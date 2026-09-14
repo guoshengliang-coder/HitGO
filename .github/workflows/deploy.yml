@@ -1,0 +1,67 @@
+name: Deploy
+
+# Two triggers:
+#   - push a `v*` tag        → release deploy of that tag
+#   - workflow_dispatch      → deploy any ref to the prototype host (demo builds)
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   DEPLOY_SSH_KEY   private key authorised on the host
+#   DEPLOY_HOST      e.g. example.com
+#   DEPLOY_USER      ssh user
+#   DEPLOY_APP_DIR   e.g. /srv/hitgo/app
+#   HITGO_ACCESS_CODE  used by the smoke test after deploy
+# The host needs docker compose + passwordless sudo for docker (see docs/DEPLOY.md).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or SHA to deploy'
+        required: true
+        default: 'main'
+
+concurrency:
+  group: deploy-prototype
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prototype
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Check secrets are configured
+        run: |
+          for v in DEPLOY_SSH_KEY DEPLOY_HOST DEPLOY_USER DEPLOY_APP_DIR; do
+            if [ -z "${!v}" ]; then echo "::error::missing secret $v"; exit 1; fi
+          done
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy
+        env:
+          HITGO_SSH: ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}
+          HITGO_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
+          HITGO_ACCESS_CODE: ${{ secrets.HITGO_ACCESS_CODE }}
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/deploy_key
+          RSYNC_RSH: ssh -i ~/.ssh/deploy_key
+          SSH_OPTS: -i ~/.ssh/deploy_key
+        run: scripts/deploy.sh
+
+      - name: Summary
+        run: echo "Deployed ${{ github.event.inputs.ref || github.ref_name }} to prototype" >> "$GITHUB_STEP_SUMMARY"

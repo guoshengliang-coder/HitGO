@@ -31,3 +31,6 @@ npm-debug.log*
 .idea/
 .vscode/
 *.swp
+
+# local deploy target (never commit)
+.deploy.env
