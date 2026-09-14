@@ -1,0 +1,1 @@
+"""HitGO backend package."""

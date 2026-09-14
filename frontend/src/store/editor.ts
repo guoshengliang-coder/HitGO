@@ -1,0 +1,833 @@
+// 编辑器全局状态（zustand）。
+// - 每条视频一份草稿 spec（specs）+ 历史栈（history，上限 50）
+// - 任何 spec 修改后 1 秒防抖自动保存（PUT /api/videos/{id}/spec）
+// - "保存并回传"：先把文字图层烘焙成 PNG，再 PUT spec，再 POST /api/render，并轮询任务
+
+import { create } from 'zustand';
+import { api, ApiError, type ApplyLayerMode } from '../api';
+import type { Asset, BatchDetail, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
+import { emptySpec } from '../types';
+import { cloneSpec, layerAspect, newLayerId, toContractSpec } from '../lib/spec';
+import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { nudgePlacement, round4 } from '../lib/layout';
+import { bakeTextLayer } from '../lib/textImage';
+import { player } from '../lib/player';
+import { ensureFontsLoaded } from '../lib/fonts';
+import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
+import { calibrationFromJobs, type Calibration } from '../lib/estimate';
+
+export type Step = 1 | 2 | 3;
+export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+export type ApplyModule = 'trim' | 'layers' | 'outputs';
+export type SafeZoneView = 'frames' | 'overlay' | 'none';
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+/** 最近一次批量应用的快照，用于「撤销本次批量应用」。prevSpecs 里的 null 表示目标当时没有 spec。 */
+export interface LastApply {
+  targetIds: string[];
+  prevSpecs: Record<string, EditSpec | null>;
+}
+
+const SAFE_ZONE_VIEW_KEY = 'hitgo.safeZoneView';
+function loadSafeZoneView(): SafeZoneView {
+  try {
+    const v = localStorage.getItem(SAFE_ZONE_VIEW_KEY);
+    if (v === 'frames' || v === 'overlay' || v === 'none') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'frames';
+}
+
+interface History {
+  past: EditSpec[];
+  future: EditSpec[];
+}
+
+const HISTORY_CAP = 50;
+
+export interface EditorState {
+  batch: BatchDetail | null;
+  videos: Video[];
+  loading: boolean;
+  error: string | null;
+  currentVideoId: string | null;
+  selectedIds: string[];
+  step: Step;
+  safeZones: SafeZone[];
+  safeZoneKey: string;
+  assets: Asset[];
+  specs: Record<string, EditSpec>;
+  history: Record<string, History>;
+  selectedLayerId: string | null;
+  time: number; // 源时间
+  playing: boolean;
+  saveState: SaveState;
+  saveError: string | null;
+  // 输出步骤
+  selectedVariantKey: VariantKey;
+  overrideMode: boolean;
+  saveScope: 'current' | 'selected' | 'all';
+  // 渲染
+  jobs: Job[];
+  trackedJobIds: string[];
+  progressOpen: boolean;
+  rendering: boolean;
+  toast: string | null;
+  toastAction: ToastAction | null;
+  // 交互
+  shortcutsOpen: boolean;
+  safeZoneView: SafeZoneView;
+  timelinePps: number | null; // null = 适应窗口
+  layerClipboard: Layer[] | null;
+  layerClipboardVideoId: string | null;
+  styleClipboard: TextStyle | null;
+  // 文字样式预设（内置 + 用户）
+  textPresets: TextStylePreset[];
+  // 批量应用撤销
+  lastApply: LastApply | null;
+  // 成片大小估算校准（来自该批次已完成任务的实际码率）
+  outputCalibration: Calibration;
+
+  load: (batchId: string) => Promise<void>;
+  loadTextPresets: () => Promise<void>;
+  saveTextPreset: (name: string, style: TextStyle) => Promise<void>;
+  deleteTextPreset: (id: string) => Promise<void>;
+  /** 拉取该批次已完成任务，按实际码率校准估算（步骤 3 进入时调用一次）。 */
+  loadOutputCalibration: () => Promise<void>;
+  refreshVideos: () => Promise<void>;
+  loadAssets: () => Promise<void>;
+  setCurrent: (id: string) => void;
+  toggleSelected: (id: string) => void;
+  setSelectedAll: (on: boolean) => void;
+  setStep: (s: Step) => void;
+  setSafeZoneKey: (k: string) => void;
+  setSelectedLayer: (id: string | null) => void;
+  setTime: (t: number) => void;
+  setPlaying: (p: boolean) => void;
+  setSelectedVariant: (k: VariantKey) => void;
+  setOverrideMode: (on: boolean) => void;
+  setSaveScope: (s: 'current' | 'selected' | 'all') => void;
+  setToast: (m: string | null, action?: ToastAction | null) => void;
+  setShortcutsOpen: (on: boolean) => void;
+  setSafeZoneView: (v: SafeZoneView) => void;
+  cycleSafeZoneView: () => void;
+  setTimelinePps: (pps: number | null) => void;
+
+  currentSpec: () => EditSpec | null;
+  currentVideo: () => Video | null;
+  updateSpec: (fn: (spec: EditSpec) => void, opts?: { history?: boolean; videoId?: string }) => void;
+  /** 整体替换某条视频的草稿 spec（null = 重置为空 spec），可记入历史，并安排自动保存。 */
+  replaceSpec: (videoId: string, spec: EditSpec | null, opts?: { history?: boolean }) => void;
+  undo: () => void;
+  redo: () => void;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
+
+  // 剪辑
+  addRemoveRange: (a: number, b: number) => void;
+  updateRemoveRange: (index: number, a: number, b: number) => void;
+  deleteRemoveRange: (index: number) => void;
+  selectedRangeIndex: number | null;
+  setSelectedRange: (i: number | null) => void;
+  inPoint: number | null;
+  setInPoint: (t: number | null) => void;
+  setOutPoint: (t: number) => void;
+  /** 删左：删除 [0, 当前源时间]。 */
+  removeBefore: () => void;
+  /** 删右：删除 [当前源时间, duration]。 */
+  removeAfter: () => void;
+  canRemoveBefore: () => boolean;
+  canRemoveAfter: () => boolean;
+
+  // 图层
+  addLayer: (layer: Layer) => void;
+  updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
+  removeLayer: (id: string) => void;
+  moveLayer: (id: string, dir: -1 | 1) => void;
+  moveLayerTo: (id: string, where: 'top' | 'bottom') => void;
+  duplicateLayer: (id: string) => void;
+  copyLayer: () => void;
+  pasteLayer: () => void;
+  copyStyle: () => void;
+  pasteStyle: () => void;
+  /** 按 1080×1920 参考像素平移图层。 */
+  nudgeLayer: (id: string, dx: number, dy: number, history?: boolean) => void;
+
+  // 输出
+  setOutputs: (outputs: OutputVariant[]) => void;
+  setOverride: (variantKey: VariantKey, layerId: string, patch: Record<string, unknown> | null) => void;
+
+  // 批量 / 渲染
+  applyToTargets: (targetIds: string[], modules: ApplyModule[], opts?: { layerMode?: ApplyLayerMode }) => Promise<void>;
+  /** 撤销最近一次批量应用：把每个目标恢复到应用前的 spec。 */
+  undoLastApply: () => void;
+  saveAndRender: (targetIds: string[]) => Promise<void>;
+  retryJob: (id: string) => Promise<void>;
+  closeProgress: () => void;
+  openProgressFor: (jobs: Job[]) => void;
+  flushSave: () => Promise<void>;
+}
+
+const saveTimers: Record<string, number> = {};
+let pollTimer: number | null = null;
+
+function ensureHistory(h: Record<string, History>, id: string): History {
+  if (!h[id]) h[id] = { past: [], future: [] };
+  return h[id];
+}
+
+export const useEditor = create<EditorState>((set, get) => {
+  const scheduleSave = (videoId: string) => {
+    set({ saveState: 'dirty' });
+    if (saveTimers[videoId]) window.clearTimeout(saveTimers[videoId]);
+    saveTimers[videoId] = window.setTimeout(() => {
+      delete saveTimers[videoId];
+      void saveNow(videoId);
+    }, 1000);
+  };
+
+  const saveNow = async (videoId: string) => {
+    const spec = get().specs[videoId];
+    const video = get().videos.find((v) => v.id === videoId);
+    if (!spec || !video) return;
+    set({ saveState: 'saving' });
+    try {
+      const saved = await api.putSpec(videoId, toContractSpec(spec, video.duration));
+      set((s) => ({
+        saveState: 'saved',
+        saveError: null,
+        videos: s.videos.map((v) => (v.id === videoId ? { ...saved, edit_spec: v.edit_spec ?? saved.edit_spec } : v)),
+      }));
+    } catch (e) {
+      set({ saveState: 'error', saveError: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const startPolling = () => {
+    if (pollTimer) return;
+    const tick = async () => {
+      const ids = get().trackedJobIds;
+      if (!ids.length) {
+        pollTimer = null;
+        return;
+      }
+      try {
+        const jobs = await api.getJobs(ids);
+        set({ jobs });
+        const unfinished = jobs.some((j) => j.status === 'queued' || j.status === 'running');
+        await get().refreshVideos();
+        if (!unfinished) {
+          pollTimer = null;
+          return;
+        }
+      } catch {
+        /* 下一轮重试 */
+      }
+      pollTimer = window.setTimeout(tick, 1500);
+    };
+    pollTimer = window.setTimeout(tick, 300);
+  };
+
+  return {
+    batch: null,
+    videos: [],
+    loading: false,
+    error: null,
+    currentVideoId: null,
+    selectedIds: [],
+    step: 1,
+    safeZones: [],
+    safeZoneKey: 'generic-vertical',
+    assets: [],
+    specs: {},
+    history: {},
+    selectedLayerId: null,
+    time: 0,
+    playing: false,
+    saveState: 'idle',
+    saveError: null,
+    selectedVariantKey: '9x16',
+    overrideMode: false,
+    saveScope: 'current',
+    jobs: [],
+    trackedJobIds: [],
+    progressOpen: false,
+    rendering: false,
+    toast: null,
+    toastAction: null,
+    shortcutsOpen: false,
+    safeZoneView: loadSafeZoneView(),
+    timelinePps: null,
+    layerClipboard: null,
+    layerClipboardVideoId: null,
+    styleClipboard: null,
+    textPresets: BUILTIN_TEXT_PRESETS,
+    lastApply: null,
+    outputCalibration: {},
+    selectedRangeIndex: null,
+    inPoint: null,
+
+    load: async (batchId) => {
+      set({ loading: true, error: null });
+      try {
+        const [batch, zones] = await Promise.all([api.getBatch(batchId), get().safeZones.length ? Promise.resolve(get().safeZones) : api.safeZones()]);
+        const specs: Record<string, EditSpec> = {};
+        for (const v of batch.videos) specs[v.id] = v.edit_spec ? cloneSpec(v.edit_spec) : emptySpec();
+        const currentVideoId = batch.videos[0]?.id ?? null;
+        set({
+          batch,
+          videos: batch.videos,
+          specs,
+          history: {},
+          safeZones: zones,
+          safeZoneKey: zones.find((z) => z.key === get().safeZoneKey)?.key ?? zones[0]?.key ?? 'generic-vertical',
+          currentVideoId,
+          selectedIds: [],
+          selectedLayerId: null,
+          time: 0,
+          loading: false,
+          saveState: 'idle',
+          lastApply: null,
+          outputCalibration: {},
+        });
+        void get().loadAssets();
+        void get().loadTextPresets();
+        // 恢复未完成的渲染任务
+        try {
+          const jobs = await api.batchJobs(batchId);
+          const active = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+          if (active.length) {
+            set({ jobs: active, trackedJobIds: active.map((j) => j.id) });
+            startPolling();
+          }
+        } catch {
+          /* ignore */
+        }
+      } catch (e) {
+        set({ loading: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    },
+
+    refreshVideos: async () => {
+      const b = get().batch;
+      if (!b) return;
+      try {
+        const fresh = await api.getBatch(b.id);
+        set((s) => ({
+          batch: fresh,
+          videos: fresh.videos,
+          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? cloneSpec(v.edit_spec) : emptySpec())])),
+        }));
+      } catch {
+        /* ignore */
+      }
+    },
+
+    loadAssets: async () => {
+      try {
+        const [stickers, fonts] = await Promise.all([api.listAssets('sticker'), api.listAssets('font')]);
+        set({ assets: [...stickers, ...fonts] });
+        void ensureFontsLoaded(fonts);
+      } catch {
+        /* ignore */
+      }
+    },
+
+    loadTextPresets: async () => {
+      try {
+        const list = await api.listPresets('text_style');
+        const user: TextStylePreset[] = list.map((p) => ({ id: p.id, name: p.name, style: p.data as Partial<TextStyle> }));
+        set({ textPresets: [...BUILTIN_TEXT_PRESETS, ...user] });
+      } catch {
+        set({ textPresets: BUILTIN_TEXT_PRESETS });
+      }
+    },
+    saveTextPreset: async (name, style) => {
+      const nm = name.trim();
+      if (!nm) return;
+      try {
+        // 预设不带对齐：套用时保留当前图层的对齐方式
+        const { align: _align, ...data } = style;
+        void _align;
+        const p = await api.createPreset({ type: 'text_style', name: nm, data });
+        set((s) => ({ textPresets: [...s.textPresets, { id: p.id, name: p.name, style: p.data as Partial<TextStyle> }], toast: `已保存预设「${p.name}」`, toastAction: null }));
+      } catch (e) {
+        set({ toast: `保存预设失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+      }
+    },
+    deleteTextPreset: async (id) => {
+      const target = get().textPresets.find((p) => p.id === id);
+      if (!target || target.builtin) return;
+      try {
+        await api.deletePreset(id);
+        set((s) => ({ textPresets: s.textPresets.filter((p) => p.id !== id) }));
+      } catch (e) {
+        set({ toast: `删除预设失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+      }
+    },
+    loadOutputCalibration: async () => {
+      const b = get().batch;
+      if (!b) return;
+      try {
+        const done = await api.batchOutputs(b.id);
+        set({ outputCalibration: calibrationFromJobs(done) });
+      } catch {
+        /* 估算退回码率表 */
+      }
+    },
+
+    setCurrent: (id) => {
+      if (id === get().currentVideoId) return;
+      player.pause();
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, overrideMode: false, timelinePps: null });
+    },
+    toggleSelected: (id) =>
+      set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
+    setSelectedAll: (on) => set((s) => ({ selectedIds: on ? s.videos.map((v) => v.id) : [] })),
+    setStep: (step) => {
+      player.pause();
+      set({ step, selectedLayerId: null, selectedRangeIndex: null, overrideMode: false });
+      if (step === 3) void get().loadOutputCalibration();
+    },
+    setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
+    setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
+    setTime: (time) => set({ time }),
+    setPlaying: (playing) => set({ playing }),
+    setSelectedVariant: (selectedVariantKey) => set({ selectedVariantKey, overrideMode: false }),
+    setOverrideMode: (overrideMode) => set({ overrideMode }),
+    setSaveScope: (saveScope) => set({ saveScope }),
+    setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
+    setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+    setSafeZoneView: (safeZoneView) => {
+      try {
+        localStorage.setItem(SAFE_ZONE_VIEW_KEY, safeZoneView);
+      } catch {
+        /* ignore */
+      }
+      set({ safeZoneView });
+    },
+    cycleSafeZoneView: () => {
+      const order: SafeZoneView[] = ['frames', 'overlay', 'none'];
+      const cur = get().safeZoneView;
+      get().setSafeZoneView(order[(order.indexOf(cur) + 1) % order.length]);
+    },
+    setTimelinePps: (timelinePps) => set({ timelinePps }),
+    setSelectedRange: (selectedRangeIndex) => set({ selectedRangeIndex }),
+    setInPoint: (inPoint) => set({ inPoint }),
+    setOutPoint: (t) => {
+      const ip = get().inPoint;
+      if (ip === null) {
+        set({ inPoint: t });
+        return;
+      }
+      get().addRemoveRange(ip, t);
+      set({ inPoint: null });
+    },
+    canRemoveBefore: () => {
+      const v = get().currentVideo();
+      const t = get().time;
+      if (!v || t < 0.05) return false;
+      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], v.duration);
+    },
+    canRemoveAfter: () => {
+      const v = get().currentVideo();
+      const t = get().time;
+      if (!v || v.duration - t < 0.05) return false;
+      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration);
+    },
+    removeBefore: () => {
+      const v = get().currentVideo();
+      if (!v) return;
+      const t = get().time;
+      if (t < 0.05) return;
+      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], v.duration)) {
+        set({ toast: '不能删除整条视频', toastAction: null });
+        return;
+      }
+      get().addRemoveRange(0, t);
+      set({ inPoint: null, toast: `已删除播放头左侧 ${t.toFixed(2)}s`, toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    removeAfter: () => {
+      const v = get().currentVideo();
+      if (!v) return;
+      const t = get().time;
+      if (v.duration - t < 0.05) return;
+      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration)) {
+        set({ toast: '不能删除整条视频', toastAction: null });
+        return;
+      }
+      get().addRemoveRange(t, v.duration);
+      set({ inPoint: null, toast: `已删除播放头右侧 ${(v.duration - t).toFixed(2)}s`, toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+
+    currentSpec: () => {
+      const id = get().currentVideoId;
+      return id ? get().specs[id] ?? null : null;
+    },
+    currentVideo: () => {
+      const id = get().currentVideoId;
+      return get().videos.find((v) => v.id === id) ?? null;
+    },
+
+    updateSpec: (fn, opts) => {
+      const videoId = opts?.videoId ?? get().currentVideoId;
+      if (!videoId) return;
+      const s = get();
+      const prev = s.specs[videoId] ?? emptySpec();
+      const next = cloneSpec(prev);
+      fn(next);
+      const history = { ...s.history };
+      if (opts?.history !== false) {
+        const h = { ...ensureHistory(history, videoId) };
+        h.past = [...h.past, prev].slice(-HISTORY_CAP);
+        h.future = [];
+        history[videoId] = h;
+      }
+      set({ specs: { ...s.specs, [videoId]: next }, history });
+      scheduleSave(videoId);
+    },
+    replaceSpec: (videoId, spec, opts) => {
+      const s = get();
+      if (!s.videos.some((v) => v.id === videoId)) return;
+      const prev = s.specs[videoId] ?? emptySpec();
+      // 后端要求 outputs 至少一个：null 用空 spec 代替
+      const next = spec ? cloneSpec(spec) : emptySpec();
+      const history = { ...s.history };
+      if (opts?.history) {
+        const h = { ...ensureHistory(history, videoId) };
+        h.past = [...h.past, prev].slice(-HISTORY_CAP);
+        h.future = [];
+        history[videoId] = h;
+      }
+      set({ specs: { ...s.specs, [videoId]: next }, history, selectedLayerId: videoId === s.currentVideoId ? null : s.selectedLayerId });
+      scheduleSave(videoId);
+    },
+    undo: () => {
+      const videoId = get().currentVideoId;
+      if (!videoId) return;
+      const s = get();
+      const h = ensureHistory({ ...s.history }, videoId);
+      if (!h.past.length) return;
+      const prev = h.past[h.past.length - 1];
+      const nh: History = { past: h.past.slice(0, -1), future: [s.specs[videoId], ...h.future].slice(0, HISTORY_CAP) };
+      set({ specs: { ...s.specs, [videoId]: prev }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null });
+      scheduleSave(videoId);
+    },
+    redo: () => {
+      const videoId = get().currentVideoId;
+      if (!videoId) return;
+      const s = get();
+      const h = ensureHistory({ ...s.history }, videoId);
+      if (!h.future.length) return;
+      const next = h.future[0];
+      const nh: History = { past: [...h.past, s.specs[videoId]].slice(-HISTORY_CAP), future: h.future.slice(1) };
+      set({ specs: { ...s.specs, [videoId]: next }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null });
+      scheduleSave(videoId);
+    },
+    canUndo: () => {
+      const id = get().currentVideoId;
+      return !!id && (get().history[id]?.past.length ?? 0) > 0;
+    },
+    canRedo: () => {
+      const id = get().currentVideoId;
+      return !!id && (get().history[id]?.future.length ?? 0) > 0;
+    },
+
+    addRemoveRange: (a, b) => {
+      const v = get().currentVideo();
+      if (!v) return;
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      if (hi - lo < 0.05) return;
+      get().updateSpec((spec) => {
+        spec.trim.remove = normalizeRanges([...spec.trim.remove, [lo, hi]], v.duration);
+      });
+      const idx = get().currentSpec()?.trim.remove.findIndex(([x, y]) => x <= lo + 1e-6 && y >= hi - 1e-6) ?? -1;
+      set({ selectedRangeIndex: idx >= 0 ? idx : null });
+    },
+    updateRemoveRange: (index, a, b) => {
+      const v = get().currentVideo();
+      if (!v) return;
+      get().updateSpec((spec) => {
+        const rs = spec.trim.remove.map((r, i) => (i === index ? ([Math.min(a, b), Math.max(a, b)] as [number, number]) : r));
+        spec.trim.remove = normalizeRanges(rs, v.duration);
+      });
+    },
+    deleteRemoveRange: (index) => {
+      get().updateSpec((spec) => {
+        spec.trim.remove = spec.trim.remove.filter((_, i) => i !== index);
+      });
+      set({ selectedRangeIndex: null });
+    },
+
+    addLayer: (layer) => {
+      get().updateSpec((spec) => {
+        spec.layers.push(layer);
+      });
+      set({ selectedLayerId: layer.id });
+    },
+    updateLayer: (id, patch, history = true) => {
+      get().updateSpec(
+        (spec) => {
+          const l = spec.layers.find((x) => x.id === id);
+          if (!l) return;
+          if (typeof patch === 'function') patch(l);
+          else Object.assign(l, patch);
+        },
+        { history },
+      );
+    },
+    removeLayer: (id) => {
+      get().updateSpec((spec) => {
+        spec.layers = spec.layers.filter((l) => l.id !== id);
+        for (const o of spec.outputs) if (o.layer_overrides) delete o.layer_overrides[id];
+      });
+      if (get().selectedLayerId === id) set({ selectedLayerId: null });
+    },
+    moveLayer: (id, dir) => {
+      get().updateSpec((spec) => {
+        const i = spec.layers.findIndex((l) => l.id === id);
+        const j = i + dir;
+        if (i < 0 || j < 0 || j >= spec.layers.length) return;
+        const [item] = spec.layers.splice(i, 1);
+        spec.layers.splice(j, 0, item);
+      });
+    },
+    moveLayerTo: (id, where) => {
+      const layers = get().currentSpec()?.layers ?? [];
+      const i = layers.findIndex((l) => l.id === id);
+      if (i < 0) return;
+      const target = where === 'top' ? layers.length - 1 : 0;
+      if (i === target) return;
+      get().updateSpec((spec) => {
+        const [item] = spec.layers.splice(i, 1);
+        spec.layers.splice(target, 0, item);
+      });
+    },
+    duplicateLayer: (id) => {
+      const src = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!src) return;
+      const copy = { ...cloneSpec({ ...emptySpec(), layers: [src] }).layers[0], id: newLayerId() };
+      copy.margin = [round4(copy.margin[0] + 0.03), round4(copy.margin[1] + 0.03)];
+      get().updateSpec((spec) => {
+        const i = spec.layers.findIndex((l) => l.id === id);
+        spec.layers.splice(i + 1, 0, copy);
+      });
+      set({ selectedLayerId: copy.id });
+    },
+    copyLayer: () => {
+      const id = get().selectedLayerId;
+      const src = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!src) return;
+      set({ layerClipboard: cloneSpec({ ...emptySpec(), layers: [src] }).layers, layerClipboardVideoId: get().currentVideoId, toast: '已复制图层', toastAction: null });
+    },
+    pasteLayer: () => {
+      const clip = get().layerClipboard;
+      const spec = get().currentSpec();
+      if (!clip?.length || !spec) return;
+      const sameVideo = get().layerClipboardVideoId === get().currentVideoId;
+      const existing = new Set(spec.layers.map((l) => l.id));
+      const pasted = cloneSpec({ ...emptySpec(), layers: clip }).layers.map((l) => {
+        const collide = sameVideo || existing.has(l.id);
+        const copy: Layer = { ...l, id: newLayerId() };
+        if (collide) copy.margin = [round4(l.margin[0] + 0.03), round4(l.margin[1] + 0.03)];
+        return copy;
+      });
+      get().updateSpec((s) => {
+        s.layers.push(...pasted);
+      });
+      // 同一视频里连续粘贴时继续错开：剪贴板里的坐标随之更新
+      if (sameVideo) set({ layerClipboard: cloneSpec({ ...emptySpec(), layers: pasted }).layers });
+      set({ selectedLayerId: pasted[pasted.length - 1].id });
+    },
+    copyStyle: () => {
+      const id = get().selectedLayerId;
+      const src = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!src) return;
+      if (src.type !== 'text') {
+        set({ toast: '只能从文字图层复制样式', toastAction: null });
+        return;
+      }
+      set({ styleClipboard: { ...src.style }, toast: '已复制文字样式', toastAction: null });
+    },
+    pasteStyle: () => {
+      const style = get().styleClipboard;
+      const id = get().selectedLayerId;
+      const target = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!style) {
+        set({ toast: '还没有复制过文字样式', toastAction: null });
+        return;
+      }
+      if (!target) return;
+      if (target.type !== 'text') {
+        set({ toast: '只能把样式粘贴到文字图层', toastAction: null });
+        return;
+      }
+      get().updateLayer(target.id, (l) => {
+        if (l.type === 'text') l.style = { ...style };
+      });
+    },
+    nudgeLayer: (id, dx, dy, history = true) => {
+      const layer = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!layer || layer.locked) return;
+      const m = nudgePlacement(layer, layerAspect(layer, get().assets), { W: 1080, H: 1920 }, dx, dy);
+      get().updateLayer(id, { margin: [round4(m[0]), round4(m[1])] }, history);
+    },
+
+    setOutputs: (outputs) => {
+      get().updateSpec((spec) => {
+        spec.outputs = outputs;
+      });
+    },
+    setOverride: (variantKey, layerId, patch) => {
+      get().updateSpec((spec) => {
+        const o = spec.outputs.find((x) => x.variant_key === variantKey);
+        if (!o) return;
+        if (patch === null) {
+          if (o.layer_overrides) delete o.layer_overrides[layerId];
+          return;
+        }
+        o.layer_overrides = o.layer_overrides ?? {};
+        o.layer_overrides[layerId] = { ...(o.layer_overrides[layerId] ?? {}), ...patch };
+      });
+    },
+
+    applyToTargets: async (targetIds, modules, opts) => {
+      const s = get();
+      const b = s.batch;
+      const src = s.currentVideoId;
+      if (!b || !src) return;
+      const targets = targetIds.filter((id) => id !== src);
+      if (!targets.length) return;
+      await get().flushSave();
+      // 请求前快照：目标当前草稿（没有则 null），用于撤销
+      const prevSpecs: Record<string, EditSpec | null> = {};
+      for (const id of targets) {
+        const cur = get().specs[id];
+        prevSpecs[id] = cur ? cloneSpec(cur) : null;
+      }
+      try {
+        const layerMode = opts?.layerMode ?? 'replace';
+        const updated = await api.applySpec(b.id, {
+          source_video_id: src,
+          target_video_ids: targets,
+          modules,
+          ...(modules.includes('layers') && layerMode !== 'replace' ? { layer_mode: layerMode } : {}),
+        });
+        set((st) => {
+          const history = { ...st.history };
+          for (const u of updated) {
+            const h = { ...ensureHistory(history, u.id) };
+            h.past = [...h.past, prevSpecs[u.id] ?? emptySpec()].slice(-HISTORY_CAP);
+            h.future = [];
+            history[u.id] = h;
+          }
+          const lastApply: LastApply = { targetIds: updated.map((u) => u.id), prevSpecs };
+          return {
+            videos: st.videos.map((v) => updated.find((u) => u.id === v.id) ?? v),
+            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? cloneSpec(u.edit_spec) : emptySpec()])) },
+            history,
+            lastApply,
+            toast: `已应用到 ${updated.length} 条视频`,
+            toastAction: { label: '撤销本次批量应用', run: () => get().undoLastApply() },
+          };
+        });
+      } catch (e) {
+        set({ toast: `应用失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+      }
+    },
+    undoLastApply: () => {
+      const la = get().lastApply;
+      if (!la) return;
+      for (const id of la.targetIds) {
+        if (!(id in la.prevSpecs)) continue;
+        get().replaceSpec(id, la.prevSpecs[id], { history: true });
+      }
+      set({ lastApply: null, toast: `已撤销批量应用（${la.targetIds.length} 条）`, toastAction: null });
+    },
+
+    flushSave: async () => {
+      const ids = Object.keys(saveTimers);
+      for (const id of ids) {
+        window.clearTimeout(saveTimers[id]);
+        delete saveTimers[id];
+        await saveNow(id);
+      }
+    },
+
+    saveAndRender: async (targetIds) => {
+      const s = get();
+      if (!targetIds.length || s.rendering) return;
+      set({ rendering: true, toast: null });
+      try {
+        for (const id of targetIds) {
+          const video = s.videos.find((v) => v.id === id);
+          if (!video) continue;
+          const spec = cloneSpec(get().specs[id] ?? (video.edit_spec ? video.edit_spec : emptySpec()));
+          // 文字图层 → PNG（每次回传都重新生成，保证与当前文字 / 样式一致）
+          for (let i = 0; i < spec.layers.length; i++) {
+            const l = spec.layers[i];
+            if (l.type === 'text') spec.layers[i] = await bakeTextLayer(l as TextLayer);
+          }
+          if (saveTimers[id]) {
+            window.clearTimeout(saveTimers[id]);
+            delete saveTimers[id];
+          }
+          set((st) => ({ specs: { ...st.specs, [id]: spec }, saveState: 'saving' }));
+          const saved = await api.putSpec(id, toContractSpec(spec, video.duration));
+          set((st) => ({ videos: st.videos.map((v) => (v.id === id ? saved : v)), saveState: 'saved' }));
+        }
+        let jobs: Job[];
+        try {
+          jobs = await api.render(targetIds);
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 409) {
+            set({ toast: `有任务仍在进行：${e.message}` });
+            const existing = await api.batchJobs(s.batch!.id);
+            jobs = existing.filter((j) => targetIds.includes(j.video_id) && (j.status === 'queued' || j.status === 'running'));
+          } else throw e;
+        }
+        set((st) => ({ jobs, trackedJobIds: Array.from(new Set([...st.trackedJobIds.filter((id) => st.jobs.find((j) => j.id === id && (j.status === 'queued' || j.status === 'running'))), ...jobs.map((j) => j.id)])), progressOpen: true, rendering: false }));
+        startPolling();
+        await get().refreshVideos();
+      } catch (e) {
+        set({ rendering: false, toast: `回传失败：${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+
+    retryJob: async (id) => {
+      try {
+        const j = await api.retryJob(id);
+        set((s) => ({ jobs: s.jobs.map((x) => (x.id === id ? j : x)), trackedJobIds: Array.from(new Set([...s.trackedJobIds, id])) }));
+        startPolling();
+      } catch (e) {
+        set({ toast: `重试失败：${e instanceof Error ? e.message : String(e)}` });
+      }
+    },
+    closeProgress: () => set({ progressOpen: false }),
+    openProgressFor: (jobs) => {
+      set({ jobs, trackedJobIds: jobs.map((j) => j.id), progressOpen: true });
+      startPolling();
+    },
+  };
+});
+
+// ---- 派生选择器 ----
+export function usePostDuration(): number {
+  return useEditor((s) => {
+    const v = s.videos.find((x) => x.id === s.currentVideoId);
+    const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
+    if (!v) return 0;
+    return postTrimDuration(v.duration, spec?.trim.remove ?? []);
+  });
+}
+
+export function usePostTime(): number {
+  return useEditor((s) => {
+    const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
+    return sourceToPost(s.time, spec?.trim.remove ?? []);
+  });
+}

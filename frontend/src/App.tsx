@@ -1,0 +1,81 @@
+import { useCallback, useEffect, useState } from 'react';
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { api } from './api';
+import { LoginPage } from './pages/LoginPage';
+import { BatchesPage } from './pages/BatchesPage';
+import { AssetsPage } from './pages/AssetsPage';
+import { EditorPage } from './pages/EditorPage';
+import { OutputsPage } from './pages/OutputsPage';
+
+type AuthState = 'checking' | 'ok' | 'required';
+
+function Shell() {
+  return (
+    <>
+      <nav className="app-nav">
+        <NavLink to="/" className="brand">
+          Hit<b>GO</b>
+        </NavLink>
+        <NavLink to="/" end className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
+          批次
+        </NavLink>
+        <NavLink to="/assets" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
+          素材库
+        </NavLink>
+      </nav>
+      <Outlet />
+    </>
+  );
+}
+
+export default function App() {
+  const [auth, setAuth] = useState<AuthState>('checking');
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const check = useCallback(async () => {
+    try {
+      const r = await api.authStatus();
+      setAuth(r.required && !r.ok ? 'required' : 'ok');
+    } catch {
+      setAuth('ok');
+    }
+  }, []);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  useEffect(() => {
+    if (auth === 'required' && location.pathname !== '/login') navigate('/login', { replace: true });
+  }, [auth, location.pathname, navigate]);
+
+  if (auth === 'checking') return <div className="empty">加载中…</div>;
+
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          auth === 'ok' ? (
+            <Navigate to="/" replace />
+          ) : (
+            <LoginPage
+              onSuccess={() => {
+                setAuth('ok');
+                navigate('/', { replace: true });
+              }}
+            />
+          )
+        }
+      />
+      <Route element={<Shell />}>
+        <Route path="/" element={<BatchesPage />} />
+        <Route path="/assets" element={<AssetsPage />} />
+        <Route path="/batches/:id/outputs" element={<OutputsPage />} />
+      </Route>
+      <Route path="/batches/:id" element={<EditorPage />} />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
