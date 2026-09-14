@@ -20,3 +20,7 @@ deploy:
 # make release v=0.2.0
 release:
 	scripts/release.sh v$(v)
+
+# make task-done b=feat/<task>   (after the PR is merged)
+task-done:
+	scripts/task-done.sh $(b)
