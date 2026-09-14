@@ -11,6 +11,7 @@
 | 任务范围写进 PR | 开工前在 PR（draft）里列出计划触碰的目录/文件，方便并行任务提前发现冲突 |
 | 共享文件 | `frontend/src/store/editor.ts`、`frontend/src/pages/EditorPage.tsx`、`backend/app/schemas.py`、`docs/CONTRACT.md` 是高冲突文件；改这些的任务尽量串行，或先合并一个基础 PR 再各自 rebase |
 | 分支寿命 | 尽量 ≤ 3 天；长任务拆成多个 PR 逐步合并，用 feature flag 或"预留字段"保证每一步 main 可用 |
+| 合并后清理 | 远程分支由 GitHub 自动删除；本地执行 `make task-done b=feat/<task>` 删除 worktree 和本地分支（脚本会先确认 PR 已合并） |
 
 ## 2. 契约变更流程
 
