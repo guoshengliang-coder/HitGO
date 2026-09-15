@@ -1,4 +1,4 @@
-// 输出步骤的裁切编辑：按源视频比例显示当前帧，拖动 / 拉角一个锁定画幅比的窗口，写入 outputs[].crop。
+// 剪辑模块的裁切编辑：按源视频比例显示当前帧，拖动 / 拉角一个锁定 9:16 的窗口，写入 outputs[0].crop。
 // 窗口的像素比 = 输出画幅比，所以 worker 端"裁窗口 → cover 居中"那一步不会再裁掉任何东西，所见即所得。
 
 import { useEffect, useRef, useState } from 'react';
@@ -24,17 +24,16 @@ export function CropEditor() {
 
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
-  const variantKey = useEditor((s) => s.selectedVariantKey);
   const setCrop = useEditor((s) => s.setCrop);
   const setCropEditing = useEditor((s) => s.setCropEditing);
 
-  const def = variantDef(variantKey);
+  const def = variantDef('9x16');
   const aspect = def.width / def.height;
   const srcW = video?.width || 16;
   const srcH = video?.height || 9;
   const { W, H } = useFitSize(wrapRef, srcW / srcH);
 
-  const variant = spec?.outputs.find((o) => o.variant_key === variantKey);
+  const variant = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
   const rect = variant?.crop ?? defaultCropRect(srcW, srcH, aspect);
   const px = cropRectToPixels(rect, W, H);
   // 拖动 / 缩放过程中的实时框（遮罩跟着走），松手后以 store 为准
@@ -42,7 +41,7 @@ export function CropEditor() {
   const box = live ?? px;
 
   // 背景：当前帧（<video> 已就绪）或封面。
-  // 和变体预览一样由常驻 rAF 驱动，不放进 effect 依赖里跟着每帧重渲染走（HIG-5）。
+  // 由常驻 rAF 驱动，不放进 effect 依赖里跟着每帧重渲染走（HIG-5）。
   const bgInputRef = useRef<{ posterUrl: string; W: number; H: number } | null>(null);
   bgInputRef.current = video ? { posterUrl: video.poster_url ?? '', W, H } : null;
 
@@ -114,7 +113,7 @@ export function CropEditor() {
     if (!tr || !node) return;
     tr.nodes([node]);
     tr.getLayer()?.batchDraw();
-  }, [W, H, variantKey]);
+  }, [W, H]);
 
   const readBox = (node: Konva.Rect): PixelBox => ({ x: node.x(), y: node.y(), w: node.width() * node.scaleX(), h: node.height() * node.scaleY() });
 
@@ -128,7 +127,7 @@ export function CropEditor() {
     node.position({ x: p.x, y: p.y });
     node.size({ width: p.w, height: p.h });
     setLive(null);
-    setCrop(variantKey, next);
+    setCrop(next);
   };
 
   return (
@@ -185,9 +184,9 @@ export function CropEditor() {
         </div>
       </div>
       <div className="override-bar crop-bar">
-        <span className="muted">拖动 / 拉角调整 {def.label} 变体的裁切窗口（锁定画幅比）；遮罩部分不会出现在成片里。</span>
+        <span className="muted">拖动 / 拉角调整 {def.label} 成片的裁切窗口（锁定画幅比）；遮罩部分不会出现在成片里。</span>
         <span className="spacer" />
-        <button className="btn sm" onClick={() => setCrop(variantKey, defaultCropRect(srcW, srcH, aspect))}>
+        <button className="btn sm" onClick={() => setCrop(defaultCropRect(srcW, srcH, aspect))}>
           居中
         </button>
         <button className="btn sm primary" onClick={() => setCropEditing(false)}>

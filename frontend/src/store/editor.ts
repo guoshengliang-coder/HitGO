@@ -1,24 +1,26 @@
 // 编辑器全局状态（zustand）。
 // - 每条视频一份草稿 spec（specs）+ 历史栈（history，上限 50）
 // - 任何 spec 修改后 1 秒防抖自动保存（PUT /api/videos/{id}/spec）
-// - "保存并回传"：先把文字图层烘焙成 PNG，再 PUT spec，再 POST /api/render，并轮询任务
+// - "导出"：先把文字图层烘焙成 PNG，再 PUT spec，再 POST /api/render，并轮询任务
+// - 编辑器只产出一个 9:16 输出（HIG-8）：载入 / 批量应用 / 导出时用 toSingleOutput 收掉旧 spec 里的其他画幅
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
-import { cloneSpec, layerAspect, newLayerId, toContractSpec } from '../lib/spec';
+import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { nudgePlacement, round4 } from '../lib/layout';
-import { reorder } from '../lib/order';
+import { indexWithinType, layersOfType, moveWithinType } from '../lib/layerKind';
+import { layerTypeForStep, type Step } from '../lib/steps';
 import { bakeTextLayer } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
 import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 
-export type Step = 1 | 2 | 3;
+export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 export type ApplyModule = 'trim' | 'layers' | 'outputs' | 'audio';
 export type SafeZoneView = 'frames' | 'overlay' | 'none';
@@ -80,12 +82,8 @@ export interface EditorState {
   playing: boolean;
   saveState: SaveState;
   saveError: string | null;
-  // 输出步骤
-  selectedVariantKey: VariantKey;
-  overrideMode: boolean;
-  /** 正在舞台上拖动 selectedVariantKey 变体的裁切窗口 */
+  /** 剪辑模块里正在调整 9:16 输出的裁切窗口（中栏换成 CropEditor） */
   cropEditing: boolean;
-  saveScope: 'current' | 'selected' | 'all';
   // 渲染
   jobs: Job[];
   trackedJobIds: string[];
@@ -113,7 +111,7 @@ export interface EditorState {
   loadTextPresets: () => Promise<void>;
   saveTextPreset: (name: string, style: TextStyle) => Promise<void>;
   deleteTextPreset: (id: string) => Promise<void>;
-  /** 拉取该批次已完成任务，按实际码率校准估算（步骤 3 进入时调用一次）。 */
+  /** 拉取该批次已完成任务，按实际码率校准估算（剪辑面板的「画面」分组挂载时调用）。 */
   loadOutputCalibration: () => Promise<void>;
   refreshVideos: () => Promise<void>;
   loadAssets: () => Promise<void>;
@@ -125,10 +123,7 @@ export interface EditorState {
   setSelectedLayer: (id: string | null) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
-  setSelectedVariant: (k: VariantKey) => void;
-  setOverrideMode: (on: boolean) => void;
   setCropEditing: (on: boolean) => void;
-  setSaveScope: (s: 'current' | 'selected' | 'all') => void;
   setToast: (m: string | null, action?: ToastAction | null) => void;
   setShortcutsOpen: (on: boolean) => void;
   setSafeZoneView: (v: SafeZoneView) => void;
@@ -183,9 +178,10 @@ export interface EditorState {
   addLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
   removeLayer: (id: string) => void;
+  // 层级操作都只在图层自己这一类（文字 / 贴纸）里换序，另一类的位置不动，见 lib/layerKind
   moveLayer: (id: string, dir: -1 | 1) => void;
   moveLayerTo: (id: string, where: 'top' | 'bottom') => void;
-  /** 把图层挪到 spec.layers 的 index 位置（越界夹到边界；末尾 = 最上层）。 */
+  /** 把图层挪到同类里的第 index 位（0 = 同类最下层；越界夹到边界）。 */
   moveLayerToIndex: (id: string, index: number) => void;
   duplicateLayer: (id: string) => void;
   copyLayer: () => void;
@@ -195,11 +191,10 @@ export interface EditorState {
   /** 按 1080×1920 参考像素平移图层。 */
   nudgeLayer: (id: string, dx: number, dy: number, history?: boolean) => void;
 
-  // 输出
-  setOutputs: (outputs: OutputVariant[]) => void;
-  /** 写某个变体的裁切窗口；null = 删掉（回到 cover 居中）。 */
-  setCrop: (variantKey: VariantKey, rect: CropRect | null, history?: boolean) => void;
-  setOverride: (variantKey: VariantKey, layerId: string, patch: Record<string, unknown> | null) => void;
+  // 画面（唯一的 9:16 输出）
+  patchOutput: (patch: Partial<OutputVariant>) => void;
+  /** 写 9:16 输出的裁切窗口；null = 删掉（回到 cover 居中）。 */
+  setCrop: (rect: CropRect | null, history?: boolean) => void;
 
   // 批量 / 渲染
   applyToTargets: (targetIds: string[], modules: ApplyModule[], opts?: { layerMode?: ApplyLayerMode }) => Promise<void>;
@@ -309,7 +304,7 @@ export const useEditor = create<EditorState>((set, get) => {
     error: null,
     currentVideoId: null,
     selectedIds: [],
-    step: 1,
+    step: 'trim',
     safeZones: [],
     safeZoneKey: 'generic-vertical',
     assets: [],
@@ -320,10 +315,7 @@ export const useEditor = create<EditorState>((set, get) => {
     playing: false,
     saveState: 'idle',
     saveError: null,
-    selectedVariantKey: '9x16',
-    overrideMode: false,
     cropEditing: false,
-    saveScope: 'current',
     jobs: [],
     trackedJobIds: [],
     progressOpen: false,
@@ -348,7 +340,17 @@ export const useEditor = create<EditorState>((set, get) => {
       try {
         const [batch, zones] = await Promise.all([api.getBatch(batchId), get().safeZones.length ? Promise.resolve(get().safeZones) : api.safeZones()]);
         const specs: Record<string, EditSpec> = {};
-        for (const v of batch.videos) specs[v.id] = v.edit_spec ? cloneSpec(v.edit_spec) : emptySpec();
+        // 旧 spec 里的其他画幅在载入时就收掉；就绪的视频随后自动保存写回（未就绪的后端不收 spec）
+        const collapsed: string[] = [];
+        for (const v of batch.videos) {
+          if (!v.edit_spec) {
+            specs[v.id] = emptySpec();
+            continue;
+          }
+          const draft = cloneSpec(v.edit_spec);
+          specs[v.id] = toSingleOutput(draft);
+          if (specs[v.id] !== draft && v.status === 'ready') collapsed.push(v.id);
+        }
         const currentVideoId = batch.videos[0]?.id ?? null;
         set({
           batch,
@@ -365,7 +367,10 @@ export const useEditor = create<EditorState>((set, get) => {
           saveState: 'idle',
           lastApply: null,
           outputCalibration: {},
+          step: 'trim',
+          cropEditing: false,
         });
+        for (const id of collapsed) scheduleSave(id);
         void get().loadAssets();
         void get().loadTextPresets();
         // 恢复未完成的渲染任务
@@ -392,7 +397,7 @@ export const useEditor = create<EditorState>((set, get) => {
         set((s) => ({
           batch: fresh,
           videos: fresh.videos,
-          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? cloneSpec(v.edit_spec) : emptySpec())])),
+          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? toSingleOutput(cloneSpec(v.edit_spec)) : emptySpec())])),
         }));
       } catch {
         /* ignore */
@@ -456,24 +461,21 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, overrideMode: false, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
     setSelectedAll: (on) => set((s) => ({ selectedIds: on ? s.videos.map((v) => v.id) : [] })),
     setStep: (step) => {
       player.pause();
-      set({ step, selectedLayerId: null, selectedRangeIndex: null, overrideMode: false, cropEditing: false });
-      if (step === 3) void get().loadOutputCalibration();
+      // 选中的图层 / 区间只属于原模块：文本模块里不能留着一个选中的贴纸
+      set({ step, selectedLayerId: null, selectedRangeIndex: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
-    setSelectedVariant: (selectedVariantKey) => set({ selectedVariantKey, overrideMode: false, cropEditing: false }),
-    setOverrideMode: (overrideMode) => set({ overrideMode }),
     setCropEditing: (cropEditing) => set({ cropEditing }),
-    setSaveScope: (saveScope) => set({ saveScope }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
     setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
     toggleTheme: () => {
@@ -721,38 +723,29 @@ export const useEditor = create<EditorState>((set, get) => {
     removeLayer: (id) => {
       get().updateSpec((spec) => {
         spec.layers = spec.layers.filter((l) => l.id !== id);
-        for (const o of spec.outputs) if (o.layer_overrides) delete o.layer_overrides[id];
       });
       if (get().selectedLayerId === id) set({ selectedLayerId: null });
     },
     moveLayer: (id, dir) => {
-      get().updateSpec((spec) => {
-        const i = spec.layers.findIndex((l) => l.id === id);
-        const j = i + dir;
-        if (i < 0 || j < 0 || j >= spec.layers.length) return;
-        const [item] = spec.layers.splice(i, 1);
-        spec.layers.splice(j, 0, item);
-      });
+      const layers = get().currentSpec()?.layers ?? [];
+      const i = indexWithinType(layers, id);
+      if (i < 0) return;
+      get().moveLayerToIndex(id, i + dir);
     },
     moveLayerTo: (id, where) => {
       const layers = get().currentSpec()?.layers ?? [];
-      const i = layers.findIndex((l) => l.id === id);
-      if (i < 0) return;
-      const target = where === 'top' ? layers.length - 1 : 0;
-      if (i === target) return;
-      get().updateSpec((spec) => {
-        const [item] = spec.layers.splice(i, 1);
-        spec.layers.splice(target, 0, item);
-      });
+      const layer = layers.find((l) => l.id === id);
+      if (!layer) return;
+      get().moveLayerToIndex(id, where === 'top' ? layersOfType(layers, layer.type).length - 1 : 0);
     },
     moveLayerToIndex: (id, index) => {
       const layers = get().currentSpec()?.layers ?? [];
-      const i = layers.findIndex((l) => l.id === id);
-      if (i < 0) return;
-      const target = Math.min(layers.length - 1, Math.max(0, Math.trunc(index)));
-      if (i === target) return;
+      const layer = layers.find((l) => l.id === id);
+      if (!layer) return;
+      // 越界（到顶了再上移）直接忽略，免得记一条空历史
+      if (index < 0 || index >= layersOfType(layers, layer.type).length || moveWithinType(layers, id, index) === layers) return;
       get().updateSpec((spec) => {
-        spec.layers = reorder(spec.layers, i, target);
+        spec.layers = moveWithinType(spec.layers, id, index);
       });
     },
     duplicateLayer: (id) => {
@@ -776,6 +769,12 @@ export const useEditor = create<EditorState>((set, get) => {
       const clip = get().layerClipboard;
       const spec = get().currentSpec();
       if (!clip?.length || !spec) return;
+      // 文本 / 贴纸各管各的：粘进来的图层要能在当前模块里选中和编辑
+      const want = layerTypeForStep(get().step);
+      if (want && clip.some((l) => l.type !== want)) {
+        set({ toast: `剪贴板里是${clip[0].type === 'text' ? '文字' : '贴纸'}图层，切到「${clip[0].type === 'text' ? '文本' : '贴纸'}」再粘贴`, toastAction: null });
+        return;
+      }
       const sameVideo = get().layerClipboardVideoId === get().currentVideoId;
       const existing = new Set(spec.layers.map((l) => l.id));
       const pasted = cloneSpec({ ...emptySpec(), layers: clip }).layers.map((l) => {
@@ -825,33 +824,25 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateLayer(id, { margin: [round4(m[0]), round4(m[1])] }, history);
     },
 
-    setOutputs: (outputs) => {
+    patchOutput: (patch) => {
       get().updateSpec((spec) => {
-        spec.outputs = outputs;
+        const next = toSingleOutput(spec);
+        const o = { ...next.outputs[0], ...patch };
+        if (o.fill !== 'color') delete o.color;
+        if (o.fill !== 'crop') delete o.crop;
+        spec.outputs = [o];
       });
     },
-    setCrop: (variantKey, rect, history = true) => {
+    setCrop: (rect, history = true) => {
       get().updateSpec(
         (spec) => {
-          const o = spec.outputs.find((x) => x.variant_key === variantKey);
-          if (!o) return;
+          const o = toSingleOutput(spec).outputs[0];
           if (rect === null) delete o.crop;
           else o.crop = { ...rect };
+          spec.outputs = [o];
         },
         { history },
       );
-    },
-    setOverride: (variantKey, layerId, patch) => {
-      get().updateSpec((spec) => {
-        const o = spec.outputs.find((x) => x.variant_key === variantKey);
-        if (!o) return;
-        if (patch === null) {
-          if (o.layer_overrides) delete o.layer_overrides[layerId];
-          return;
-        }
-        o.layer_overrides = o.layer_overrides ?? {};
-        o.layer_overrides[layerId] = { ...(o.layer_overrides[layerId] ?? {}), ...patch };
-      });
     },
 
     applyToTargets: async (targetIds, modules, opts) => {
@@ -887,7 +878,7 @@ export const useEditor = create<EditorState>((set, get) => {
           const lastApply: LastApply = { targetIds: updated.map((u) => u.id), prevSpecs };
           return {
             videos: st.videos.map((v) => updated.find((u) => u.id === v.id) ?? v),
-            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? cloneSpec(u.edit_spec) : emptySpec()])) },
+            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? toSingleOutput(cloneSpec(u.edit_spec)) : emptySpec()])) },
             history,
             lastApply,
             toast: `已应用到 ${updated.length} 条视频`,
@@ -925,7 +916,7 @@ export const useEditor = create<EditorState>((set, get) => {
         for (const id of targetIds) {
           const video = s.videos.find((v) => v.id === id);
           if (!video) continue;
-          const spec = cloneSpec(get().specs[id] ?? (video.edit_spec ? video.edit_spec : emptySpec()));
+          const spec = toSingleOutput(cloneSpec(get().specs[id] ?? (video.edit_spec ? video.edit_spec : emptySpec())));
           // 文字图层 → PNG（每次回传都重新生成，保证与当前文字 / 样式一致）
           for (let i = 0; i < spec.layers.length; i++) {
             const l = spec.layers[i];
@@ -953,7 +944,7 @@ export const useEditor = create<EditorState>((set, get) => {
         startPolling();
         await get().refreshVideos();
       } catch (e) {
-        set({ rendering: false, toast: `回传失败：${e instanceof Error ? e.message : String(e)}` });
+        set({ rendering: false, toast: `导出失败：${e instanceof Error ? e.message : String(e)}` });
       }
     },
 

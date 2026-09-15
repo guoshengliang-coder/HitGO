@@ -55,7 +55,7 @@ html.dark {
     linear-gradient(45deg, transparent 75%, #3a3f48 75%),
     linear-gradient(-45deg, transparent 75%, #3a3f48 75%);
 }
-.dark .btn:hover:not(:disabled), .dark .quickbar .btn.on, .dark .crop-bar .btn.on, .dark .output-item.on { border-color: #4b515b; }
+.dark .btn:hover:not(:disabled), .dark .quickbar .btn.on, .dark .crop-bar .btn.on, .dark .scope-option.active { border-color: #4b515b; }
 .dark .step-btn.active { border-color: #6a3524; }
 .dark .vrow .poster { background-color: #2c3037; }
 .dark .tl-bar { background: #2b3a55; border-color: #4a6295; color: #b9cbf0; }
@@ -265,7 +265,6 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
   white-space: nowrap;
 }
 .step-btn.active { background: var(--accent-soft); color: var(--accent-ink); border-color: #f0c9bd; font-weight: 500; }
-.step-btn.ghost-step { color: var(--ink-3); border: 1px dashed var(--line); }
 .spacer { flex: 1; }
 .save-indicator { color: var(--ink-3); font-size: 12px; min-width: 56px; text-align: right; }
 .save-indicator.error { color: var(--st-failed-fg); }
@@ -304,7 +303,6 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .stage-hint { position: absolute; left: 8px; bottom: 8px; color: rgba(255,255,255,0.6); font-size: 11px; pointer-events: none; }
 .stage-box > canvas.crop-bg { position: absolute; inset: 0; display: block; }
 .crop-bar .btn.on { border-color: #b9bfc9; background: var(--panel-2); }
-.stage-hint-top { bottom: auto; top: 8px; right: 8px; background: rgba(0,0,0,0.45); padding: 2px 6px; border-radius: 3px; color: rgba(255,255,255,0.85); }
 .stage-fill { position: absolute; inset: 0; width: 100%; height: 100%; }
 /* 画布内联文字编辑框：叠在文字图层原位，白字 + 半透明深底 + 强调色描边，让人一眼看出是在编辑 */
 .inline-text-editor {
@@ -318,7 +316,6 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .quickbar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--panel); flex-wrap: wrap; }
 .quickbar .btn.on { border-color: #b9bfc9; background: var(--panel-2); }
 .quickbar .qb-sep { width: 1px; height: 18px; background: var(--line-soft); margin: 0 4px; }
-.quickbar .qb-ratio { display: inline-flex; align-items: center; gap: 6px; }
 
 .transport { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--panel); }
 .transport .time { font-family: var(--mono); font-size: 12px; min-width: 190px; }
@@ -410,20 +407,12 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .sticker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .sticker-grid .asset-card .thumb { height: 64px; }
 
-.output-item { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
-.output-item.on { border-color: #b9bfc9; }
-.output-item.selected { border-color: var(--accent); }
-.output-item .head { display: flex; align-items: center; gap: 8px; }
-.output-item .head b { font-family: var(--mono); font-weight: 600; }
-
-.variants { display: flex; gap: 16px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 16px; overflow: auto; flex: 1; }
-.variant { display: flex; flex-direction: column; gap: 6px; align-items: center; }
-.variant .vbox { position: relative; background: #0b0d10; border-radius: 4px; overflow: hidden; border: 2px solid transparent; box-shadow: var(--shadow); cursor: pointer; }
-.variant.selected .vbox { border-color: var(--accent); }
-.variant.off .vbox { opacity: 0.35; filter: grayscale(1); }
-.variant .vcap { font-size: 12px; color: var(--ink-2); text-align: center; }
-.variant .vcap b { font-family: var(--mono); color: var(--ink); }
-.variant canvas { display: block; }
+/* 导出弹窗：范围单选 */
+.scope-list { display: flex; flex-direction: column; gap: 6px; }
+.scope-option { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.scope-option.active { border-color: var(--accent); }
+.scope-option.disabled { cursor: default; opacity: 0.55; }
+.scope-option .scope-note { margin-left: auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .override-bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--panel); font-size: 12px; }
 
@@ -445,7 +434,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 
 /* ---- 文字样式预设条 ---- */
 .preset-strip { display: flex; flex-direction: column; gap: 6px; }
-.preset-list { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+.preset-list { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 4px; }
 .preset-item { position: relative; flex: none; }
 .preset-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 72px; padding: 4px 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; }
 .preset-btn:hover { border-color: var(--accent); }
@@ -460,7 +449,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .topbar .seg, .topbar .seg-btn { white-space: nowrap; flex: none; }
 .topbar .save-indicator { white-space: nowrap; }
 
-/* 标题模板列表（LayersPanel「标题」按钮展开） */
+/* 标题模板列表（文本面板「模板」页） */
 .template-list { display: flex; flex-direction: column; gap: 4px; }
 .template-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; text-align: left; }
 .template-item:hover { border-color: var(--accent); }

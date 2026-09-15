@@ -1,15 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { api } from '../../api';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { hintFor } from '../../lib/shortcuts';
 import { filterAssets, type AssetBucket } from '../../lib/assets';
 import { audibleSpan, resolveTrack, sourceVolume } from '../../lib/audioTracks';
+import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
+import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
+import { countSafeZoneOverlaps } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { IconClose, IconCutLeft, IconCutRight, IconTrash } from '../ui/Icons';
 import { Modal } from '../ui/Modal';
 import { Num, Slider } from '../ui/Num';
-import type { AudioRole, AudioTrack } from '../../types';
+import { variantDef, type AudioRole, type AudioTrack, type FillMode, type OutputQuality } from '../../types';
 
 /** 选一段音频素材作为 BGM / 口播；可以直接在这里上传（走素材库同一条上传链路）。 */
 function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (assetId: string) => void; onClose: () => void }) {
@@ -122,6 +125,126 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
   );
 }
 
+const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
+const FILL_TIP: Record<FillMode, string> = {
+  blur: '源画面完整缩放放进 9:16，空出的部分用放大模糊的画面填满',
+  color: '源画面完整缩放放进 9:16，空出的部分填纯色',
+  crop: '只取源画面里的一个 9:16 窗口铺满成片',
+};
+const QUALITY_LABEL: Record<OutputQuality, string> = { standard: '标准', high: '高清' };
+const QUALITY_TIP = '标准 = 更快更小（veryfast / crf 20）；高清 = 更慢更清晰（medium / crf 19）';
+
+/** 成片画面（唯一的 9:16 输出）：填充方式、裁切范围、清晰度。原「输出」步骤里的设置搬到这里（HIG-8）。 */
+function FrameSection() {
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const patchOutput = useEditor((s) => s.patchOutput);
+  const setCrop = useEditor((s) => s.setCrop);
+  const cropEditing = useEditor((s) => s.cropEditing);
+  const setCropEditing = useEditor((s) => s.setCropEditing);
+  const calibration = useEditor((s) => s.outputCalibration);
+  const loadOutputCalibration = useEditor((s) => s.loadOutputCalibration);
+  const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
+  const assets = useEditor((s) => s.assets);
+  const batchId = useEditor((s) => s.batch?.id);
+  const postDuration = usePostDuration();
+
+  // 按本批次已完成任务的实际码率校准大小估算
+  useEffect(() => {
+    void loadOutputCalibration();
+  }, [batchId, loadOutputCalibration]);
+
+  const def = variantDef('9x16');
+  const aspect = def.width / def.height;
+  const out = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
+  if (!video || !out) return null;
+  const sameAspect = Math.abs(video.width / video.height - aspect) < 0.01;
+  const landscape = video.width > video.height;
+  const customCrop = !!out.crop && !isDefaultCrop(out.crop, video.width, video.height, aspect);
+  const overlaps = spec ? countSafeZoneOverlaps(spec, zone, assets) : 0;
+  const calibrated = Object.keys(calibration).length > 0;
+
+  const setFill = (fill: FillMode) => {
+    if (fill === out.fill) return;
+    // 切到裁切时先写入缺省（居中 cover）窗口，画布与成片从一开始就一致
+    patchOutput({ fill, ...(fill === 'color' ? { color: out.color ?? '#000000' } : {}), ...(fill === 'crop' && !out.crop ? { crop: defaultCropRect(video.width, video.height, aspect) } : {}) });
+    if (fill !== 'crop' && cropEditing) setCropEditing(false);
+  };
+
+  return (
+    <div className="section">
+      <div className="section-title">
+        <span>画面</span>
+        <span className="mono muted">
+          {def.width}×{def.height}
+        </span>
+      </div>
+      {sameAspect ? (
+        <div className="hint">源画面已是 9:16，直接铺满成片，不需要填充或裁切。</div>
+      ) : (
+        <div className="prop-grid">
+          <span>填充</span>
+          <div className="inline" role="radiogroup" aria-label="填充方式">
+            {(Object.keys(FILL_LABEL) as FillMode[]).map((f) => (
+              <button key={f} role="radio" aria-checked={out.fill === f} className={`chip ${out.fill === f ? 'active' : ''}`} title={FILL_TIP[f]} onClick={() => setFill(f)}>
+                {FILL_LABEL[f]}
+              </button>
+            ))}
+          </div>
+          {out.fill === 'color' && (
+            <>
+              <span>颜色</span>
+              <div className="inline">
+                <input type="color" className="color" value={out.color ?? '#000000'} onChange={(e) => patchOutput({ color: e.target.value })} />
+                <span className="mono small">{out.color ?? '#000000'}</span>
+              </div>
+            </>
+          )}
+          {out.fill === 'crop' && (
+            <>
+              <span>裁切</span>
+              <div className="inline">
+                <button className={`btn sm ${cropEditing ? 'on' : ''}`} onClick={() => setCropEditing(!cropEditing)}>
+                  {cropEditing ? '完成裁切' : '调整裁切范围'}
+                </button>
+                <span className="mono muted small" title="裁切窗口在源画面上的像素尺寸 @ 左上角">
+                  {customCrop && out.crop ? describeCrop(out.crop, video.width, video.height) : '居中（默认）'}
+                </span>
+                {customCrop && (
+                  <button className="btn ghost sm" onClick={() => setCrop(defaultCropRect(video.width, video.height, aspect))}>
+                    居中
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {!sameAspect && landscape && out.fill !== 'crop' && <div className="hint">横屏源：若内容只在画面中间（两侧是模糊 / 装饰），把填充改为「裁切」并调整裁切范围，只取中间那一条。</div>}
+      <div className="prop-grid">
+        <span>清晰度</span>
+        <div className="inline">
+          <span className="chips" title={QUALITY_TIP} role="radiogroup" aria-label="清晰度">
+            {(['standard', 'high'] as OutputQuality[]).map((qk) => (
+              <button key={qk} role="radio" aria-checked={qualityOf(out) === qk} className={`chip ${qualityOf(out) === qk ? 'active' : ''}`} onClick={() => patchOutput({ quality: qk })}>
+                {QUALITY_LABEL[qk]}
+              </button>
+            ))}
+          </span>
+          <span className="spacer" />
+          <span className="mono muted small" title={calibrated ? '按本批次已完成任务的实际码率校准' : '按编码档位的典型码率估算'}>
+            约 {formatBytes(estimateOutputBytes(out, postDuration, calibration))}（估算）
+          </span>
+        </div>
+        <span>安全区</span>
+        <span className="small" style={{ color: overlaps ? 'var(--st-failed-fg)' : 'var(--st-done-fg)' }}>
+          {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层与遮挡区重叠'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function AudioSection() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const audio = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio : null));
@@ -191,7 +314,7 @@ export function TrimPanel() {
 
   return (
     <div className="panel">
-      <div className="panel-head">① 剪辑 · 删除区间</div>
+      <div className="panel-head">剪辑</div>
       <div className="panel-body">
         <div className="inline">
           <button className="btn" onClick={() => setInPoint(time)} title={hintFor('in')}>
@@ -243,6 +366,8 @@ export function TrimPanel() {
           )}
         </div>
 
+        <FrameSection />
+
         <AudioSection />
 
         <dl className="kv">
@@ -255,7 +380,7 @@ export function TrimPanel() {
         </dl>
 
         <div className="hint">
-          删除区间基于源视频时间轴；图层出现时段基于剪后时间轴。修改剪辑不会自动改动图层时段，图层步骤会对落在剪后时长之外的图层给出提示。
+          删除区间基于源视频时间轴；文字 / 贴纸的出现时段基于剪后时间轴。修改剪辑不会自动改动图层时段，文本、贴纸模块会对落在剪后时长之外的图层给出提示。
         </div>
       </div>
     </div>

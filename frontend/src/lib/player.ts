@@ -61,7 +61,7 @@ export class Player {
     return this.synthetic;
   }
 
-  /** 当前挂载的 <video>（输出步骤抓帧用）；合成时钟模式下返回 null。 */
+  /** 当前挂载的 <video>（裁切编辑、填充底图抓帧用）；合成时钟模式下返回 null。 */
   getVideo(): HTMLVideoElement | null {
     return this.video && !this.synthetic ? this.video : null;
   }

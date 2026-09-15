@@ -203,10 +203,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - x：left → `margin.x·W`；center → `(W−w)/2 + margin.x·W`；right → `W − w − margin.x·W`
   - y：top → `margin.y·H`；center → `(H−h)/2 + margin.y·H`；bottom → `H − h − margin.y·H`
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
-- **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在图层步骤里对落在已删区间外的图层给提示。
+- **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在文本 / 贴纸模块里对落在已删区间外的图层给提示。
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
 - **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
+- **编辑器只产出一个 `9x16` 输出**（HIG-8）：前端载入、批量应用回填和导出前都会把 spec 收成只含一个 `9x16` 的 `outputs`（保留它的 `fill` / `color` / `crop` / `quality`，去掉其他变体与 `layer_overrides`；没有 `9x16` 时沿用第一个变体的 `fill` / `color` / `quality` 新建，`crop` 丢弃），并自动保存写回。多画幅字段、后端校验与 worker 行为不变，上面的示例仍是合法 spec，只是编辑器不再产生这种形状。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
 - `layer_overrides` 只允许覆盖 `anchor | margin | width | rotate | opacity`。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或

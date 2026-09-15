@@ -1,6 +1,6 @@
-// edit_spec 辅助：清洗本地字段、图层命名、安全区检查、变体覆盖合并。
+// edit_spec 辅助：清洗本地字段、图层命名、安全区检查、收成单一 9:16 输出。
 
-import type { Anchor, Asset, EditSpec, Layer, LayerOverride, OutputVariant, SafeZone, TextLayer } from '../types';
+import type { Asset, EditSpec, Layer, OutputVariant, SafeZone, TextLayer } from '../types';
 import { boxOverlapsRect, placeLayer } from './layout';
 import { normalizeRanges } from './time';
 import { getCachedText } from './textImage';
@@ -64,15 +64,22 @@ export function layerAspect(layer: Layer, assets: Asset[]): number {
   return 4;
 }
 
-/** 合并变体覆盖后的图层放置参数。 */
-export function effectivePlacement(layer: Layer, override?: LayerOverride) {
-  return {
-    anchor: (override?.anchor ?? layer.anchor) as Anchor,
-    margin: (override?.margin ?? layer.margin) as [number, number],
-    width: override?.width ?? layer.width,
-    rotate: override?.rotate ?? layer.rotate,
-    opacity: override?.opacity ?? layer.opacity,
-  };
+/**
+ * 编辑器只产出一个 9:16 输出（HIG-8）：把旧 spec 里的其他画幅变体和 layer_overrides 清掉。
+ * - 有 9x16 变体：保留它的填充 / 颜色 / 裁切 / 清晰度；
+ * - 没有：沿用第一个变体的填充 / 颜色 / 清晰度新建 9x16，裁切窗口是按别的画幅比算的，丢掉（回到居中）。
+ * 已经是单一 9x16 且没有覆盖时原样返回同一个对象，调用方可以用 === 判断要不要写回。
+ */
+export function toSingleOutput(spec: EditSpec): EditSpec {
+  const outs = spec.outputs ?? [];
+  const only = outs.length === 1 ? outs[0] : null;
+  if (only && only.variant_key === '9x16' && !(only.layer_overrides && Object.keys(only.layer_overrides).length)) return spec;
+  const base = outs.find((o) => o.variant_key === '9x16');
+  const src = base ?? outs[0];
+  const next: OutputVariant = { variant_key: '9x16', aspect: '9:16', fill: src?.fill ?? 'blur', quality: src?.quality === 'high' ? 'high' : 'standard' };
+  if (next.fill === 'color') next.color = src?.color ?? '#000000';
+  if (base && next.fill === 'crop' && base.crop) next.crop = { ...base.crop };
+  return { ...spec, outputs: [next] };
 }
 
 /** 与所选安全区重叠的图层数量（按 9:16 默认画布计算）。 */

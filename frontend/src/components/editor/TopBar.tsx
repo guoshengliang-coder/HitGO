@@ -1,13 +1,8 @@
 import { Link } from 'react-router-dom';
-import { useEditor, type SafeZoneView, type Step } from '../../store/editor';
+import { useEditor, type SafeZoneView } from '../../store/editor';
+import { STEPS } from '../../lib/steps';
 import { IconRedo, IconUndo } from '../ui/Icons';
 import { ThemeToggle } from '../ui/ThemeToggle';
-
-const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: '① 剪辑' },
-  { n: 2, label: '② 图层' },
-  { n: 3, label: '③ 输出' },
-];
 
 const SAFE_VIEWS: { v: SafeZoneView; label: string; tip: string }[] = [
   { v: 'frames', label: '框线', tip: '显示遮挡区框线与安全框' },
@@ -15,7 +10,7 @@ const SAFE_VIEWS: { v: SafeZoneView; label: string; tip: string }[] = [
   { v: 'none', label: '关闭', tip: '不显示安全区' },
 ];
 
-export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndRender: () => void; targetCount: number; fileCount: number }) {
+export function TopBar({ onExport }: { onExport: () => void }) {
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
   const setStep = useEditor((s) => s.setStep);
@@ -46,17 +41,10 @@ export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndR
       </span>
       <span className="muted small mono">{batch?.video_count ?? 0} 条</span>
       <div className="steps" role="tablist">
-        {STEPS.map((s, i) => (
-          <span key={s.n} style={{ display: 'contents' }}>
-            <button role="tab" aria-selected={step === s.n} className={`step-btn ${step === s.n ? 'active' : ''}`} onClick={() => setStep(s.n)}>
-              {s.label}
-            </button>
-            {i === 0 && (
-              <button className="step-btn ghost-step" disabled title="二期功能">
-                本地化 · 二期
-              </button>
-            )}
-          </span>
+        {STEPS.map((s) => (
+          <button key={s.key} role="tab" aria-selected={step === s.key} className={`step-btn ${step === s.key ? 'active' : ''}`} onClick={() => setStep(s.key)}>
+            {s.label}
+          </button>
         ))}
       </div>
       <span className="spacer" />
@@ -91,8 +79,8 @@ export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndR
       <Link to={`/batches/${batch?.id}/outputs`} className="btn">
         已回传
       </Link>
-      <button className="btn primary" onClick={onSaveAndRender} disabled={rendering || targetCount === 0}>
-        {rendering ? '处理中…' : `保存并回传 · ${targetCount} 条 · ${fileCount} 个文件`}
+      <button className="btn primary" onClick={onExport} disabled={rendering} title="保存并导出成片：选择导出这一批、勾选的几条或仅当前这条">
+        {rendering ? '导出中…' : '导出'}
       </button>
     </div>
   );

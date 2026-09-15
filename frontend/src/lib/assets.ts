@@ -1,6 +1,6 @@
 // 素材来源分栏与筛选。前端一次性把全部素材拉进 store，所以筛选在本地做；
 // 接正式物料库后只需让 'library' 这一栏多出 source === 'library' 的素材，见 docs/ASSETS.md。
-import type { Asset, AssetSource, AssetType } from '../types';
+import { isVideoAsset, type Asset, type AssetSource, type AssetType } from '../types';
 
 /** 界面上的两栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的。 */
 export type AssetBucket = 'library' | 'mine';
@@ -44,16 +44,21 @@ export function oversizedUpload(type: AssetType, files: { name: string; size: nu
   return null;
 }
 
+/** 贴纸面板里的形态筛选：全部 / 静态图 / 视频贴纸。 */
+export type StickerKindFilter = 'all' | 'image' | 'video';
+
 export function filterAssets(
   assets: Asset[],
-  opts: { type?: AssetType; bucket?: AssetBucket; q?: string } = {},
+  opts: { type?: AssetType; bucket?: AssetBucket; q?: string; kind?: StickerKindFilter } = {},
 ): Asset[] {
-  const { type, bucket, q } = opts;
+  const { type, bucket, q, kind } = opts;
   const needle = (q ?? '').trim().toLowerCase();
   const sources = bucket ? BUCKET_SOURCES[bucket] : null;
   return assets.filter((a) => {
     if (type && a.type !== type) return false;
     if (sources && !sources.includes(a.source)) return false;
+    if (kind === 'video' && !isVideoAsset(a)) return false;
+    if (kind === 'image' && isVideoAsset(a)) return false;
     if (needle && !a.name.toLowerCase().includes(needle)) return false;
     return true;
   });
