@@ -44,6 +44,8 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'nudge-10', keys: ['⇧', '↑↓←→'], label: '微移 10 px', group: '图层', step: 2 },
   { id: 'frame-step-alt', keys: ['⌥', '←→'], label: '选中图层时仍逐帧', group: '图层', step: 2 },
   { id: 'delete-layer', keys: ['Delete'], label: '删除图层', group: '图层', step: 2 },
+  { id: 'edit-text', keys: ['双击'], label: '在画布上编辑文字', group: '图层', step: 2 },
+  { id: 'edit-text-commit', keys: ['⌘', 'Enter'], label: '提交画布文字编辑（Esc 取消）', group: '图层', step: 2 },
   { id: 'center-h', keys: [], label: '水平居中', group: '图层', step: 2 },
   { id: 'center-v', keys: [], label: '垂直居中', group: '图层', step: 2 },
   { id: 'center', keys: [], label: '居中', group: '图层', step: 2 },
