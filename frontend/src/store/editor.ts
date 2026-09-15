@@ -34,13 +34,14 @@ export interface LastApply {
 
 export type EditorTheme = 'light' | 'dark';
 const THEME_KEY = 'hitgo.editorTheme';
+/** 整站默认深色（与剪映一致）；只有用户明确切到浅色才记住浅色。 */
 function loadTheme(): EditorTheme {
   try {
-    if (localStorage.getItem(THEME_KEY) === 'dark') return 'dark';
+    if (localStorage.getItem(THEME_KEY) === 'light') return 'light';
   } catch {
     /* ignore */
   }
-  return 'light';
+  return 'dark';
 }
 
 const SAFE_ZONE_VIEW_KEY = 'hitgo.safeZoneView';
@@ -95,7 +96,7 @@ export interface EditorState {
   // 交互
   shortcutsOpen: boolean;
   safeZoneView: SafeZoneView;
-  /** 编辑器配色（只作用于编辑页，列表页保持浅色）；存本机 */
+  /** 整站配色（类名挂在 <html> 上，见 App.tsx）；存本机 */
   theme: EditorTheme;
   timelinePps: number | null; // null = 适应窗口
   layerClipboard: Layer[] | null;
