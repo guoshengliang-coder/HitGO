@@ -34,7 +34,6 @@ export function QuickBar() {
   const selectedVariant = useEditor((s) => s.selectedVariantKey);
   const outputs = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.outputs ?? [] : []));
   const setSelectedVariant = useEditor((s) => s.setSelectedVariant);
-  const setStep = useEditor((s) => s.setStep);
   const setShortcutsOpen = useEditor((s) => s.setShortcutsOpen);
 
   const center = (axis: 'h' | 'v' | 'both') => {
@@ -101,17 +100,9 @@ export function QuickBar() {
       >
         <IconSafeZone mode={safeZoneView} /> {SAFE_VIEW_LABEL[safeZoneView]}
       </button>
-      <label className="qb-ratio" data-tip="切换输出比例并进入输出步骤">
-        <span className="muted small">比例</span>
-        <select
-          className="select sm"
-          value={selectedVariant}
-          onChange={(e) => {
-            const k = e.target.value as VariantKey;
-            setSelectedVariant(k);
-            setStep(3);
-          }}
-        >
+      <label className="qb-ratio" data-tip="切换编辑画布的比例（9:16 为基准，其他比例上的拖动写入该变体的 layer_overrides）">
+        <span className="muted small">画布</span>
+        <select className="select sm" value={selectedVariant} onChange={(e) => setSelectedVariant(e.target.value as VariantKey)}>
           {VARIANT_DEFS.map((d) => (
             <option key={d.key} value={d.key}>
               {d.label}
