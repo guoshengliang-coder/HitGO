@@ -18,7 +18,7 @@ from app.config import settings
 from app.db import init_db
 from app.routers import assets, auth, batches, config, jobs, presets, render, uploads, videos
 from app.routers.auth import access_ok
-from app.services import storage
+from app.services import storage, upload_ticket
 
 log = logging.getLogger("hitgo")
 
@@ -113,11 +113,50 @@ def seed_builtin_assets() -> None:
             log.warning("builtin video sticker %s could not be queued", asset_id)
 
 
+def backfill_video_sticker_audio() -> None:
+    """Re-probe ready video stickers that predate ``Asset.has_audio`` (contract §6).
+
+    They need the flag and a preview proxy that carries audio. The asset stays ready
+    while the worker redoes it, so specs already using it keep rendering.
+    """
+    from sqlalchemy import select
+
+    from app import worker
+    from app.db import SessionLocal
+    from app.models import ASSET_READY, ASSET_VIDEO, Asset
+
+    db = SessionLocal()
+    try:
+        stale = list(
+            db.scalars(
+                select(Asset.id).where(
+                    Asset.kind == ASSET_VIDEO,
+                    Asset.status == ASSET_READY,
+                    Asset.has_audio.is_(None),
+                )
+            )
+        )
+    except Exception:  # noqa: BLE001 - never block startup
+        log.exception("listing video stickers to backfill failed")
+        return
+    finally:
+        db.close()
+
+    for asset_id in stale:
+        try:
+            worker.enqueue(worker.preprocess_asset, asset_id)
+        except worker.QueueUnavailable:
+            # Retried on the next startup: has_audio is still null.
+            log.warning("video sticker %s could not be queued for audio backfill", asset_id)
+            return
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     storage.ensure_dirs()
     init_db()
     seed_builtin_assets()
+    backfill_video_sticker_audio()
     yield
 
 
@@ -142,10 +181,32 @@ class AccessGate:
         gated = path.startswith("/api/") or path.startswith("/media/") or path in ("/api", "/media")
         # /api/auth issues the cookie; /api/health is polled by the compose healthcheck.
         if gated and settings.access_code and path not in ("/api/auth", "/api/health"):
-            if not access_ok(Request(scope)):
+            if not access_ok(Request(scope)) and not _ticket_ok(scope):
                 await JSONResponse({"detail": "需要访问码"}, status_code=401)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+def _ticket_ok(scope: Scope) -> bool:
+    """POST /api/assets from the cookie-less upload host (contract §0 / §3)."""
+    if scope.get("method") != "POST" or scope.get("path") != "/api/assets":
+        return False
+    for name, value in scope.get("headers", []):
+        if name == upload_ticket.HEADER.encode():
+            return upload_ticket.verify(value.decode("latin-1"), settings.access_code)
+    return False
+
+
+def cors_origins() -> list[str]:
+    """Browser origins allowed to call the API cross-origin.
+
+    dev: the Vite server. With an upload host configured: the main site, whose pages
+    POST /api/assets to that host.
+    """
+    origins = list(ALLOWED_DEV_ORIGINS) if settings.is_dev else []
+    if settings.upload_base_url and settings.public_base_url not in origins:
+        origins.append(settings.public_base_url)
+    return origins
 
 
 # ---------------------------------------------------------------------------
@@ -189,17 +250,20 @@ def create_app() -> FastAPI:
 
     _mount_spa(app)
 
-    if settings.is_dev:
+    app.add_middleware(AccessGate)
+    origins = cors_origins()
+    if origins:
         from fastapi.middleware.cors import CORSMiddleware
 
+        # Added after AccessGate so it wraps it: preflight OPTIONS carries no cookie or
+        # ticket and must be answered before the gate would turn it away.
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=ALLOWED_DEV_ORIGINS,
+            allow_origins=origins,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
         )
-    app.add_middleware(AccessGate)
     return app
 
 

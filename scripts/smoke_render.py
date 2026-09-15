@@ -4,7 +4,9 @@
 Waits for preprocessing of the first batch, saves a spec with a trim, two image
 sticker layers, a looping video sticker (when one is available) and two output
 variants on its first video, renders, and prints the job results. Also checks the
-output duration, since a looping sticker must not stretch the clip.
+output duration, since a looping sticker must not stretch the clip. When a video
+sticker with its own audio track is available, that layer mixes its audio in
+(mix_audio) and the output must carry an audio stream.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
@@ -59,7 +61,10 @@ if failed:
     print("sticker preprocessing failed:", failed)
 ready = [a for a in stickers if a.get("status", "ready") == "ready"]
 video_stickers = [a for a in ready if a.get("kind") == "video"]
-print("video stickers", [(a["name"], a.get("duration"), a.get("has_alpha")) for a in video_stickers])
+print("video stickers", [(a["name"], a.get("duration"), a.get("has_alpha"), a.get("has_audio")) for a in video_stickers])
+# Prefer one with audio so the sticker-audio mix (mix_audio) is exercised too.
+video_stickers.sort(key=lambda a: a.get("has_audio") is not True)
+mix_audio = bool(video_stickers) and video_stickers[0].get("has_audio") is True
 
 video = videos[0]
 layers = [
@@ -72,8 +77,11 @@ if video_stickers:
     # Looping video sticker whose window outlives the clip: proves the output is not stretched.
     layers.append(
         {"id": "l_3", "type": "sticker", "asset_id": video_stickers[0]["id"], "anchor": "center",
-         "margin": [0, 0], "width": 0.4, "rotate": 0, "opacity": 1, "t": "all", "playback": "loop"}
+         "margin": [0, 0], "width": 0.4, "rotate": 0, "opacity": 1, "t": "all", "playback": "loop",
+         "mix_audio": mix_audio}
     )
+    if not mix_audio:
+        print("no video sticker with audio — skipping the sticker-audio part of the smoke test")
 else:
     print("no video sticker available — skipping the video-layer part of the smoke test")
 
@@ -121,6 +129,12 @@ for j in jobs:
         print(f"unexpected duration for {j['variant_key']}: "
               f"{j['output']['duration']} (expected ~{post_duration})")
         sys.exit(1)
+
+if mix_audio:
+    for j in jobs:
+        if j["status"] == "done" and j["output"]["codec"] != "h264/aac":
+            print("mixed sticker audio missing from", j["variant_key"], j["output"])
+            sys.exit(1)
 
 expected = {"9x16": (1080, 1920), "1x1": (1080, 1080)}
 for j in jobs:

@@ -83,12 +83,15 @@
 
 | 项 | 值 | 在哪 |
 |---|---|---|
-| 贴纸格式 | png / webp / 静态 gif | `backend/app/routers/assets.py` `STICKER_EXTS` |
+| 贴纸格式 | png / webp / gif，mp4 / mov / webm | `backend/app/routers/assets.py` `STICKER_EXTS` |
 | 字体格式 | ttf / otf / woff2 | 同上 `FONT_EXTS` |
-| 单文件上限 | 贴纸 10 MiB、字体 20 MiB | 同上 `MAX_BYTES` |
-| 动态 GIF | 拒绝（400） | 同上 `_read_sticker_size`，多帧即拒 |
-| 请求体上限 | 2 GiB | `deploy/nginx/hitgo.conf` |
+| 单文件上限 | 图片贴纸 10 MiB、视频贴纸（mp4 / mov / webm）1 GiB、字体 20 MiB；视频贴纸不限时长 | 同上 `MAX_BYTES` / `MAX_VIDEO_STICKER_BYTES`；前端 `frontend/src/lib/assets.ts` `UPLOAD_LIMITS` 先挡一次 |
+| 动态 gif / webp | 与视频文件一样走视频贴纸（异步预处理），但大小仍按图片的 10 MiB | 同上 `create_assets` |
+| 贴纸音轨 | 预处理记 `has_audio`；图层 `mix_audio = true` 时合成进成片，默认不合成 | 契约 §2、`filtergraph.py` |
+| 请求体上限 | 主域名 2 GiB，但 **Cloudflare 免费版在 100 MB 处先拦下（413）**；上传子域名 1100 MiB | `deploy/nginx/hitgo.conf` |
 
-动态 GIF 之所以拒绝而不是放行：渲染管线用 `-i img` + `overlay=...:eof_action=repeat` 把静态帧铺满整条流，
-动态 GIF 会播放一遍然后冻在最后一帧，既不是「动图」也不是使用者预期的样子。真要支持动图，
-得改的是 `filtergraph.py` 的图层输入方式和契约，不是放开一个校验。
+**大文件为什么走上传子域名**：`hitgo.mrlgs.net` 走 Cloudflare 代理，免费版单个请求超过 100 MB 会被
+Cloudflare 直接回 413，请求根本到不了源站（浏览器里表现为「网络错误」，HIG-6）。配置了 `UPLOAD_BASE_URL`
+后，前端先在主域名 `POST /api/assets/upload-ticket` 拿一张 10 分钟的 ticket，再把文件直接传到不经
+Cloudflare 的上传子域名。访问码 Cookie 是 host-only 的，而且它的值就是访问码，所以不扩到 `.mrlgs.net`，
+改用 ticket。部署步骤见 `docs/DEPLOY.md`。

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Asset } from '../types';
-import { bucketOf, canDelete, filterAssets } from './assets';
+import { bucketOf, canDelete, filterAssets, oversizedUpload, uploadLimit, UPLOAD_LIMITS } from './assets';
 
 const asset = (id: string, over: Partial<Asset> = {}): Asset => ({
   id,
@@ -64,5 +64,33 @@ describe('filterAssets', () => {
   it('筛不到时返回空数组而不是抛错', () => {
     expect(filterAssets(ALL, { type: 'font', bucket: 'library' })).toEqual([]);
     expect(filterAssets([], { bucket: 'mine' })).toEqual([]);
+  });
+});
+
+describe('上传大小校验', () => {
+  const MiB = 1024 * 1024;
+
+  it('视频贴纸 1 GiB，图片贴纸 10 MiB，字体 20 MiB', () => {
+    expect(uploadLimit('sticker', '片头.MP4')).toBe(UPLOAD_LIMITS.video);
+    expect(uploadLimit('sticker', 'a.mov')).toBe(1024 * MiB);
+    expect(uploadLimit('sticker', 'a.webm')).toBe(1024 * MiB);
+    // 多帧 gif / webp 在后端仍按图片上限
+    expect(uploadLimit('sticker', 'a.gif')).toBe(10 * MiB);
+    expect(uploadLimit('font', 'a.ttf')).toBe(20 * MiB);
+  });
+
+  it('100 多 MB 的视频贴纸不再被挡（HIG-6）', () => {
+    expect(oversizedUpload('sticker', [{ name: 'big.mp4', size: 130 * MiB }])).toBeNull();
+  });
+
+  it('返回第一个超限文件的提示', () => {
+    expect(
+      oversizedUpload('sticker', [
+        { name: 'ok.png', size: 1 * MiB },
+        { name: 'huge.mov', size: 1025 * MiB },
+        { name: 'big.png', size: 11 * MiB },
+      ]),
+    ).toBe('huge.mov：文件超过 1 GiB 上限');
+    expect(oversizedUpload('sticker', [{ name: 'big.png', size: 11 * MiB }])).toBe('big.png：文件超过 10 MiB 上限');
   });
 });

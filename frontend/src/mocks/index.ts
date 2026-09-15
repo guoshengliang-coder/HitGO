@@ -89,6 +89,14 @@ function spriteImage(duration: number, hue: number) {
   return { url: c.toDataURL('image/jpeg', 0.6), interval: 1, tile_width: tw, tile_height: th, columns, count };
 }
 
+/** 浏览器能不能看出 <video> 带音轨：Safari 有 audioTracks，Firefox 有 mozHasAudio；都没有（Chrome）就当有，方便调界面。 */
+function videoHasAudio(el: HTMLVideoElement): boolean {
+  const v = el as HTMLVideoElement & { audioTracks?: { length: number }; mozHasAudio?: boolean };
+  if (v.audioTracks) return v.audioTracks.length > 0;
+  if (typeof v.mozHasAudio === 'boolean') return v.mozHasAudio;
+  return true;
+}
+
 /** mock 的"异步预处理"：用 <video> 的 loadedmetadata 拿尺寸/时长，然后把素材推到 ready。 */
 function probeVideo(asset: Asset, url: string) {
   const el = document.createElement('video');
@@ -101,6 +109,7 @@ function probeVideo(asset: Asset, url: string) {
       asset.duration = Number.isFinite(el.duration) ? Math.round(el.duration * 100) / 100 : 3;
       asset.fps = 30;
       asset.has_alpha = /\.webm$/i.test(asset.name);
+      asset.has_audio = videoHasAudio(el);
       asset.poster_url = null; // mock 不生成首帧，画布会直接用预览代理
       asset.preview_url = url;
       asset.status = 'ready';
@@ -490,6 +499,9 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
       return undefined;
     }
     return clone(v);
+  }
+  if (path === '/api/assets/upload-ticket') {
+    return { upload_url: null, ticket: null, expires_at: null };
   }
   if (path === '/api/assets') {
     if (method === 'GET') {

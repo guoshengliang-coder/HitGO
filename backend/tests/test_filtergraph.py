@@ -461,3 +461,124 @@ def test_real_ffmpeg_video_sticker_does_not_stretch_the_output(tmp_path):
         check=True, capture_output=True, text=True,
     )  # fmt: skip
     assert abs(float(probe.stdout.strip()) - plan.expected_duration) < 0.15
+
+
+# --- sticker audio (mix_audio) ------------------------------------------------------
+
+VOCAL_STICKER = ImageSource("/data/assets/a_sticker001.mp4", 600, 240, duration=3.0, has_audio=True)
+AFMT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+
+
+def mixing_spec(**layer):
+    spec = valid_spec()
+    spec["layers"][0].update({"mix_audio": True, **layer})
+    return spec
+
+
+def test_sticker_audio_is_left_out_unless_the_layer_mixes_it():
+    """Default (no mix_audio): the argv is exactly what it was before audio mixing existed."""
+    vocal = video_build(source=VOCAL_STICKER)
+    mute = video_build(source=ImageSource(VOCAL_STICKER.path, 600, 240, duration=3.0))
+    assert vocal.argv == mute.argv
+    assert "[aout]" not in fc(vocal) and "amix" not in fc(vocal)
+
+
+def test_mixed_sticker_audio_is_windowed_delayed_and_mixed_over_the_trimmed_source():
+    plan = video_build(mixing_spec(t=[4, 9]), source=VOCAL_STICKER)
+    graph, argv = fc(plan), plan.argv
+    # Same timing as the picture: starts at its own 0 s at t=4, cut after the 5 s window.
+    assert f"[1:a]asetpts=PTS-STARTPTS,atrim=end=5,adelay=4000:all=1,{AFMT}[sa1]" in graph
+    # valid_spec removes two ranges, so the source audio is the concat output [at].
+    assert f"[at]{AFMT}[abase]" in graph
+    assert "[abase][sa1]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[aout]" in graph
+    assert argv[argv.index("[vout]") + 1 : argv.index("[vout]") + 3] == ["-map", "[aout]"]
+    assert "-an" not in argv and argv.count("-map") == 2
+
+
+def test_mixed_sticker_audio_at_time_zero_needs_no_delay_and_loops_with_the_input():
+    plan = video_build(mixing_spec(), source=VOCAL_STICKER)
+    assert f"[1:a]asetpts=PTS-STARTPTS,atrim=end=6,{AFMT}[sa1]" in fc(plan)
+    i = plan.argv.index(VOCAL_STICKER.path)
+    assert plan.argv[i - 3 : i - 1] == ["-stream_loop", "-1"]  # audio repeats with the picture
+
+
+def test_mixed_sticker_audio_over_an_untrimmed_source_uses_its_first_audio_stream():
+    spec = mixing_spec()
+    spec["trim"] = {"remove": []}
+    assert f"[0:a:0]{AFMT}[abase]" in fc(video_build(spec, source=VOCAL_STICKER))
+
+
+def test_mixed_sticker_audio_over_a_silent_source_gets_a_silent_bed():
+    plan = video_build(mixing_spec(), source=VOCAL_STICKER, meta={**META, "has_audio": False})
+    graph = fc(plan)
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[abase]" in graph
+    assert "[abase][sa1]amix=inputs=2" in graph
+    assert "-an" not in plan.argv and "[aout]" in plan.argv
+
+
+def test_mix_audio_is_ignored_for_stickers_without_audio_and_for_still_images():
+    silent = video_build(mixing_spec())  # VIDEO_STICKER has no audio
+    assert "amix" not in fc(silent) and "[1:a]" not in fc(silent)
+    still = build(mixing_spec())
+    assert "amix" not in fc(still) and still.argv == build().argv
+
+
+def test_several_mixed_stickers_all_join_the_mix():
+    spec = mixing_spec()
+    spec["layers"].append(dict(spec["layers"][0], id="l_3", t=[10, 12], playback="once"))
+    graph = fc(video_build(spec, source=VOCAL_STICKER))
+    assert "[sa1]" in graph and "adelay=10000:all=1" in graph
+    assert "[abase][sa1][sa2]amix=inputs=3" in graph
+
+
+def _mean_volume(path, start, duration) -> float:
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-ss", str(start), "-t", str(duration), "-i", str(path),
+         "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    match = re.search(r"mean_volume: (-?[\d.]+|-inf) dB", proc.stderr)
+    assert match, proc.stderr[-500:]
+    return float("-inf") if match.group(1) == "-inf" else float(match.group(1))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_mixes_sticker_audio_only_inside_its_window(tmp_path):
+    """Silent 4 s source + 1 s beeping sticker looped over [1.5, 3.5]: sound only in the window."""
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=30:duration=4",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    sticker = tmp_path / "sticker.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=30:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(sticker)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+    out = tmp_path / "out.mp4"
+    layer = dict(valid_spec()["layers"][0], t=[1.5, 3.5], mix_audio=True)
+    spec = EditSpec.model_validate(valid_spec(trim={"remove": []}, layers=[layer]))
+    plan = build_render_command(
+        spec,
+        {"duration": 4.0, "has_audio": False},
+        {"a_sticker001": ImageSource(str(sticker), 160, 120, duration=1.0, has_audio=True)},
+        spec.outputs[0],
+        source_path=str(src),
+        output_path=str(out),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name,duration", "-of", "default=nw=1:nk=1", str(out)],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    codec, duration = probe.stdout.split()
+    assert codec == "aac"
+    assert abs(float(duration) - plan.expected_duration) < 0.15
+    assert _mean_volume(out, 0.1, 1.2) < -60  # before the window: silence
+    assert _mean_volume(out, 1.7, 1.6) > -30  # inside (spans the loop point): the beep

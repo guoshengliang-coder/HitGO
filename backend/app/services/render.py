@@ -160,6 +160,7 @@ def collect_assets(db: Session, spec: EditSpec) -> dict[str, ImageSource]:
                 duration=asset.duration or 0.0,
                 decoder=asset.decoder,
                 has_alpha=bool(asset.has_alpha),
+                has_audio=bool(asset.has_audio),
             )
             continue
         image = _image_from_file(path, asset.width, asset.height)

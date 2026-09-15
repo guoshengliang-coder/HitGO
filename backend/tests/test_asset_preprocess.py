@@ -97,3 +97,44 @@ def test_probe_layer_asset_reports_opaque_mp4(tmp_path):
     )  # fmt: skip
     meta = ffprobe.probe_layer_asset(src)
     assert meta["has_alpha"] is False and meta["decoder"] is None
+
+
+def test_preview_args_carry_the_first_audio_track_when_there_is_one():
+    for has_alpha, audio_codec in ((True, "libopus"), (False, "aac")):
+        argv = asset_preprocess.preview_args(Path("/a.mov"), Path("/a.preview"), has_alpha)
+        assert "-an" not in argv
+        # "?" keeps gif/webp and silent clips working: no audio stream, no error.
+        assert ["-map", "0:v:0", "-map", "0:a:0?"] == argv[argv.index("-map") : argv.index("-map") + 4]
+        assert argv[argv.index("-c:a") + 1] == audio_codec
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("has_alpha", [True, False])
+def test_preview_keeps_audio_and_probe_reports_it(tmp_path, has_alpha):
+    src = tmp_path / "vocal.mp4"
+    subprocess.run(
+        [FFMPEG, "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True, timeout=180,
+    )  # fmt: skip
+    assert ffprobe.probe_layer_asset(src)["has_audio"] is True
+    ext = asset_preprocess.preview_ext(has_alpha)
+    preview = tmp_path / f"vocal.preview.{ext}"
+    subprocess.run(
+        asset_preprocess.preview_args(src, preview, has_alpha), check=True, capture_output=True, timeout=180
+    )
+    assert ffprobe.probe(preview)["has_audio"] is True
+
+
+@needs_ffmpeg
+def test_preview_of_a_silent_clip_still_succeeds(tmp_path):
+    src = tmp_path / "silent.mp4"
+    subprocess.run(
+        [FFMPEG, "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True, timeout=180,
+    )  # fmt: skip
+    preview = tmp_path / "silent.preview.mp4"
+    subprocess.run(asset_preprocess.preview_args(src, preview, False), check=True, capture_output=True, timeout=180)
+    assert ffprobe.probe(preview)["has_audio"] is False

@@ -102,6 +102,8 @@ class Asset(Base):
     duration: Mapped[float | None] = mapped_column(Float, nullable=True)
     fps: Mapped[float | None] = mapped_column(Float, nullable=True)
     has_alpha: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # None until probed; startup re-probes ready video stickers that predate this column.
+    has_audio: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     decoder: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preview_ext: Mapped[str | None] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
