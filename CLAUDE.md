@@ -11,7 +11,7 @@ make test-frontend   # cd frontend && npm run typecheck && npm test && npm run b
 make deploy          # 从当前 main 部署到原型服务器（需要 SSH 权限，见 docs/DEPLOY.md）
 ```
 
-本机有 ffmpeg（Homebrew，9.x，带 libvpx-vp9 / prores / qtrle），渲染相关的用例本机就能真跑；Docker daemon 通常没起，容器与整链验证仍在原型服务器上跑 `scripts/smoke_render.py`。注意服务器镜像是 `python:3.12-slim` apt 装的 ffmpeg（5.1.x），版本和本机不同，filter 行为要分别验。
+本机有 ffmpeg（Homebrew，9.x，带 libvpx-vp9 / prores / qtrle），渲染相关的用例本机就能真跑；Docker daemon 通常没起，容器与整链验证仍在原型服务器上跑 `scripts/smoke_render.py`。服务器镜像里 apt 装的是 ffmpeg 7.1.5（实测，同样带 libvpx-vp9），和本机版本不同，filter 行为以服务器上的 smoke 为准。
 
 ## 分支与提交
 
