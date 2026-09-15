@@ -778,6 +778,7 @@ def test_video_sticker_upload_is_async_and_pollable(client, enqueued, db):
     asset.fps, asset.has_alpha, asset.preview_ext = 30.0, False, "mp4"
     db.commit()
     ready = client.get(f"/api/assets/{a['id']}").json()
+    # Derived files not on disk (yet): plain URLs, no version to add.
     assert ready["poster_url"] == f"/media/assets/{a['id']}.poster.jpg"
     assert ready["preview_url"] == f"/media/assets/{a['id']}.preview.mp4"
     assert ready["duration"] == 2.4 and ready["has_alpha"] is False
@@ -966,3 +967,32 @@ def test_failed_backfill_keeps_a_ready_sticker_in_service(monkeypatch, db):
     asset = db.get(Asset, "a_ready")
     assert asset.status == "ready" and asset.error is None
     assert asset.has_audio is False  # stops the startup backfill from retrying forever
+
+
+def test_video_sticker_preview_url_changes_when_the_file_is_regenerated(client, db):
+    """The audio backfill rewrites the preview in place; a stale browser cache must not win."""
+    import os
+
+    asset = Asset(
+        id="a_regen", type="sticker", name="r.webm", ext="webm", kind="video", status="ready",
+        width=600, height=240, duration=2.0, preview_ext="webm",
+    )  # fmt: skip
+    db.add(asset)
+    db.commit()
+    preview = storage.asset_preview_path("a_regen", "webm")
+    poster = storage.asset_poster_path("a_regen")
+    preview.parent.mkdir(parents=True, exist_ok=True)
+    preview.write_bytes(b"old")
+    poster.write_bytes(b"jpg")
+    os.utime(preview, (1_700_000_000, 1_700_000_000))
+
+    first = client.get("/api/assets/a_regen").json()
+    assert first["preview_url"] == "/media/assets/a_regen.preview.webm?v=1700000000"
+    assert first["poster_url"].startswith("/media/assets/a_regen.poster.jpg?v=")
+    assert client.get(first["preview_url"]).content == b"old"  # the query is ignored when serving
+
+    preview.write_bytes(b"new, with audio")
+    os.utime(preview, (1_700_000_500, 1_700_000_500))
+    second = client.get("/api/assets/a_regen").json()
+    assert second["preview_url"] == "/media/assets/a_regen.preview.webm?v=1700000500"
+    assert storage.media_url_to_path(second["preview_url"]) == preview.resolve()

@@ -69,12 +69,15 @@
   "has_alpha": true,              // 可选；kind = video 才有：素材是否带透明通道
   "has_audio": false,             // 可选；kind = video 且预处理完才有：素材是否带音轨（null = 未知，旧素材回填前）
   "poster_url": "/media/assets/a_s1t2u3.poster.jpg",    // 可选；kind = video 且 ready 才有：首帧
-  "preview_url": "/media/assets/a_s1t2u3.preview.webm", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
+  "preview_url": "/media/assets/a_s1t2u3.preview.webm?v=1757923200", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
   "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）
   "created_at": "..."
 }
 ```
+
+`poster_url` / `preview_url` 可能带 `?v=<文件修改时间>`：这两个派生文件会被原地重新生成（例如音轨回填），
+带版本号是为了让浏览器不继续用旧缓存。前端把它们当不透明 URL 使用即可。
 
 **视频贴纸**（`kind = "video"`）：上传 `mp4 / mov / webm`，或多帧的 `gif / webp`。落盘后由 worker 异步
 探测（`preparing`），拿到宽高 / 时长 / 帧率 / 是否带透明通道，并生成首帧 `poster` 与浏览器可播的
