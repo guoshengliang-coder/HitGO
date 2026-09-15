@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { isVideoAsset, type Asset, type AssetType } from '../types';
-import { canDelete, filterAssets, type AssetBucket } from '../lib/assets';
+import { acceptFor, canDelete, filterAssets, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
 
@@ -120,10 +120,7 @@ export function AssetsPage() {
     }
   };
 
-  const accept =
-    tab === 'sticker'
-      ? 'image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.webp,.gif,.mp4,.mov,.webm'
-      : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
+  const accept = acceptFor(tab);
   const shown = filterAssets(assets, { bucket });
   const kind = tab === 'sticker' ? '贴纸' : '字体';
   const emptyText =

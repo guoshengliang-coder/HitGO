@@ -33,3 +33,15 @@ export function filterAssets(
     return true;
   });
 }
+
+/**
+ * 文件选择器的 accept。契约 §3 的格式清单在这里只有一份，素材库页和编辑器
+ * 「素材」tab 共用；改格式时只改这里。
+ */
+export const STICKER_ACCEPT =
+  'image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.webp,.gif,.mp4,.mov,.webm';
+export const FONT_ACCEPT = '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
+
+export function acceptFor(type: AssetType): string {
+  return type === 'sticker' ? STICKER_ACCEPT : FONT_ACCEPT;
+}

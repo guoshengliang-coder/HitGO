@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Asset } from '../types';
-import { bucketOf, canDelete, filterAssets } from './assets';
+import { acceptFor, bucketOf, canDelete, filterAssets, FONT_ACCEPT, STICKER_ACCEPT } from './assets';
 
 const asset = (id: string, over: Partial<Asset> = {}): Asset => ({
   id,
@@ -64,5 +64,20 @@ describe('filterAssets', () => {
   it('筛不到时返回空数组而不是抛错', () => {
     expect(filterAssets(ALL, { type: 'font', bucket: 'library' })).toEqual([]);
     expect(filterAssets([], { bucket: 'mine' })).toEqual([]);
+  });
+});
+
+describe('acceptFor', () => {
+  it('贴纸涵盖契约 §3 的全部格式，静态图与视频都在', () => {
+    for (const ext of ['.png', '.webp', '.gif', '.mp4', '.mov', '.webm']) {
+      expect(STICKER_ACCEPT).toContain(ext);
+    }
+    expect(acceptFor('sticker')).toBe(STICKER_ACCEPT);
+  });
+
+  it('字体只收 ttf / otf / woff2，不收图片', () => {
+    for (const ext of ['.ttf', '.otf', '.woff2']) expect(FONT_ACCEPT).toContain(ext);
+    expect(FONT_ACCEPT).not.toContain('.png');
+    expect(acceptFor('font')).toBe(FONT_ACCEPT);
   });
 });
