@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useEditor } from '../store/editor';
 import { player } from '../lib/player';
+import { frameDuration } from '../lib/time';
 import { TopBar } from '../components/editor/TopBar';
 import { ApplyDialog, VideoList } from '../components/editor/VideoList';
 import { Stage } from '../components/editor/Stage';
@@ -15,8 +16,6 @@ import { VariantPreviews } from '../components/editor/VariantPreviews';
 import { CropEditor } from '../components/editor/CropEditor';
 import { ProgressModal } from '../components/editor/ProgressModal';
 import { ShortcutsModal } from '../components/editor/ShortcutsModal';
-
-const FRAME = 1 / 30;
 
 function isTyping(e: KeyboardEvent) {
   const el = e.target as HTMLElement | null;
@@ -33,6 +32,7 @@ function handleKey(e: KeyboardEvent) {
   if (isTyping(e)) return;
   const s = useEditor.getState();
   const mod = e.metaKey || e.ctrlKey;
+  const frame = frameDuration(s.videos.find((v) => v.id === s.currentVideoId)?.fps);
 
   const modalOpen = s.progressOpen || s.shortcutsOpen || !!document.querySelector('.modal-backdrop');
   if (modalOpen) {
@@ -84,7 +84,7 @@ function handleKey(e: KeyboardEvent) {
     // ⌥ + 方向键：强制逐帧（图层步骤下方向键默认是微移）
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
       e.preventDefault();
-      player.seek(s.time + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : FRAME));
+      player.seek(s.time + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : frame));
     }
     return;
   }
@@ -162,11 +162,11 @@ function handleKey(e: KeyboardEvent) {
       return;
     case 'ArrowLeft':
       e.preventDefault();
-      player.seek(s.time - (e.shiftKey ? 1 : FRAME));
+      player.seek(s.time - (e.shiftKey ? 1 : frame));
       return;
     case 'ArrowRight':
       e.preventDefault();
-      player.seek(s.time + (e.shiftKey ? 1 : FRAME));
+      player.seek(s.time + (e.shiftKey ? 1 : frame));
       return;
     case 'Slash':
       if (e.shiftKey) {

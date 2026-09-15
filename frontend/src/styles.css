@@ -263,7 +263,7 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
 .quickbar .qb-ratio { display: inline-flex; align-items: center; gap: 6px; }
 
 .transport { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--panel); }
-.transport .time { font-family: var(--mono); font-size: 12px; min-width: 130px; }
+.transport .time { font-family: var(--mono); font-size: 12px; min-width: 190px; }
 .transport .hint { color: var(--ink-3); font-size: 11px; }
 
 .timeline { height: 214px; background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; overflow: hidden; }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatTime,
+  formatTimecode,
+  frameDuration,
   keepSegments,
   normalizeRanges,
   postToSource,
@@ -112,5 +114,34 @@ describe('windowContains / formatTime', () => {
     expect(formatTime(0)).toBe('0:00.00');
     expect(formatTime(65.5)).toBe('1:05.50');
     expect(formatTime(4.2)).toBe('0:04.20');
+  });
+});
+
+describe('frameDuration / formatTimecode', () => {
+  it('帧时长按真实 fps，缺省或非法时回退 30', () => {
+    expect(frameDuration(25)).toBeCloseTo(1 / 25, 9);
+    expect(frameDuration(60)).toBeCloseTo(1 / 60, 9);
+    expect(frameDuration(undefined)).toBe(1 / 30);
+    expect(frameDuration(0)).toBe(1 / 30);
+    expect(frameDuration(NaN)).toBe(1 / 30);
+    expect(frameDuration(-24)).toBe(1 / 30);
+  });
+  it('HH:MM:SS:FF 基本格式', () => {
+    expect(formatTimecode(0, 30)).toBe('00:00:00:00');
+    expect(formatTimecode(30.1, 30)).toBe('00:00:30:03');
+    expect(formatTimecode(65.5, 30)).toBe('00:01:05:15');
+    expect(formatTimecode(3600, 30)).toBe('01:00:00:00');
+    expect(formatTimecode(-3, 30)).toBe('00:00:00:00');
+  });
+  it('fps 25 / 60 边界：帧号不超过 fps-1', () => {
+    expect(formatTimecode(59.999, 25)).toBe('00:00:59:24');
+    expect(formatTimecode(1.04, 25)).toBe('00:00:01:01');
+    expect(formatTimecode(0.5, 60)).toBe('00:00:00:30');
+    expect(formatTimecode(0.9999, 60)).toBe('00:00:00:59');
+    expect(formatTimecode(2.9999, 30)).toBe('00:00:02:29');
+  });
+  it('fps 缺省按 30', () => {
+    expect(formatTimecode(30.1)).toBe('00:00:30:03');
+    expect(formatTimecode(30.1, 0)).toBe('00:00:30:03');
   });
 });
