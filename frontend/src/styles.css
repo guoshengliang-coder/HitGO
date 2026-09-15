@@ -385,11 +385,11 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
 .topbar .seg, .topbar .seg-btn { white-space: nowrap; flex: none; }
 .topbar .save-indicator { white-space: nowrap; }
 
-/* 标题组合列表（LayersPanel「标题」按钮展开） */
-.combo-list { display: flex; flex-direction: column; gap: 4px; }
-.combo-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; text-align: left; }
-.combo-item:hover { border-color: var(--accent); }
-.combo-item .cname { font-size: 12px; }
+/* 标题模板列表（LayersPanel「标题」按钮展开） */
+.template-list { display: flex; flex-direction: column; gap: 4px; }
+.template-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; text-align: left; }
+.template-item:hover { border-color: var(--accent); }
+.template-item .cname { font-size: 12px; }
 
 /* 文字局部上色：已上色片段列表 */
 .span-chips { display: flex; flex-wrap: wrap; gap: 4px; }

@@ -147,7 +147,7 @@ export interface EditorState {
 
   // 图层
   addLayer: (layer: Layer) => void;
-  /** 一次加入多个图层（标题组合），只记一步历史，选中第一个。 */
+  /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
   addLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
   removeLayer: (id: string) => void;

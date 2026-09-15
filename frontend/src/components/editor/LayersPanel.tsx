@@ -8,7 +8,7 @@ import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
-import { TITLE_COMBOS, comboToLayers, type TitleCombo } from '../../lib/titleCombos';
+import { TITLE_TEMPLATES, templateToLayers, type TitleTemplate } from '../../lib/titleTemplates';
 import { AssetCard } from '../../pages/AssetsPage';
 import { IconCopy, IconDown, IconEye, IconLock, IconSticker, IconText, IconTrash, IconUp } from '../ui/Icons';
 
@@ -372,7 +372,7 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const setSelected = useEditor((s) => s.setSelectedLayer);
   const addLayer = useEditor((s) => s.addLayer);
   const addLayers = useEditor((s) => s.addLayers);
-  const [combos, setCombos] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const updateLayer = useEditor((s) => s.updateLayer);
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
@@ -398,9 +398,9 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     addLayer(l);
     setTab('layers');
   };
-  const addCombo = (c: TitleCombo) => {
-    addLayers(comboToLayers(c, newLayerId));
-    setCombos(false);
+  const addTemplate = (c: TitleTemplate) => {
+    addLayers(templateToLayers(c, newLayerId));
+    setShowTemplates(false);
     setTab('layers');
   };
   const addSticker = (assetId: string) => {
@@ -420,12 +420,12 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
           <div className="inline">
             <button className="btn" onClick={() => setTab('assets')}><IconSticker /> 贴纸</button>
             <button className="btn" onClick={addText}><IconText /> 文字</button>
-            <button className="btn" onClick={() => setCombos((v) => !v)} title="一键添加带样式与位置的标题图层，加入后只需改字"><IconText /> 标题</button>
+            <button className="btn" onClick={() => setShowTemplates((v) => !v)} title="标题模板：一键添加带样式与位置的文字图层，加入后只需改字"><IconText /> 标题模板</button>
           </div>
-          {combos && (
-            <div className="combo-list">
-              {TITLE_COMBOS.map((c) => (
-                <button key={c.id} className="combo-item" onClick={() => addCombo(c)}>
+          {showTemplates && (
+            <div className="template-list">
+              {TITLE_TEMPLATES.map((c) => (
+                <button key={c.id} className="template-item" onClick={() => addTemplate(c)}>
                   <span className="cname">{c.name}</span>
                   <span className="muted small">{c.note}{c.layers.length > 1 ? ` · ${c.layers.length} 个图层` : ''}</span>
                 </button>
