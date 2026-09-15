@@ -5,7 +5,7 @@
 ## 0. 约定
 
 - 所有 API 挂在 `/api` 前缀下，JSON 请求 / 响应，时间用 ISO 8601 字符串。
-- 媒体文件（源片、代理、雪碧图、素材、成片、文字 PNG）通过 `/media/...` 路径访问，由后端静态服务；返回给前端的 `*_url` 字段都是以 `/media/` 开头的站内相对路径。
+- 媒体文件（源片、代理、雪碧图、素材、成片、文字 PNG）通过 `/media/...` 路径访问，由后端静态服务；返回给前端的 `*_url` 字段都是以 `/media/` 开头的站内相对路径。**唯一例外**：`source = "library"` 的素材（将来对接正式物料库时才出现）其 `url` 可以是外部 `https://` 绝对地址，前端一律当不透明 URL 直接用；见 `docs/ASSETS.md`。
 - 所有几何量用**相对比例**（0–1），相对于所在画布的宽或高；时间用秒（float）。
 - ID 用短随机字符串（例如 `nanoid` 12 位），前后端都当不透明字符串处理。
 - 错误统一返回 `{ "detail": "人类可读的中文说明" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。
@@ -62,7 +62,7 @@
   "url": "/media/assets/a_s1t2u3.png",
   "width": 600, "height": 240,    // sticker 才有
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
-  "source": "upload",             // upload | builtin（原型内置示例）
+  "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）
   "created_at": "..."
 }
 ```
@@ -194,9 +194,10 @@
 - `DELETE /api/videos/{id}` → 204
 
 ### 素材
-- `GET /api/assets?type=sticker|font` → `Asset[]`
-- `POST /api/assets` multipart：`type`，`files`（png / webp / gif 静态 / ttf / otf / woff2）→ `Asset[]`
-- `DELETE /api/assets/{id}` → 204
+- `GET /api/assets?type=sticker|font&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
+- `POST /api/assets` multipart：`type`，`files`（png / webp / gif 静态 / ttf / otf / woff2）→ `Asset[]`。只产出 `source = "upload"` 的素材。单文件上限：sticker 10 MiB、font 20 MiB，超出 400；动态 GIF（多帧）拒绝，400。
+- `DELETE /api/assets/{id}` → 204。`source != "upload"` 的素材不可删（400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
+- 素材的来源迁移规划（怎么把 `upload` / `builtin` 换成正式物料库的 `library`，要改哪几处）见 `docs/ASSETS.md`。
 
 ### 文字图层 PNG
 - `POST /api/uploads/layer-image` multipart：`file`（png）→ `{ url, width, height }`

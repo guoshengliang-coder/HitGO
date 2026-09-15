@@ -40,13 +40,14 @@ def seed_builtin_assets() -> None:
 
     from app import ids
     from app.db import SessionLocal
-    from app.models import ASSET_FONT, ASSET_STICKER, Asset
+    from app.models import ASSET_FONT, ASSET_SOURCE_BUILTIN, ASSET_STICKER, Asset
     from app.routers.assets import FONT_EXTS, STICKER_EXTS
 
     db = SessionLocal()
     try:
         existing = {
-            (a.type, a.name) for a in db.scalars(select(Asset).where(Asset.source == "builtin"))
+            (a.type, a.name)
+            for a in db.scalars(select(Asset).where(Asset.source == ASSET_SOURCE_BUILTIN))
         }
         for asset_type, sub, exts in (
             (ASSET_STICKER, "stickers", STICKER_EXTS),
@@ -60,7 +61,11 @@ def seed_builtin_assets() -> None:
                 if not file.is_file() or ext not in exts or (asset_type, file.name) in existing:
                     continue
                 asset = Asset(
-                    id=ids.asset_id(), type=asset_type, name=file.name, ext=ext, source="builtin"
+                    id=ids.asset_id(),
+                    type=asset_type,
+                    name=file.name,
+                    ext=ext,
+                    source=ASSET_SOURCE_BUILTIN,
                 )
                 dst = storage.asset_path(asset.id, ext)
                 dst.parent.mkdir(parents=True, exist_ok=True)

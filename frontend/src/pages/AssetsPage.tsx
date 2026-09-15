@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Asset, AssetType } from '../types';
+import { canDelete, filterAssets, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
 
@@ -36,6 +37,7 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
 
 export function AssetsPage() {
   const [tab, setTab] = useState<AssetType>('sticker');
+  const [bucket, setBucket] = useState<AssetBucket>('mine');
   const [assets, setAssets] = useState<Asset[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
@@ -77,6 +79,14 @@ export function AssetsPage() {
   };
 
   const accept = tab === 'sticker' ? 'image/png,image/webp,image/gif,.png,.webp,.gif' : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
+  const shown = filterAssets(assets, { bucket });
+  const kind = tab === 'sticker' ? '贴纸' : '字体';
+  const emptyText =
+    bucket === 'library'
+      ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
+      : tab === 'sticker'
+        ? '还没有贴纸。支持 png / webp / 静态 gif，单个不超过 10 MiB。'
+        : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';
 
   return (
     <div className="page">
@@ -92,12 +102,16 @@ export function AssetsPage() {
         <button className={`tab ${tab === 'font' ? 'active' : ''}`} onClick={() => setTab('font')}>字体</button>
       </div>
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
-      {assets.length === 0 ? (
-        <div className="empty">{tab === 'sticker' ? '还没有贴纸。支持 png / webp / 静态 gif。' : '还没有字体。支持 ttf / otf / woff2；字体名取文件名。'}</div>
+      <div className="chips" style={{ marginBottom: 12 }}>
+        <button className={`chip ${bucket === 'mine' ? 'active' : ''}`} onClick={() => setBucket('mine')}>我上传的</button>
+        <button className={`chip ${bucket === 'library' ? 'active' : ''}`} onClick={() => setBucket('library')}>原料库</button>
+      </div>
+      {shown.length === 0 ? (
+        <div className="empty">{emptyText}</div>
       ) : (
         <div className="asset-grid">
-          {assets.map((a) => (
-            <AssetCard key={a.id} asset={a} onDelete={() => void remove(a)} />
+          {shown.map((a) => (
+            <AssetCard key={a.id} asset={a} onDelete={canDelete(a) ? () => void remove(a) : undefined} />
           ))}
         </div>
       )}

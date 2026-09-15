@@ -56,6 +56,9 @@ export type BatchDetail = Batch & { videos: Video[] };
 
 export type AssetType = 'sticker' | 'font';
 
+/** 素材来源（契约 §1）。`library` 预留给正式物料库，原型阶段不会出现，见 docs/ASSETS.md。 */
+export type AssetSource = 'upload' | 'builtin' | 'library';
+
 export interface Asset {
   id: string;
   type: AssetType;
@@ -64,7 +67,7 @@ export interface Asset {
   width?: number;
   height?: number;
   family?: string;
-  source: 'upload' | 'builtin';
+  source: AssetSource;
   created_at: string;
 }
 
