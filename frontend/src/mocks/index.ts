@@ -89,6 +89,31 @@ function spriteImage(duration: number, hue: number) {
   return { url: c.toDataURL('image/jpeg', 0.6), interval: 1, tile_width: tw, tile_height: th, columns, count };
 }
 
+/** mock 的"异步预处理"：用 <video> 的 loadedmetadata 拿尺寸/时长，然后把素材推到 ready。 */
+function probeVideo(asset: Asset, url: string) {
+  const el = document.createElement('video');
+  el.preload = 'metadata';
+  el.muted = true;
+  const finish = (ok: boolean) => {
+    if (ok) {
+      asset.width = el.videoWidth || 600;
+      asset.height = el.videoHeight || 240;
+      asset.duration = Number.isFinite(el.duration) ? Math.round(el.duration * 100) / 100 : 3;
+      asset.fps = 30;
+      asset.has_alpha = /\.webm$/i.test(asset.name);
+      asset.poster_url = null; // mock 不生成首帧，画布会直接用预览代理
+      asset.preview_url = url;
+      asset.status = 'ready';
+    } else {
+      asset.status = 'failed';
+      asset.error = '无法解析该视频';
+    }
+  };
+  el.onloadedmetadata = () => window.setTimeout(() => finish(true), 800);
+  el.onerror = () => window.setTimeout(() => finish(false), 800);
+  el.src = url;
+}
+
 function stickerImage(text: string, color: string): { url: string; width: number; height: number } {
   const w = 600;
   const h = 240;
@@ -479,7 +504,16 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     for (const f of files) {
       const url = URL.createObjectURL(f);
       const a: Asset = { id: nid('a'), type, name: f.name, url, source: 'upload', created_at: now() };
-      if (type === 'sticker') {
+      if (type !== 'sticker') {
+        a.family = f.name.replace(/\.[a-z0-9]+$/i, '');
+      } else if (/\.(mp4|mov|webm)$/i.test(f.name)) {
+        // 视频贴纸：和后端一样先返回 preparing，稍后由 GET /api/assets/{id} 轮询到 ready
+        a.kind = 'video';
+        a.status = 'preparing';
+        void probeVideo(a, url);
+      } else {
+        a.kind = 'image';
+        a.status = 'ready';
         const dims = await new Promise<[number, number]>((res) => {
           const img = new Image();
           img.onload = () => res([img.naturalWidth, img.naturalHeight]);
@@ -488,8 +522,6 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
         });
         a.width = dims[0];
         a.height = dims[1];
-      } else {
-        a.family = f.name.replace(/\.[a-z0-9]+$/i, '');
       }
       assets.push(a);
       created.push(a);
@@ -498,6 +530,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
   }
   if ((mm = m(/^\/api\/assets\/([^/]+)$/))) {
     const i = assets.findIndex((a) => a.id === mm![1]);
+    if (method === 'GET') return i >= 0 ? clone(assets[i]) : undefined;
     if (i >= 0) {
       if (assets[i].source !== 'upload') throw new ApiError(400, '只能删除自己上传的素材');
       assets.splice(i, 1);

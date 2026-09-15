@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """End-to-end smoke test against a running HitGO instance.
 
-Waits for preprocessing of the first batch, saves a spec with a trim, two
-sticker layers and two output variants on its first video, renders, and prints
-the job results. No dependencies beyond the standard library.
+Waits for preprocessing of the first batch, saves a spec with a trim, two image
+sticker layers, a looping video sticker (when one is available) and two output
+variants on its first video, renders, and prints the job results. Also checks the
+output duration, since a looping sticker must not stretch the clip.
+No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
 """
@@ -44,18 +46,41 @@ for v in videos[:2]:
 print("failed:", [(v["name"], v["error"]) for v in videos if v["status"] == "failed"])
 
 stickers = call("GET", "/api/assets?type=sticker")[1]
-print("stickers", [(a["name"], a["width"], a["height"]) for a in stickers])
+print("stickers", [(a["name"], a.get("kind", "image"), a.get("status", "ready"), a["width"], a["height"]) for a in stickers])
+
+# Video stickers are preprocessed asynchronously; wait for them before building a spec.
+for _ in range(60):
+    if all(a.get("status", "ready") != "preparing" for a in stickers):
+        break
+    time.sleep(2)
+    stickers = call("GET", "/api/assets?type=sticker")[1]
+failed = [(a["name"], a.get("error")) for a in stickers if a.get("status") == "failed"]
+if failed:
+    print("sticker preprocessing failed:", failed)
+ready = [a for a in stickers if a.get("status", "ready") == "ready"]
+video_stickers = [a for a in ready if a.get("kind") == "video"]
+print("video stickers", [(a["name"], a.get("duration"), a.get("has_alpha")) for a in video_stickers])
 
 video = videos[0]
+layers = [
+    {"id": "l_1", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "top-left",
+     "margin": [0.08, 0.12], "width": 0.35, "rotate": -8, "opacity": 0.9, "t": [0, 5]},
+    {"id": "l_2", "type": "sticker", "asset_id": ready[2 % len(ready)]["id"], "anchor": "bottom-center",
+     "margin": [0, 0.25], "width": 0.5, "rotate": 0, "opacity": 1, "t": "all"},
+]
+if video_stickers:
+    # Looping video sticker whose window outlives the clip: proves the output is not stretched.
+    layers.append(
+        {"id": "l_3", "type": "sticker", "asset_id": video_stickers[0]["id"], "anchor": "center",
+         "margin": [0, 0], "width": 0.4, "rotate": 0, "opacity": 1, "t": "all", "playback": "loop"}
+    )
+else:
+    print("no video sticker available — skipping the video-layer part of the smoke test")
+
 spec = {
     "spec_version": 1,
     "trim": {"remove": [[2.0, 4.0]]},
-    "layers": [
-        {"id": "l_1", "type": "sticker", "asset_id": stickers[0]["id"], "anchor": "top-left",
-         "margin": [0.08, 0.12], "width": 0.35, "rotate": -8, "opacity": 0.9, "t": [0, 5]},
-        {"id": "l_2", "type": "sticker", "asset_id": stickers[2]["id"], "anchor": "bottom-center",
-         "margin": [0, 0.25], "width": 0.5, "rotate": 0, "opacity": 1, "t": "all"},
-    ],
+    "layers": layers,
     "outputs": [
         {"variant_key": "9x16", "aspect": "9:16", "fill": "blur"},
         {"variant_key": "1x1", "aspect": "1:1", "fill": "crop",
@@ -88,6 +113,15 @@ while True:
 print(f"finished in {time.time() - t0:.0f}s")
 for j in jobs:
     print(" ", j["variant_key"], j["status"], j["progress"], j["output"], (j["error"] or "")[:800])
+
+# A looping video sticker must not stretch the output past the post-trim duration.
+post_duration = round(video["duration"] - 2.0, 1)
+for j in jobs:
+    if j["status"] == "done" and abs(j["output"]["duration"] - post_duration) > 0.3:
+        print(f"unexpected duration for {j['variant_key']}: "
+              f"{j['output']['duration']} (expected ~{post_duration})")
+        sys.exit(1)
+
 expected = {"9x16": (1080, 1920), "1x1": (1080, 1080)}
 for j in jobs:
     if j["status"] == "done" and (j["output"]["width"], j["output"]["height"]) != expected[j["variant_key"]]:

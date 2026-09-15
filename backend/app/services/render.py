@@ -19,7 +19,17 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import utcnow
-from app.models import JOB_DONE, JOB_FAILED, JOB_RUNNING, Asset, Batch, Job, Video
+from app.models import (
+    ASSET_READY,
+    ASSET_VIDEO,
+    JOB_DONE,
+    JOB_FAILED,
+    JOB_RUNNING,
+    Asset,
+    Batch,
+    Job,
+    Video,
+)
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
 from app.services.filtergraph import ImageSource, RenderPlan, build_render_command
@@ -136,7 +146,23 @@ def collect_assets(db: Session, spec: EditSpec) -> dict[str, ImageSource]:
         return {}
     result: dict[str, ImageSource] = {}
     for asset in db.query(Asset).filter(Asset.id.in_(ids)).all():
-        image = _image_from_file(storage.asset_path(asset.id, asset.ext), asset.width, asset.height)
+        path = storage.asset_path(asset.id, asset.ext)
+        if asset.kind == ASSET_VIDEO:
+            # Still preparing (or failed): leave it out, the graph builder warns and skips.
+            if asset.status != ASSET_READY or not asset.width or not asset.height:
+                continue
+            if not path.is_file():
+                continue
+            result[asset.id] = ImageSource(
+                str(path),
+                asset.width,
+                asset.height,
+                duration=asset.duration or 0.0,
+                decoder=asset.decoder,
+                has_alpha=bool(asset.has_alpha),
+            )
+            continue
+        image = _image_from_file(path, asset.width, asset.height)
         if image is not None:
             result[asset.id] = image
     return result

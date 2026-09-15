@@ -9,7 +9,8 @@ import { effectivePlacement, layerAspect } from '../../lib/spec';
 import { windowContains } from '../../lib/time';
 import { ensureTextRendered } from '../../lib/textImage';
 import { loadImage } from '../../lib/useImage';
-import { VARIANT_DEFS, type EditSpec, type Asset, type OutputVariant, type TextLayer, type Video } from '../../types';
+import { getVideo } from '../../lib/useVideo';
+import { isVideoAsset, VARIANT_DEFS, type EditSpec, type Asset, type OutputVariant, type TextLayer, type Video } from '../../types';
 
 const PREVIEW_H = 300;
 
@@ -88,7 +89,19 @@ async function drawVariant(canvas: HTMLCanvasElement, video: Video, spec: EditSp
     let image: CanvasImageSource | null = null;
     if (layer.type === 'sticker') {
       const a = assets.find((x) => x.id === layer.asset_id);
-      if (a) {
+      if (a && isVideoAsset(a)) {
+        // 舞台那边已经把这个 <video>（同 URL 同实例）对齐到播放头，这里画它的当前帧；
+        // 还没解出帧就退回首帧，和上面源画面的处理一致。
+        const el = getVideo(a.preview_url ?? a.url);
+        if (el.readyState >= 2) image = el;
+        else if (a.poster_url) {
+          try {
+            image = await loadImage(a.poster_url);
+          } catch {
+            /* ignore */
+          }
+        }
+      } else if (a) {
         try {
           image = await loadImage(a.url);
         } catch {

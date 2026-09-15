@@ -197,3 +197,16 @@ def test_spec_version_must_be_1():
 
 def test_layer_override_as_dict_drops_none():
     assert LayerOverride(width=0.2).as_dict() == {"width": 0.2}
+
+
+def test_sticker_playback_defaults_and_validates():
+    spec = valid_spec()
+    assert "playback" not in spec["layers"][0]
+    assert validate(spec).layers[0].playback == "loop"  # old specs keep working
+
+    for mode in ("loop", "freeze", "once"):
+        spec["layers"][0]["playback"] = mode
+        assert validate(spec).layers[0].playback == mode
+
+    spec["layers"][0]["playback"] = "rewind"
+    assert "playback" in errors_of(spec)

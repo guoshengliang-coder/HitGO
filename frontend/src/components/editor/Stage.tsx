@@ -5,15 +5,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect, Text as KText, Transformer, Group } from 'react-konva';
-import { useEditor, usePostTime } from '../../store/editor';
+import { useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4 } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
-import { windowContains } from '../../lib/time';
+import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
 import { useImage } from '../../lib/useImage';
-import type { Layer, Rect as ZRect, SafeZone, TextLayer } from '../../types';
+import { useVideo } from '../../lib/useVideo';
+import { stickerMediaTime } from '../../lib/stickerMedia';
+import { isVideoAsset, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
 const SNAP_PX = 6;
 const GUIDE_COLOR = '#d9481f';
@@ -103,9 +105,46 @@ function LayerNode({
 }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
-  const stickerUrl = layer.type === 'sticker' ? assets.find((a) => a.id === layer.asset_id)?.url : undefined;
-  const stickerImg = useImage(stickerUrl);
+  const postDuration = usePostDuration();
+  const sticker = layer.type === 'sticker' ? assets.find((a) => a.id === layer.asset_id) : undefined;
+  const stickerIsVideo = isVideoAsset(sticker);
+  // 静态图走 useImage；视频贴纸优先用浏览器可播的预览代理（MOV/ProRes 直接放会是空白）
+  const stickerImg = useImage(stickerIsVideo ? undefined : sticker?.url);
+  const { video: stickerVideo, ready: videoReady } = useVideo(
+    stickerIsVideo ? sticker?.preview_url ?? sticker?.url : undefined,
+  );
+  // 视频还没就绪时先画首帧，避免画布上突然空一块
+  const stickerPoster = useImage(stickerIsVideo && !videoReady ? sticker?.poster_url : undefined);
   const [, bump] = useState(0);
+
+  // 把贴纸视频的播放位置对齐到播放头。播放中的每帧重绘由 player 的 rAF → setTime →
+  // React 重渲染带出来；这里补的是暂停 / 拖进度条后 seek 完成的那一次重绘。
+  useEffect(() => {
+    if (!stickerVideo || layer.type !== 'sticker') return;
+    const playback = layer.playback ?? 'loop';
+    const mediaDuration = sticker?.duration ?? stickerVideo.duration ?? 0;
+    const sync = (postTime: number, playing: boolean) => {
+      const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback);
+      if (at === null) {
+        if (!stickerVideo.paused) stickerVideo.pause();
+        return;
+      }
+      if (playing) {
+        // 播放中只在明显漂移时纠正，否则每帧 seek 会让画面抖
+        if (Math.abs(stickerVideo.currentTime - at) > 0.25) stickerVideo.currentTime = at;
+        if (stickerVideo.paused) void stickerVideo.play().catch(() => undefined);
+      } else {
+        if (!stickerVideo.paused) stickerVideo.pause();
+        if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
+      }
+    };
+    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying);
+    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing));
+    return () => {
+      unsub();
+      stickerVideo.pause();
+    };
+  }, [stickerVideo, sticker?.duration, layer, postDuration]);
 
   // 文字图层：渲染 PNG 预览；未手动设宽时，width 跟随渲染尺寸（pngWidth / 1080）
   // 缓存 key 与 textImage 一致（text + style + spans），任一变化都重新渲染
@@ -125,7 +164,10 @@ function LayerNode({
     };
   }, [textKey, widthManual]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const image: CanvasImageSource | undefined = layer.type === 'sticker' ? stickerImg : getCachedText(layer as TextLayer)?.canvas;
+  let image: CanvasImageSource | undefined;
+  if (layer.type !== 'sticker') image = getCachedText(layer as TextLayer)?.canvas;
+  else if (!stickerIsVideo) image = stickerImg;
+  else image = videoReady ? stickerVideo : stickerPoster;
   if (!image) return null;
 
   const aspect = layerAspect(layer, assets);

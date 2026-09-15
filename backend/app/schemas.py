@@ -38,6 +38,8 @@ ANCHORS: tuple[str, ...] = Anchor.__args__  # type: ignore[attr-defined]
 
 Aspect = Literal["9:16", "1:1", "4:5", "16:9"]
 Fill = Literal["blur", "color", "crop"]
+# Video sticker shorter than its time window: loop it, hold the last frame, or let it end.
+Playback = Literal["loop", "freeze", "once"]
 Quality = Literal["standard", "high"]
 LayerMode = Literal["replace", "style_only"]
 
@@ -88,6 +90,8 @@ class LayerBase(BaseModel):
 class StickerLayer(LayerBase):
     type: Literal["sticker"]
     asset_id: str = Field(min_length=1)
+    # Only meaningful for video stickers (Asset.kind == "video"); still images ignore it.
+    playback: Playback = "loop"
 
 
 class TextShadow(BaseModel):
@@ -427,8 +431,16 @@ class AssetOut(BaseModel):
     type: str
     name: str
     url: str
+    kind: str = "image"
+    status: str = "ready"
+    error: str | None = None
     width: int | None = None
     height: int | None = None
+    duration: float | None = None
+    fps: float | None = None
+    has_alpha: bool | None = None
+    poster_url: str | None = None
+    preview_url: str | None = None
     family: str | None = None
     source: str
     created_at: str

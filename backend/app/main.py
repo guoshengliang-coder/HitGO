@@ -38,12 +38,21 @@ def seed_builtin_assets() -> None:
     from PIL import Image
     from sqlalchemy import select
 
-    from app import ids
+    from app import ids, worker
     from app.db import SessionLocal
-    from app.models import ASSET_FONT, ASSET_SOURCE_BUILTIN, ASSET_STICKER, Asset
+    from app.models import (
+        ASSET_FONT,
+        ASSET_PREPARING,
+        ASSET_SOURCE_BUILTIN,
+        ASSET_STICKER,
+        ASSET_VIDEO,
+        Asset,
+    )
     from app.routers.assets import FONT_EXTS, STICKER_EXTS
+    from app.services.ffprobe import ANIMATABLE_IMAGE_EXTS, VIDEO_STICKER_EXTS
 
     db = SessionLocal()
+    pending: list[str] = []
     try:
         existing = {
             (a.type, a.name)
@@ -70,22 +79,38 @@ def seed_builtin_assets() -> None:
                 dst = storage.asset_path(asset.id, ext)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(file, dst)
-                if asset_type == ASSET_STICKER:
+                if asset_type != ASSET_STICKER:
+                    asset.family = file.stem
+                elif ext in VIDEO_STICKER_EXTS:
+                    asset.kind, asset.status = ASSET_VIDEO, ASSET_PREPARING
+                    pending.append(asset.id)
+                else:
                     try:
                         with Image.open(dst) as img:
                             asset.width, asset.height = img.size
+                            frames = getattr(img, "n_frames", 1)
                     except OSError:
                         storage.remove_file(dst)
                         continue
-                else:
-                    asset.family = file.stem
+                    if ext in ANIMATABLE_IMAGE_EXTS and frames > 1:
+                        asset.kind, asset.status = ASSET_VIDEO, ASSET_PREPARING
+                        pending.append(asset.id)
                 db.add(asset)
         db.commit()
     except Exception:  # noqa: BLE001 - seeding must never block startup
         log.exception("seeding builtin assets failed")
         db.rollback()
+        return
     finally:
         db.close()
+
+    for asset_id in pending:
+        try:
+            worker.enqueue(worker.preprocess_asset, asset_id)
+        except worker.QueueUnavailable:
+            # Broker not up yet: the asset stays "preparing" and can be re-queued
+            # by deleting and re-uploading it. Never block startup on Redis.
+            log.warning("builtin video sticker %s could not be queued", asset_id)
 
 
 @asynccontextmanager

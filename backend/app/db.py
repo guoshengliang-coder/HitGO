@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
@@ -49,6 +49,41 @@ def init_db() -> None:
 
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
+    ensure_columns()
+
+
+def ensure_columns() -> None:
+    """Add columns that exist on the models but not yet in an already-created table.
+
+    ``create_all`` never alters an existing table, and the prototype server keeps its
+    database in a persistent volume — without this, adding a column to a model makes
+    every query on that table fail with "no such column" after a deploy.
+    Idempotent, and limited to nullable / defaulted columns (the only kind the
+    contract allows to be added). SQLite and PostgreSQL both take this ALTER form.
+    """
+    with engine.begin() as conn:
+        # Reflect through the live connection: an Inspector built from the engine can
+        # hand back cached metadata and we would ALTER a column that already exists.
+        inspector = inspect(conn)
+        existing_tables = set(inspector.get_table_names())
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue  # create_all just made it, with every column
+            present = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present or column.primary_key:
+                    continue
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {column.name} "
+                ddl += column.type.compile(engine.dialect)
+                default = column.default
+                if default is not None and not callable(getattr(default, "arg", None)):
+                    literal = default.arg
+                    if isinstance(literal, str):
+                        literal = "'" + literal.replace("'", "''") + "'"
+                    elif isinstance(literal, bool):
+                        literal = "1" if literal else "0"
+                    ddl += f" DEFAULT {literal}"
+                conn.execute(text(ddl))
 
 
 def get_db() -> Iterator[Session]:

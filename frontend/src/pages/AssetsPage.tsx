@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import type { Asset, AssetType } from '../types';
+import { isVideoAsset, type Asset, type AssetType } from '../types';
 import { canDelete, filterAssets, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
@@ -10,11 +10,34 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
   useEffect(() => {
     if (asset.type === 'font') void ensureFontLoaded(asset).then(() => setFontReady(true));
   }, [asset]);
+  const video = isVideoAsset(asset);
+  const status = asset.status ?? 'ready';
   return (
     <div className={`asset-card ${onPick ? 'pick' : ''}`} onClick={onPick} role={onPick ? 'button' : undefined} tabIndex={onPick ? 0 : undefined} onKeyDown={(e) => onPick && e.key === 'Enter' && onPick()}>
       {asset.type === 'sticker' ? (
         <div className="thumb checker">
-          <img src={asset.url} alt={asset.name} />
+          {!video ? (
+            <img src={asset.url} alt={asset.name} />
+          ) : status === 'ready' ? (
+            // 就绪后直接播预览代理当缩略图；poster 只作首帧占位（可能没有）
+            <video
+              src={asset.preview_url ?? asset.url}
+              poster={asset.poster_url ?? undefined}
+              muted
+              loop
+              autoPlay
+              playsInline
+              aria-label={asset.name}
+            />
+          ) : (
+            <div className="asset-state small muted">{status === 'failed' ? '处理失败' : '处理中…'}</div>
+          )}
+          {video && status === 'ready' && (
+            <div className="asset-badges">
+              {asset.duration ? <span className="badge">{asset.duration.toFixed(1)}s</span> : null}
+              {asset.has_alpha === false && <span className="badge" title="素材没有透明通道，会以不透明矩形叠加">不透明</span>}
+            </div>
+          )}
         </div>
       ) : (
         <div className="thumb">
@@ -24,7 +47,7 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
         </div>
       )}
       <div className="cap">
-        <span title={asset.name}>{asset.name}</span>
+        <span title={status === 'failed' && asset.error ? asset.error : asset.name}>{asset.name}</span>
         {onDelete && (
           <button className="btn ghost icon sm danger" aria-label="删除素材" onClick={(e) => { e.stopPropagation(); onDelete(); }}>
             <IconTrash />
@@ -54,6 +77,25 @@ export function AssetsPage() {
     void load(tab);
   }, [tab, load]);
 
+  // 视频贴纸是异步预处理的，preparing 期间轮询到 ready / failed 为止
+  useEffect(() => {
+    const pending = assets.filter((a) => (a.status ?? 'ready') === 'preparing');
+    if (!pending.length) return;
+    let alive = true;
+    const timer = window.setTimeout(async () => {
+      const updated = await Promise.all(
+        pending.map((a) => api.getAsset(a.id).catch(() => null)),
+      );
+      if (!alive) return;
+      const byId = new Map(updated.filter(Boolean).map((a) => [a!.id, a!]));
+      if (byId.size) setAssets((prev) => prev.map((a) => byId.get(a.id) ?? a));
+    }, 1500);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [assets]);
+
   const upload = async (files: File[]) => {
     if (!files.length) return;
     setError(null);
@@ -78,14 +120,17 @@ export function AssetsPage() {
     }
   };
 
-  const accept = tab === 'sticker' ? 'image/png,image/webp,image/gif,.png,.webp,.gif' : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
+  const accept =
+    tab === 'sticker'
+      ? 'image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.webp,.gif,.mp4,.mov,.webm'
+      : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
   const shown = filterAssets(assets, { bucket });
   const kind = tab === 'sticker' ? '贴纸' : '字体';
   const emptyText =
     bucket === 'library'
       ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
       : tab === 'sticker'
-        ? '还没有贴纸。支持 png / webp / 静态 gif，单个不超过 10 MiB。'
+        ? '还没有贴纸。支持 png / webp / gif 与 mp4 / mov / webm；图片单个不超过 10 MiB，视频贴纸不超过 50 MiB、60 秒。'
         : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';
 
   return (

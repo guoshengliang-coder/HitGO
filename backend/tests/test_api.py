@@ -12,7 +12,7 @@ from app import worker
 from app.config import settings
 from app.db import SessionLocal, utcnow
 from app.main import app
-from app.models import Job, Video
+from app.models import Asset, Job, Video
 from app.services import storage
 from tests.conftest import make_png, valid_spec
 
@@ -477,7 +477,12 @@ def test_assets_source_filter(client, png_bytes, db):
     assert client.delete(f"/api/assets/{mine['id']}").status_code == 204
 
 
-def test_sticker_upload_rejects_animated_gif(client):
+def test_animated_gif_becomes_a_video_sticker(client, enqueued):
+    """Replaces HIG-4's "reject animated GIF" rule.
+
+    That rule existed because a multi-frame input rendered one pass and then froze;
+    animated stickers now go down the video path instead, which plays and loops them.
+    """
     from PIL import Image
 
     buf = io.BytesIO()
@@ -488,8 +493,26 @@ def test_sticker_upload_rejects_animated_gif(client):
         data={"type": "sticker"},
         files=[("files", ("anim.gif", io.BytesIO(buf.getvalue()), "image/gif"))],
     )
-    assert r.status_code == 400 and "动态" in r.json()["detail"]
-    assert client.get("/api/assets").json() == []
+    assert r.status_code == 200, r.text
+    a = r.json()[0]
+    assert a["kind"] == "video" and a["status"] == "preparing"
+    assert enqueued.names() == ["hitgo.preprocess_asset"]
+
+
+def test_still_gif_stays_an_image_sticker(client, enqueued):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (255, 0, 0)).convert("P").save(buf, "GIF")
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("still.gif", io.BytesIO(buf.getvalue()), "image/gif"))],
+    )
+    assert r.status_code == 200, r.text
+    a = r.json()[0]
+    assert a["kind"] == "image" and a["status"] == "ready" and (a["width"], a["height"]) == (8, 8)
+    assert enqueued.calls == []
 
 
 def test_sticker_upload_rejects_oversized_file(client, png_bytes, monkeypatch):
@@ -727,3 +750,93 @@ def test_storage_media_url_roundtrip():
     assert storage.media_url_to_path("/media/hitgo.db") is None
     assert storage.media_url_to_path("/media/tmp/x.mp4") is None
     assert storage.media_url_to_path("https://x/media/a.png") is None
+
+
+def test_video_sticker_upload_is_async_and_pollable(client, enqueued, db):
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("角标动效.mp4", io.BytesIO(b"\x00" * 2048), "video/mp4"))],
+    )
+    assert r.status_code == 200, r.text
+    a = r.json()[0]
+    # Nothing is decoded inline: the worker fills width/height/duration later.
+    assert a["kind"] == "video" and a["status"] == "preparing"
+    assert a["width"] is None and a["poster_url"] is None and a["preview_url"] is None
+    assert a["url"] == f"/media/assets/{a['id']}.mp4"
+    assert enqueued.names() == ["hitgo.preprocess_asset"]
+    assert [args[0] for _, args in enqueued.calls] == [a["id"]]
+
+    single = client.get(f"/api/assets/{a['id']}")
+    assert single.status_code == 200 and single.json()["status"] == "preparing"
+    assert client.get("/api/assets/a_missing").status_code == 404
+
+    # Once the worker is done the derived URLs appear.
+    asset = db.get(Asset, a["id"])
+    asset.status, asset.kind = "ready", "video"
+    asset.width, asset.height, asset.duration = 600, 240, 2.4
+    asset.fps, asset.has_alpha, asset.preview_ext = 30.0, False, "mp4"
+    db.commit()
+    ready = client.get(f"/api/assets/{a['id']}").json()
+    assert ready["poster_url"] == f"/media/assets/{a['id']}.poster.jpg"
+    assert ready["preview_url"] == f"/media/assets/{a['id']}.preview.mp4"
+    assert ready["duration"] == 2.4 and ready["has_alpha"] is False
+
+
+def test_video_sticker_upload_rejects_oversized_files(client, enqueued, monkeypatch):
+    from app.routers import assets as assets_router
+
+    monkeypatch.setattr(assets_router, "MAX_VIDEO_STICKER_BYTES", 2 * 1024 * 1024)
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("big.mov", io.BytesIO(b"\x00" * (3 * 1024 * 1024)), "video/quicktime"))],
+    )
+    assert r.status_code == 400 and "上限" in r.json()["detail"]
+    assert client.get("/api/assets").json() == []
+    assert enqueued.calls == []
+    assert not any(storage.data_dir().joinpath("assets").glob("*.mov"))
+
+
+def test_image_sticker_upload_stays_synchronous(client, enqueued, png_bytes):
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("静态.png", io.BytesIO(png_bytes), "image/png"))],
+    )
+    a = r.json()[0]
+    assert a["kind"] == "image" and a["status"] == "ready" and (a["width"], a["height"]) == (300, 120)
+    assert a["duration"] is None and a["has_alpha"] is None
+    assert enqueued.calls == []  # no worker round-trip for still images
+
+
+def test_deleting_a_video_sticker_removes_its_derived_files(client, db):
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("x.webm", io.BytesIO(b"\x00" * 512), "video/webm"))],
+    )
+    a = r.json()[0]
+    asset = db.get(Asset, a["id"])
+    asset.status, asset.preview_ext = "ready", "webm"
+    db.commit()
+    poster = storage.asset_poster_path(a["id"])
+    preview = storage.asset_preview_path(a["id"], "webm")
+    poster.write_bytes(b"jpg")
+    preview.write_bytes(b"webm")
+
+    assert client.delete(f"/api/assets/{a['id']}").status_code == 204
+    assert not poster.exists() and not preview.exists()
+    assert not storage.asset_path(a["id"], "webm").exists()
+
+
+def test_render_skips_a_video_sticker_that_is_not_ready(ready_video, db, client):
+    from app.services.render import collect_assets
+    from app.schemas import EditSpec
+
+    db.add(Asset(id="a_sticker001", type="sticker", name="v.mp4", ext="mp4",
+                 kind="video", status="preparing", source="upload"))
+    db.commit()
+    spec = EditSpec.model_validate(valid_spec())
+    # Not ready → not resolved → the graph builder warns and skips the layer.
+    assert collect_assets(db, spec) == {}

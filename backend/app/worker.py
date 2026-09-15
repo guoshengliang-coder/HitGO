@@ -1,4 +1,4 @@
-"""Celery app + tasks (preprocess_video, render_job) and the API-side ``enqueue`` helper.
+"""Celery app + tasks (preprocess_video, preprocess_asset, render_job) and the API-side ``enqueue`` helper.
 
 The API never blocks on Redis for long: publishing uses a short connection
 timeout and a single retry, and failures are turned into ``QueueUnavailable``
@@ -14,8 +14,16 @@ from kombu.exceptions import OperationalError
 
 from app.config import settings
 from app.db import SessionLocal, utcnow
-from app.models import VIDEO_FAILED, VIDEO_READY, Job, Video
-from app.services import preprocess, render, storage
+from app.models import (
+    ASSET_FAILED,
+    ASSET_READY,
+    VIDEO_FAILED,
+    VIDEO_READY,
+    Asset,
+    Job,
+    Video,
+)
+from app.services import asset_preprocess, preprocess, render, storage
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +107,46 @@ def preprocess_video(self, video_id: str) -> None:  # noqa: ANN001
         video.status = VIDEO_READY
         video.error = None
         video.updated_at = utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hitgo.preprocess_asset", bind=True, max_retries=3)
+def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
+    """Probe a video sticker and build its poster + preview proxy (contract §6)."""
+    db = SessionLocal()
+    try:
+        asset = db.get(Asset, asset_id)
+        if asset is None:
+            # Row not visible yet (published right after commit) or deleted.
+            if self.request.retries < self.max_retries:
+                raise self.retry(countdown=1)
+            log.info("preprocess: asset %s vanished", asset_id)
+            return
+        source = storage.asset_path(asset.id, asset.ext)
+        try:
+            meta = asset_preprocess.run_asset_preprocess(
+                source=source,
+                poster=storage.asset_poster_path(asset.id),
+                preview_for_ext=lambda ext: storage.asset_preview_path(asset.id, ext),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("preprocess asset %s failed", asset_id)
+            asset.status = ASSET_FAILED
+            asset.error = str(exc)[:4000]
+            db.commit()
+            return
+
+        asset.width = meta["width"]
+        asset.height = meta["height"]
+        asset.duration = meta["duration"]
+        asset.fps = meta["fps"]
+        asset.has_alpha = meta["has_alpha"]
+        asset.decoder = meta["decoder"]
+        asset.preview_ext = meta["preview_ext"]
+        asset.status = ASSET_READY
+        asset.error = None
         db.commit()
     finally:
         db.close()

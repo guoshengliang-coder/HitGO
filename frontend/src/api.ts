@@ -117,6 +117,7 @@ export const api = {
 
   // 素材
   listAssets: (type: AssetType) => request<Asset[]>('GET', `/api/assets?type=${type}`),
+  getAsset: (id: string) => request<Asset>('GET', `/api/assets/${id}`),
   uploadAssets: (type: AssetType, files: File[], onProgress?: (f: number) => void) => {
     const form = new FormData();
     form.append('type', type);
