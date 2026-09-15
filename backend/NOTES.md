@@ -38,6 +38,26 @@ Decisions taken where the contract was silent or ambiguous. Everything else foll
 ## Filter graph
 - Still-image layer inputs use plain `-i img.png` and `overlay=…:eof_action=repeat` (no `-loop`), so the image
   frame is held for the whole main stream.
+- **Video sticker layers** (`Asset.kind = video`, contract §2 `playback`):
+  - `overlay` sizes its output to the **longest** input, not the main stream. Every video layer chain therefore
+    ends in `trim=end=<window end>`, and the whole command gets `-t <post-trim duration>` as a backstop.
+    This also fixes a pre-existing bug: a 15s animated GIF sticker on a 10s clip used to produce a 14.83s video
+    with a 10s audio track. `-t` is only appended when a video layer exists, so still-image renders keep their
+    exact argv (and their golden tests).
+  - `playback = loop` adds `-stream_loop -1` **to that input only**. On its own it never terminates — the
+    `trim=end` above is what makes it safe. `freeze` omits it (`eof_action=repeat` holds the last frame) and
+    `once` uses `eof_action=pass`.
+  - The layer chain appends `setpts=PTS-STARTPTS+<t.start>/TB` so the sticker starts at its own frame 0 when
+    the window opens. Without it the sticker plays out behind the `enable=` gate and only its last frame is
+    ever visible. The `enable` `t` and this offset are on the same post-trim timeline, so trim/concat's PTS
+    reset needs no special handling.
+  - **VP8/VP9 alpha in WebM needs a forced decoder** (`-c:v libvpx`/`libvpx-vp9` before that `-i`); the default
+    decoder drops the alpha channel silently and the sticker renders as an opaque black box. ProRes 4444,
+    QuickTime RLE and HEVC-with-alpha MOVs are fine with the default decoder.
+  - Sticker audio is never mapped: an explicit `-map` disables ffmpeg's automatic stream selection, so no extra
+    flag is needed to drop it.
+- `rotate`, `scale` and `colorchannelmixer` apply to video layers unchanged (per frame). Cost measured on
+  20s/1080×1920: 3 still layers 1.14s vs 3 video layers with rotation 3.78s — still ~5× realtime.
 - Rotation: `rotate=<rad>:c=none:ow='rotw(<rad>)':oh='roth(<rad>)'` on the RGBA image; the overlay x/y is shifted so
   the rotated bounding box stays centred on the un-rotated box centre (contract: rotation about the layer centre).
 - Layer size uses explicit `scale=w:h` (h from the image aspect) instead of `scale=w:-1` so the layout math and
@@ -51,6 +71,24 @@ Decisions taken where the contract was silent or ambiguous. Everything else foll
 - Poster time is `min(0.5, duration / 2)`.
 - Rotation metadata (`tags.rotate` / `side_data_list.rotation` of 90/270) swaps the reported width/height, matching
   what ffmpeg does when it autorotates during decoding.
+
+## Assets
+- Sticker uploads split by extension: images are probed inline with Pillow, `mp4/mov/webm` (and `gif`/`webp`
+  with more than one frame) land as `status=preparing` and go through `hitgo.preprocess_asset`, mirroring how
+  source videos are ingested. The queue-down path rolls the whole upload back, same as `POST /videos`.
+- Alpha detection needs two probes: the container-level `pix_fmt` lies (HEVC-with-alpha and VP9-with-alpha both
+  report `yuv420p`). VP8/VP9 are decided by the `alpha_mode` stream tag, everything else by the **decoded first
+  frame's** `pix_fmt` against `ffprobe.ALPHA_PIX_FMTS`.
+- The preview proxy exists only because ProRes/QuickTime-RLE MOVs cannot be played by any browser; rendering
+  always uses the original file. It keeps alpha (VP9/`yuva420p`) when the source has it.
+- `DELETE /api/assets/{id}` removes the poster and preview alongside the original.
+
+## Database
+- `init_db()` calls `ensure_columns()`, which ALTERs in any model column missing from an already-created table.
+  `create_all` never touches existing tables and the prototype server keeps its SQLite file in a persistent
+  volume, so without this any newly added field breaks every query on that table after a deploy. It only
+  handles nullable/defaulted columns — the only kind the contract allows to be added — and reflects through the
+  live connection, because an engine-level Inspector can hand back cached metadata.
 
 ## Uploads
 - Multipart parsing goes through Starlette's `UploadFile` (spooled to a temp file past 1 MiB), then copied to

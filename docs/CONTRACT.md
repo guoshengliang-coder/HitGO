@@ -54,18 +54,34 @@
 
 ### Asset（素材）
 
-```json
+```jsonc
 {
   "id": "a_s1t2u3",
   "type": "sticker",              // sticker | font
+  "kind": "image",                // 可选，缺省 "image"：image | video（只对 sticker 有意义）
+  "status": "ready",              // 可选，缺省 "ready"：preparing | ready | failed（视频贴纸异步预处理）
+  "error": null,                  // status = failed 时的中文原因
   "name": "限时免费.png",
   "url": "/media/assets/a_s1t2u3.png",
-  "width": 600, "height": 240,    // sticker 才有
+  "width": 600, "height": 240,    // sticker 才有；视频贴纸在 status = ready 后才有
+  "duration": 2.4,                // 可选；kind = video 才有，秒
+  "fps": 30,                      // 可选；kind = video 才有
+  "has_alpha": true,              // 可选；kind = video 才有：素材是否带透明通道
+  "poster_url": "/media/assets/a_s1t2u3.poster.jpg",    // 可选；kind = video 且 ready 才有：首帧
+  "preview_url": "/media/assets/a_s1t2u3.preview.webm", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
   "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）
   "created_at": "..."
 }
 ```
+
+**视频贴纸**（`kind = "video"`）：上传 `mp4 / mov / webm`，或多帧的 `gif / webp`。落盘后由 worker 异步
+探测（`preparing`），拿到宽高 / 时长 / 帧率 / 是否带透明通道，并生成首帧 `poster` 与浏览器可播的
+`preview` 代理，完成后转 `ready`；失败转 `failed` 并写 `error`。`preparing` 期间素材可以列出但不能用于
+渲染（worker 会跳过并记警告）。
+
+**透明通道**：`mp4`（H.264）没有 alpha 通道，只能作为不透明矩形叠加；`mov`（ProRes 4444 /
+QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明。前端按 `has_alpha` 给出提示。
 
 ### Preset（用户保存的预设）
 
@@ -117,7 +133,8 @@
       "width": 0.35,                         // 相对画布宽；高度按素材宽高比推出
       "rotate": 0,                           // 角度，绕图层中心
       "opacity": 1,
-      "t": [0, 6]                            // 出现时段，秒，基于剪后时间轴；"all" 表示全程
+      "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
+      "playback": "loop"                     // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
     },
     {
       "id": "l_2",
@@ -166,7 +183,12 @@
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
 - `layer_overrides` 只允许覆盖 `anchor | margin | width | rotate | opacity`。
-- 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。
+- 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
+  视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
+- **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
+  生效，静态图忽略。素材时长短于 `t` 时段时 —— `loop` 循环播放；`freeze` 播完定格最后一帧；`once` 播完
+  消失。素材比时段长时一律在时段结束处截断。**贴纸自带的音轨一律丢弃**，成片音轨仍只来自源视频。
+  批量套用 `style_only` 时 `playback` 跟随 `asset_id` 一起复制。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -195,8 +217,14 @@
 
 ### 素材
 - `GET /api/assets?type=sticker|font&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
-- `POST /api/assets` multipart：`type`，`files`（png / webp / gif 静态 / ttf / otf / woff2）→ `Asset[]`。只产出 `source = "upload"` 的素材。单文件上限：sticker 10 MiB、font 20 MiB，超出 400；动态 GIF（多帧）拒绝，400。
-- `DELETE /api/assets/{id}` → 204。`source != "upload"` 的素材不可删（400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
+- `GET /api/assets/{id}` → `Asset` / 404（前端轮询视频贴纸的 `preparing → ready`）
+- `POST /api/assets` multipart：`type`，`files` → `Asset[]`。只产出 `source = "upload"` 的素材。
+  - `sticker`：`png / webp / gif` 与 `mp4 / mov / webm`。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
+    立即入队预处理并以 `status = "preparing"` 返回。
+  - `font`：`ttf / otf / woff2`
+  - 单文件上限：图片 sticker 10 MiB、font 20 MiB、视频 sticker 50 MiB，超出 400；视频贴纸另限 60 秒。
+- `DELETE /api/assets/{id}` → 204（一并删除 poster / preview 派生文件）。`source != "upload"` 的素材不可删
+  （400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
 - 素材的来源迁移规划（怎么把 `upload` / `builtin` 换成正式物料库的 `library`，要改哪几处）见 `docs/ASSETS.md`。
 
 ### 文字图层 PNG
@@ -263,6 +291,8 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 /data/hitgo.db                               SQLite（DATABASE_URL 可换 PostgreSQL）
 /data/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg
 /data/assets/{asset_id}.{ext}
+/data/assets/{asset_id}.poster.jpg            视频贴纸：首帧
+/data/assets/{asset_id}.preview.{webm|mp4}    视频贴纸：浏览器可播的预览代理
 /data/uploads/{upload_id}.png
 /data/outputs/{job_id}.mp4
 /data/tmp/                                    worker 临时文件
@@ -270,6 +300,13 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 `/media` 直接映射到 `DATA_DIR`（`hitgo.db` 和 `tmp/` 不对外）。
 
 ## 6. 预处理与渲染（worker）
+
+### 素材预处理（视频贴纸入库后）
+1. `ffprobe` 取宽高 / 时长 / 帧率；透明通道判定：VP8/VP9 看 stream tag `alpha_mode`，其它看首帧 `pix_fmt`
+   是否是带 alpha 的像素格式（容器层的 `pix_fmt` 不可靠，HEVC-with-alpha 与 WebM-alpha 都报 `yuv420p`）。
+2. 首帧 `{asset_id}.poster.jpg`。
+3. 预览代理：带 alpha → `libvpx-vp9 -pix_fmt yuva420p` 出 `.webm`；否则 `libx264 -pix_fmt yuv420p` 出 `.mp4`。
+   预览代理只给编辑器看，渲染始终用原文件。
 
 ### 预处理（每条视频入库后）
 1. `ffprobe -v error -print_format json -show_format -show_streams`
@@ -283,7 +320,12 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
    - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
-   - 输出 `format=yuv420p`
+   - 视频贴纸图层额外：输入侧 `playback = "loop"` 时加 `-stream_loop -1`，带透明的 WebM 还要强制解码器
+     （VP9 → `-c:v libvpx-vp9`，VP8 → `-c:v libvpx`，否则 alpha 会被静默丢弃）；滤镜侧在链尾加
+     `setpts=PTS-STARTPTS+a/TB`（贴纸从自己第 0 帧开始播）与 `trim=end=b`（既挡住无限循环，也挡住
+     比主流长的素材）；`playback = "once"` 用 `overlay=...:eof_action=pass`，其余用 `repeat`。
+     贴纸自带的音轨不映射。
+   - 输出 `format=yuv420p`；本次渲染存在视频图层时，输出端补 `-t <剪后时长>` 兜底成片时长
 3. 编码（按输出变体的 `quality`，1080p）：
    - `standard`（默认）：`-c:v libx264 -preset veryfast -crf 20 -maxrate 8M -bufsize 16M -c:a aac -b:a 128k -movflags +faststart`
    - `high`：`-c:v libx264 -preset medium -crf 19 -maxrate 10M -bufsize 20M -c:a aac -b:a 128k -movflags +faststart`

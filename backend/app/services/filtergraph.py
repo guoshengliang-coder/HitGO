@@ -50,9 +50,18 @@ MIN_SEGMENT = 0.01  # seconds; shorter keep-segments are dropped
 
 @dataclass(frozen=True)
 class ImageSource:
+    """One layer's media. ``duration is None`` means a still image (the original case)."""
+
     path: str
     width: int
     height: int
+    duration: float | None = None  # seconds; None = still image
+    decoder: str | None = None  # forced input decoder, e.g. "libvpx-vp9" for alpha WebM
+    has_alpha: bool = True  # informational; drives the frontend hint, not the graph
+
+    @property
+    def is_video(self) -> bool:
+        return self.duration is not None
 
 
 @dataclass
@@ -137,7 +146,8 @@ def build_render_command(
     canvas_w, canvas_h = CANVAS_SIZES[variant.aspect]
 
     warnings: list[str] = []
-    inputs: list[str] = [source_path]
+    # One argv group per input: video stickers need per-input options (-stream_loop, -c:v).
+    inputs: list[list[str]] = [["-i", source_path]]
     chains: list[str] = []
 
     # ---- 1. trim / concat ---------------------------------------------------
@@ -202,10 +212,21 @@ def build_render_command(
 
     # ---- 3. layers ----------------------------------------------------------
     layer_index = 0
+    has_video_layer = False
     for layer in spec.layers:
         image = _resolve_layer_image(layer, assets, resolve_image_url, warnings)
         if image is None:
             continue
+
+        # Visible window on the post-trim timeline; "all" spans the whole output.
+        if layer.t == "all":
+            t_start, t_end = 0.0, expected_duration
+        else:
+            t_start, t_end = float(layer.t[0]), min(float(layer.t[1]), expected_duration)
+        if image.is_video and t_start >= expected_duration:
+            warnings.append(f"图层 {layer.id}：出现时段起点超出剪后时长，已跳过")
+            continue
+
         geo = apply_overrides(layer, variant)
         box = layer_box(
             geo["anchor"], geo["margin"], geo["width"], W, H, image.width, image.height
@@ -213,8 +234,19 @@ def build_render_command(
         x, y, w, h = box.rounded()
         w, h = max(1, w), max(1, h)
 
+        playback = getattr(layer, "playback", "loop")
+        options: list[str] = []
+        if image.is_video:
+            has_video_layer = True
+            if playback == "loop":
+                # Safe only because the layer chain ends in trim=end (see below);
+                # on its own -stream_loop -1 makes ffmpeg run forever.
+                options += ["-stream_loop", "-1"]
+            if image.decoder:
+                options += ["-c:v", image.decoder]
+
         input_index = len(inputs)
-        inputs.append(image.path)
+        inputs.append([*options, "-i", image.path])
         layer_index += 1
         lbl = f"[l{layer_index}]"
 
@@ -229,12 +261,22 @@ def build_render_command(
         opacity = float(geo["opacity"])
         if opacity < 1:
             steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
+        if image.is_video:
+            # Start the sticker at its own frame 0 when the window opens, instead of
+            # letting it run (and finish) behind the enable= gate.
+            steps.append(
+                "setpts=PTS-STARTPTS"
+                if t_start <= 0
+                else f"setpts=PTS-STARTPTS+{_fmt(t_start)}/TB"
+            )
+            # Bounds the looped input and any sticker longer than the main stream.
+            steps.append(f"trim=end={_fmt(t_end)}")
         chains.append(",".join(steps) + lbl)
 
-        overlay = f"{current}{lbl}overlay={x}:{y}:eof_action=repeat"
+        eof_action = "pass" if (image.is_video and playback == "once") else "repeat"
+        overlay = f"{current}{lbl}overlay={x}:{y}:eof_action={eof_action}"
         if layer.t != "all":
-            a, b = layer.t
-            overlay += f":enable='between(t,{_fmt(a)},{_fmt(b)})'"
+            overlay += f":enable='between(t,{_fmt(t_start)},{_fmt(t_end)})'"
         out = f"[c{layer_index}]"
         chains.append(overlay + out)
         current = out
@@ -245,14 +287,21 @@ def build_render_command(
 
     # ---- argv ---------------------------------------------------------------
     argv: list[str] = [ffmpeg_bin, "-hide_banner", "-y", "-nostats"]
-    for path in inputs:
-        argv += ["-i", path]
+    for group in inputs:
+        argv += group
     argv += ["-filter_complex", filter_complex, "-map", "[vout]"]
+    # An explicit -map disables automatic stream selection, so sticker audio is
+    # never picked up; no extra flag needed to drop it.
     if has_audio:
         argv += ["-map", audio_label if audio_label else "0:a:0"]
     else:
         argv += ["-an"]
     argv += encode_args(getattr(variant, "quality", "standard"))
+    if has_video_layer:
+        # Belt and braces: overlay takes the longest input, so a sticker could
+        # otherwise stretch the output. Only added when a video layer exists, so
+        # still-image renders keep their exact argv.
+        argv += ["-t", _fmt(expected_duration)]
     argv += ["-progress", "pipe:1", output_path]
 
     return RenderPlan(

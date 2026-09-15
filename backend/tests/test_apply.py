@@ -157,3 +157,16 @@ def test_style_only_each_target_matched_once():
     target = [{"id": "t", "type": "text", "text": "同", "anchor": "center"}]
     out = merge_layers_style_only(src, target)
     assert [l["id"] for l in out] == ["t", "y"] and out[0]["style"] == {"color": "#1"}
+
+
+def test_style_only_copies_playback_with_the_asset():
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][0]["playback"] = "once"
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][0]["playback"] == "once"
+
+    # playback belongs to the source sticker, so a source without it clears the target's
+    del src["layers"][0]["playback"]
+    target["layers"][0]["playback"] = "freeze"
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert "playback" not in out["layers"][0]

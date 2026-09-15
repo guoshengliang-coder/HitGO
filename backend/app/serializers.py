@@ -12,6 +12,8 @@ from collections.abc import Iterable
 
 from app.db import iso
 from app.models import (
+    ASSET_READY,
+    ASSET_VIDEO,
     JOB_DONE,
     JOB_FAILED,
     JOB_QUEUED,
@@ -130,13 +132,31 @@ def batch_detail_out(batch: Batch, videos: list[Video], jobs: Iterable[Job]) -> 
 
 
 def asset_out(asset: Asset) -> AssetOut:
+    is_video = asset.kind == ASSET_VIDEO
+    ready = asset.status == ASSET_READY
     return AssetOut(
         id=asset.id,
         type=asset.type,
         name=asset.name,
         url=storage.media_url(storage.asset_path(asset.id, asset.ext)),
+        kind=asset.kind,
+        status=asset.status,
+        error=asset.error,
         width=asset.width,
         height=asset.height,
+        duration=asset.duration if is_video else None,
+        fps=asset.fps if is_video else None,
+        has_alpha=asset.has_alpha if is_video else None,
+        poster_url=(
+            storage.media_url(storage.asset_poster_path(asset.id))
+            if is_video and ready
+            else None
+        ),
+        preview_url=(
+            storage.media_url(storage.asset_preview_path(asset.id, asset.preview_ext))
+            if is_video and ready and asset.preview_ext
+            else None
+        ),
         family=asset.family,
         source=asset.source,
         created_at=iso(asset.created_at) or "",

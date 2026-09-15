@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, type Anchor, type Layer, type StickerLayer, type TextLayer, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextLayer, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
 import { filterAssets, type AssetBucket } from '../../lib/assets';
 import { reanchor } from '../../lib/layout';
@@ -127,6 +127,13 @@ function Num({ value, onChange, step = 0.01, min, max, scale = 100, suffix = '%'
   );
 }
 
+/** 视频贴纸短于显示时段时的行为，与后端 filtergraph 的三种 eof_action 一一对应。 */
+const PLAYBACK_MODES: [Playback, string, string][] = [
+  ['loop', '循环', '素材比时段短时，从头循环播放'],
+  ['freeze', '定格', '播完停在最后一帧'],
+  ['once', '播完消失', '播完后该图层不再出现'],
+];
+
 function LayerProps({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
@@ -194,6 +201,25 @@ function LayerProps({ layer }: { layer: Layer }) {
             </>
           )}
         </div>
+        {layer.type === 'sticker' && isVideoAsset(assets.find((a) => a.id === layer.asset_id)) && (
+          <>
+            <span>播放</span>
+            <div className="inline" role="radiogroup" aria-label="播放">
+              {PLAYBACK_MODES.map(([mode, label, title]) => (
+                <button
+                  key={mode}
+                  role="radio"
+                  aria-checked={(layer.playback ?? 'loop') === mode}
+                  className={`chip ${(layer.playback ?? 'loop') === mode ? 'active' : ''}`}
+                  title={title}
+                  onClick={() => updateLayer(layer.id, { playback: mode })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       {layerOutsideDuration(layer, postDuration) && <div className="error-text">该图层的时段起点已超出剪后时长（{postDuration.toFixed(1)}s），成片里不会出现。</div>}
 
@@ -405,7 +431,10 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     setTab('layers');
   };
   const addSticker = (assetId: string) => {
+    const asset = assets.find((a) => a.id === assetId);
+    if (!isAssetReady(asset)) return; // 还在预处理：加进去也渲染不出来
     const l: StickerLayer = { id: newLayerId(), type: 'sticker', asset_id: assetId, anchor: 'top-left', margin: [0.08, 0.12], width: 0.35, rotate: 0, opacity: 1, t: 'all' };
+    if (isVideoAsset(asset)) l.playback = 'loop';
     addLayer(l);
     setTab('layers');
   };
@@ -480,7 +509,7 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
               ))}
             </div>
           )}
-          <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）。</div>
+          <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）。视频贴纸默认循环播放，可在属性里改。</div>
         </div>
       )}
       <div className="panel-foot">

@@ -52,4 +52,20 @@ sticker sticker_half_off     0xFFC300 360x150 "-50%"         84 black
 sticker sticker_download_now 0x1E6FE8 520x150 "DOWNLOAD NOW" 56 white
 sticker sticker_new          0xFFFFFF 200x120 "NEW"          64 0x1a1d23
 
+# Animated sticker with a real alpha channel (VP9/yuva420p): a pulsing ring on a
+# transparent background. Exercises the video-sticker path end to end.
+if [ ! -f sticker_pulse.webm ]; then
+  # An opaque box overlaid on a transparent canvas. Note drawbox/drawtext are NOT
+  # usable here: they write RGB but leave the alpha channel at 0, so the whole
+  # frame would decode as fully transparent.
+  ffmpeg -nostdin -v error -y \
+    -f lavfi -i "color=c=0x00000000:s=320x320:r=25:d=2,format=rgba" \
+    -f lavfi -i "color=c=0xFFC300:s=140x140:r=25:d=2,format=rgba" \
+    -filter_complex "[0:v][1:v]overlay=x='90+60*sin(2*PI*t)':y=90:format=auto[v]" \
+    -map "[v]" -c:v libvpx-vp9 -pix_fmt yuva420p -auto-alt-ref 0 -b:v 800k sticker_pulse.webm
+  echo "made sticker_pulse.webm"
+else
+  echo "skip sticker_pulse.webm"
+fi
+
 ls -la

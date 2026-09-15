@@ -180,6 +180,31 @@ export interface EditorState {
 
 const saveTimers: Record<string, number> = {};
 let pollTimer: number | null = null;
+let assetPollTimer: number | null = null;
+
+/**
+ * 视频贴纸是异步预处理的：preparing 期间没有尺寸也没有预览代理，画布画不出来。
+ * 轮到 ready / failed 为止，让编辑器里的贴纸自己"长出来"。
+ */
+function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>) => void, get: () => EditorState) {
+  if (assetPollTimer !== null) return;
+  const tick = async () => {
+    assetPollTimer = null;
+    const pending = get().assets.filter((a) => (a.status ?? 'ready') === 'preparing');
+    if (!pending.length) return;
+    const updated = (await Promise.all(pending.map((a) => api.getAsset(a.id).catch(() => null)))).filter(
+      (a): a is Asset => !!a,
+    );
+    if (updated.length) {
+      const byId = new Map(updated.map((a) => [a.id, a]));
+      set((s) => ({ assets: s.assets.map((a) => byId.get(a.id) ?? a) }));
+    }
+    if (get().assets.some((a) => (a.status ?? 'ready') === 'preparing')) {
+      assetPollTimer = window.setTimeout(tick, 2000);
+    }
+  };
+  assetPollTimer = window.setTimeout(tick, 2000);
+}
 
 function ensureHistory(h: Record<string, History>, id: string): History {
   if (!h[id]) h[id] = { past: [], future: [] };
@@ -339,6 +364,7 @@ export const useEditor = create<EditorState>((set, get) => {
         const [stickers, fonts] = await Promise.all([api.listAssets('sticker'), api.listAssets('font')]);
         set({ assets: [...stickers, ...fonts] });
         void ensureFontsLoaded(fonts);
+        pollPreparingAssets(set, get);
       } catch {
         /* ignore */
       }

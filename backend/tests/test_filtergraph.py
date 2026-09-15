@@ -331,3 +331,133 @@ def test_real_ffmpeg_renders(tmp_path):
     )
     subprocess.run(plan.argv, check=True, capture_output=True)
     assert (tmp_path / "out.mp4").stat().st_size > 0
+
+
+# --- video stickers ---------------------------------------------------------------
+
+# 3s sticker; the spec's l_1 window is [0, 6] and the post-trim duration is 20.6s.
+VIDEO_STICKER = ImageSource("/data/assets/a_sticker001.webm", 600, 240, duration=3.0)
+ALPHA_WEBM = ImageSource(
+    "/data/assets/a_sticker001.webm", 600, 240, duration=3.0, decoder="libvpx-vp9", has_alpha=True
+)
+
+
+def video_build(spec_dict=None, source=VIDEO_STICKER, **kw):
+    return build(spec_dict, assets={"a_sticker001": source}, **kw)
+
+
+def test_video_sticker_loops_and_is_time_aligned():
+    plan = video_build()
+    graph, argv = fc(plan), plan.argv
+    i = argv.index(VIDEO_STICKER.path)
+    # -stream_loop belongs to this input, immediately before its -i
+    assert argv[i - 3:i + 1] == ["-stream_loop", "-1", "-i", VIDEO_STICKER.path]
+    # Sticker starts at its own frame 0 when the window opens, and is bounded by it.
+    assert "[1:v]format=rgba,scale=378:151,setpts=PTS-STARTPTS,trim=end=6[l1]" in graph
+    assert "[c0][l1]overlay=86:230:eof_action=repeat:enable='between(t,0,6)'[c1]" in graph
+    # Output duration is pinned to the post-trim length (overlay takes the longest input)
+    assert argv[argv.index("-t") + 1] == "20.6"
+
+
+def test_video_sticker_offset_window_shifts_pts():
+    spec = valid_spec()
+    spec["layers"][0]["t"] = [4, 9]
+    graph = fc(video_build(spec))
+    assert "setpts=PTS-STARTPTS+4/TB,trim=end=9[l1]" in graph
+    assert "enable='between(t,4,9)'" in graph
+
+
+def test_video_sticker_all_window_is_bounded_by_post_trim_duration():
+    spec = valid_spec()
+    spec["layers"][0]["t"] = "all"
+    graph = fc(video_build(spec))
+    # trim keeps a long sticker from stretching the output; no enable for "all"
+    assert "setpts=PTS-STARTPTS,trim=end=20.6[l1]" in graph
+    assert "[c0][l1]overlay=86:230:eof_action=repeat[c1]" in graph
+
+
+def test_video_sticker_playback_modes():
+    spec = valid_spec()
+    spec["layers"][0]["playback"] = "freeze"
+    plan = video_build(spec)
+    assert "-stream_loop" not in plan.argv  # freeze holds the last frame instead
+    assert "eof_action=repeat" in fc(plan)
+
+    spec["layers"][0]["playback"] = "once"
+    plan = video_build(spec)
+    assert "-stream_loop" not in plan.argv
+    assert "[c0][l1]overlay=86:230:eof_action=pass" in fc(plan)
+
+
+def test_alpha_webm_forces_its_decoder():
+    argv = video_build(source=ALPHA_WEBM).argv
+    i = argv.index(ALPHA_WEBM.path)
+    # Without this the VP9 alpha channel is silently dropped (opaque black block).
+    assert argv[i - 5:i + 1] == ["-stream_loop", "-1", "-c:v", "libvpx-vp9", "-i", ALPHA_WEBM.path]
+
+
+def test_video_sticker_starting_past_the_end_is_skipped_with_warning():
+    spec = valid_spec()
+    spec["layers"][0]["t"] = [30, 40]
+    plan = video_build(spec)
+    assert VIDEO_STICKER.path not in plan.argv  # not even added as an input
+    assert any("出现时段起点超出剪后时长" in w for w in plan.warnings)
+
+
+def test_still_image_argv_is_unchanged_by_the_video_support():
+    """Still-image renders must keep their exact command line (no -t, no -stream_loop)."""
+    argv = build().argv
+    assert "-t" not in argv and "-stream_loop" not in argv
+    assert "-c:v" not in argv[: argv.index("-filter_complex")]
+    # the layer chains carry no timing steps (trim/concat still uses setpts, as before)
+    for chain in fc(build()).split(";"):
+        if chain.startswith("[1:v]") or chain.startswith("[2:v]"):
+            assert "setpts" not in chain and "trim=" not in chain
+
+
+def test_video_sticker_rotation_and_opacity_still_apply():
+    spec = valid_spec()
+    spec["layers"][0]["rotate"] = 30
+    spec["layers"][0]["opacity"] = 0.5
+    graph = fc(video_build(spec))
+    chain = next(c for c in graph.split(";") if c.startswith("[1:v]"))
+    # rotate/opacity come before the timing steps, exactly as for still images
+    assert chain.index("rotate=") < chain.index("colorchannelmixer") < chain.index("setpts")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_video_sticker_does_not_stretch_the_output(tmp_path):
+    """A sticker longer than the clip must not extend it (overlay takes the longest input)."""
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=30:duration=3",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    sticker = tmp_path / "sticker.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=30:duration=8",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(sticker)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+    out = tmp_path / "out.mp4"
+    spec = EditSpec.model_validate(
+        valid_spec(trim={"remove": []}, layers=[dict(valid_spec()["layers"][0], t="all")])
+    )
+    plan = build_render_command(
+        spec,
+        {"duration": 3.0, "has_audio": False},
+        {"a_sticker001": ImageSource(str(sticker), 160, 120, duration=8.0)},
+        spec.outputs[0],
+        source_path=str(src),
+        output_path=str(out),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", str(out)],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    assert abs(float(probe.stdout.strip()) - plan.expected_duration) < 0.15

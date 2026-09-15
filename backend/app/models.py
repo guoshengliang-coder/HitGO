@@ -30,6 +30,14 @@ ASSET_SOURCE_BUILTIN = "builtin"
 ASSET_SOURCE_LIBRARY = "library"
 ASSET_SOURCES = (ASSET_SOURCE_UPLOAD, ASSET_SOURCE_BUILTIN, ASSET_SOURCE_LIBRARY)
 
+# Asset.kind / status (contract §1). Video stickers are probed asynchronously.
+ASSET_IMAGE = "image"
+ASSET_VIDEO = "video"
+
+ASSET_PREPARING = "preparing"
+ASSET_READY = "ready"
+ASSET_FAILED = "failed"
+
 
 class Batch(Base):
     __tablename__ = "batches"
@@ -87,6 +95,15 @@ class Asset(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     family: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(String(16), default=ASSET_SOURCE_UPLOAD, nullable=False)
+    # Video stickers (contract §1). Images stay kind=image / status=ready.
+    kind: Mapped[str] = mapped_column(String(16), default=ASSET_IMAGE, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default=ASSET_READY, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    has_alpha: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    decoder: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    preview_ext: Mapped[str | None] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

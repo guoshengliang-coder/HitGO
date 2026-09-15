@@ -2,7 +2,7 @@
 
     {DATA_DIR}/hitgo.db
     {DATA_DIR}/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg
-    {DATA_DIR}/assets/{asset_id}.{ext}
+    {DATA_DIR}/assets/{asset_id}.{ext} | {asset_id}.poster.jpg | {asset_id}.preview.{webm|mp4}
     {DATA_DIR}/uploads/{upload_id}.png
     {DATA_DIR}/outputs/{job_id}.mp4
     {DATA_DIR}/tmp/
@@ -65,6 +65,16 @@ def sprite_path(batch_id: str, video_id: str) -> Path:
 
 def asset_path(asset_id: str, ext: str) -> Path:
     return data_dir() / "assets" / f"{asset_id}.{ext}"
+
+
+def asset_poster_path(asset_id: str) -> Path:
+    """Video sticker: first frame, shown in the asset grid and as a canvas fallback."""
+    return data_dir() / "assets" / f"{asset_id}.poster.jpg"
+
+
+def asset_preview_path(asset_id: str, ext: str) -> Path:
+    """Video sticker: browser-playable proxy (rendering always uses the original)."""
+    return data_dir() / "assets" / f"{asset_id}.preview.{ext}"
 
 
 def upload_path(upload_id: str) -> Path:

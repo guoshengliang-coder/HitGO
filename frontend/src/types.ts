@@ -55,6 +55,10 @@ export interface Video {
 export type BatchDetail = Batch & { videos: Video[] };
 
 export type AssetType = 'sticker' | 'font';
+/** 贴纸素材是静态图还是一段视频（多帧 gif / webp 也算 video）。 */
+export type AssetKind = 'image' | 'video';
+/** 视频贴纸要异步探测 + 生成预览代理，期间是 preparing。 */
+export type AssetStatus = 'preparing' | 'ready' | 'failed';
 
 /** 素材来源（契约 §1）。`library` 预留给正式物料库，原型阶段不会出现，见 docs/ASSETS.md。 */
 export type AssetSource = 'upload' | 'builtin' | 'library';
@@ -64,11 +68,31 @@ export interface Asset {
   type: AssetType;
   name: string;
   url: string;
+  /** 缺省 'image'；旧后端不返回时按静态图处理。 */
+  kind?: AssetKind;
+  /** 缺省 'ready'。 */
+  status?: AssetStatus;
+  error?: string | null;
   width?: number;
   height?: number;
+  /** 以下四个只有 kind='video' 且 status='ready' 时有值。 */
+  duration?: number | null;
+  fps?: number | null;
+  has_alpha?: boolean | null;
+  poster_url?: string | null;
+  preview_url?: string | null;
   family?: string;
   source: AssetSource;
   created_at: string;
+}
+
+/** 素材是不是视频贴纸（旧后端没有 kind 字段时按静态图）。 */
+export function isVideoAsset(asset: Asset | undefined): boolean {
+  return asset?.kind === 'video';
+}
+
+export function isAssetReady(asset: Asset | undefined): boolean {
+  return !asset || (asset.status ?? 'ready') === 'ready';
 }
 
 export interface JobOutput {
@@ -159,9 +183,14 @@ export interface LayerBase {
   locked?: boolean;
 }
 
+/** 视频贴纸短于显示时段时的行为；静态图忽略。 */
+export type Playback = 'loop' | 'freeze' | 'once';
+
 export interface StickerLayer extends LayerBase {
   type: 'sticker';
   asset_id: string;
+  /** 可选，缺省 'loop'。 */
+  playback?: Playback;
 }
 
 export type TextAlign = 'left' | 'center' | 'right';
