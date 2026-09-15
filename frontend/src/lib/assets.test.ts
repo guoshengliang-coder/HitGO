@@ -94,3 +94,22 @@ describe('上传大小校验', () => {
     expect(oversizedUpload('sticker', [{ name: 'big.png', size: 11 * MiB }])).toBe('big.png：文件超过 10 MiB 上限');
   });
 });
+
+describe('filterAssets · kind', () => {
+  const mixed: Asset[] = [
+    asset('img', { name: '箭头.png' }),
+    asset('legacy', { name: '旧素材.png', kind: undefined }),
+    asset('vid', { name: '点赞动画.webm', kind: 'video' }),
+  ];
+  it('image 只留静态图（旧后端没有 kind 的按静态图）', () => {
+    expect(filterAssets(mixed, { type: 'sticker', kind: 'image' }).map((a) => a.id)).toEqual(['img', 'legacy']);
+  });
+  it('video 只留视频贴纸', () => {
+    expect(filterAssets(mixed, { type: 'sticker', kind: 'video' }).map((a) => a.id)).toEqual(['vid']);
+  });
+  it('all 或不传时不按形态过滤，并与来源 / 搜索叠加', () => {
+    expect(filterAssets(mixed, { kind: 'all' })).toHaveLength(3);
+    expect(filterAssets(mixed, { kind: 'video', bucket: 'library' })).toHaveLength(0);
+    expect(filterAssets(mixed, { kind: 'image', q: '箭头' }).map((a) => a.id)).toEqual(['img']);
+  });
+});

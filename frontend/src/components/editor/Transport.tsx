@@ -27,7 +27,7 @@ export function Transport() {
       <span className="time">
         {formatTimecode(postTime, fps)} / {formatTimecode(postDuration, fps)}
       </span>
-      <span className="hint">{step === 1 ? 'I / O 设入出点 · Q / W 删左右' : step === 2 ? '拖动移动 · 角点缩放 · 方向键微移' : '点击变体预览选择变体'} · 按 ? 查看全部快捷键</span>
+      <span className="hint">{step === 'trim' ? 'I / O 设入出点 · Q / W 删左右' : step === 'text' ? '双击画布上的文字直接编辑 · 方向键微移' : '拖动移动 · 角点缩放 · 方向键微移'} · 按 ? 查看全部快捷键</span>
       <span className="spacer" />
       <span className="hint mono">源 {formatTimecode(time, fps)}</span>
     </div>

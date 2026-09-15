@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useParams } from 'react-router-dom';
 import { useEditor } from '../store/editor';
 import { player } from '../lib/player';
+import { layerTypeForStep } from '../lib/steps';
 import { frameDuration } from '../lib/time';
 import { TopBar } from '../components/editor/TopBar';
 import { ApplyDialog, VideoList } from '../components/editor/VideoList';
@@ -10,10 +11,10 @@ import { QuickBar } from '../components/editor/QuickBar';
 import { Transport } from '../components/editor/Transport';
 import { Timeline } from '../components/editor/Timeline';
 import { TrimPanel } from '../components/editor/TrimPanel';
-import { LayersPanel } from '../components/editor/LayersPanel';
-import { OutputsPanel } from '../components/editor/OutputsPanel';
-import { VariantPreviews } from '../components/editor/VariantPreviews';
+import { TextPanel } from '../components/editor/TextPanel';
+import { StickerPanel } from '../components/editor/StickerPanel';
 import { CropEditor } from '../components/editor/CropEditor';
+import { ExportDialog } from '../components/editor/ExportDialog';
 import { ProgressModal } from '../components/editor/ProgressModal';
 import { ShortcutsModal } from '../components/editor/ShortcutsModal';
 import { Splitter } from '../components/ui/Splitter';
@@ -60,7 +61,7 @@ function handleKey(e: KeyboardEvent) {
         return;
       case 'KeyC':
       case 'KeyV': {
-        if (s.step !== 2) return;
+        if (!layerTypeForStep(s.step)) return;
         // 页面上有选中文字时交给浏览器
         if (e.code === 'KeyC' && (window.getSelection()?.toString() ?? '') !== '') return;
         e.preventDefault();
@@ -72,7 +73,7 @@ function handleKey(e: KeyboardEvent) {
         return;
       }
       case 'KeyD':
-        if (s.step === 2 && s.selectedLayerId) {
+        if (layerTypeForStep(s.step) && s.selectedLayerId) {
           e.preventDefault();
           s.duplicateLayer(s.selectedLayerId);
         }
@@ -83,7 +84,7 @@ function handleKey(e: KeyboardEvent) {
   }
 
   if (e.altKey) {
-    // ⌥ + 方向键：强制逐帧（图层步骤下方向键默认是微移）
+    // ⌥ + 方向键：强制逐帧（文本 / 贴纸模块下方向键默认是微移）
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
       e.preventDefault();
       player.seek(s.time + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : frame));
@@ -92,7 +93,7 @@ function handleKey(e: KeyboardEvent) {
   }
 
   // ---- 当前步骤的单键 ----
-  if (s.step === 1) {
+  if (s.step === 'trim') {
     switch (e.code) {
       case 'KeyI':
         s.setInPoint(s.time);
@@ -118,7 +119,7 @@ function handleKey(e: KeyboardEvent) {
         s.setSelectedRange(null);
         return;
     }
-  } else if (s.step === 2) {
+  } else if (layerTypeForStep(s.step)) {
     const layer = s.selectedLayerId ? s.currentSpec()?.layers.find((l) => l.id === s.selectedLayerId) ?? null : null;
     switch (e.code) {
       case 'Delete':
@@ -193,19 +194,16 @@ export function EditorPage() {
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
   const cropEditing = useEditor((s) => s.cropEditing);
-  const videos = useEditor((s) => s.videos);
-  const specs = useEditor((s) => s.specs);
   const currentVideoId = useEditor((s) => s.currentVideoId);
   const selectedIds = useEditor((s) => s.selectedIds);
-  const saveScope = useEditor((s) => s.saveScope);
   const progressOpen = useEditor((s) => s.progressOpen);
   const shortcutsOpen = useEditor((s) => s.shortcutsOpen);
   const toast = useEditor((s) => s.toast);
   const toastAction = useEditor((s) => s.toastAction);
   const setToast = useEditor((s) => s.setToast);
-  const saveAndRender = useEditor((s) => s.saveAndRender);
   const flushSave = useEditor((s) => s.flushSave);
   const [applyOpen, setApplyOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
 
   // 面板尺寸：右栏宽 / 时间线高，拖动分隔条调整，存本机
   const [layout, setLayout] = useState<LayoutPrefs>(() => loadLayoutPrefs());
@@ -242,15 +240,6 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
-  const targetIds = useMemo(() => {
-    if (saveScope === 'all') return videos.map((v) => v.id);
-    if (saveScope === 'selected') return selectedIds.filter((x) => videos.some((v) => v.id === x));
-    return currentVideoId ? [currentVideoId] : [];
-  }, [saveScope, videos, selectedIds, currentVideoId]);
-  const fileCount = useMemo(
-    () => targetIds.reduce((n, vid) => n + (specs[vid]?.outputs.length ?? videos.find((v) => v.id === vid)?.edit_spec?.outputs.length ?? 1), 0),
-    [targetIds, specs, videos],
-  );
   const applyTargets = selectedIds.filter((x) => x !== currentVideoId);
 
   if (error) {
@@ -264,29 +253,27 @@ export function EditorPage() {
 
   return (
     <div className="editor" style={layoutStyle}>
-      <TopBar onSaveAndRender={() => void saveAndRender(targetIds)} targetCount={targetIds.length} fileCount={fileCount} />
+      <TopBar onExport={() => setExportOpen(true)} />
       <div className="editor-body">
         <VideoList />
         <div className="col-center">
-          {step === 3 && (cropEditing ? <CropEditor /> : <VariantPreviews />)}
-          <Stage hidden={step === 3} />
+          {/* 裁切编辑时 Stage 只隐藏不卸载：<video> 和 player 挂在 Stage 上，CropEditor 从它抓帧（HIG-5） */}
+          {step === 'trim' && cropEditing && <CropEditor />}
+          <Stage hidden={step === 'trim' && cropEditing} />
           <QuickBar />
           <Transport />
-          {step !== 3 && (
-            <>
-              <Splitter axis="y" label="调整时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
-              <Timeline />
-            </>
-          )}
+          <Splitter axis="y" label="调整时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
+          <Timeline />
         </div>
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
-          {step === 1 && <TrimPanel />}
-          {step === 2 && <LayersPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
-          {step === 3 && <OutputsPanel onSaveAndRender={() => void saveAndRender(targetIds)} targetCount={targetIds.length} fileCount={fileCount} />}
+          {step === 'trim' && <TrimPanel />}
+          {step === 'text' && <TextPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
+          {step === 'sticker' && <StickerPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
         </div>
       </div>
       {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={['layers']} onClose={() => setApplyOpen(false)} />}
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
       {progressOpen && <ProgressModal />}
       {shortcutsOpen && <ShortcutsModal />}
       {toast && (

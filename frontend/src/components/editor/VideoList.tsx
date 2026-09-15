@@ -8,8 +8,8 @@ import { isDefaultAudio } from '../../lib/audioTracks';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
-  { key: 'layers', label: '图层', desc: '贴纸 / 文字图层及其时段' },
-  { key: 'outputs', label: '输出', desc: '画幅变体、填充方式与质量' },
+  { key: 'layers', label: '图层', desc: '文字与贴纸图层及其时段（两类一起套用）' },
+  { key: 'outputs', label: '画面', desc: '填充方式、裁切范围与清晰度' },
   { key: 'audio', label: '音频', desc: '源音轨音量与 BGM / 口播音轨（源没设置时清掉目标的）' },
 ];
 
@@ -19,10 +19,7 @@ export function moduleConfigured(spec: EditSpec | undefined, module: ApplyModule
   if (module === 'trim') return spec.trim.remove.length > 0;
   if (module === 'layers') return spec.layers.length > 0;
   if (module === 'audio') return !isDefaultAudio(spec.audio);
-  return (
-    spec.outputs.length > 1 ||
-    spec.outputs.some((o) => (o.layer_overrides && Object.keys(o.layer_overrides).length > 0) || o.fill !== 'blur' || o.quality === 'high')
-  );
+  return spec.outputs.some((o) => o.fill !== 'blur' || o.quality === 'high');
 }
 
 export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds: string[]; onClose: () => void; defaultModules?: ApplyModule[] }) {

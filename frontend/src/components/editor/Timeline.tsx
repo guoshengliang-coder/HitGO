@@ -1,4 +1,4 @@
-// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（步骤 1 可拖边）/ 图层行（步骤 2 可拖动、拉伸，轨道头可锁定 / 隐藏）。
+// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间与音轨（剪辑模块，区间可拖边）/ 图层行（文本、贴纸模块各自只显示本类图层，可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层 t 基于剪后时间，显示时用 postToSource 映射。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
@@ -8,6 +8,7 @@ import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
+import { layerTypeForStep } from '../../lib/steps';
 import { resolveTrack, sourceVolume } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { snapValue } from '../../lib/snap';
@@ -21,7 +22,7 @@ const MIN_PPS = 20;
 const MAX_PPS = 400;
 const SNAP_PX = 6;
 
-/** 步骤 1 的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
+/** 剪辑模块的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
 function SourceAudioRow({ hasAudio, volume, width, scrub }: { hasAudio: boolean; volume: number; width: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
   const muted = !hasAudio || volume === 0;
   const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
@@ -130,6 +131,10 @@ export function Timeline() {
   const trackW = duration * pps;
   const remove = spec?.trim.remove ?? [];
   const postDuration = postTrimDuration(duration, remove);
+  const trimStep = step === 'trim';
+  const layerType = layerTypeForStep(step);
+  // 本模块管理的图层行；保留在 spec.layers 里的下标，拖动时按它写回
+  const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => r.l.type === layerType) : [];
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
 
@@ -329,7 +334,7 @@ export function Timeline() {
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''}`} ref={scrollRef}>
         <div className="tl-inner" style={{ width: trackW + LABEL_W }}>
           <div className="tl-row" style={{ height: 20 }}>
-            <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{step === 2 ? '剪后' : '秒'}</div>
+            <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
               {ticks.map((k) => (
                 <div key={k.t} className={`tick ${k.minor ? 'minor' : ''}`} style={{ left: k.t * pps }}>
@@ -362,14 +367,14 @@ export function Timeline() {
                   <div
                     key={i}
                     className={`tl-cut ${selectedRange === i ? 'selected' : ''}`}
-                    style={{ left: a * pps, width: Math.max(2, (b - a) * pps), opacity: step === 1 ? 1 : 0.5, pointerEvents: step === 1 ? 'auto' : 'none' }}
+                    style={{ left: a * pps, width: Math.max(2, (b - a) * pps), opacity: trimStep ? 1 : 0.5, pointerEvents: trimStep ? 'auto' : 'none' }}
                     onPointerDown={(e) => {
                       setSelectedRange(i);
                       startDrag(e, { kind: 'cut-move', index: i, startX: e.clientX, orig: r });
                     }}
                     title={`删除 ${a.toFixed(2)}s – ${b.toFixed(2)}s`}
                   >
-                    {step === 1 && (
+                    {trimStep && (
                       <>
                         <div className="edge l" onPointerDown={(e) => { setSelectedRange(i); startDrag(e, { kind: 'cut-l', index: i, startX: e.clientX, orig: r }); }} />
                         <div className="edge r" onPointerDown={(e) => { setSelectedRange(i); startDrag(e, { kind: 'cut-r', index: i, startX: e.clientX, orig: r }); }} />
@@ -378,14 +383,14 @@ export function Timeline() {
                   </div>
                 );
               })}
-              {inPoint !== null && step === 1 && <div className="tl-inpoint" style={{ left: inPoint * pps }} title="入点" />}
+              {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: inPoint * pps }} title="入点" />}
             </div>
           </div>
 
-          {step === 1 && (
+          {trimStep && (
             <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} scrub={scrub.handlers} />
           )}
-          {step === 1 &&
+          {trimStep &&
             (spec?.audio?.tracks ?? []).map((t) => {
               const r = resolveTrack(t);
               const all = r.t === 'all';
@@ -412,71 +417,70 @@ export function Timeline() {
               );
             })}
 
-          {step === 2 &&
-            (spec?.layers ?? []).map((l, i) => {
-              const v = barVal(i, l);
-              const all = v === 'all';
-              const [pa, pb] = all ? [0, postDuration] : v;
-              const left = postToSource(pa, remove) * pps;
-              const right = postToSource(pb, remove) * pps;
-              const sel = selectedLayerId === l.id;
-              const hidden = l.visible === false;
-              const locked = !!l.locked;
-              return (
-                <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
-                  <div className="lbl" title={layerName(l, assets)}>
-                    <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
-                      <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: hidden }, false)}>
-                        <IconEye off={hidden} />
-                      </button>
-                      <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !locked }, false)}>
-                        <IconLock open={!locked} />
-                      </button>
-                    </span>
-                    <button
-                      className={`chip ${all ? 'active' : ''}`}
-                      style={{ height: 18, padding: '0 6px', fontSize: 10 }}
-                      title="全程 / 区间"
-                      onClick={() => {
-                        if (all) {
-                          const cur = sourceToPost(time, remove);
-                          updateLayer(l.id, { t: [Math.round(cur * 100) / 100, Math.round(Math.min(postDuration, cur + 3) * 100) / 100] });
-                        } else updateLayer(l.id, { t: 'all' });
-                      }}
-                    >
-                      {all ? '全程' : '区间'}
+          {layerRows.map(({ l, i }) => {
+            const v = barVal(i, l);
+            const all = v === 'all';
+            const [pa, pb] = all ? [0, postDuration] : v;
+            const left = postToSource(pa, remove) * pps;
+            const right = postToSource(pb, remove) * pps;
+            const sel = selectedLayerId === l.id;
+            const hidden = l.visible === false;
+            const locked = !!l.locked;
+            return (
+              <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
+                <div className="lbl" title={layerName(l, assets)}>
+                  <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                    <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: hidden }, false)}>
+                      <IconEye off={hidden} />
                     </button>
-                    <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
-                  </div>
-                  <div className="body" {...scrub.handlers}>
-                    <div
-                      className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
-                      style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
-                      onPointerDown={(e) => {
-                        setSelectedLayer(l.id);
-                        if (all || locked) {
-                          e.stopPropagation();
-                          return;
-                        }
-                        startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
-                      }}
-                    >
-                      {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
-                      {!all && !locked && (
-                        <>
-                          <div className="edge l" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
-                          <div className="edge r" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
-                        </>
-                      )}
-                    </div>
+                    <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !locked }, false)}>
+                      <IconLock open={!locked} />
+                    </button>
+                  </span>
+                  <button
+                    className={`chip ${all ? 'active' : ''}`}
+                    style={{ height: 18, padding: '0 6px', fontSize: 10 }}
+                    title="全程 / 区间"
+                    onClick={() => {
+                      if (all) {
+                        const cur = sourceToPost(time, remove);
+                        updateLayer(l.id, { t: [Math.round(cur * 100) / 100, Math.round(Math.min(postDuration, cur + 3) * 100) / 100] });
+                      } else updateLayer(l.id, { t: 'all' });
+                    }}
+                  >
+                    {all ? '全程' : '区间'}
+                  </button>
+                  <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
+                </div>
+                <div className="body" {...scrub.handlers}>
+                  <div
+                    className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
+                    style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
+                    onPointerDown={(e) => {
+                      setSelectedLayer(l.id);
+                      if (all || locked) {
+                        e.stopPropagation();
+                        return;
+                      }
+                      startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
+                    }}
+                  >
+                    {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
+                    {!all && !locked && (
+                      <>
+                        <div className="edge l" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
+                        <div className="edge r" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
+                      </>
+                    )}
                   </div>
                 </div>
-              );
-            })}
-          {step === 2 && (spec?.layers.length ?? 0) === 0 && (
+              </div>
+            );
+          })}
+          {layerType && layerRows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
-              <div className="lbl">图层</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>还没有图层，在右侧添加贴纸或文字。</div>
+              <div className="lbl">{layerType === 'text' ? '文字' : '贴纸'}</div>
+              <div className="body hint" style={{ padding: '6px 8px' }}>{layerType === 'text' ? '还没有文字图层，在右侧添加文字、标题模板或导入字幕。' : '还没有贴纸，在右侧素材里点选添加。'}</div>
             </div>
           )}
 

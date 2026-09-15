@@ -58,7 +58,7 @@ function TrackAudio({ track }: { track: AudioTrack }) {
   return null;
 }
 
-/** 挂在舞台里；步骤 3 舞台只是隐藏、仍然挂着，所以输出步骤预览也照常出声。 */
+/** 挂在舞台里；裁切编辑时舞台只是隐藏、仍然挂着，所以播放照常出声。 */
 export function AudioTracks() {
   const tracks = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio?.tracks : undefined)) ?? [];
   return (

@@ -1,8 +1,8 @@
 // 预览舞台：<video>（proxy）在下，react-konva Stage 同尺寸叠在上面，绘制安全区与图层。
 // 图层位置全部由 lib/layout.ts 的契约公式计算；拖动 / 缩放 / 旋转后反算回 margin / width / rotate。
 // 拖动时吸附到画布边 / 中线 / 安全区边（lib/snap.canvasGuides），按住 ⌘/Ctrl 关闭；命中的参考线画在最上层。
-// 画布比例跟随 selectedVariantKey：9:16 是基准，编辑写回图层本身；其他比例按该变体的填充模式绘制，
-// 图层按 effectivePlacement（含 layer_overrides）摆放，拖动 / 缩放 / 旋转写入该变体的 layer_overrides。
+// 画布固定 9:16（编辑器只产出这一个输出，HIG-8）；源画面比例不同时按输出的填充方式（模糊 / 纯色 / 裁切）画底。
+// 只有当前模块管理的那一类图层（文本 / 贴纸）能选中、拖动；另一类照常显示。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -11,7 +11,8 @@ import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect,
 import { useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4 } from '../../lib/layout';
-import { effectivePlacement, layerAspect } from '../../lib/spec';
+import { layerAspect } from '../../lib/spec';
+import { layerTypeForStep } from '../../lib/steps';
 import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
@@ -22,7 +23,7 @@ import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/sti
 import { InlineTextEditor } from './InlineTextEditor';
 import { sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
-import { isVideoAsset, variantDef, type CropRect, type Layer, type LayerOverride, type Rect as ZRect, type SafeZone, type TextLayer, type VariantKey } from '../../types';
+import { isVideoAsset, variantDef, type CropRect, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
 const SNAP_PX = 6;
 const GUIDE_COLOR = '#d9481f';
@@ -89,9 +90,9 @@ function SafeZoneOverlay({ url, W, H }: { url: string; W: number; H: number }) {
 }
 
 /**
- * 非 9:16 画布的源画面：模糊 = 当前帧放大模糊做底 + contain 前景由 <video> 画；
+ * 源画面不是 9:16 时的底：模糊 = 当前帧放大模糊做底 + contain 前景由 <video> 画；
  * 纯色 = 变体颜色做底；裁切 = 按 outputs[].crop 从当前帧取窗口再 cover（与 worker 顺序一致，
- * <video> 隐藏）。几何全部走 lib/videoBox，与输出步骤预览同一份说法。每帧重绘（跟随 postTime）。
+ * <video> 隐藏）。几何全部走 lib/videoBox，与 worker 同一份说法。每帧重绘（跟随 postTime）。
  */
 function FillBackdrop({ fill, color, crop, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; posterUrl?: string; W: number; H: number; postTime: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -144,9 +145,6 @@ function LayerNode({
   onEdit,
   onGuides,
   registerNode,
-  variantKey,
-  variantEnabled,
-  override,
 }: {
   layer: Layer;
   W: number;
@@ -160,18 +158,9 @@ function LayerNode({
   onEdit: () => void;
   onGuides: (g: Guides) => void;
   registerNode: (node: Konva.Image | null) => void;
-  /** 当前画布对应的输出变体；'9x16' 为基准（编辑写回图层），其他写入该变体的 layer_overrides。 */
-  variantKey: VariantKey;
-  variantEnabled: boolean;
-  override?: LayerOverride;
 }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
-  const setOverride = useEditor((s) => s.setOverride);
-  const isBase = variantKey === '9x16';
-  // 非基准画布且该变体未启用输出时，layer_overrides 无处可写：只看不改
-  const editable = selectable && (isBase || variantEnabled);
-  const eff = effectivePlacement(layer, isBase ? undefined : override);
   const postDuration = usePostDuration();
   const sticker = layer.type === 'sticker' ? assets.find((a) => a.id === layer.asset_id) : undefined;
   const stickerIsVideo = isVideoAsset(sticker);
@@ -248,11 +237,11 @@ function LayerNode({
   if (!image) return null;
 
   const aspect = layerAspect(layer, assets);
-  const box = placeLayer(eff, aspect, { W, H });
-  const draggable = editable && !layer.locked;
+  const box = placeLayer(layer, aspect, { W, H });
+  const draggable = selectable && !layer.locked;
   const onDblClick = () => {
     onSelect();
-    if (layer.type === 'text' && editable && !layer.locked) onEdit();
+    if (layer.type === 'text' && selectable && !layer.locked) onEdit();
   };
 
   const commitBox = (node: Konva.Image, newW: number, rotate?: number) => {
@@ -260,14 +249,10 @@ function LayerNode({
     const cx = node.x();
     const cy = node.y();
     const nb = { x: cx - newW / 2, y: cy - h / 2, w: newW, h };
-    const margin = marginFromBox(nb, eff.anchor, { W, H });
+    const margin = marginFromBox(nb, layer.anchor, { W, H });
     const m: [number, number] = [round4(margin[0]), round4(margin[1])];
     const w = round4(newW / W);
     const r = rotate !== undefined ? Math.round(rotate * 10) / 10 : undefined;
-    if (!isBase) {
-      setOverride(variantKey, layer.id, { anchor: eff.anchor, margin: m, width: w, ...(r !== undefined ? { rotate: r } : {}) });
-      return;
-    }
     updateLayer(layer.id, (l) => {
       l.margin = m;
       l.width = w;
@@ -311,8 +296,8 @@ function LayerNode({
       height={box.h}
       offsetX={box.w / 2}
       offsetY={box.h / 2}
-      rotation={eff.rotate}
-      opacity={eff.opacity}
+      rotation={layer.rotate}
+      opacity={layer.opacity}
       visible={!hidden}
       draggable={draggable}
       listening={selectable}
@@ -346,18 +331,17 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const nodes = useRef<Record<string, Konva.Image | null>>({});
-  const variantKey = useEditor((s) => s.selectedVariantKey);
-  const def = variantDef(variantKey);
-  const isBase = variantKey === '9x16';
+  const def = variantDef('9x16');
   const { W, H } = useFitSize(wrapRef, def.width / def.height);
 
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
-  const variant = spec?.outputs.find((o) => o.variant_key === variantKey);
+  const variant = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
   const fill = variant?.fill ?? 'blur';
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
   const needsFill = !!video && Math.abs(video.width / video.height - def.width / def.height) > 0.01;
   const step = useEditor((s) => s.step);
+  const layerType = layerTypeForStep(step);
   const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
@@ -376,8 +360,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     setEditingLayerId(null);
   }, [video?.id, step]);
 
-  // 安全区是按 9:16 平台 UI 定义的，其他比例只吸附画布边 / 中线
-  const guides = canvasGuides(isBase ? zone : undefined, W, H);
+  const guides = canvasGuides(zone, W, H);
   const guidesRef = useRef(guides);
   guidesRef.current = guides;
 
@@ -412,10 +395,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   useEffect(() => {
     const tr = trRef.current;
     if (!tr) return;
-    const node = selectedLayerId && step === 2 && (isBase || !!variant) && editingLayerId !== selectedLayerId ? nodes.current[selectedLayerId] : null;
+    const selected = selectedLayerId ? spec?.layers.find((l) => l.id === selectedLayerId) : undefined;
+    const node = selected && selected.type === layerType && editingLayerId !== selectedLayerId ? nodes.current[selected.id] : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedLayerId, editingLayerId, step, spec, W, H, isBase, variant]);
+  }, [selectedLayerId, editingLayerId, layerType, spec, W, H]);
 
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
@@ -441,10 +425,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, []);
 
   const layers = spec?.layers ?? [];
-  const editingLayer = step === 2 && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
+  const editingLayer = layerType === 'text' && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
   const hasSrc = !!video?.proxy_url;
-  const overlayUrl = isBase && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
-  const showFrames = isBase && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
+  const overlayUrl = safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
+  const showFrames = safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl);
 
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined}>
@@ -476,8 +460,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     layer={l}
                     W={W}
                     H={H}
-                    selectable={step === 2}
-                    selected={selectedLayerId === l.id && step === 2}
+                    selectable={l.type === layerType}
+                    selected={selectedLayerId === l.id && l.type === layerType}
                     hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
                     onSelect={() => setSelectedLayer(l.id)}
@@ -486,13 +470,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     registerNode={(n) => {
                       nodes.current[l.id] = n;
                     }}
-                    variantKey={variantKey}
-                    variantEnabled={!!variant}
-                    override={variant?.layer_overrides?.[l.id]}
                   />
                 );
               })}
-              {step === 2 && (
+              {layerType && (
                 <Transformer
                   ref={trRef}
                   keepRatio
@@ -521,11 +502,6 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         </div>
         {editingLayer && <InlineTextEditor key={editingLayer.id} layer={editingLayer} W={W} H={H} onClose={() => setEditingLayerId(null)} />}
         {!hasSrc && <div className="stage-hint">无代理视频（mock 示例）· 使用合成时钟播放</div>}
-        {!isBase && (
-          <div className="stage-hint stage-hint-top">
-            {variant ? `${def.label} 画布 · 拖动 / 缩放 / 旋转只影响此变体（layer_overrides）` : `${def.label} 未启用输出 · 仅预览；在「输出」步骤勾选后可在此微调`}
-          </div>
-        )}
         {video?.status === 'preparing' && <div className="stage-hint">预处理中…</div>}
       </div>
     </div>

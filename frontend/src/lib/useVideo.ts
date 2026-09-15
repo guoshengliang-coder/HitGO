@@ -60,13 +60,3 @@ export function useVideo(url: string | undefined | null): { video?: HTMLVideoEle
 
   return { video, ready: !!video && video.readyState >= 2 };
 }
-
-/** 命令式取用（输出步骤的缩略预览按帧抓图时用）。 */
-export function getVideo(url: string): HTMLVideoElement {
-  let el = cache.get(url);
-  if (!el) {
-    el = createVideo(url);
-    cache.set(url, el);
-  }
-  return el;
-}

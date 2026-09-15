@@ -1,22 +1,19 @@
-// 第二步右侧面板：图层列表 + 属性检查器 + 贴纸素材。
-// 属性检查器参考剪映的组织方式：文字内容在最上、样式预设分「花字 / 气泡」两组、
-// 位置区带六向对齐、描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
+// 文本 / 贴纸两个模块右侧面板共用的部件（HIG-8 从原「图层」面板拆出）：
+// 同类图层列表、属性检查器、花字 / 气泡预设、批量应用底栏。
+// 属性检查器参考剪映的组织方式：文字内容在最上、位置区带六向对齐、
+// 描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type EditSpec, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, isVideoAsset, type Anchor, type EditSpec, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { cloneSpec, layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
-import { filterAssets, type AssetBucket } from '../../lib/assets';
+import { layersOfType, type LayerType } from '../../lib/layerKind';
 import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
-import { TITLE_TEMPLATES, templateToLayers, type TitleTemplate } from '../../lib/titleTemplates';
-import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
-import { cuesToTextLayers, parseSrt } from '../../lib/srt';
-import { AssetCard } from '../../pages/AssetsPage';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconChevron, IconCopy, IconDown, IconEye, IconLock, IconReset, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
@@ -46,7 +43,7 @@ function presetThumb(preset: TextStylePreset): string {
 const hex6 = (c: string) => (c && /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : '#000000');
 
 /** 预设分组：带背景的算「气泡」，其余算「花字」。 */
-type PresetGroup = 'text' | 'bubble';
+export type PresetGroup = 'text' | 'bubble';
 const presetGroup = (p: TextStylePreset): PresetGroup => (p.style.background ? 'bubble' : 'text');
 
 const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.002, 0.004] };
@@ -94,23 +91,49 @@ function Section({ title, enabled, onToggle, onReset, defaultOpen = true, childr
 
 // ---------------------------------------------------------------- 预设
 
-function PresetTabs({ layer }: { layer: TextLayer }) {
+/** 新建一个居中、全程显示的文字图层（可带初始样式）。 */
+export function newTextLayer(style?: Partial<TextStyle>, text = '双击编辑文字'): TextLayer {
+  return {
+    id: newLayerId(),
+    type: 'text',
+    text,
+    style: { ...defaultTextStyle(), ...(style ?? {}) },
+    anchor: 'center',
+    margin: [0, 0],
+    width: 0.5,
+    rotate: 0,
+    opacity: 1,
+    t: 'all',
+  };
+}
+
+/**
+ * 花字 / 气泡预设墙。有选中的文字图层时点击套用到它；没有时新建一条带该样式的文字（onCreated 回调里切回列表）。
+ * 「存为预设」需要一个选中的文字图层做样式来源。
+ */
+export function PresetGallery({ layer, group, onCreated }: { layer: TextLayer | null; group: PresetGroup; onCreated?: () => void }) {
   const presets = useEditor((s) => s.textPresets);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const addLayer = useEditor((s) => s.addLayer);
   const savePreset = useEditor((s) => s.saveTextPreset);
   const deletePreset = useEditor((s) => s.deleteTextPreset);
-  const [group, setGroup] = useState<PresetGroup>('text');
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
   const thumbs = useMemo(() => presets.filter((p) => presetGroup(p) === group).map((p) => ({ p, url: presetThumb(p) })), [presets, group]);
 
-  const apply = (p: TextStylePreset) =>
+  const apply = (p: TextStylePreset) => {
+    if (!layer) {
+      addLayer(newTextLayer(p.style, group === 'bubble' ? '气泡文字' : '花字'));
+      onCreated?.();
+      return;
+    }
     updateLayer(layer.id, (l) => {
       if (l.type === 'text') Object.assign(l.style, p.style);
     });
+  };
   const submit = async () => {
     const nm = name.trim();
-    if (!nm) return;
+    if (!nm || !layer) return;
     await savePreset(nm, { ...layer.style });
     setName('');
     setNaming(false);
@@ -119,11 +142,8 @@ function PresetTabs({ layer }: { layer: TextLayer }) {
   return (
     <div className="preset-strip">
       <div className="section-title">
-        <span className="chips">
-          <button className={`chip ${group === 'text' ? 'active' : ''}`} onClick={() => setGroup('text')}>花字</button>
-          <button className={`chip ${group === 'bubble' ? 'active' : ''}`} onClick={() => setGroup('bubble')}>气泡</button>
-        </span>
-        {naming ? (
+        <span className="muted small">{layer ? `点击套用到「${layer.text.replace(/\n/g, ' ').slice(0, 10) || '文字'}」` : '点击新建一条这个样式的文字'}</span>
+        {!layer ? null : naming ? (
           <span className="inline">
             <input
               className="input sm"
@@ -481,7 +501,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
   );
 }
 
-function LayerProps({ layer }: { layer: Layer }) {
+export function LayerProps({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const assets = useEditor((s) => s.assets);
@@ -527,7 +547,6 @@ function LayerProps({ layer }: { layer: Layer }) {
               setSel(t.selectionStart !== t.selectionEnd ? [t.selectionStart, t.selectionEnd] : null);
             }}
           />
-          <PresetTabs layer={layer} />
           <TextSections layer={layer} sel={sel} />
         </>
       )}
@@ -535,7 +554,7 @@ function LayerProps({ layer }: { layer: Layer }) {
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />
       <TimeSection layer={layer} />
-      {layer.type === 'text' && <div className="hint">文字在「保存并回传」时按 1080×1920 输出分辨率渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
+      {layer.type === 'text' && <div className="hint">花字 / 气泡样式在上方「花字」「气泡」页里套用。文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
     </div>
   );
 }
@@ -581,30 +600,21 @@ function LayerNameCell({ layer, editing, onEdit, onDone }: { layer: Layer; editi
   );
 }
 
-// ---------------------------------------------------------------- 面板
+// ---------------------------------------------------------------- 同类图层列表
 
-export function LayersPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
-  const [tab, setTab] = useState<'layers' | 'assets'>('layers');
-  const [bucket, setBucket] = useState<AssetBucket>('mine');
-  const [q, setQ] = useState('');
-  const [showTemplates, setShowTemplates] = useState(false);
+/** 某一类（文字 / 贴纸）图层的列表：上层在前，拖动 / 上下移只在这一类里换序（lib/layerKind）。 */
+export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: ReactNode }) {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
-  const assets = useEditor((s) => s.assets);
   const selectedId = useEditor((s) => s.selectedLayerId);
   const setSelected = useEditor((s) => s.setSelectedLayer);
-  const addLayer = useEditor((s) => s.addLayer);
-  const addLayers = useEditor((s) => s.addLayers);
-  const setToast = useEditor((s) => s.setToast);
-  const postDuration = usePostDuration();
-  const srtInputRef = useRef<HTMLInputElement>(null);
   const updateLayer = useEditor((s) => s.updateLayer);
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
   const moveLayerTo = useEditor((s) => s.moveLayerTo);
   const moveLayerToIndex = useEditor((s) => s.moveLayerToIndex);
   const duplicateLayer = useEditor((s) => s.duplicateLayer);
-  const layers = spec?.layers ?? [];
-  // 图层列表：正在改名的图层 / 正在拖的图层 / 插入位置指示（列表按 z 序倒序显示：before = 视觉上方 = 更靠上层）
+  const layers = useMemo(() => layersOfType(spec?.layers ?? [], type), [spec?.layers, type]);
+  // 正在改名的图层 / 正在拖的图层 / 插入位置指示（列表按 z 序倒序显示：before = 视觉上方 = 更靠上层）
   const [editingId, setEditingId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [drop, setDrop] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
@@ -623,173 +633,63 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     const from = layers.findIndex((l) => l.id === dragId);
     const over = layers.findIndex((l) => l.id === overId);
     if (from < 0 || over < 0) return clearDrag();
-    // 视觉上方 = spec.layers 里 over 之后；先把自己拿掉再算最终下标
+    // 视觉上方 = 同类里 over 之后；先把自己拿掉再算最终下标
     let target = drop.side === 'before' ? over + 1 : over;
     if (from < target) target -= 1;
     clearDrag();
     if (target !== from) moveLayerToIndex(dragId, target);
   };
-  const selected = layers.find((l) => l.id === selectedId) ?? null;
-  const stickers = useMemo(() => filterAssets(assets, { type: 'sticker', bucket, q }), [assets, bucket, q]);
-
-  const addText = () => {
-    const l: TextLayer = {
-      id: newLayerId(),
-      type: 'text',
-      text: '双击编辑文字',
-      style: defaultTextStyle(),
-      anchor: 'center',
-      margin: [0, 0],
-      width: 0.5,
-      rotate: 0,
-      opacity: 1,
-      t: 'all',
-    };
-    addLayer(l);
-    setTab('layers');
-  };
-  const addTemplate = (c: TitleTemplate) => {
-    addLayers(templateToLayers(c, newLayerId));
-    setShowTemplates(false);
-    setTab('layers');
-  };
-  // 导入本地字幕（对应剪映）：每条 .srt 字幕 → 一个带时段的文字图层，套「黑底白字字幕条」样式贴底居中。
-  const importSrt = async (file: File) => {
-    let text = '';
-    try {
-      text = await file.text();
-    } catch {
-      setToast('读取字幕文件失败');
-      return;
-    }
-    const cues = parseSrt(text);
-    const preset = BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar');
-    const style = { ...defaultTextStyle(), ...(preset?.style ?? {}) };
-    const layers = cuesToTextLayers(cues, { style, newId: newLayerId, maxEnd: postDuration > 0 ? postDuration : undefined });
-    if (!layers.length) {
-      setToast('没有解析到字幕');
-      return;
-    }
-    addLayers(layers);
-    setShowTemplates(false);
-    setTab('layers');
-    setToast(`已导入 ${layers.length} 条字幕`);
-  };
-  const addSticker = (assetId: string) => {
-    const asset = assets.find((a) => a.id === assetId);
-    if (!isAssetReady(asset)) return; // 还在预处理：加进去也渲染不出来
-    const l: StickerLayer = { id: newLayerId(), type: 'sticker', asset_id: assetId, anchor: 'top-left', margin: [0.08, 0.12], width: 0.35, rotate: 0, opacity: 1, t: 'all' };
-    if (isVideoAsset(asset)) l.playback = 'loop';
-    addLayer(l);
-    setTab('layers');
-  };
 
   return (
-    <div className="panel">
-      <div className="tabs" style={{ padding: '0 8px' }}>
-        <button className={`tab ${tab === 'layers' ? 'active' : ''}`} onClick={() => setTab('layers')}>图层</button>
-        <button className={`tab ${tab === 'assets' ? 'active' : ''}`} onClick={() => setTab('assets')}>素材</button>
-      </div>
-      {tab === 'layers' ? (
-        <div className="panel-body">
-          <div className="inline">
-            <button className="btn" onClick={() => setTab('assets')}><IconSticker /> 贴纸</button>
-            <button className="btn" onClick={addText}><IconText /> 文字</button>
-            <button className="btn" onClick={() => setShowTemplates((v) => !v)} title="标题模板：一键添加带样式与位置的文字图层，加入后只需改字"><IconText /> 标题模板</button>
-            <button className="btn" onClick={() => srtInputRef.current?.click()} title="导入本地字幕：把 .srt 文件的每条字幕变成一个带时段的文字图层"><IconText /> 导入字幕</button>
-            <input
-              ref={srtInputRef}
-              type="file"
-              accept=".srt,.vtt,text/plain"
-              hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                e.target.value = ''; // 允许重复导入同一个文件
-                if (f) void importSrt(f);
-              }}
-            />
-          </div>
-          {showTemplates && (
-            <div className="template-list">
-              {TITLE_TEMPLATES.map((c) => (
-                <button key={c.id} className="template-item" onClick={() => addTemplate(c)}>
-                  <span className="cname">{c.name}</span>
-                  <span className="muted small">{c.note}{c.layers.length > 1 ? ` · ${c.layers.length} 个图层` : ''}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="section">
-            <div className="section-title"><span>图层（上层在前）</span><span className="mono muted">{layers.length}</span></div>
-            {layers.length === 0 ? (
-              <div className="hint">还没有图层。添加贴纸或文字后，可在预览里拖动、缩放、旋转。</div>
-            ) : (
-              <div className="layer-list" onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(null); }}>
-                {[...layers].reverse().map((l) => (
-                  <div
-                    key={l.id}
-                    className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
-                    onClick={() => setSelected(l.id)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => e.key === 'Enter' && setSelected(l.id)}
-                    draggable={editingId !== l.id}
-                    onDragStart={(e) => {
-                      e.dataTransfer.effectAllowed = 'move';
-                      e.dataTransfer.setData('text/plain', l.id); // Firefox 不 setData 不会开始拖
-                      setDragId(l.id);
-                    }}
-                    onDragOver={(e) => onRowDragOver(e, l.id)}
-                    onDrop={(e) => onRowDrop(e, l.id)}
-                    onDragEnd={clearDrag}
-                  >
-                    <span className="muted">{l.type === 'text' ? <IconText /> : <IconSticker />}</span>
-                    <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
-                    <span className="acts" onClick={(e) => e.stopPropagation()}>
-                      <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
-                      <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !l.locked }, false)}><IconLock open={!l.locked} /></button>
-                      <button className="btn ghost icon" title={`${hintFor('layer-up')}（${hintFor('layer-top')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'top') : moveLayer(l.id, 1))}><IconUp /></button>
-                      <button className="btn ghost icon" title={`${hintFor('layer-down')}（${hintFor('layer-bottom')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'bottom') : moveLayer(l.id, -1))}><IconDown /></button>
-                      <button className="btn ghost icon" title={hintFor('duplicate')} onClick={() => duplicateLayer(l.id)}><IconCopy /></button>
-                      <button className="btn ghost icon danger" title={hintFor('delete-layer')} onClick={() => removeLayer(l.id)}><IconTrash /></button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          {selected && <LayerProps key={selected.id} layer={selected} />}
-        </div>
+    <div className="section">
+      <div className="section-title"><span>{type === 'text' ? '文字图层' : '贴纸图层'}（上层在前）</span><span className="mono muted">{layers.length}</span></div>
+      {layers.length === 0 ? (
+        <div className="hint">{emptyHint}</div>
       ) : (
-        <div className="panel-body">
-          <div className="chips">
-            <button className={`chip ${bucket === 'library' ? 'active' : ''}`} onClick={() => setBucket('library')}>原料库</button>
-            <button className={`chip ${bucket === 'mine' ? 'active' : ''}`} onClick={() => setBucket('mine')}>我上传的</button>
-          </div>
-          <input className="input sm" placeholder="搜索贴纸…" value={q} onChange={(e) => setQ(e.target.value)} />
-          {stickers.length === 0 ? (
-            <div className="empty small">
-              {q
-                ? '没有匹配的贴纸。'
-                : bucket === 'library'
-                  ? '原料库为空 · 把文件放进仓库的 samples/stickers 作为内置示例，正式环境接原料库 API'
-                  : '还没有贴纸，去「素材库」上传。'}
+        <div className="layer-list" onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(null); }}>
+          {[...layers].reverse().map((l) => (
+            <div
+              key={l.id}
+              className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
+              onClick={() => setSelected(l.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => e.key === 'Enter' && setSelected(l.id)}
+              draggable={editingId !== l.id}
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', l.id); // Firefox 不 setData 不会开始拖
+                setDragId(l.id);
+              }}
+              onDragOver={(e) => onRowDragOver(e, l.id)}
+              onDrop={(e) => onRowDrop(e, l.id)}
+              onDragEnd={clearDrag}
+            >
+              <span className="muted">{l.type === 'text' ? <IconText /> : <IconSticker />}</span>
+              <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
+              <span className="acts" onClick={(e) => e.stopPropagation()}>
+                <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
+                <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !l.locked }, false)}><IconLock open={!l.locked} /></button>
+                <button className="btn ghost icon" title={`${hintFor('layer-up')}（${hintFor('layer-top')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'top') : moveLayer(l.id, 1))}><IconUp /></button>
+                <button className="btn ghost icon" title={`${hintFor('layer-down')}（${hintFor('layer-bottom')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'bottom') : moveLayer(l.id, -1))}><IconDown /></button>
+                <button className="btn ghost icon" title={hintFor('duplicate')} onClick={() => duplicateLayer(l.id)}><IconCopy /></button>
+                <button className="btn ghost icon danger" title={hintFor('delete-layer')} onClick={() => removeLayer(l.id)}><IconTrash /></button>
+              </span>
             </div>
-          ) : (
-            <div className="sticker-grid">
-              {stickers.map((a) => (
-                <AssetCard key={a.id} asset={a} onPick={() => addSticker(a.id)} />
-              ))}
-            </div>
-          )}
-          <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）。视频贴纸默认循环播放，可在属性里改。</div>
+          ))}
         </div>
       )}
-      <div className="panel-foot">
-        <button className="btn" disabled={targetCount === 0} onClick={onApply}>
-          把图层配置应用到选中 {targetCount} 条
-        </button>
-      </div>
+    </div>
+  );
+}
+
+/** 面板底栏：把当前视频的图层（文字 + 贴纸一起）批量应用到左侧勾选的视频。 */
+export function ApplyLayersFoot({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
+  return (
+    <div className="panel-foot">
+      <button className="btn" disabled={targetCount === 0} onClick={onApply} title="文字和贴纸图层会一起套用到目标视频">
+        把图层（文字 + 贴纸）应用到选中 {targetCount} 条
+      </button>
     </div>
   );
 }
