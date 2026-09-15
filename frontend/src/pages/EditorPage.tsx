@@ -14,6 +14,7 @@ import { TrimPanel } from '../components/editor/TrimPanel';
 import { AudioPanel } from '../components/editor/AudioPanel';
 import { TextPanel } from '../components/editor/TextPanel';
 import { StickerPanel } from '../components/editor/StickerPanel';
+import { SubtitlePanel } from '../components/editor/SubtitlePanel';
 import { CropEditor } from '../components/editor/CropEditor';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { ProgressModal } from '../components/editor/ProgressModal';
@@ -85,7 +86,7 @@ function handleKey(e: KeyboardEvent) {
   }
 
   if (e.altKey) {
-    // ⌥ + 方向键：强制逐帧（文本 / 贴纸模块下方向键默认是微移）
+    // ⌥ + 方向键：强制逐帧（文本 / 贴纸 / 字幕模块下方向键默认是微移）
     if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
       e.preventDefault();
       player.seek(s.time + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : frame));
@@ -285,6 +286,7 @@ export function EditorPage() {
           {step === 'audio' && <AudioPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'text' && <TextPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'sticker' && <StickerPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
+          {step === 'subtitle' && <SubtitlePanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
         </div>
       </div>
       {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={step === 'audio' ? ['audio'] : ['layers']} onClose={() => setApplyOpen(false)} />}

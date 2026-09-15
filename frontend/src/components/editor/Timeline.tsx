@@ -1,5 +1,5 @@
 // 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨、BGM / 口播可拖动拉伸、贴纸音轨只读）/
-// 图层行（文本、贴纸模块各自只显示本类图层，可拖动、拉伸，轨道头可锁定 / 隐藏）。
+// 图层行（文本、字幕模块显示文字图层，贴纸模块显示贴纸图层；可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
 // 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
@@ -582,8 +582,10 @@ export function Timeline() {
           })}
           {layerType && layerRows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
-              <div className="lbl">{layerType === 'text' ? '文字' : '贴纸'}</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>{layerType === 'text' ? '还没有文字图层，在右侧添加文字、标题模板或导入字幕。' : '还没有贴纸，在右侧素材里点选添加。'}</div>
+              <div className="lbl">{step === 'subtitle' ? '字幕' : layerType === 'text' ? '文字' : '贴纸'}</div>
+              <div className="body hint" style={{ padding: '6px 8px' }}>
+                {step === 'subtitle' ? '还没有字幕，在右侧选择 .srt 文件导入。' : layerType === 'text' ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。' : '还没有贴纸，在右侧素材里点选添加。'}
+              </div>
             </div>
           )}
 
