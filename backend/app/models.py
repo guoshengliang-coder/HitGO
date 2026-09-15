@@ -23,6 +23,13 @@ JOB_ACTIVE = (JOB_QUEUED, JOB_RUNNING)
 ASSET_STICKER = "sticker"
 ASSET_FONT = "font"
 
+# Asset.source (contract §1). "library" is reserved for the real material library we will
+# eventually point at; nothing in the prototype creates it. See docs/ASSETS.md.
+ASSET_SOURCE_UPLOAD = "upload"
+ASSET_SOURCE_BUILTIN = "builtin"
+ASSET_SOURCE_LIBRARY = "library"
+ASSET_SOURCES = (ASSET_SOURCE_UPLOAD, ASSET_SOURCE_BUILTIN, ASSET_SOURCE_LIBRARY)
+
 
 class Batch(Base):
     __tablename__ = "batches"
@@ -79,7 +86,7 @@ class Asset(Base):
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     family: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    source: Mapped[str] = mapped_column(String(16), default="upload", nullable=False)
+    source: Mapped[str] = mapped_column(String(16), default=ASSET_SOURCE_UPLOAD, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

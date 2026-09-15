@@ -285,7 +285,7 @@ function seed() {
   const s2 = stickerImage('新人礼包', '#2f6fdd');
   assets.push(
     { id: 'a_demo1', type: 'sticker', name: '限时免费.png', url: s1.url, width: s1.width, height: s1.height, source: 'upload', created_at: now() },
-    { id: 'a_demo2', type: 'sticker', name: '新人礼包.png', url: s2.url, width: s2.width, height: s2.height, source: 'upload', created_at: now() },
+    { id: 'a_demo2', type: 'sticker', name: '新人礼包.png', url: s2.url, width: s2.width, height: s2.height, source: 'builtin', created_at: now() },
   );
 }
 
@@ -467,7 +467,11 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return clone(v);
   }
   if (path === '/api/assets') {
-    if (method === 'GET') return clone(assets.filter((a) => a.type === q.get('type')));
+    if (method === 'GET') {
+      const type = q.get('type');
+      const source = q.get('source');
+      return clone(assets.filter((a) => (!type || a.type === type) && (!source || a.source === source)));
+    }
     const form = body as FormData;
     const type = form.get('type') as 'sticker' | 'font';
     const files = form.getAll('files') as File[];
@@ -494,7 +498,10 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
   }
   if ((mm = m(/^\/api\/assets\/([^/]+)$/))) {
     const i = assets.findIndex((a) => a.id === mm![1]);
-    if (i >= 0) assets.splice(i, 1);
+    if (i >= 0) {
+      if (assets[i].source !== 'upload') throw new ApiError(400, '只能删除自己上传的素材');
+      assets.splice(i, 1);
+    }
     return undefined;
   }
   if (path === '/api/uploads/layer-image') {

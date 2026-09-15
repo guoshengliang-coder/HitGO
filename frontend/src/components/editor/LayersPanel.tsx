@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { ANCHORS, defaultTextStyle, type Anchor, type Layer, type StickerLayer, type TextLayer, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
+import { filterAssets, type AssetBucket } from '../../lib/assets';
 import { reanchor } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
@@ -364,7 +365,7 @@ function LayerProps({ layer }: { layer: Layer }) {
 
 export function LayersPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
   const [tab, setTab] = useState<'layers' | 'assets'>('layers');
-  const [source, setSource] = useState<'builtin' | 'mine'>('mine');
+  const [bucket, setBucket] = useState<AssetBucket>('mine');
   const [q, setQ] = useState('');
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const assets = useEditor((s) => s.assets);
@@ -380,7 +381,7 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const duplicateLayer = useEditor((s) => s.duplicateLayer);
   const layers = spec?.layers ?? [];
   const selected = layers.find((l) => l.id === selectedId) ?? null;
-  const stickers = useMemo(() => assets.filter((a) => a.type === 'sticker' && (!q || a.name.toLowerCase().includes(q.toLowerCase()))), [assets, q]);
+  const stickers = useMemo(() => filterAssets(assets, { type: 'sticker', bucket, q }), [assets, bucket, q]);
 
   const addText = () => {
     const l: TextLayer = {
@@ -460,14 +461,18 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
       ) : (
         <div className="panel-body">
           <div className="chips">
-            <button className={`chip ${source === 'builtin' ? 'active' : ''}`} onClick={() => setSource('builtin')}>原料库</button>
-            <button className={`chip ${source === 'mine' ? 'active' : ''}`} onClick={() => setSource('mine')}>我上传的</button>
+            <button className={`chip ${bucket === 'library' ? 'active' : ''}`} onClick={() => setBucket('library')}>原料库</button>
+            <button className={`chip ${bucket === 'mine' ? 'active' : ''}`} onClick={() => setBucket('mine')}>我上传的</button>
           </div>
           <input className="input sm" placeholder="搜索贴纸…" value={q} onChange={(e) => setQ(e.target.value)} />
-          {source === 'builtin' ? (
-            <div className="empty small">原料库为空 · 正式环境接原料库 API</div>
-          ) : stickers.length === 0 ? (
-            <div className="empty small">还没有贴纸，去「素材库」上传。</div>
+          {stickers.length === 0 ? (
+            <div className="empty small">
+              {q
+                ? '没有匹配的贴纸。'
+                : bucket === 'library'
+                  ? '原料库为空 · 把文件放进仓库的 samples/stickers 作为内置示例，正式环境接原料库 API'
+                  : '还没有贴纸，去「素材库」上传。'}
+            </div>
           ) : (
             <div className="sticker-grid">
               {stickers.map((a) => (

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import ids
 from app.db import get_db
-from app.models import ASSET_FONT, ASSET_STICKER, Asset
+from app.models import ASSET_FONT, ASSET_SOURCE_UPLOAD, ASSET_STICKER, Asset
 from app.schemas import AssetOut
 from app.serializers import asset_out
 from app.services import storage
@@ -22,19 +22,45 @@ STICKER_EXTS = {"png", "webp", "gif"}
 FONT_EXTS = {"ttf", "otf", "woff2"}
 ALLOWED = {ASSET_STICKER: STICKER_EXTS, ASSET_FONT: FONT_EXTS}
 
+# Contract §3: per-file upload ceilings. The prototype only ever holds a handful of small
+# overlays, and nginx's 2g body limit is far too loose to catch a mistaken drag-and-drop.
+MAX_BYTES = {ASSET_STICKER: 10 * 1024 * 1024, ASSET_FONT: 20 * 1024 * 1024}
+
 
 def _ext(filename: str) -> str:
     return Path(filename).suffix.lower().lstrip(".")
 
 
+def _human_mib(size: int) -> str:
+    return f"{size // (1024 * 1024)} MiB"
+
+
+def _read_sticker_size(path: Path, name: str) -> tuple[int, int]:
+    """Pixel size of an uploaded sticker; rejects unreadable files and animated GIFs."""
+    try:
+        with Image.open(path) as img:
+            # Contract says "gif 静态": an animated GIF would render as a single pass and
+            # then freeze (overlay uses eof_action=repeat), which is not what anyone means.
+            if getattr(img, "n_frames", 1) > 1:
+                raise HTTPException(400, f"{name}：不支持动态图片，请上传静态 png / webp / gif")
+            return img.size
+    except HTTPException:
+        raise
+    except (UnidentifiedImageError, OSError):
+        raise HTTPException(400, f"{name}：无法解析图片") from None
+
+
 @router.get("", response_model=list[AssetOut])
 def list_assets(
     type: str | None = Query(default=None, pattern="^(sticker|font)$"),
+    source: str | None = Query(default=None, pattern="^(upload|builtin|library)$"),
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
     stmt = select(Asset).order_by(Asset.created_at.desc(), Asset.id)
     if type:
         stmt = stmt.where(Asset.type == type)
+    if source:
+        stmt = stmt.where(Asset.source == source)
     return [asset_out(a) for a in db.scalars(stmt).all()]
 
 
@@ -65,14 +91,15 @@ async def create_assets(
             written.append(dst)
             if size == 0:
                 raise HTTPException(400, f"{name}：文件为空")
+            limit = MAX_BYTES[type]
+            if size > limit:
+                raise HTTPException(400, f"{name}：文件超过 {_human_mib(limit)} 上限")
 
-            asset = Asset(id=asset_id, type=type, name=name, ext=ext, source="upload")
+            asset = Asset(
+                id=asset_id, type=type, name=name, ext=ext, source=ASSET_SOURCE_UPLOAD
+            )
             if type == ASSET_STICKER:
-                try:
-                    with Image.open(dst) as img:
-                        asset.width, asset.height = img.size
-                except (UnidentifiedImageError, OSError):
-                    raise HTTPException(400, f"{name}：无法解析图片") from None
+                asset.width, asset.height = _read_sticker_size(dst, name)
             else:
                 asset.family = Path(name).stem
             db.add(asset)
@@ -91,6 +118,9 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "素材不存在")
+    if asset.source != ASSET_SOURCE_UPLOAD:
+        # builtin comes back on the next startup, library belongs to the upstream system.
+        raise HTTPException(400, "只能删除自己上传的素材")
     path = storage.asset_path(asset.id, asset.ext)
     db.delete(asset)
     db.commit()

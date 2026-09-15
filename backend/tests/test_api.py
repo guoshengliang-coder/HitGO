@@ -449,6 +449,62 @@ def test_assets_lifecycle(client, png_bytes, tmp_path):
     assert client.delete(f"/api/assets/{a['id']}").status_code == 404
 
 
+def test_assets_source_filter(client, png_bytes, db):
+    from app.models import ASSET_SOURCE_BUILTIN, Asset
+
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("mine.png", io.BytesIO(png_bytes), "image/png"))],
+    )
+    assert r.status_code == 200, r.text
+    mine = r.json()[0]
+
+    db.add(Asset(id="a_builtin001", type="sticker", name="内置.png", ext="png",
+                 width=10, height=10, source=ASSET_SOURCE_BUILTIN))
+    db.commit()
+
+    assert [x["id"] for x in client.get("/api/assets?source=upload").json()] == [mine["id"]]
+    assert [x["id"] for x in client.get("/api/assets?source=builtin").json()] == ["a_builtin001"]
+    assert client.get("/api/assets?source=library").json() == []
+    assert len(client.get("/api/assets?type=sticker").json()) == 2
+    assert len(client.get("/api/assets?type=sticker&source=upload").json()) == 1
+    assert client.get("/api/assets?source=nope").status_code == 400
+
+    # builtin comes back on the next startup, so deleting it would be a fake delete
+    r = client.delete("/api/assets/a_builtin001")
+    assert r.status_code == 400 and "自己上传" in r.json()["detail"]
+    assert client.delete(f"/api/assets/{mine['id']}").status_code == 204
+
+
+def test_sticker_upload_rejects_animated_gif(client):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    frames = [Image.new("RGB", (8, 8), c).convert("P") for c in ((255, 0, 0), (0, 0, 255))]
+    frames[0].save(buf, "GIF", save_all=True, append_images=frames[1:], duration=100, loop=0)
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("anim.gif", io.BytesIO(buf.getvalue()), "image/gif"))],
+    )
+    assert r.status_code == 400 and "动态" in r.json()["detail"]
+    assert client.get("/api/assets").json() == []
+
+
+def test_sticker_upload_rejects_oversized_file(client, png_bytes, monkeypatch):
+    from app.routers import assets as assets_router
+
+    monkeypatch.setitem(assets_router.MAX_BYTES, "sticker", 16)
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("big.png", io.BytesIO(png_bytes), "image/png"))],
+    )
+    assert r.status_code == 400 and "上限" in r.json()["detail"]
+    assert client.get("/api/assets").json() == []
+
+
 def test_layer_image_upload(client, png_bytes):
     r = client.post("/api/uploads/layer-image", files={"file": ("text.png", io.BytesIO(png_bytes), "image/png")})
     assert r.status_code == 200, r.text
