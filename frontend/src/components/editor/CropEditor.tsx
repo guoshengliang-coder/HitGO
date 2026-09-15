@@ -4,8 +4,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Stage as KStage, Layer as KLayer, Rect, Transformer, Group } from 'react-konva';
-import { useEditor, usePostTime } from '../../store/editor';
+import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
+import { isDue, previewIntervalMs } from '../../lib/previewClock';
 import { loadImage } from '../../lib/useImage';
 import { clampCropRect, cropRectFromPixels, cropRectToPixels, defaultCropRect, describeCrop, type PixelBox } from '../../lib/crop';
 import { variantDef } from '../../types';
@@ -26,7 +27,6 @@ export function CropEditor() {
   const variantKey = useEditor((s) => s.selectedVariantKey);
   const setCrop = useEditor((s) => s.setCrop);
   const setCropEditing = useEditor((s) => s.setCropEditing);
-  const postTime = usePostTime();
 
   const def = variantDef(variantKey);
   const aspect = def.width / def.height;
@@ -41,32 +41,71 @@ export function CropEditor() {
   const [live, setLive] = useState<PixelBox | null>(null);
   const box = live ?? px;
 
-  // 背景：当前帧（<video> 已就绪）或封面
+  // 背景：当前帧（<video> 已就绪）或封面。
+  // 和变体预览一样由常驻 rAF 驱动，不放进 effect 依赖里跟着每帧重渲染走（HIG-5）。
+  const bgInputRef = useRef<{ posterUrl: string; W: number; H: number } | null>(null);
+  bgInputRef.current = video ? { posterUrl: video.poster_url ?? '', W, H } : null;
+
   useEffect(() => {
     const c = bgRef.current;
-    if (!c || !video) return;
-    let alive = true;
-    const draw = async () => {
+    if (!c) return;
+    let raf = 0;
+    let gen = 0;
+    let drawing = false;
+    let lastDrawn = -Infinity;
+    let everDrewLiveFrame = false;
+
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const input = bgInputRef.current;
+      if (!input || drawing) return;
+      const interval = previewIntervalMs({ playing: player.isPlaying, selected: true, visible: true });
+      if (interval === null) return;
+      const now = performance.now();
+      if (!isDue(now, lastDrawn, interval)) return;
+
       const ctx = c.getContext('2d');
       if (!ctx) return;
-      ctx.fillStyle = '#0b0d10';
-      ctx.fillRect(0, 0, W, H);
       const v = player.getVideo();
-      let src: CanvasImageSource | null = v && v.readyState >= 2 ? v : null;
-      if (!src && video.poster_url) {
-        try {
-          src = await loadImage(video.poster_url);
-        } catch {
-          src = null;
-        }
+      const liveSrc = v && v.readyState >= 2 ? v : null;
+      // 已经画过真实帧后就不再闪回封面
+      if (!liveSrc && everDrewLiveFrame) return;
+
+      lastDrawn = now;
+      const myGen = ++gen;
+      if (liveSrc) {
+        ctx.fillStyle = '#0b0d10';
+        ctx.fillRect(0, 0, input.W, input.H);
+        ctx.drawImage(liveSrc, 0, 0, input.W, input.H);
+        everDrewLiveFrame = true;
+        return;
       }
-      if (alive && src) ctx.drawImage(src, 0, 0, W, H);
+      if (!input.posterUrl) {
+        ctx.fillStyle = '#0b0d10';
+        ctx.fillRect(0, 0, input.W, input.H);
+        return;
+      }
+      drawing = true;
+      void loadImage(input.posterUrl)
+        .then((img) => {
+          if (myGen !== gen) return;
+          ctx.fillStyle = '#0b0d10';
+          ctx.fillRect(0, 0, input.W, input.H);
+          ctx.drawImage(img, 0, 0, input.W, input.H);
+        })
+        .catch(() => {
+          /* 没有封面就留底色 */
+        })
+        .finally(() => {
+          drawing = false;
+        });
     };
-    void draw();
+    raf = requestAnimationFrame(tick);
     return () => {
-      alive = false;
+      cancelAnimationFrame(raf);
+      gen++;
     };
-  }, [video, W, H, postTime]);
+  }, []);
 
   // Transformer 绑定到窗口节点
   useEffect(() => {
