@@ -92,6 +92,8 @@ class StickerLayer(LayerBase):
     asset_id: str = Field(min_length=1)
     # Only meaningful for video stickers (Asset.kind == "video"); still images ignore it.
     playback: Playback = "loop"
+    # Mix the sticker's own audio into the output (contract §2); needs Asset.has_audio.
+    mix_audio: bool = False
 
 
 class TextShadow(BaseModel):
@@ -439,6 +441,7 @@ class AssetOut(BaseModel):
     duration: float | None = None
     fps: float | None = None
     has_alpha: bool | None = None
+    has_audio: bool | None = None
     poster_url: str | None = None
     preview_url: str | None = None
     family: str | None = None
@@ -460,6 +463,14 @@ class JobOut(BaseModel):
     created_at: str
     started_at: str | None
     finished_at: str | None
+
+
+class UploadTicketOut(BaseModel):
+    """Where to send large asset uploads; all null when no upload host is configured."""
+
+    upload_url: str | None = None
+    ticket: str | None = None
+    expires_at: str | None = None
 
 
 class LayerImageOut(BaseModel):

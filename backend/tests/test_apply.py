@@ -170,3 +170,15 @@ def test_style_only_copies_playback_with_the_asset():
     target["layers"][0]["playback"] = "freeze"
     out = apply_modules(src, target, ["layers"], 24.6, "style_only")
     assert "playback" not in out["layers"][0]
+
+
+def test_style_only_copies_mix_audio_with_the_asset():
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][0]["mix_audio"] = True
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][0]["mix_audio"] is True
+
+    del src["layers"][0]["mix_audio"]
+    target["layers"][0]["mix_audio"] = True
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert "mix_audio" not in out["layers"][0]

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 // 视频贴纸的 <video> 元素缓存，形状与 useImage 保持一致。
 // HTMLVideoElement 本身就是 CanvasImageSource，Konva.Image 与 ctx.drawImage 都能直接吃，
 // 所以画布侧不需要再做一层离屏 canvas。
-// 元素一律静音：贴纸自带的音轨不参与成片（契约 §2），预览也不应该出声。
+// 元素默认静音；图层开了 mix_audio 时由 Stage 在播放中、时段内临时取消静音（契约 §2，规则见 stickerAudible）。
 
 const cache = new Map<string, HTMLVideoElement>();
 

@@ -9,7 +9,7 @@
 - 所有几何量用**相对比例**（0–1），相对于所在画布的宽或高；时间用秒（float）。
 - ID 用短随机字符串（例如 `nanoid` 12 位），前后端都当不透明字符串处理。
 - 错误统一返回 `{ "detail": "人类可读的中文说明" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。
-- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。
+- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。**唯一例外**：`POST /api/assets` 带有效的请求头 `X-Upload-Ticket`（由 `POST /api/assets/upload-ticket` 签发）时不看 Cookie，见第 3 节「素材」的上传子域名。
 
 ## 1. 数据模型
 
@@ -67,6 +67,7 @@
   "duration": 2.4,                // 可选；kind = video 才有，秒
   "fps": 30,                      // 可选；kind = video 才有
   "has_alpha": true,              // 可选；kind = video 才有：素材是否带透明通道
+  "has_audio": false,             // 可选；kind = video 且预处理完才有：素材是否带音轨（null = 未知，旧素材回填前）
   "poster_url": "/media/assets/a_s1t2u3.poster.jpg",    // 可选；kind = video 且 ready 才有：首帧
   "preview_url": "/media/assets/a_s1t2u3.preview.webm", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
@@ -134,7 +135,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "rotate": 0,                           // 角度，绕图层中心
       "opacity": 1,
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
-      "playback": "loop"                     // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
+      "playback": "loop",                    // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
+      "mix_audio": false                     // 可选，缺省 false：视频贴纸自带的音轨是否合成进成片
     },
     {
       "id": "l_2",
@@ -187,8 +189,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
 - **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
   生效，静态图忽略。素材时长短于 `t` 时段时 —— `loop` 循环播放；`freeze` 播完定格最后一帧；`once` 播完
-  消失。素材比时段长时一律在时段结束处截断。**贴纸自带的音轨一律丢弃**，成片音轨仍只来自源视频。
-  批量套用 `style_only` 时 `playback` 跟随 `asset_id` 一起复制。
+  消失。素材比时段长时一律在时段结束处截断。批量套用 `style_only` 时 `playback` 跟随 `asset_id` 一起复制。
+- **贴纸音轨 `mix_audio`**（可选，默认 `false`）：只对带音轨的视频贴纸（`Asset.kind = "video"` 且
+  `has_audio = true`）生效，其它贴纸与 `false` 一律忽略——成片音轨只来自源视频（即此前的行为）。为 `true`
+  时贴纸音轨按原音量叠加到成片音轨上（不做音量调节，也不压低源视频音量）：只在 `t` 时段内出声，从
+  贴纸自己的第 0 秒开始；`loop` 时随画面循环，`freeze` / `once` 只放一遍；时段结束处截断。源视频
+  没有音轨时成片音轨就是贴纸音轨（其余时间静音）。编辑器预览按同样的规则出声。批量套用
+  `style_only` 时 `mix_audio` 跟随 `asset_id` 一起复制。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -222,7 +229,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - `sticker`：`png / webp / gif` 与 `mp4 / mov / webm`。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
     立即入队预处理并以 `status = "preparing"` 返回。
   - `font`：`ttf / otf / woff2`
-  - 单文件上限：图片 sticker 10 MiB、font 20 MiB、视频 sticker 50 MiB，超出 400；视频贴纸另限 60 秒。
+  - 单文件上限：图片 sticker 10 MiB、font 20 MiB、视频 sticker 1 GiB，超出 400。视频贴纸不限时长。
+  - 请求头 `X-Upload-Ticket: <ticket>`（可选）：有效时本请求免 Cookie 校验，见下面的上传子域名。
+- `POST /api/assets/upload-ticket` → `{ "upload_url": "https://hitgo-upload.example.com/api/assets" | null, "ticket": "..." | null, "expires_at": "..." | null }`。
+  需要正常的访问码 Cookie。服务端未配置 `UPLOAD_BASE_URL` 时三个字段都是 null，前端照旧同源上传。
+  配置了时签发一张 10 分钟有效的 ticket，前端把 `POST /api/assets` 直接发到 `upload_url`
+  （跨域 XHR，带 `X-Upload-Ticket`，不带 Cookie）。
+  **为什么**：主域名走 Cloudflare 代理，免费版单个请求超过 100 MB 会被 Cloudflare 回 413，根本到不了源站；
+  上传子域名不经 Cloudflare 代理（DNS only），只放行这一个接口。服务端对 `PUBLIC_BASE_URL` 这个 origin
+  开 CORS（`POST` / `OPTIONS`，允许 `X-Upload-Ticket`）。
 - `DELETE /api/assets/{id}` → 204（一并删除 poster / preview 派生文件）。`source != "upload"` 的素材不可删
   （400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
 - 素材的来源迁移规划（怎么把 `upload` / `builtin` 换成正式物料库的 `library`，要改哪几处）见 `docs/ASSETS.md`。
@@ -305,8 +320,11 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 1. `ffprobe` 取宽高 / 时长 / 帧率；透明通道判定：VP8/VP9 看 stream tag `alpha_mode`，其它看首帧 `pix_fmt`
    是否是带 alpha 的像素格式（容器层的 `pix_fmt` 不可靠，HEVC-with-alpha 与 WebM-alpha 都报 `yuv420p`）。
 2. 首帧 `{asset_id}.poster.jpg`。
-3. 预览代理：带 alpha → `libvpx-vp9 -pix_fmt yuva420p` 出 `.webm`；否则 `libx264 -pix_fmt yuv420p` 出 `.mp4`。
-   预览代理只给编辑器看，渲染始终用原文件。
+3. 预览代理：带 alpha → `libvpx-vp9 -pix_fmt yuva420p` 出 `.webm`（音轨 `libopus 96k`）；否则
+   `libx264 -pix_fmt yuv420p` 出 `.mp4`（音轨 `aac 128k`）。素材有音轨才带音轨（`-map 0:a:0?`），并记
+   `has_audio`。预览代理只给编辑器看，渲染始终用原文件。
+4. 服务启动时，`kind = video`、`status = ready` 但 `has_audio` 还是 null 的旧素材会重新入队预处理一次，补上
+   `has_audio` 与带音轨的预览代理（素材保持 `ready`，不影响正在用它的 spec）。
 
 ### 预处理（每条视频入库后）
 1. `ffprobe -v error -print_format json -show_format -show_streams`
@@ -324,7 +342,11 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
      （VP9 → `-c:v libvpx-vp9`，VP8 → `-c:v libvpx`，否则 alpha 会被静默丢弃）；滤镜侧在链尾加
      `setpts=PTS-STARTPTS+a/TB`（贴纸从自己第 0 帧开始播）与 `trim=end=b`（既挡住无限循环，也挡住
      比主流长的素材）；`playback = "once"` 用 `overlay=...:eof_action=pass`，其余用 `repeat`。
-     贴纸自带的音轨不映射。
+   - 贴纸音轨：`mix_audio = true` 且素材 `has_audio = true` 的图层，从该输入取
+     `[i:a]asetpts=PTS-STARTPTS,atrim=end=b−a,adelay=a·1000:all=1,aformat=48000/stereo`（loop 复用输入侧的
+     `-stream_loop -1`），与主音轨（剪辑后的 `[at]` / 源 `0:a:0`；源无音轨时用 `anullsrc` 截到剪后时长）
+     `amix=inputs=N:duration=first:normalize=0:dropout_transition=0` 混成 `[aout]` 再映射。没有这样的图层时
+     命令与此前完全一致，贴纸音轨不映射。
    - 输出 `format=yuv420p`；本次渲染存在视频图层时，输出端补 `-t <剪后时长>` 兜底成片时长
 3. 编码（按输出变体的 `quality`，1080p）：
    - `standard`（默认）：`-c:v libx264 -preset veryfast -crf 20 -maxrate 8M -bufsize 16M -c:a aac -b:a 128k -movflags +faststart`
@@ -336,5 +358,5 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 
 - 本地开发：`backend/` 用 `uv run uvicorn app.main:app --reload`（端口 8000），`frontend/` 用 `npm run dev`（Vite，`/api` 与 `/media` 代理到 8000）。
 - 容器：单一镜像 `hitgo`（多阶段：node 构建前端 → python:3.12-slim + apt ffmpeg + uv），`api` 与 `worker` 两个服务共用；`redis:7-alpine`。API 同时托管前端静态文件（`/` → `frontend/dist`，SPA fallback）。
-- 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）。
+- 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）、`UPLOAD_BASE_URL`（可选，上传子域名，如 `https://hitgo-upload.mrlgs.net`；空 = 不启用）。
 - 服务器：`docker compose` 监听 `127.0.0.1:8790`，nginx `hitgo.mrlgs.net` 反代，见 `docs/DEPLOY.md`。

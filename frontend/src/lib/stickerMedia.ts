@@ -10,6 +10,34 @@ import type { Playback, TimeWindow } from '../types';
 
 const EPS = 1e-6;
 
+/**
+ * 预览时贴纸此刻该不该出声（契约 §2 mix_audio），规则与成片一致：只在时段内、从贴纸自己的
+ * 第 0 秒起；loop 随画面循环，freeze / once 只放一遍。暂停、没开合成、素材没音轨一律静音。
+ */
+export function stickerAudible(opts: {
+  postTime: number;
+  t: TimeWindow;
+  postDuration: number;
+  mediaDuration: number;
+  playback?: Playback;
+  playing: boolean;
+  mixAudio?: boolean;
+  hasAudio?: boolean | null;
+}): boolean {
+  const { postTime, t, postDuration, mediaDuration, playback = 'loop', playing, mixAudio, hasAudio } = opts;
+  if (!playing || !mixAudio || hasAudio !== true || !(mediaDuration > 0)) return false;
+  const [start, end] = windowRange(t, postDuration);
+  if (postTime < start - EPS || postTime > end + EPS) return false;
+  return playback === 'loop' || postTime - start < mediaDuration - EPS;
+}
+
+/** 非 loop 的贴纸已经播到头（freeze 定格中）：此时不能再 play()，否则浏览器会从头重播。 */
+export function stickerFinished(postTime: number, t: TimeWindow, postDuration: number, mediaDuration: number, playback: Playback = 'loop'): boolean {
+  if (playback === 'loop' || !(mediaDuration > 0)) return false;
+  const [start] = windowRange(t, postDuration);
+  return postTime - start >= mediaDuration - EPS;
+}
+
 /** 时段 t 在剪后时间轴上的实际区间；'all' = [0, postDuration]。 */
 export function windowRange(t: TimeWindow, postDuration: number): [number, number] {
   if (t === 'all') return [0, Math.max(0, postDuration)];

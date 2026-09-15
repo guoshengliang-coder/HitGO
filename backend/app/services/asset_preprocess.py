@@ -52,20 +52,30 @@ def poster_args(src: Path, dst: Path, decoder: str | None = None) -> list[str]:
 
 
 def preview_args(src: Path, dst: Path, has_alpha: bool, decoder: str | None = None) -> list[str]:
-    """Browser-playable proxy: VP9/yuva420p keeps alpha, H.264 otherwise."""
+    """Browser-playable proxy: VP9/yuva420p keeps alpha, H.264 otherwise.
+
+    The sticker's first audio track rides along (``0:a:0?`` is a no-op when there is
+    none) so the editor can play it when the layer mixes its audio (contract §2).
+    """
     argv = [_bin(), "-hide_banner", "-y", "-nostats", "-loglevel", "error"]
     if decoder:
         argv += ["-c:v", decoder]
-    argv += ["-i", str(src), "-an", "-vf", f"scale='min({PREVIEW_MAX_SHORT_SIDE},iw)':-2"]
+    argv += [
+        "-i", str(src),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", f"scale='min({PREVIEW_MAX_SHORT_SIDE},iw)':-2",
+    ]  # fmt: skip
     if has_alpha:
         argv += [
             "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
             "-b:v", "1M", "-auto-alt-ref", "0",
+            "-c:a", "libopus", "-b:a", "96k",
         ]  # fmt: skip
     else:
         argv += [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "128k",
         ]  # fmt: skip
     argv.append(str(dst))
     return argv

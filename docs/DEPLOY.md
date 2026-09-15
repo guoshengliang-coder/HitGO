@@ -104,7 +104,31 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Cloudflare 侧：为 `hitgo.mrlgs.net` 添加代理（橙云）A 记录指向该主机；SSL 模式与 missiongo 一致（Full (strict)）。
-Cloudflare 免费版单次上传上限 100 MB——更大的源片需关闭该域名的代理（灰云）或走企业套餐；原型阶段建议上传前先把源片压到 100 MB 内。
+Cloudflare 免费版单次上传上限 100 MB（超过直接回 413，到不了源站）。**素材库的贴纸上传**已经通过上传子域名
+绕开，见下一节；**批次源片上传**仍走主域名，单个请求要压在 100 MB 内。
+
+## 3.1 上传子域名（大文件贴纸，HIG-6）
+
+`deploy/nginx/hitgo.conf` 里的第二个 server 块。只代理 `POST /api/assets`，其余 404。前端先在主域名取
+ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契约 §3）。上线步骤：
+
+1. Cloudflare：加 `hitgo-upload` 的 A 记录指向源站，**DNS only（灰云）**。二级名 `hitgo-upload.mrlgs.net`
+   而不是 `upload.hitgo.mrlgs.net`，以后换 `*.mrlgs.net` 通配证书也能覆盖。
+2. 证书：共用的 `/etc/hermes-edge/tls` 只覆盖 `mrlgs.net`，要单独签。80 端口被 derper 占着，沿用
+   现有 mrlgs.net 续期的 standalone 做法：
+   ```bash
+   sudo certbot certonly --standalone -d hitgo-upload.mrlgs.net \
+     --pre-hook "systemctl stop derper.service" \
+     --post-hook "systemctl start derper.service" \
+     --deploy-hook "systemctl reload nginx"
+   ```
+3. nginx：`sudo cp deploy/nginx/hitgo.conf /etc/nginx/conf.d/hitgo.conf && sudo nginx -t && sudo systemctl reload nginx`。
+4. 服务器 `.env` 加 `UPLOAD_BASE_URL=https://hitgo-upload.mrlgs.net`，重建容器（`make deploy`）。
+5. 验证：浏览器在素材库上传一个 >100 MB 的 mp4，开发者工具里上传请求应该发往 `hitgo-upload.mrlgs.net`。
+   不配 `UPLOAD_BASE_URL` 时一切照旧（同源上传，100 MB 以内可用）。
+
+注意：灰云会暴露源站 IP（这台机器的 IP 已经出现在 `47.239.30.253.sslip.io` 证书里，没有新增暴露面），
+上传子域名也不在 Cloudflare 的回源白名单保护下，所以 nginx 只放行这一个接口，接口本身需要 ticket。
 
 ## 4. 环境变量一览
 
@@ -115,6 +139,7 @@ Cloudflare 免费版单次上传上限 100 MB——更大的源片需关闭该�
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker/backend；compose 内固定为 `redis://redis:6379/0` |
 | `ACCESS_CODE` | 空 | 非空则 `/api`、`/media` 需 Cookie `hitgo_access` |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | 回传 JSON 里成片的绝对地址前缀 |
+| `UPLOAD_BASE_URL` | 空 | 上传子域名（如 `https://hitgo-upload.mrlgs.net`），非空时贴纸上传直传过去并对 `PUBLIC_BASE_URL` 开 CORS，见 3.1 |
 | `WORKER_CONCURRENCY` | `1` | worker 并行渲染数 |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |

@@ -28,7 +28,7 @@ LAYER_MODES = ("replace", "style_only")
 # Keys copied from source → matched target in style_only mode, by layer type.
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    "sticker": ("asset_id", "playback"),
+    "sticker": ("asset_id", "playback", "mix_audio"),
     "text": ("text", "spans", "style", "image_url", "image_size"),
 }
 

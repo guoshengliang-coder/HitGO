@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { stickerMediaTime, windowRange } from './stickerMedia';
+import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from './stickerMedia';
 
 describe('windowRange', () => {
   it("'all' 覆盖整条剪后时间轴", () => {
@@ -54,5 +54,43 @@ describe('stickerMediaTime', () => {
 
   it('素材比时段长时照常按经过时间走', () => {
     expect(stickerMediaTime(8, [4, 9], D, 30, 'loop')).toBeCloseTo(4);
+  });
+});
+
+describe('stickerAudible', () => {
+  const base = { t: [4, 9] as [number, number], postDuration: 20.6, mediaDuration: 3, playing: true, mixAudio: true, hasAudio: true };
+
+  it('时段内、播放中、开了合成、素材有音轨才出声', () => {
+    expect(stickerAudible({ ...base, postTime: 5 })).toBe(true);
+    expect(stickerAudible({ ...base, postTime: 5, playing: false })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 5, mixAudio: false })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 5, mixAudio: undefined })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 5, hasAudio: false })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 5, hasAudio: null })).toBe(false);
+  });
+
+  it('时段外静音', () => {
+    expect(stickerAudible({ ...base, postTime: 3.9 })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 9.1 })).toBe(false);
+  });
+
+  it('loop 随画面循环；freeze / once 只放一遍', () => {
+    expect(stickerAudible({ ...base, postTime: 8, playback: 'loop' })).toBe(true);
+    expect(stickerAudible({ ...base, postTime: 6.9, playback: 'freeze' })).toBe(true);
+    expect(stickerAudible({ ...base, postTime: 8, playback: 'freeze' })).toBe(false);
+    expect(stickerAudible({ ...base, postTime: 8, playback: 'once' })).toBe(false);
+  });
+
+  it('素材时长未知（还在预处理）时静音', () => {
+    expect(stickerAudible({ ...base, postTime: 5, mediaDuration: 0 })).toBe(false);
+  });
+});
+
+describe('stickerFinished', () => {
+  it('只有非 loop 且播到头才算结束', () => {
+    expect(stickerFinished(7.5, [4, 9], 20.6, 3, 'freeze')).toBe(true);
+    expect(stickerFinished(6.5, [4, 9], 20.6, 3, 'freeze')).toBe(false);
+    expect(stickerFinished(7.5, [4, 9], 20.6, 3, 'loop')).toBe(false);
+    expect(stickerFinished(7.5, [4, 9], 20.6, 0, 'freeze')).toBe(false);
   });
 });

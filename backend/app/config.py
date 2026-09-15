@@ -21,6 +21,8 @@ class Settings:
     redis_url: str
     access_code: str
     public_base_url: str
+    # Upload host that bypasses the CDN (contract §3 upload-ticket); "" = same-origin uploads.
+    upload_base_url: str
     worker_concurrency: int
     env: str
     ffmpeg_bin: str
@@ -53,6 +55,7 @@ def load_settings() -> Settings:
         redis_url=_env("REDIS_URL", "redis://localhost:6379/0"),
         access_code=_env("ACCESS_CODE", "").strip(),
         public_base_url=_env("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
+        upload_base_url=_env("UPLOAD_BASE_URL", "").strip().rstrip("/"),
         worker_concurrency=int(_env("WORKER_CONCURRENCY", "1")),
         env=_env("ENV", "prod").lower(),
         ffmpeg_bin=_env("FFMPEG_BIN", "ffmpeg"),

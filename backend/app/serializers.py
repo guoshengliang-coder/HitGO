@@ -147,6 +147,7 @@ def asset_out(asset: Asset) -> AssetOut:
         duration=asset.duration if is_video else None,
         fps=asset.fps if is_video else None,
         has_alpha=asset.has_alpha if is_video else None,
+        has_audio=asset.has_audio if is_video else None,
         poster_url=(
             storage.media_url(storage.asset_poster_path(asset.id))
             if is_video and ready

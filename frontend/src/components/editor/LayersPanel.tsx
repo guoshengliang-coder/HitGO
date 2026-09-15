@@ -134,6 +134,11 @@ const PLAYBACK_MODES: [Playback, string, string][] = [
   ['once', '播完消失', '播完后该图层不再出现'],
 ];
 
+const AUDIO_MODES: [boolean, string, string][] = [
+  [false, '不合成', '成片只保留源视频的声音'],
+  [true, '合成', '贴纸自带的声音叠加进成片（时段内，跟随播放方式）'],
+];
+
 function LayerProps({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
@@ -218,6 +223,25 @@ function LayerProps({ layer }: { layer: Layer }) {
                 </button>
               ))}
             </div>
+            {assets.find((a) => a.id === layer.asset_id)?.has_audio === true && (
+              <>
+                <span>音轨</span>
+                <div className="inline" role="radiogroup" aria-label="音轨">
+                  {AUDIO_MODES.map(([mix, label, title]) => (
+                    <button
+                      key={label}
+                      role="radio"
+                      aria-checked={!!layer.mix_audio === mix}
+                      className={`chip ${!!layer.mix_audio === mix ? 'active' : ''}`}
+                      title={title}
+                      onClick={() => updateLayer(layer.id, { mix_audio: mix })}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>

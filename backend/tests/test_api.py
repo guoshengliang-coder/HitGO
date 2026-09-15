@@ -840,3 +840,129 @@ def test_render_skips_a_video_sticker_that_is_not_ready(ready_video, db, client)
     spec = EditSpec.model_validate(valid_spec())
     # Not ready → not resolved → the graph builder warns and skips the layer.
     assert collect_assets(db, spec) == {}
+
+
+# --- sticker audio + upload host (HIG-6 / HIG-7) ------------------------------------
+
+
+def test_video_sticker_reports_has_audio_once_ready(client, db):
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("带声音.mp4", io.BytesIO(b"\x00" * 1024), "video/mp4"))],
+    )
+    a = r.json()[0]
+    assert a["has_audio"] is None  # not probed yet
+    asset = db.get(Asset, a["id"])
+    asset.status, asset.width, asset.height, asset.duration = "ready", 600, 240, 2.0
+    asset.has_audio, asset.preview_ext = True, "mp4"
+    db.commit()
+    assert client.get(f"/api/assets/{a['id']}").json()["has_audio"] is True
+
+
+def test_video_sticker_limit_is_one_gib():
+    from app.routers import assets as assets_router
+
+    assert assets_router.MAX_VIDEO_STICKER_BYTES == 1024 * 1024 * 1024
+    assert assets_router._human_mib(assets_router.MAX_VIDEO_STICKER_BYTES) == "1 GiB"
+    assert assets_router._human_mib(10 * 1024 * 1024) == "10 MiB"
+
+
+def test_mix_audio_is_accepted_and_kept_in_the_spec(client, ready_video):
+    spec = valid_spec()
+    spec["layers"][0]["mix_audio"] = True
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]["layers"][0]["mix_audio"] is True
+
+
+def test_upload_ticket_is_empty_without_an_upload_host(client):
+    assert client.post("/api/assets/upload-ticket").json() == {
+        "upload_url": None,
+        "ticket": None,
+        "expires_at": None,
+    }
+
+
+def test_upload_ticket_lets_the_cookieless_upload_host_accept_assets(monkeypatch, enqueued, png_bytes):
+    monkeypatch.setattr(settings, "access_code", "secret")
+    monkeypatch.setattr(settings, "upload_base_url", "https://up.example")
+    sticker = [("files", ("a.png", io.BytesIO(png_bytes), "image/png"))]
+    with TestClient(app, base_url="https://testserver") as c:
+        assert c.post("/api/assets/upload-ticket").status_code == 401  # gated like any API
+        c.post("/api/auth", json={"code": "secret"})
+        body = c.post("/api/assets/upload-ticket").json()
+        assert body["upload_url"] == "https://up.example/api/assets"
+        assert body["ticket"] and body["expires_at"].endswith("Z")
+        ticket = body["ticket"]
+
+    with TestClient(app, base_url="https://testserver") as bare:  # no cookie, like the upload host
+        assert bare.post("/api/assets", data={"type": "sticker"}, files=sticker).status_code == 401
+        bad = {"X-Upload-Ticket": ticket[:-1] + ("0" if ticket[-1] != "0" else "1")}
+        assert bare.post("/api/assets", data={"type": "sticker"}, files=sticker, headers=bad).status_code == 401
+        ok = bare.post(
+            "/api/assets", data={"type": "sticker"}, files=sticker, headers={"X-Upload-Ticket": ticket}
+        )
+        assert ok.status_code == 200, ok.text
+        # The ticket opens exactly one door.
+        assert bare.get("/api/assets", headers={"X-Upload-Ticket": ticket}).status_code == 401
+        assert bare.get("/api/batches", headers={"X-Upload-Ticket": ticket}).status_code == 401
+
+
+def test_upload_host_cors_allows_the_main_site(monkeypatch, enqueued):
+    from app.main import cors_origins, create_app
+
+    monkeypatch.setattr(settings, "env", "prod")
+    monkeypatch.setattr(settings, "access_code", "secret")
+    assert cors_origins() == []  # prod without an upload host: no CORS at all
+    monkeypatch.setattr(settings, "upload_base_url", "https://up.example")
+    assert cors_origins() == ["https://hitgo.example"]
+
+    with TestClient(create_app(), base_url="https://up.example") as c:
+        # Preflight carries neither cookie nor ticket; it must not hit the access gate.
+        r = c.options(
+            "/api/assets",
+            headers={
+                "Origin": "https://hitgo.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-upload-ticket",
+            },
+        )
+        assert r.status_code == 200
+        assert r.headers["access-control-allow-origin"] == "https://hitgo.example"
+        evil = c.options(
+            "/api/assets",
+            headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},
+        )
+        assert evil.headers.get("access-control-allow-origin") != "https://evil.example"
+
+
+def test_startup_backfills_has_audio_for_ready_video_stickers(enqueued, db):
+    from app.main import backfill_video_sticker_audio
+
+    db.add_all([
+        Asset(id="a_old", type="sticker", name="old.mp4", ext="mp4", kind="video", status="ready"),
+        Asset(id="a_known", type="sticker", name="k.mp4", ext="mp4", kind="video", status="ready", has_audio=False),
+        Asset(id="a_prep", type="sticker", name="p.mp4", ext="mp4", kind="video", status="preparing"),
+        Asset(id="a_png", type="sticker", name="s.png", ext="png"),
+    ])  # fmt: skip
+    db.commit()
+    backfill_video_sticker_audio()
+    assert enqueued.calls == [("hitgo.preprocess_asset", ("a_old",))]
+
+
+def test_failed_backfill_keeps_a_ready_sticker_in_service(monkeypatch, db):
+    from app.services import asset_preprocess
+
+    db.add(Asset(id="a_ready", type="sticker", name="r.mp4", ext="mp4", kind="video", status="ready"))
+    db.commit()
+
+    def boom(**_kw):
+        raise asset_preprocess.AssetPreprocessError("libopus missing")
+
+    monkeypatch.setattr(asset_preprocess, "run_asset_preprocess", boom)
+    worker.preprocess_asset.run("a_ready")
+    db.expire_all()
+    asset = db.get(Asset, "a_ready")
+    assert asset.status == "ready" and asset.error is None
+    assert asset.has_audio is False  # stops the startup backfill from retrying forever

@@ -79,6 +79,8 @@ export interface Asset {
   duration?: number | null;
   fps?: number | null;
   has_alpha?: boolean | null;
+  /** kind='video' 且预处理完才有：素材是否带音轨；null = 还没探测（旧素材等后端回填）。 */
+  has_audio?: boolean | null;
   poster_url?: string | null;
   preview_url?: string | null;
   family?: string;
@@ -191,6 +193,15 @@ export interface StickerLayer extends LayerBase {
   asset_id: string;
   /** 可选，缺省 'loop'。 */
   playback?: Playback;
+  /** 可选，缺省 false：视频贴纸自带的音轨是否合成进成片（契约 §2），只对 has_audio 的素材生效。 */
+  mix_audio?: boolean;
+}
+
+/** POST /api/assets/upload-ticket：大文件上传绕开 CDN 的上传子域名；未配置时全是 null。 */
+export interface UploadTicket {
+  upload_url: string | null;
+  ticket: string | null;
+  expires_at: string | null;
 }
 
 export type TextAlign = 'left' | 'center' | 'right';

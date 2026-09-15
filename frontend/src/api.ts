@@ -1,7 +1,8 @@
 // 类型化 API 客户端，路由与契约第 3 节一一对应。
 // VITE_MOCK=1 时由 src/mocks 提供内存实现（见 request()）。
 
-import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, Preset, PresetType, SafeZone, Video } from './types';
+import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, Preset, PresetType, SafeZone, UploadTicket, Video } from './types';
+import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
 
@@ -53,6 +54,7 @@ export function uploadWithProgress<T>(
   url: string,
   form: FormData,
   onProgress?: (fraction: number) => void,
+  headers: Record<string, string> = {},
 ): Promise<T> {
   if (MOCK && mockHandler) {
     onProgress?.(0.5);
@@ -64,6 +66,7 @@ export function uploadWithProgress<T>(
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
+    for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
@@ -85,7 +88,7 @@ export function uploadWithProgress<T>(
         reject(new ApiError(xhr.status, detail));
       }
     };
-    xhr.onerror = () => reject(new ApiError(0, '网络错误'));
+    xhr.onerror = () => reject(new ApiError(0, '网络错误：上传被中断，请检查网络后重试'));
     xhr.send(form);
   });
 }
@@ -118,10 +121,18 @@ export const api = {
   // 素材
   listAssets: (type: AssetType) => request<Asset[]>('GET', `/api/assets?type=${type}`),
   getAsset: (id: string) => request<Asset>('GET', `/api/assets/${id}`),
-  uploadAssets: (type: AssetType, files: File[], onProgress?: (f: number) => void) => {
+  uploadAssets: async (type: AssetType, files: File[], onProgress?: (f: number) => void) => {
+    const tooBig = oversizedUpload(type, files);
+    if (tooBig) throw new ApiError(400, tooBig);
     const form = new FormData();
     form.append('type', type);
     for (const f of files) form.append('files', f, f.name);
+    // 主域名走 CDN，单个请求超过 100 MB 会被直接拒掉；配置了上传子域名时直传过去（契约 §3）。
+    // 取票失败（旧后端没有这个接口等）就退回同源上传，小文件照样能传。
+    const target = await request<UploadTicket>('POST', '/api/assets/upload-ticket').catch(() => null);
+    if (target?.upload_url && target.ticket) {
+      return uploadWithProgress<Asset[]>(target.upload_url, form, onProgress, { 'X-Upload-Ticket': target.ticket });
+    }
     return uploadWithProgress<Asset[]>('/api/assets', form, onProgress);
   },
   deleteAsset: (id: string) => request<void>('DELETE', `/api/assets/${id}`),

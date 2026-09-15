@@ -8,6 +8,7 @@ the job, mirroring how source videos are ingested in ``routers/batches.py``.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -16,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import ids, worker
+from app.config import settings
 from app.db import get_db
 from app.models import (
     ASSET_FONT,
@@ -28,9 +30,9 @@ from app.models import (
     Asset,
 )
 from app.routers._common import enqueue_or_503
-from app.schemas import AssetOut
+from app.schemas import AssetOut, UploadTicketOut
 from app.serializers import asset_out
-from app.services import storage
+from app.services import storage, upload_ticket
 from app.services.ffprobe import ANIMATABLE_IMAGE_EXTS, VIDEO_STICKER_EXTS
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
@@ -43,10 +45,9 @@ ALLOWED = {ASSET_STICKER: STICKER_EXTS, ASSET_FONT: FONT_EXTS}
 # Contract §3: per-file upload ceilings. The prototype only ever holds a handful of small
 # overlays, and nginx's 2g body limit is far too loose to catch a mistaken drag-and-drop.
 MAX_BYTES = {ASSET_STICKER: 10 * 1024 * 1024, ASSET_FONT: 20 * 1024 * 1024}
-# Video stickers are decoded frame by frame on every render, so they get their own (larger
-# but still bounded) ceiling; the duration cap is enforced by the preprocessing task.
-MAX_VIDEO_STICKER_BYTES = 50 * 1024 * 1024
-MAX_VIDEO_STICKER_SECONDS = 60.0
+# Video stickers are real footage (often 100+ MB), so their ceiling only guards against a
+# runaway drop; files this size go through the upload host, not the CDN (contract §3).
+MAX_VIDEO_STICKER_BYTES = 1024 * 1024 * 1024
 
 
 def _ext(filename: str) -> str:
@@ -54,6 +55,8 @@ def _ext(filename: str) -> str:
 
 
 def _human_mib(size: int) -> str:
+    if size >= 1024 * 1024 * 1024 and size % (1024 * 1024 * 1024) == 0:
+        return f"{size // (1024 * 1024 * 1024)} GiB"
     return f"{size // (1024 * 1024)} MiB"
 
 
@@ -88,6 +91,23 @@ def list_assets(
     if source:
         stmt = stmt.where(Asset.source == source)
     return [asset_out(a) for a in db.scalars(stmt).all()]
+
+
+@router.post("/upload-ticket", response_model=UploadTicketOut)
+def create_upload_ticket() -> UploadTicketOut:
+    """Where the browser should send POST /api/assets (contract §3).
+
+    Reaching this endpoint already passed the access-code gate; the ticket lets the
+    cookie-less upload host accept the follow-up upload.
+    """
+    if not settings.upload_base_url:
+        return UploadTicketOut()
+    ticket, expires = upload_ticket.issue(settings.access_code)
+    return UploadTicketOut(
+        upload_url=f"{settings.upload_base_url}/api/assets",
+        ticket=ticket,
+        expires_at=datetime.fromtimestamp(expires, UTC).isoformat().replace("+00:00", "Z"),
+    )
 
 
 @router.get("/{asset_id}", response_model=AssetOut)

@@ -9,6 +9,9 @@ Filter graph order:
            → canvas fill (blur | color | crop; crop honours an optional source window first)
            → one overlay per layer (enable='between(t,a,b)' for timed layers)
            → format=yuv420p
+    audio: source audio (trimmed like the video) is mapped as-is, unless some video
+           sticker layer has mix_audio — then its audio is windowed, delayed and
+           amix'ed on top of the source audio (or of silence when there is none).
 """
 
 from __future__ import annotations
@@ -46,6 +49,8 @@ def encode_args(quality: str = "standard") -> list[str]:
 
 BLUR_RADIUS = "20:2"
 MIN_SEGMENT = 0.01  # seconds; shorter keep-segments are dropped
+# Every amix input is brought to one format so sources with odd layouts or rates mix cleanly.
+AUDIO_FORMAT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class ImageSource:
     duration: float | None = None  # seconds; None = still image
     decoder: str | None = None  # forced input decoder, e.g. "libvpx-vp9" for alpha WebM
     has_alpha: bool = True  # informational; drives the frontend hint, not the graph
+    has_audio: bool = False  # only consulted for layers with mix_audio
 
     @property
     def is_video(self) -> bool:
@@ -213,6 +219,7 @@ def build_render_command(
     # ---- 3. layers ----------------------------------------------------------
     layer_index = 0
     has_video_layer = False
+    sticker_audio: list[str] = []  # labels of sticker audio chains to mix in
     for layer in spec.layers:
         image = _resolve_layer_image(layer, assets, resolve_image_url, warnings)
         if image is None:
@@ -281,8 +288,37 @@ def build_render_command(
         chains.append(overlay + out)
         current = out
 
+        if image.is_video and image.has_audio and getattr(layer, "mix_audio", False):
+            window = t_end - t_start
+            if window > MIN_SEGMENT:
+                # Same timing as the picture: from the sticker's own 0 s at the window
+                # start, cut at the window end (the looped input repeats the audio too).
+                steps = [f"[{input_index}:a]asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+                delay_ms = round(t_start * 1000)
+                if delay_ms > 0:
+                    steps.append(f"adelay={delay_ms}:all=1")
+                steps.append(AUDIO_FORMAT)
+                label = f"[sa{len(sticker_audio) + 1}]"
+                chains.append(",".join(steps) + label)
+                sticker_audio.append(label)
+
     # ---- 4. final format ----------------------------------------------------
     chains.append(f"{current}format=yuv420p[vout]")
+
+    # ---- 5. sticker audio mix -------------------------------------------------
+    mixed_audio = bool(sticker_audio)
+    if mixed_audio:
+        if has_audio:
+            chains.append(f"{audio_label or '[0:a:0]'}{AUDIO_FORMAT}[abase]")
+        else:
+            # Silent bed so amix (duration=first) still spans the whole output.
+            chains.append(
+                f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}[abase]"
+            )
+        chains.append(
+            f"[abase]{''.join(sticker_audio)}amix=inputs={len(sticker_audio) + 1}"
+            ":duration=first:normalize=0:dropout_transition=0[aout]"
+        )
     filter_complex = ";".join(chains)
 
     # ---- argv ---------------------------------------------------------------
@@ -290,9 +326,11 @@ def build_render_command(
     for group in inputs:
         argv += group
     argv += ["-filter_complex", filter_complex, "-map", "[vout]"]
-    # An explicit -map disables automatic stream selection, so sticker audio is
-    # never picked up; no extra flag needed to drop it.
-    if has_audio:
+    # An explicit -map disables automatic stream selection, so sticker audio is only
+    # ever heard through the [aout] mix above.
+    if mixed_audio:
+        argv += ["-map", "[aout]"]
+    elif has_audio:
         argv += ["-map", audio_label if audio_label else "0:a:0"]
     else:
         argv += ["-an"]

@@ -125,6 +125,9 @@ def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
             log.info("preprocess: asset %s vanished", asset_id)
             return
         source = storage.asset_path(asset.id, asset.ext)
+        # A ready asset is only here for the has_audio backfill; failing that must not
+        # take a working sticker out of service.
+        was_ready = asset.status == ASSET_READY
         try:
             meta = asset_preprocess.run_asset_preprocess(
                 source=source,
@@ -133,6 +136,10 @@ def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("preprocess asset %s failed", asset_id)
+            if was_ready:
+                asset.has_audio = False  # stop the startup backfill from retrying forever
+                db.commit()
+                return
             asset.status = ASSET_FAILED
             asset.error = str(exc)[:4000]
             db.commit()
@@ -143,6 +150,7 @@ def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
         asset.duration = meta["duration"]
         asset.fps = meta["fps"]
         asset.has_alpha = meta["has_alpha"]
+        asset.has_audio = bool(meta.get("has_audio"))
         asset.decoder = meta["decoder"]
         asset.preview_ext = meta["preview_ext"]
         asset.status = ASSET_READY

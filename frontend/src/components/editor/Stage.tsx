@@ -14,7 +14,7 @@ import { canvasGuides, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
 import { useImage } from '../../lib/useImage';
 import { useVideo } from '../../lib/useVideo';
-import { stickerMediaTime } from '../../lib/stickerMedia';
+import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
 import { isVideoAsset, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
 const SNAP_PX = 6;
@@ -125,11 +125,20 @@ function LayerNode({
     const mediaDuration = sticker?.duration ?? stickerVideo.duration ?? 0;
     const sync = (postTime: number, playing: boolean) => {
       const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback);
+      // 贴纸音轨（mix_audio）：和成片同一套规则决定此刻出不出声；元素默认静音
+      stickerVideo.muted = !stickerAudible({
+        postTime, t: layer.t, postDuration, mediaDuration, playback, playing,
+        mixAudio: layer.mix_audio, hasAudio: sticker?.has_audio,
+      });
       if (at === null) {
         if (!stickerVideo.paused) stickerVideo.pause();
         return;
       }
-      if (playing) {
+      if (playing && stickerFinished(postTime, layer.t, postDuration, mediaDuration, playback)) {
+        // freeze 定格中：再 play() 浏览器会从头重播（画面闪、声音重来），停在最后一帧即可
+        if (!stickerVideo.paused) stickerVideo.pause();
+        if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
+      } else if (playing) {
         // 播放中只在明显漂移时纠正，否则每帧 seek 会让画面抖
         if (Math.abs(stickerVideo.currentTime - at) > 0.25) stickerVideo.currentTime = at;
         if (stickerVideo.paused) void stickerVideo.play().catch(() => undefined);
@@ -143,8 +152,9 @@ function LayerNode({
     return () => {
       unsub();
       stickerVideo.pause();
+      stickerVideo.muted = true;
     };
-  }, [stickerVideo, sticker?.duration, layer, postDuration]);
+  }, [stickerVideo, sticker?.duration, sticker?.has_audio, layer, postDuration]);
 
   // 文字图层：渲染 PNG 预览；未手动设宽时，width 跟随渲染尺寸（pngWidth / 1080）
   // 缓存 key 与 textImage 一致（text + style + spans），任一变化都重新渲染
