@@ -154,6 +154,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "padding": 0.01,                     // 相对画布高
         "align": "center", "line_height": 1.2,
         "shadow": { "color": "#00000080", "blur": 0.01, "offset": [0.002, 0.004] },   // 可选；blur / offset 相对画布高；null = 无阴影
+        "glow": { "color": "#FF7A1ACC", "blur": 0.014 },   // 可选；blur 相对画布高；null = 无发光
         "letter_spacing": 0.02,              // 可选，em 单位，可为负
         "background_width": null,            // 可选；背景块宽度，相对画布宽 (0,1]，1 = 通栏；null / 缺省 = 紧贴文字，文字按 align 在块内排
         "background_radius": null            // 可选；背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）
@@ -199,7 +200,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   贴纸自己的第 0 秒开始；`loop` 时随画面循环，`freeze` / `once` 只放一遍；时段结束处截断。源视频
   没有音轨时成片音轨就是贴纸音轨（其余时间静音）。编辑器预览按同样的规则出声。批量套用
   `style_only` 时 `mix_audio` 跟随 `asset_id` 一起复制。
-- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
+- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
 

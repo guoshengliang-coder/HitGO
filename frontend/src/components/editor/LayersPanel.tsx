@@ -4,7 +4,7 @@
 
 import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
 import { filterAssets, type AssetBucket } from '../../lib/assets';
 import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
@@ -49,6 +49,7 @@ type PresetGroup = 'text' | 'bubble';
 const presetGroup = (p: TextStylePreset): PresetGroup => (p.style.background ? 'bubble' : 'text');
 
 const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.002, 0.004] };
+const DEFAULT_GLOW: TextGlow = { color: '#FFD84DCC', blur: 0.012 };
 const DEFAULT_STROKE = { stroke_color: '#000000', stroke_width: 0.004 };
 const DEFAULT_BACKGROUND = '#00000099';
 
@@ -432,6 +433,22 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         <input type="color" className="color" value={hex6(st.stroke_color)} onChange={(e) => patchStyle({ stroke_color: e.target.value.toUpperCase() })} />
         <span>粗细</span>
         <Num value={st.stroke_width} min={0.001} max={0.05} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ stroke_width: v })} />
+      </Section>
+
+      <Section
+        title="发光"
+        enabled={!!st.glow}
+        onToggle={(on) => patchStyle({ glow: on ? { ...DEFAULT_GLOW } : null })}
+        onReset={() => patchStyle({ glow: { ...DEFAULT_GLOW } })}
+      >
+        {st.glow && (
+          <>
+            <span>颜色</span>
+            <input type="color" className="color" value={hex6(st.glow.color)} onChange={(e) => patchStyle({ glow: { ...st.glow!, color: e.target.value.toUpperCase() + (st.glow?.color.slice(7) || 'CC') } })} />
+            <span>强度</span>
+            <Num value={st.glow.blur} min={0.002} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ glow: { ...st.glow!, blur: v } })} />
+          </>
+        )}
       </Section>
 
       <Section

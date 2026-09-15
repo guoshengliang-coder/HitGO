@@ -41,6 +41,12 @@ export const BUILTIN_TEXT_PRESETS: TextStylePreset[] = [
     style: { color: '#FFFFFF', stroke_color: '#000000', stroke_width: 0, background: null, shadow: { color: '#00000099', blur: 0.012, offset: [0.003, 0.005] }, letter_spacing: 0 },
   },
   {
+    id: 'builtin:glow-title',
+    name: '发光标题',
+    builtin: true,
+    style: { font_weight: 900, color: '#FFFFFF', stroke_color: '#000000', stroke_width: 0, background: null, shadow: null, glow: { color: '#FF7A1ACC', blur: 0.014 }, letter_spacing: 0 },
+  },
+  {
     id: 'builtin:bubble',
     name: '半透明气泡',
     builtin: true,

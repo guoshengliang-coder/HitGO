@@ -106,6 +106,15 @@ class TextShadow(BaseModel):
     offset: tuple[float, float] = (0.0, 0.0)  # [x, y], relative to canvas height
 
 
+class TextGlow(BaseModel):
+    """Glow (centered blurred halo) of a text layer; rendered by the frontend into the PNG (contract §2)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    color: str = "#FFFFFF"
+    blur: float = Field(default=0.0, ge=0)  # halo radius, relative to canvas height
+
+
 class TextStyle(BaseModel):
     """Frontend-owned; the worker only consumes the pre-rendered PNG. Kept loose on purpose."""
 
@@ -122,6 +131,7 @@ class TextStyle(BaseModel):
     align: Literal["left", "center", "right"] | None = None
     line_height: float | None = Field(default=None, gt=0)
     shadow: TextShadow | None = None
+    glow: TextGlow | None = None
     letter_spacing: float | None = None  # em units; negative tightens
     background_width: float | None = Field(default=None, gt=0, le=1)  # relative to canvas width; None = hug text
     background_radius: float | None = Field(default=None, ge=0)  # relative to canvas height; None = auto
