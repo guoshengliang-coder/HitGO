@@ -6,6 +6,8 @@ import { BatchesPage } from './pages/BatchesPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { EditorPage } from './pages/EditorPage';
 import { OutputsPage } from './pages/OutputsPage';
+import { useEditor } from './store/editor';
+import { ThemeToggle } from './components/ui/ThemeToggle';
 
 type AuthState = 'checking' | 'ok' | 'required';
 
@@ -22,6 +24,8 @@ function Shell() {
         <NavLink to="/assets" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
           素材库
         </NavLink>
+        <span className="spacer" />
+        <ThemeToggle />
       </nav>
       <Outlet />
     </>
@@ -32,6 +36,12 @@ export default function App() {
   const [auth, setAuth] = useState<AuthState>('checking');
   const navigate = useNavigate();
   const location = useLocation();
+  const theme = useEditor((s) => s.theme);
+
+  // 主题类挂在 <html> 上：body 背景、原生控件（color-scheme）和所有页面一起生效
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
 
   const check = useCallback(async () => {
     try {
