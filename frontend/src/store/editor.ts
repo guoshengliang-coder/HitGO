@@ -493,7 +493,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setSelectedAll: (on) => set((s) => ({ selectedIds: on ? s.videos.map((v) => v.id) : [] })),
     setStep: (step) => {
       player.pause();
-      // 选中的图层 / 区间 / 音轨只属于原模块：文本模块里不能留着一个选中的贴纸
+      // 选中的图层 / 区间 / 音轨只属于原模块：切模块时不保留上个模块的选择
       set({ step, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
@@ -819,7 +819,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const clip = get().layerClipboard;
       const spec = get().currentSpec();
       if (!clip?.length || !spec) return;
-      // 文本 / 贴纸各管各的：粘进来的图层要能在当前模块里选中和编辑
+      // 文本 / 贴纸各管各的（字幕沿用文本）：粘进来的图层要能在当前模块里选中和编辑
       const want = layerTypeForStep(get().step);
       if (want && clip.some((l) => l.type !== want)) {
         set({ toast: `剪贴板里是${clip[0].type === 'text' ? '文字' : '贴纸'}图层，切到「${clip[0].type === 'text' ? '文本' : '贴纸'}」再粘贴`, toastAction: null });

@@ -11,6 +11,7 @@ const STEP_HINT: Record<Step, string> = {
   audio: '拖动音轨条调整时段 · Delete 删除音轨',
   text: '双击画布上的文字直接编辑 · 方向键微移',
   sticker: '拖动移动 · 角点缩放 · 方向键微移',
+  subtitle: '导入字幕后可在时间线调时段 · 双击画布编辑',
 };
 
 export function Transport() {

@@ -11,14 +11,14 @@ export interface Shortcut {
   keys: string[];
   label: string;
   group: ShortcutGroup;
-  /** 只在这些模块里生效；缺省 = 全局。「图层」组对文本、贴纸两个模块都生效。 */
+  /** 只在这些模块里生效；缺省 = 全局。「图层」组对文本、贴纸、字幕模块生效。 */
   steps?: Step[];
 }
 
 const TRIM: Step[] = ['trim'];
 const AUDIO: Step[] = ['audio'];
-const LAYER_STEPS: Step[] = ['text', 'sticker'];
-const TEXT: Step[] = ['text'];
+const LAYER_STEPS: Step[] = ['text', 'sticker', 'subtitle'];
+const TEXT: Step[] = ['text', 'subtitle'];
 
 export const SHORTCUTS: Shortcut[] = [
   // 全局
