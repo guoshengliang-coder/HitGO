@@ -401,3 +401,22 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
 .span-chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 11px; border: 1px solid var(--line); background: var(--panel); font-size: 11px; cursor: pointer; max-width: 100%; }
 .span-chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
 .span-chip .stext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- 属性检查器（剪映式分组） ---- */
+.inspector { gap: 8px; }
+.sec { border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel); }
+.sec-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; }
+.sec-head input[type='checkbox'] { margin: 0; }
+.sec-title { flex: 1; display: flex; align-items: center; justify-content: space-between; height: 24px; padding: 0 2px; border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; }
+.sec-title:disabled { color: var(--ink-3); cursor: default; }
+.sec-title svg { color: var(--ink-3); }
+.sec-body { padding: 4px 8px 8px; border-top: 1px solid var(--line-soft); }
+.sec-body .span2 { grid-column: 1 / -1; }
+.num-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.num-wrap .input.num { width: 62px; padding: 0 4px; }
+.num-step { width: 18px; height: 24px; padding: 0; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); font-size: 13px; line-height: 1; border-radius: 4px; cursor: pointer; }
+.num-step:hover { background: var(--panel-2); color: var(--ink); }
+.num-wrap .muted { margin-left: 2px; }
+.slider-row { flex-wrap: nowrap; }
+.slider-row input[type='range'] { flex: 1; min-width: 48px; height: 14px; accent-color: var(--accent); margin: 0; }
+.align-row { display: flex; gap: 2px; }
+.align-row .btn.gap { margin-left: 8px; }

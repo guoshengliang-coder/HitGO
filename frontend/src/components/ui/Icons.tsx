@@ -101,3 +101,23 @@ export const IconFit = () => (
 export const IconRatio = () => (
   <svg {...base}><rect x="2" y="3" width="12" height="10" rx="1" /><rect x="5.5" y="2" width="5" height="12" rx="1" strokeDasharray="1.5 1.5" /></svg>
 );
+
+/* 六向对齐（属性面板） */
+export const IconAlignLeft = () => (
+  <svg {...base}><path d="M2.5 1.5v13" /><rect x="4.5" y="4" width="8" height="3" rx="0.8" /><rect x="4.5" y="9" width="5" height="3" rx="0.8" /></svg>
+);
+export const IconAlignRight = () => (
+  <svg {...base}><path d="M13.5 1.5v13" /><rect x="3.5" y="4" width="8" height="3" rx="0.8" /><rect x="6.5" y="9" width="5" height="3" rx="0.8" /></svg>
+);
+export const IconAlignTop = () => (
+  <svg {...base}><path d="M1.5 2.5h13" /><rect x="4" y="4.5" width="3" height="8" rx="0.8" /><rect x="9" y="4.5" width="3" height="5" rx="0.8" /></svg>
+);
+export const IconAlignBottom = () => (
+  <svg {...base}><path d="M1.5 13.5h13" /><rect x="4" y="3.5" width="3" height="8" rx="0.8" /><rect x="9" y="6.5" width="3" height="5" rx="0.8" /></svg>
+);
+export const IconChevron = ({ open }: { open: boolean }) => (
+  <svg {...base} style={{ transform: open ? 'rotate(90deg)' : undefined, transition: 'transform 0.12s' }}><path d="M6 3.5l4 4.5-4 4.5" /></svg>
+);
+export const IconReset = () => (
+  <svg {...base}><path d="M3 8a5 5 0 1 0 1.5-3.6" /><path d="M3 2.5v3h3" /></svg>
+);
