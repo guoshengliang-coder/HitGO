@@ -4,7 +4,7 @@ import { Modal } from '../ui/Modal';
 import { formatKeys, SHORTCUTS, type ShortcutGroup } from '../../lib/shortcuts';
 import { useEditor } from '../../store/editor';
 
-const GROUPS: ShortcutGroup[] = ['全局', '剪辑', '图层', '时间轴'];
+const GROUPS: ShortcutGroup[] = ['全局', '剪辑', '音频', '图层', '时间轴'];
 
 export function ShortcutsModal() {
   const setOpen = useEditor((s) => s.setShortcutsOpen);

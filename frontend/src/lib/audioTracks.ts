@@ -2,7 +2,7 @@
 // 成片端（filtergraph.py）对每条 track：atrim=start=offset → atrim=end=时段长 → volume → afade in/out → adelay；
 // 这里给编辑器算"此刻素材该播到哪一秒 / 此刻的增益"，让 <audio> 的 currentTime / volume 跟成片一致。
 
-import type { AudioRole, AudioSpec, AudioTrack } from '../types';
+import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type AudioTrack, type Layer, type StickerLayer, type TimeWindow } from '../types';
 import { windowRange } from './stickerMedia';
 
 const EPS = 1e-6;
@@ -97,4 +97,32 @@ export function trackGain(postTime: number, track: AudioTrack, postDuration: num
   if (fadeIn > 0) gain *= Math.max(0, Math.min(1, elapsed / fadeIn));
   if (fadeOut > 0) gain *= Math.max(0, Math.min(1, (effective - elapsed) / fadeOut));
   return gain;
+}
+
+// ---- 音频模块（HIG-10）----
+
+/** 带声音的视频贴纸图层：音频模块的「贴纸音轨」分组和时间线共用。只有这些图层的 mix_audio 才有意义。 */
+export function stickerAudioLayers(layers: Layer[], assets: Asset[]): StickerLayer[] {
+  return layers.filter((l): l is StickerLayer => {
+    if (l.type !== 'sticker') return false;
+    const asset = assets.find((a) => a.id === l.asset_id);
+    return isVideoAsset(asset) && asset?.has_audio === true;
+  });
+}
+
+/** 时间线上拖动音轨时的吸附点（剪后时间）：0、剪后时长、播放头、其他音轨和图层的区间端点。 */
+export function trackSnapCandidates(opts: { tracks: AudioTrack[]; layers: Layer[]; excludeTrackId: string; postDuration: number; playhead: number }): number[] {
+  const { tracks, layers, excludeTrackId, postDuration, playhead } = opts;
+  const ends = (t: TimeWindow) => (t === 'all' ? [] : t);
+  return [0, postDuration, playhead, ...tracks.flatMap((t) => (t.id === excludeTrackId ? [] : ends(t.t))), ...layers.flatMap((l) => ends(l.t))];
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** 时间线轨道头的「全程 / 区间」切换：全程 → 从播放头起 3 秒（截到剪后时长，至少 0.1 秒）；区间 → 全程。 */
+export function toggleTrackWindow(t: TimeWindow, playhead: number, postDuration: number): TimeWindow {
+  if (t !== 'all') return 'all';
+  const d = Math.max(0.1, postDuration);
+  const start = Math.max(0, Math.min(playhead, d - 0.1));
+  return [round2(start), round2(Math.max(start + 0.1, Math.min(d, start + 3)))];
 }
