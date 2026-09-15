@@ -333,6 +333,20 @@ class AudioSpec(BaseModel):
         return v
 
 
+COVER_MIN_DURATION = 0.1
+COVER_MAX_DURATION = 10.0
+
+
+class CoverSpec(BaseModel):
+    """Contract §2 ``cover``: an image or video inserted before the (trimmed) main video."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    asset_id: str = Field(min_length=1)  # Asset.type = "sticker", image or video
+    # Seconds an image cover stays on screen; a video cover always plays its own full length.
+    duration: float = Field(default=1.0, ge=COVER_MIN_DURATION, le=COVER_MAX_DURATION)
+
+
 class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -341,6 +355,7 @@ class EditSpec(BaseModel):
     layers: list[Layer] = Field(default_factory=list)
     outputs: list[OutputVariant] = Field(min_length=1)
     audio: AudioSpec | None = None  # None = keep the source track as-is (pre-audio behaviour)
+    cover: CoverSpec | None = None  # None = no cover (pre-cover behaviour)
 
     @model_validator(mode="after")
     def _cross_checks(self) -> EditSpec:
@@ -394,7 +409,7 @@ class SpecIn(BaseModel):
 class ApplyIn(BaseModel):
     source_video_id: str
     target_video_ids: list[str] = Field(min_length=1)
-    modules: list[Literal["trim", "layers", "outputs", "audio"]] = Field(min_length=1)
+    modules: list[Literal["trim", "layers", "outputs", "audio", "cover"]] = Field(min_length=1)
     layer_mode: LayerMode = "replace"
 
 

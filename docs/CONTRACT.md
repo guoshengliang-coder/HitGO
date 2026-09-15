@@ -192,6 +192,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "fade_in": 0, "fade_out": 0          // 可选，缺省 0：秒；两者之和不能超过时段长
       }
     ]
+  },
+  "cover": {                                 // 可选；缺省 null = 没有封面（即此前的行为）
+    "asset_id": "a_c0v3r1",                  // Asset.type = "sticker"：图片或视频（kind = image | video）
+    "duration": 1.0                          // 可选，缺省 1.0：秒，0.1–10；只对图片封面生效
   }
 }
 ```
@@ -232,6 +236,19 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - `asset_id` 对应的素材不存在、不是音频、还没 `ready`，或 `offset` 不小于素材时长时，worker 跳过该 track
     并在 job.error 里记警告（不失败）。track `id` 在同一 spec 内唯一。
   - 批量套用 `audio` 模块时整块深拷贝；`t` 基于剪后时间轴，不做裁剪（同图层）。
+- **封面 `cover`**（可选，缺省 null，HIG-9）：在成片最前面插入一段封面，之后接剪辑后的正片。
+  - 素材是 `type = "sticker"` 的图片或视频（含多帧 gif / webp）。图片封面停留 `duration` 秒（0.1–10，缺省 1.0）；
+    视频封面整段播放一遍，时长取素材自身 `duration`，忽略 `duration` 字段。
+  - **计时不变**：`trim.remove` 仍基于源时间轴，`layers[].t` 与 `audio.tracks[].t` 仍基于剪后（正片）时间轴，
+    从正片第一帧起算。封面期间只有封面画面与封面声音，不叠图层、不放 BGM / 口播、不出源音轨。
+    成片时长 = 封面时长 + 剪后时长。
+  - **画面**：封面按输出变体的 `fill`（`blur` / `color` / `crop`）铺到画幅上；`crop` 窗口是源画面上的比例，
+    对封面不生效（封面一律 cover 居中裁切）。帧率对齐到源视频。
+  - **声音**：视频封面带音轨（`has_audio = true`）时原音量保留，不受 `source_volume` 影响；图片封面或无声视频
+    封面期间静音。
+  - 素材不存在、不是贴纸素材或还没 `ready` 时，worker 不插封面，在 job.error 里记警告（不失败）。
+  - 编辑器预览同样先放封面再接正片；时间线上封面块排在正片之前。
+  - 批量套用 `cover` 模块时整块深拷贝；源没有封面时目标的也被清掉。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -246,7 +263,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/batches/{id}` → `Batch & { videos: Video[] }`
 - `DELETE /api/batches/{id}` → 204（删除视频、任务、文件）
 - `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov）→ `Video[]`，每条立即入队预处理
-- `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）。
+- `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
     - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | spans | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
@@ -262,7 +279,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
 - `GET /api/assets/{id}` → `Asset` / 404（前端轮询视频贴纸 / 音频素材的 `preparing → ready`）
 - `POST /api/assets` multipart：`type`，`files` → `Asset[]`。只产出 `source = "upload"` 的素材。
-  - `sticker`：`png / webp / gif` 与 `mp4 / mov / webm`。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
+  - `sticker`：`png / jpg / jpeg / webp / gif` 与 `mp4 / mov / webm`（jpg 没有透明通道，主要给封面用）。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
     立即入队预处理并以 `status = "preparing"` 返回。
   - `font`：`ttf / otf / woff2`
   - `audio`：`mp3 / wav / m4a`，入队探测时长并以 `status = "preparing"` 返回。
@@ -394,10 +411,18 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
      `source_volume = 0` 且没有任何叠加音轨时 `-an`。存在 track 时输出端同样补 `-t <剪后时长>`。spec 没有 `audio`
      块时命令与此前完全一致。
    - 输出 `format=yuv420p`；本次渲染存在视频图层时，输出端补 `-t <剪后时长>` 兜底成片时长
+   - 封面 `cover`（第 2 节）：以上正片画面接 `setsar=1,trim=end=剪后时长`，正片声音统一成一路带标签的
+     `aformat=48000/stereo,apad,atrim=end=剪后时长`（原本直接映射 `0:a:0` 的也走这里；原本 `-an` 的改用
+     `anullsrc` 截到剪后时长）。封面输入：图片 `-loop 1 -framerate <源 fps> -t N -i`，视频照常输入（带透明的
+     WebM 同样强制解码器）；画面按同一 `fill` 铺满画幅（blur / color 同上，crop 不带窗口），接
+     `fps=<源 fps>,setsar=1,format=yuv420p,trim=end=N,setpts=PTS-STARTPTS`；声音为视频封面的
+     `[i:a]asetpts=PTS-STARTPTS,aformat,apad,atrim=end=N`，否则 `anullsrc` 截到 N。最后
+     `[封面v][封面a][正片v][正片a]concat=n=2:v=1:a=1` 输出。成片总时长 = N + 剪后时长（进度与 `-t` 都用它）。
+     spec 没有 `cover` 时命令与此前完全一致。
 3. 编码（按输出变体的 `quality`，1080p）：
    - `standard`（默认）：`-c:v libx264 -preset veryfast -crf 20 -maxrate 8M -bufsize 16M -c:a aac -b:a 128k -movflags +faststart`
    - `high`：`-c:v libx264 -preset medium -crf 19 -maxrate 10M -bufsize 20M -c:a aac -b:a 128k -movflags +faststart`
-4. 进度：`-progress pipe:1 -nostats`，解析 `out_time_us` / 剪后总时长 → `progress`，每秒最多写库一次。
+4. 进度：`-progress pipe:1 -nostats`，解析 `out_time_us` / 成片总时长（剪后时长 + 封面时长）→ `progress`，每秒最多写库一次。
 5. 完成：ffprobe 成片得到 duration / 宽高 / size，写 `output`、`callback`，状态 done；失败写 `error`（截取 ffmpeg stderr 最后 40 行）。
 
 ## 7. 运行方式

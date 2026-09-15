@@ -22,6 +22,7 @@ from app.db import utcnow
 from app.models import (
     ASSET_AUDIO,
     ASSET_READY,
+    ASSET_STICKER,
     ASSET_VIDEO,
     JOB_DONE,
     JOB_FAILED,
@@ -33,7 +34,13 @@ from app.models import (
 )
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
-from app.services.filtergraph import AudioSource, ImageSource, RenderPlan, build_render_command
+from app.services.filtergraph import (
+    AudioSource,
+    CoverSource,
+    ImageSource,
+    RenderPlan,
+    build_render_command,
+)
 
 STDERR_TAIL_LINES = 40
 PROGRESS_MIN_INTERVAL = 1.0  # seconds between DB writes
@@ -145,8 +152,13 @@ def collect_assets(db: Session, spec: EditSpec) -> dict[str, ImageSource]:
     ids = {layer.asset_id for layer in spec.layers if layer.type == "sticker"}
     if not ids:
         return {}
+    return collect_assets_by_id(db, db.query(Asset).filter(Asset.id.in_(ids)).all())
+
+
+def collect_assets_by_id(db: Session, assets: list[Asset]) -> dict[str, ImageSource]:
+    """Resolve sticker assets to renderable media; unready videos and missing files are left out."""
     result: dict[str, ImageSource] = {}
-    for asset in db.query(Asset).filter(Asset.id.in_(ids)).all():
+    for asset in assets:
         path = storage.asset_path(asset.id, asset.ext)
         if asset.kind == ASSET_VIDEO:
             # Still preparing (or failed): leave it out, the graph builder warns and skips.
@@ -168,6 +180,19 @@ def collect_assets(db: Session, spec: EditSpec) -> dict[str, ImageSource]:
         if image is not None:
             result[asset.id] = image
     return result
+
+
+def collect_cover(db: Session, spec: EditSpec) -> CoverSource | None:
+    """The ready sticker asset behind ``spec.cover``; None lets the builder warn and skip it."""
+    if spec.cover is None:
+        return None
+    asset = db.get(Asset, spec.cover.asset_id)
+    if asset is None or asset.type != ASSET_STICKER:
+        return None
+    media = collect_assets_by_id(db, [asset]).get(asset.id)
+    if media is None:
+        return None
+    return CoverSource(media, image_duration=spec.cover.duration)
 
 
 def collect_audio(db: Session, spec: EditSpec) -> dict[str, AudioSource]:
@@ -198,7 +223,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         raise RenderError(f"编辑参数中没有输出变体 {job.variant_key}")
     return build_render_command(
         spec,
-        {"duration": video.duration, "has_audio": video.has_audio},
+        {"duration": video.duration, "has_audio": video.has_audio, "fps": video.fps},
         collect_assets(db, spec),
         variant,
         source_path=str(storage.source_path(video.batch_id, video.id, video.source_ext)),
@@ -206,6 +231,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         resolve_image_url=resolve_image_url,
         ffmpeg_bin=settings.ffmpeg_bin,
         audio_assets=collect_audio(db, spec),
+        cover=collect_cover(db, spec),
     )
 
 
