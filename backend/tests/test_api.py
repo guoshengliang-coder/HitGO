@@ -1081,3 +1081,28 @@ def test_video_sticker_preview_url_changes_when_the_file_is_regenerated(client, 
     second = client.get("/api/assets/a_regen").json()
     assert second["preview_url"] == "/media/assets/a_regen.preview.webm?v=1700000500"
     assert storage.media_url_to_path(second["preview_url"]) == preview.resolve()
+
+
+def test_startup_seeds_sample_audio_as_builtin_assets(monkeypatch, enqueued, db, tmp_path, png_bytes):
+    """samples/audio/*.mp3 become builtin audio assets that are probed like uploads (contract §1)."""
+    from app.config import settings
+    from app.main import seed_builtin_assets
+
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "bgm.mp3").write_bytes(b"\x00" * 512)
+    (tmp_path / "audio" / "notes.txt").write_text("ignored")
+    (tmp_path / "stickers").mkdir()
+    (tmp_path / "stickers" / "s.png").write_bytes(png_bytes)
+    monkeypatch.setattr(settings, "samples_dir", tmp_path)
+
+    seed_builtin_assets()
+    rows = {a.name: a for a in db.query(Asset).all()}
+    assert set(rows) == {"bgm.mp3", "s.png"}
+    audio = rows["bgm.mp3"]
+    assert (audio.type, audio.kind, audio.status, audio.source) == ("audio", "audio", "preparing", "builtin")
+    assert audio.family is None and storage.asset_path(audio.id, "mp3").is_file()
+    assert enqueued.calls == [("hitgo.preprocess_asset", (audio.id,))]
+
+    # Idempotent: a second startup does not import the same files again.
+    seed_builtin_assets()
+    assert db.query(Asset).count() == 2
