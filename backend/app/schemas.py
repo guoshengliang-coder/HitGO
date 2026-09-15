@@ -282,6 +282,57 @@ class Trim(BaseModel):
         return [(float(a), float(b)) for a, b in ranges]
 
 
+AudioRole = Literal["bgm", "voice"]
+
+
+class AudioTrack(BaseModel):
+    """One BGM / voice-over track mixed into the output (contract §2 ``audio.tracks[]``)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(min_length=1, max_length=64)
+    asset_id: str = Field(min_length=1)
+    role: AudioRole = "bgm"  # UI grouping only; the worker treats every track alike
+    t: Literal["all"] | TimeWindow = "all"
+    offset: float = Field(default=0.0, ge=0)  # seconds into the file
+    volume: float = Field(default=1.0, ge=0, le=1)  # ≤ 1 so the browser preview can match it
+    loop: bool = False
+    fade_in: float = Field(default=0.0, ge=0)
+    fade_out: float = Field(default=0.0, ge=0)
+
+    @field_validator("t")
+    @classmethod
+    def _validate_t(cls, v: Any) -> Any:
+        return _check_time_window(v)
+
+    @model_validator(mode="after")
+    def _cross_checks(self) -> AudioTrack:
+        if self.loop and self.offset > 0:
+            # -stream_loop restarts at the file start, which would contradict the offset.
+            raise ValueError(f"音轨 {self.id}：循环播放时起始偏移必须为 0")
+        if self.t != "all" and self.fade_in + self.fade_out > (self.t[1] - self.t[0]) + 1e-6:
+            raise ValueError(f"音轨 {self.id}：淡入加淡出不能超过时段长度")
+        return self
+
+
+class AudioSpec(BaseModel):
+    """Contract §2 ``audio``: source track gain plus the mixed-in tracks."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_volume: float = Field(default=1.0, ge=0, le=1)
+    tracks: list[AudioTrack] = Field(default_factory=list)
+
+    @field_validator("tracks")
+    @classmethod
+    def _unique_ids(cls, v: list[AudioTrack]) -> list[AudioTrack]:
+        ids = [t.id for t in v]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"音轨 id 重复：{', '.join(dupes)}")
+        return v
+
+
 class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -289,6 +340,7 @@ class EditSpec(BaseModel):
     trim: Trim = Field(default_factory=Trim)
     layers: list[Layer] = Field(default_factory=list)
     outputs: list[OutputVariant] = Field(min_length=1)
+    audio: AudioSpec | None = None  # None = keep the source track as-is (pre-audio behaviour)
 
     @model_validator(mode="after")
     def _cross_checks(self) -> EditSpec:
@@ -342,7 +394,7 @@ class SpecIn(BaseModel):
 class ApplyIn(BaseModel):
     source_video_id: str
     target_video_ids: list[str] = Field(min_length=1)
-    modules: list[Literal["trim", "layers", "outputs"]] = Field(min_length=1)
+    modules: list[Literal["trim", "layers", "outputs", "audio"]] = Field(min_length=1)
     layer_mode: LayerMode = "replace"
 
 

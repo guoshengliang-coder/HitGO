@@ -138,3 +138,32 @@ def test_preview_of_a_silent_clip_still_succeeds(tmp_path):
     preview = tmp_path / "silent.preview.mp4"
     subprocess.run(asset_preprocess.preview_args(src, preview, False), check=True, capture_output=True, timeout=180)
     assert ffprobe.probe(preview)["has_audio"] is False
+
+
+# --- audio assets ------------------------------------------------------------------
+
+
+def test_parse_audio_probe_reads_the_container_duration():
+    raw = {"format": {"duration": "24.512"}, "streams": [{"codec_type": "audio", "codec_name": "mp3", "duration": "24.6"}]}
+    assert ffprobe.parse_audio_probe(raw) == {"duration": 24.512, "codec": "mp3"}
+    # Falls back to the stream when the container has none.
+    raw["format"] = {}
+    assert ffprobe.parse_audio_probe(raw)["duration"] == 24.6
+
+
+def test_parse_audio_probe_rejects_files_without_an_audio_stream():
+    with pytest.raises(ffprobe.ProbeError, match="没有音频流"):
+        ffprobe.parse_audio_probe({"format": {"duration": "3"}, "streams": [{"codec_type": "video"}]})
+    with pytest.raises(ffprobe.ProbeError, match="时长"):
+        ffprobe.parse_audio_probe({"format": {}, "streams": [{"codec_type": "audio"}]})
+
+
+@needs_ffmpeg
+def test_probe_audio_reads_a_real_wav(tmp_path):
+    src = tmp_path / "bgm.wav"
+    subprocess.run(
+        [FFMPEG, "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2.5", str(src)],
+        check=True, capture_output=True, timeout=180,
+    )  # fmt: skip
+    meta = ffprobe.probe_audio(src)
+    assert abs(meta["duration"] - 2.5) < 0.05 and meta["codec"].startswith("pcm")

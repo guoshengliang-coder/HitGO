@@ -5,8 +5,9 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
-import { emptySpec } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
+import { emptySpec, isAssetReady } from '../types';
+import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { nudgePlacement, round4 } from '../lib/layout';
@@ -19,7 +20,7 @@ import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 
 export type Step = 1 | 2 | 3;
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
-export type ApplyModule = 'trim' | 'layers' | 'outputs';
+export type ApplyModule = 'trim' | 'layers' | 'outputs' | 'audio';
 export type SafeZoneView = 'frames' | 'overlay' | 'none';
 export interface ToastAction {
   label: string;
@@ -160,6 +161,15 @@ export interface EditorState {
   canRemoveBefore: () => boolean;
   canRemoveAfter: () => boolean;
 
+  // 音频（契约 §2 audio）
+  selectedTrackId: string | null;
+  setSelectedTrack: (id: string | null) => void;
+  setSourceVolume: (v: number) => void;
+  /** 加一条音轨（素材须 ready）；按角色套默认值，返回新 id。 */
+  addAudioTrack: (assetId: string, role: AudioRole) => string | null;
+  updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
+  removeAudioTrack: (id: string) => void;
+
   // 图层
   addLayer: (layer: Layer) => void;
   /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
@@ -221,6 +231,11 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
     }
   };
   assetPollTimer = window.setTimeout(tick, 2000);
+}
+
+function ensureAudio(spec: EditSpec): AudioSpec {
+  if (!spec.audio) spec.audio = { source_volume: 1, tracks: [] };
+  return spec.audio;
 }
 
 function ensureHistory(h: Record<string, History>, id: string): History {
@@ -379,8 +394,8 @@ export const useEditor = create<EditorState>((set, get) => {
 
     loadAssets: async () => {
       try {
-        const [stickers, fonts] = await Promise.all([api.listAssets('sticker'), api.listAssets('font')]);
-        set({ assets: [...stickers, ...fonts] });
+        const [stickers, fonts, audio] = await Promise.all([api.listAssets('sticker'), api.listAssets('font'), api.listAssets('audio').catch(() => [] as Asset[])]);
+        set({ assets: [...stickers, ...fonts, ...audio] });
         void ensureFontsLoaded(fonts);
         pollPreparingAssets(set, get);
       } catch {
@@ -623,6 +638,42 @@ export const useEditor = create<EditorState>((set, get) => {
         spec.trim.remove = spec.trim.remove.filter((_, i) => i !== index);
       });
       set({ selectedRangeIndex: null });
+    },
+
+    selectedTrackId: null,
+    setSelectedTrack: (id) => set({ selectedTrackId: id }),
+    setSourceVolume: (v) => {
+      get().updateSpec((spec) => {
+        const audio = ensureAudio(spec);
+        audio.source_volume = Math.max(0, Math.min(1, Math.round(v * 100) / 100));
+      });
+    },
+    addAudioTrack: (assetId, role) => {
+      const asset = get().assets.find((a) => a.id === assetId);
+      if (!isAssetReady(asset)) return null; // 还在探测时长：加进去也放不出来
+      const id = newTrackId();
+      get().updateSpec((spec) => {
+        ensureAudio(spec).tracks.push({ id, asset_id: assetId, role, t: 'all', ...trackDefaultsFor(role) });
+      });
+      set({ selectedTrackId: id });
+      return id;
+    },
+    updateAudioTrack: (id, patch, history = true) => {
+      get().updateSpec(
+        (spec) => {
+          const t = spec.audio?.tracks.find((x) => x.id === id);
+          if (!t) return;
+          Object.assign(t, patch);
+          if (t.loop) t.offset = 0; // 契约：循环时起始偏移必须为 0
+        },
+        { history },
+      );
+    },
+    removeAudioTrack: (id) => {
+      get().updateSpec((spec) => {
+        if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
+      });
+      if (get().selectedTrackId === id) set({ selectedTrackId: null });
     },
 
     addLayer: (layer) => {

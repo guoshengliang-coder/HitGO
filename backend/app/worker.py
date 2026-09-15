@@ -15,6 +15,7 @@ from kombu.exceptions import OperationalError
 from app.config import settings
 from app.db import SessionLocal, utcnow
 from app.models import (
+    ASSET_AUDIO,
     ASSET_FAILED,
     ASSET_READY,
     VIDEO_FAILED,
@@ -23,7 +24,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.services import asset_preprocess, preprocess, render, storage
+from app.services import asset_preprocess, ffprobe, preprocess, render, storage
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +126,22 @@ def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
             log.info("preprocess: asset %s vanished", asset_id)
             return
         source = storage.asset_path(asset.id, asset.ext)
+        if asset.type == ASSET_AUDIO:
+            # Audio assets only need their duration (contract §6); no poster / preview.
+            try:
+                meta = ffprobe.probe_audio(source)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("preprocess audio %s failed", asset_id)
+                asset.status = ASSET_FAILED
+                asset.error = str(exc)[:4000]
+                db.commit()
+                return
+            asset.duration = meta["duration"]
+            asset.has_audio = True
+            asset.status = ASSET_READY
+            asset.error = None
+            db.commit()
+            return
         # A ready asset is only here for the has_audio backfill; failing that must not
         # take a working sticker out of service.
         was_ready = asset.status == ASSET_READY

@@ -3,6 +3,7 @@
 ``probe`` → {width, height, duration, fps, has_audio, codec, size} for source videos.
 ``probe_layer_asset`` additionally answers the two questions a sticker layer needs:
 how long is it, and does it carry an alpha channel (see ALPHA_PIX_FMTS / alpha_from).
+``probe_audio`` → {duration, codec} for audio assets (BGM / voice-over).
 """
 
 from __future__ import annotations
@@ -104,7 +105,26 @@ def parse_probe(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def probe(path: str | Path) -> dict[str, Any]:
+def parse_audio_probe(raw: dict[str, Any]) -> dict[str, Any]:
+    """{duration, codec} of an audio asset (contract §6); rejects files without an audio stream."""
+    streams = raw.get("streams") or []
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    if audio is None:
+        raise ProbeError("文件里没有音频流")
+    duration = None
+    for candidate in ((raw.get("format") or {}).get("duration"), audio.get("duration")):
+        try:
+            if candidate is not None:
+                duration = float(candidate)
+                break
+        except (TypeError, ValueError):
+            continue
+    if not duration or duration <= 0:
+        raise ProbeError("无法读取音频时长")
+    return {"duration": round(duration, 3), "codec": audio.get("codec_name")}
+
+
+def _run_probe(path: str | Path) -> dict[str, Any]:
     try:
         proc = subprocess.run(
             probe_args(path), capture_output=True, text=True, timeout=120, check=False
@@ -117,10 +137,18 @@ def probe(path: str | Path) -> dict[str, Any]:
         tail = (proc.stderr or "").strip().splitlines()[-5:]
         raise ProbeError("ffprobe 失败：" + (" | ".join(tail) or f"exit {proc.returncode}"))
     try:
-        raw = json.loads(proc.stdout or "{}")
+        return json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
         raise ProbeError("ffprobe 输出无法解析") from exc
-    return parse_probe(raw)
+
+
+def probe_audio(path: str | Path) -> dict[str, Any]:
+    """Duration of an audio asset (mp3 / wav / m4a)."""
+    return parse_audio_probe(_run_probe(path))
+
+
+def probe(path: str | Path) -> dict[str, Any]:
+    return parse_probe(_run_probe(path))
 
 
 # ---------------------------------------------------------------------------

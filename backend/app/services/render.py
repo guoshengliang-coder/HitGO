@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import utcnow
 from app.models import (
+    ASSET_AUDIO,
     ASSET_READY,
     ASSET_VIDEO,
     JOB_DONE,
@@ -32,7 +33,7 @@ from app.models import (
 )
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
-from app.services.filtergraph import ImageSource, RenderPlan, build_render_command
+from app.services.filtergraph import AudioSource, ImageSource, RenderPlan, build_render_command
 
 STDERR_TAIL_LINES = 40
 PROGRESS_MIN_INTERVAL = 1.0  # seconds between DB writes
@@ -169,6 +170,22 @@ def collect_assets(db: Session, spec: EditSpec) -> dict[str, ImageSource]:
     return result
 
 
+def collect_audio(db: Session, spec: EditSpec) -> dict[str, AudioSource]:
+    """Ready audio assets referenced by ``audio.tracks``; missing ones are warned about by the builder."""
+    if spec.audio is None or not spec.audio.tracks:
+        return {}
+    ids = {track.asset_id for track in spec.audio.tracks}
+    result: dict[str, AudioSource] = {}
+    for asset in db.query(Asset).filter(Asset.id.in_(ids), Asset.type == ASSET_AUDIO).all():
+        if asset.status != ASSET_READY or not asset.duration:
+            continue
+        path = storage.asset_path(asset.id, asset.ext)
+        if not path.is_file():
+            continue
+        result[asset.id] = AudioSource(str(path), float(asset.duration))
+    return result
+
+
 def resolve_image_url(url: str) -> ImageSource | None:
     path = storage.media_url_to_path(url)
     return _image_from_file(path) if path else None
@@ -188,6 +205,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         output_path=str(storage.tmp_output_path(job.id)),
         resolve_image_url=resolve_image_url,
         ffmpeg_bin=settings.ffmpeg_bin,
+        audio_assets=collect_audio(db, spec),
     )
 
 

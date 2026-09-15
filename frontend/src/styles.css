@@ -480,3 +480,24 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .slider-row input[type='range'] { flex: 1; min-width: 48px; height: 14px; accent-color: var(--accent); margin: 0; }
 .align-row { display: flex; gap: 2px; }
 .align-row .btn.gap { margin-left: 8px; }
+
+/* ---- 音频（契约 §2 audio）：剪辑步骤的音轨面板 + 时间轴音轨行 + 音频素材卡 ---- */
+.tl-audio { height: 26px; }
+.tl-audio .lbl { color: var(--ink-2); }
+.tl-audio.muted .lbl { color: var(--ink-3); text-decoration: line-through; }
+.tl-audio.selected .lbl { color: var(--accent-ink); font-weight: 500; }
+.tl-bar.audio { top: 4px; bottom: 4px; background: #dcefe3; border-color: #7fbf98; color: #2f5f42; line-height: 16px; }
+.tl-bar.audio.voice { background: #f7e6d3; border-color: #d9a56b; color: #6a4a22; }
+.tl-bar.audio.muted { opacity: 0.35; }
+.tl-bar.audio.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+.track-list { display: flex; flex-direction: column; gap: 6px; }
+.track-item { border: 1px solid var(--line-soft); border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.track-item.selected { border-color: var(--accent); background: var(--accent-soft); }
+.track-item .track-head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.track-item .track-head .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-item .track-head .role { font-size: 10px; padding: 0 5px; border-radius: 3px; background: #dcefe3; color: #2f5f42; flex: none; }
+.track-item .track-head .role.voice { background: #f7e6d3; color: #6a4a22; }
+.track-item .prop-grid { grid-template-columns: 56px 1fr; }
+.asset-card .thumb.audio { flex-direction: column; gap: 6px; padding: 0 8px; }
+.asset-card .thumb.audio audio { width: 100%; height: 32px; }
+.sticker-grid .asset-card .thumb.audio { height: 64px; }

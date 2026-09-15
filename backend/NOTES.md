@@ -54,8 +54,10 @@ Decisions taken where the contract was silent or ambiguous. Everything else foll
   - **VP8/VP9 alpha in WebM needs a forced decoder** (`-c:v libvpx`/`libvpx-vp9` before that `-i`); the default
     decoder drops the alpha channel silently and the sticker renders as an opaque black box. ProRes 4444,
     QuickTime RLE and HEVC-with-alpha MOVs are fine with the default decoder.
-  - Sticker audio is never mapped: an explicit `-map` disables ffmpeg's automatic stream selection, so no extra
-    flag is needed to drop it.
+  - An explicit `-map` disables ffmpeg's automatic stream selection, so sticker audio is only heard when a layer
+    sets `mix_audio` and the graph mixes it into `[aout]` (HIG-7); the same `amix` carries the `audio.tracks`
+    BGM / voice-over inputs, with `[abase]` (gain-adjusted source or an `anullsrc` bed) always first so
+    `duration=first` pins the length.
 - `rotate`, `scale` and `colorchannelmixer` apply to video layers unchanged (per frame). Cost measured on
   20s/1080×1920: 3 still layers 1.14s vs 3 video layers with rotation 3.78s — still ~5× realtime.
 - Rotation: `rotate=<rad>:c=none:ow='rotw(<rad>)':oh='roth(<rad>)'` on the RGBA image; the overlay x/y is shifted so
@@ -63,7 +65,8 @@ Decisions taken where the contract was silent or ambiguous. Everything else foll
 - Layer size uses explicit `scale=w:h` (h from the image aspect) instead of `scale=w:-1` so the layout math and
   ffmpeg agree to the pixel. Text layers prefer the spec's `image_size` over the PNG's real size when present.
 - `fill=color` colors are passed as `0xRRGGBB` (same as `#RRGGBB`, avoids any `#` quoting concerns).
-- With no `trim.remove`, audio is mapped straight from the input (`-map 0:a:0`) instead of going through the graph.
+- With no `trim.remove` and no `audio` block / sticker audio, audio is mapped straight from the input (`-map 0:a:0`)
+  instead of going through the graph. `audio.source_volume` alone maps `[abase]` (no `amix` with one input).
 
 ## Preprocessing
 - Sprite tiles are `scale=90:-2` for vertical sources and `scale=160:-2` for horizontal ones; the real tile size is

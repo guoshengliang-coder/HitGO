@@ -63,7 +63,7 @@ def test_apply_all_modules():
 
 def test_unknown_module():
     with pytest.raises(ValueError):
-        apply_modules(valid_spec(), None, ["audio"], 10)
+        apply_modules(valid_spec(), None, ["colors"], 10)
 
 
 def test_unknown_layer_mode():
@@ -182,3 +182,25 @@ def test_style_only_copies_mix_audio_with_the_asset():
     target["layers"][0]["mix_audio"] = True
     out = apply_modules(src, target, ["layers"], 24.6, "style_only")
     assert "mix_audio" not in out["layers"][0]
+
+
+def test_apply_audio_copies_the_whole_block_or_clears_it():
+    src = valid_spec()
+    src["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": "all", "loop": True}]}
+    target = {"spec_version": 1, "trim": {"remove": [[1, 2]]}, "layers": [], "outputs": [], "audio": {"source_volume": 0.5, "tracks": []}}
+    out = apply_modules(src, target, ["audio"], 10.0)
+    assert out["audio"] == src["audio"] and out["audio"] is not src["audio"]
+    assert out["trim"] == {"remove": [[1, 2]]}  # untouched module
+    out["audio"]["tracks"][0]["id"] = "changed"
+    assert src["audio"]["tracks"][0]["id"] == "au_1"
+
+    # No spec on the target yet: the block lands on a fresh empty spec.
+    out = apply_modules(src, None, ["audio"], 10.0)
+    assert out["audio"] == src["audio"] and out["layers"] == []
+
+    # Source without audio settings clears the target's.
+    out = apply_modules(valid_spec(), target, ["audio"], 10.0)
+    assert "audio" not in out
+    # Other modules leave the target's audio alone.
+    out = apply_modules(valid_spec(), target, ["trim"], 10.0)
+    assert out["audio"] == {"source_volume": 0.5, "tracks": []}

@@ -54,9 +54,9 @@ export interface Video {
 
 export type BatchDetail = Batch & { videos: Video[] };
 
-export type AssetType = 'sticker' | 'font';
-/** 贴纸素材是静态图还是一段视频（多帧 gif / webp 也算 video）。 */
-export type AssetKind = 'image' | 'video';
+export type AssetType = 'sticker' | 'font' | 'audio';
+/** 贴纸素材是静态图还是一段视频（多帧 gif / webp 也算 video）；音频素材固定为 audio。 */
+export type AssetKind = 'image' | 'video' | 'audio';
 /** 视频贴纸要异步探测 + 生成预览代理，期间是 preparing。 */
 export type AssetStatus = 'preparing' | 'ready' | 'failed';
 
@@ -91,6 +91,11 @@ export interface Asset {
 /** 素材是不是视频贴纸（旧后端没有 kind 字段时按静态图）。 */
 export function isVideoAsset(asset: Asset | undefined): boolean {
   return asset?.kind === 'video';
+}
+
+/** 音频素材（BGM / 口播），只用在 edit_spec.audio.tracks 里。 */
+export function isAudioAsset(asset: Asset | undefined): boolean {
+  return asset?.type === 'audio';
 }
 
 export function isAssetReady(asset: Asset | undefined): boolean {
@@ -306,11 +311,38 @@ export interface OutputVariant {
   layer_overrides?: Record<string, LayerOverride>;
 }
 
+/** 音轨角色，只给界面分类（契约 §2 audio.tracks[].role）；worker 不区分。 */
+export type AudioRole = 'bgm' | 'voice';
+
+/** 一条叠加进成片的音轨（契约 §2 audio.tracks[]）。除 id / asset_id / t 外都可选，缺省见 lib/audioTracks.TRACK_DEFAULTS。 */
+export interface AudioTrack {
+  id: string;
+  asset_id: string;
+  role?: AudioRole;
+  /** 出声时段，剪后时间轴。 */
+  t: TimeWindow;
+  /** 从素材第几秒开始播；loop 时必须为 0。 */
+  offset?: number;
+  /** 0–1。 */
+  volume?: number;
+  loop?: boolean;
+  fade_in?: number;
+  fade_out?: number;
+}
+
+/** 契约 §2 audio：源音轨音量 + 叠加音轨。缺省（无此块）= 源音轨原样保留。 */
+export interface AudioSpec {
+  /** 0–1；0 = 源音轨静音。 */
+  source_volume: number;
+  tracks: AudioTrack[];
+}
+
 export interface EditSpec {
   spec_version: 1;
   trim: { remove: [number, number][] };
   layers: Layer[];
   outputs: OutputVariant[];
+  audio?: AudioSpec | null;
 }
 
 export const VARIANT_DEFS: { key: VariantKey; aspect: AspectKey; width: number; height: number; label: string; note: string }[] = [

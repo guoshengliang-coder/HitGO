@@ -6,7 +6,10 @@ sticker layers, a looping video sticker (when one is available) and two output
 variants on its first video, renders, and prints the job results. Also checks the
 output duration, since a looping sticker must not stretch the clip. When a video
 sticker with its own audio track is available, that layer mixes its audio in
-(mix_audio) and the output must carry an audio stream.
+(mix_audio) and the output must carry an audio stream. When an audio asset is
+available, the source track is muted and that asset is looped as BGM over the
+whole clip (edit_spec.audio), which must again yield an audio stream of the
+post-trim length.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
@@ -66,6 +69,18 @@ print("video stickers", [(a["name"], a.get("duration"), a.get("has_alpha"), a.ge
 video_stickers.sort(key=lambda a: a.get("has_audio") is not True)
 mix_audio = bool(video_stickers) and video_stickers[0].get("has_audio") is True
 
+audio_assets = call("GET", "/api/assets?type=audio")[1]
+for _ in range(60):
+    if all(a.get("status", "ready") != "preparing" for a in audio_assets):
+        break
+    time.sleep(2)
+    audio_assets = call("GET", "/api/assets?type=audio")[1]
+audio_assets = [a for a in audio_assets if a.get("status", "ready") == "ready" and a.get("duration")]
+print("audio assets", [(a["name"], a.get("duration")) for a in audio_assets])
+use_bgm = bool(audio_assets)
+if not use_bgm:
+    print("no audio asset available — skipping the BGM part of the smoke test")
+
 video = videos[0]
 layers = [
     {"id": "l_1", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "top-left",
@@ -96,6 +111,13 @@ spec = {
          "layer_overrides": {"l_1": {"margin": [0.04, 0.04]}}},
     ],
 }
+if use_bgm:
+    # Muted source + looping BGM with a fade-out: the classic "replace the sound" edit.
+    spec["audio"] = {
+        "source_volume": 0,
+        "tracks": [{"id": "au_bgm", "asset_id": audio_assets[0]["id"], "role": "bgm", "t": "all",
+                    "volume": 0.6, "loop": True, "fade_out": 1}],
+    }
 status, resp = call("PUT", f"/api/videos/{video['id']}/spec", {"edit_spec": spec})
 print("put spec", status, "ok" if status == 200 else resp)
 
@@ -130,10 +152,10 @@ for j in jobs:
               f"{j['output']['duration']} (expected ~{post_duration})")
         sys.exit(1)
 
-if mix_audio:
+if mix_audio or use_bgm:
     for j in jobs:
         if j["status"] == "done" and j["output"]["codec"] != "h264/aac":
-            print("mixed sticker audio missing from", j["variant_key"], j["output"])
+            print("mixed audio missing from", j["variant_key"], j["output"])
             sys.exit(1)
 
 expected = {"9x16": (1080, 1920), "1x1": (1080, 1080)}

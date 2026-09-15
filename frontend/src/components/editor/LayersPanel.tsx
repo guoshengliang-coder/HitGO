@@ -20,6 +20,7 @@ import { AssetCard } from '../../pages/AssetsPage';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconChevron, IconCopy, IconDown, IconEye, IconLock, IconReset, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
+import { Num, Slider } from '../ui/Num';
 
 const REF = { W: 1080, H: 1920 };
 
@@ -54,43 +55,6 @@ const DEFAULT_STROKE = { stroke_color: '#000000', stroke_width: 0.004 };
 const DEFAULT_BACKGROUND = '#00000099';
 
 // ---------------------------------------------------------------- 通用小控件
-
-const clampNum = (v: number, min?: number, max?: number) => Math.min(max ?? Infinity, Math.max(min ?? -Infinity, v));
-
-/** 数字输入 + 步进按钮。value 为内部单位，界面按 scale 放大显示（默认 ×100 显示为 %）。 */
-function Num({ value, onChange, step = 0.01, min, max, scale = 100, suffix = '%', title }: { value: number; onChange: (v: number) => void; step?: number; min?: number; max?: number; scale?: number; suffix?: string; title?: string }) {
-  const shown = Math.round(value * scale * 100) / 100;
-  const bump = (dir: 1 | -1) => onChange(clampNum(Math.round((value + dir * step) * 1e6) / 1e6, min, max));
-  return (
-    <span className="num-wrap" title={title}>
-      <button className="num-step" tabIndex={-1} aria-label="减少" onClick={() => bump(-1)}>−</button>
-      <input
-        className="input sm num"
-        type="number"
-        step={step * scale}
-        min={min !== undefined ? min * scale : undefined}
-        max={max !== undefined ? max * scale : undefined}
-        value={shown}
-        onChange={(e) => {
-          const n = parseFloat(e.target.value);
-          if (!Number.isNaN(n)) onChange(clampNum(n / scale, min, max));
-        }}
-      />
-      <button className="num-step" tabIndex={-1} aria-label="增加" onClick={() => bump(1)}>+</button>
-      {suffix && <span className="muted small">{suffix}</span>}
-    </span>
-  );
-}
-
-/** 滑块 + 数字（不透明度这类 0–1 的量）。 */
-function Slider({ value, onChange, min = 0, max = 1, step = 0.01 }: { value: number; onChange: (v: number) => void; min?: number; max?: number; step?: number }) {
-  return (
-    <span className="inline slider-row">
-      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} />
-      <Num value={value} min={min} max={max} step={step} onChange={onChange} />
-    </span>
-  );
-}
 
 /**
  * 可折叠分组。带 onToggle 时标题左侧出现启用勾选（描边 / 阴影 / 背景）；

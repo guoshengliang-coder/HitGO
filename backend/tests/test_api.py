@@ -880,6 +880,72 @@ def test_video_sticker_reports_has_audio_once_ready(client, db):
     assert client.get(f"/api/assets/{a['id']}").json()["has_audio"] is True
 
 
+def test_audio_asset_upload_is_async_and_pollable(client, enqueued, db):
+    r = client.post(
+        "/api/assets",
+        data={"type": "audio"},
+        files=[("files", ("口播.mp3", io.BytesIO(b"\x00" * 2048), "audio/mpeg"))],
+    )
+    assert r.status_code == 200, r.text
+    a = r.json()[0]
+    assert a["type"] == "audio" and a["kind"] == "audio" and a["status"] == "preparing"
+    assert a["url"] == f"/media/assets/{a['id']}.mp3" and a["duration"] is None
+    assert a["width"] is None and a["poster_url"] is None and a["preview_url"] is None
+    assert enqueued.names() == ["hitgo.preprocess_asset"]
+
+    asset = db.get(Asset, a["id"])
+    asset.status, asset.duration, asset.has_audio = "ready", 24.5, True
+    db.commit()
+    ready = client.get(f"/api/assets/{a['id']}").json()
+    assert ready["status"] == "ready" and ready["duration"] == 24.5
+    assert ready["poster_url"] is None and ready["preview_url"] is None  # no derived files for audio
+
+    assert [x["type"] for x in client.get("/api/assets?type=audio").json()] == ["audio"]
+    assert client.get("/api/assets?type=sticker").json() == []
+
+    r = client.post("/api/assets", data={"type": "audio"}, files=[("files", ("x.ogg", io.BytesIO(b"1"), "audio/ogg"))])
+    assert r.status_code == 400 and "mp3" in r.json()["detail"]
+    r = client.post("/api/assets", data={"type": "sticker"}, files=[("files", ("x.mp3", io.BytesIO(b"1"), "audio/mpeg"))])
+    assert r.status_code == 400
+
+    path = storage.media_url_to_path(a["url"])
+    assert client.delete(f"/api/assets/{a['id']}").status_code == 204
+    assert not path.exists()
+
+
+def test_audio_asset_upload_rejects_oversized_files(client, enqueued, monkeypatch):
+    from app.routers import assets as assets_router
+
+    monkeypatch.setitem(assets_router.MAX_BYTES, "audio", 1024)
+    r = client.post("/api/assets", data={"type": "audio"}, files=[("files", ("big.wav", io.BytesIO(b"\x00" * 2048), "audio/wav"))])
+    assert r.status_code == 400 and "上限" in r.json()["detail"]
+    assert enqueued.names() == [] and client.get("/api/assets").json() == []
+
+
+def test_audio_preprocess_only_probes_the_duration(monkeypatch, db):
+    from app.services import ffprobe
+
+    db.add(Asset(id="a_audio", type="audio", name="bgm.mp3", ext="mp3", kind="audio", status="preparing"))
+    db.commit()
+    monkeypatch.setattr(ffprobe, "probe_audio", lambda path: {"duration": 12.25, "codec": "mp3"})
+    worker.preprocess_asset.run("a_audio")
+    db.expire_all()
+    asset = db.get(Asset, "a_audio")
+    assert asset.status == "ready" and asset.duration == 12.25 and asset.has_audio is True
+    assert asset.error is None and asset.width is None and asset.preview_ext is None
+
+    def boom(path):
+        raise ffprobe.ProbeError("文件里没有音频流")
+
+    db.add(Asset(id="a_bad", type="audio", name="x.wav", ext="wav", kind="audio", status="preparing"))
+    db.commit()
+    monkeypatch.setattr(ffprobe, "probe_audio", boom)
+    worker.preprocess_asset.run("a_bad")
+    db.expire_all()
+    bad = db.get(Asset, "a_bad")
+    assert bad.status == "failed" and "音频流" in bad.error
+
+
 def test_video_sticker_limit_is_one_gib():
     from app.routers import assets as assets_router
 
@@ -1015,3 +1081,28 @@ def test_video_sticker_preview_url_changes_when_the_file_is_regenerated(client, 
     second = client.get("/api/assets/a_regen").json()
     assert second["preview_url"] == "/media/assets/a_regen.preview.webm?v=1700000500"
     assert storage.media_url_to_path(second["preview_url"]) == preview.resolve()
+
+
+def test_startup_seeds_sample_audio_as_builtin_assets(monkeypatch, enqueued, db, tmp_path, png_bytes):
+    """samples/audio/*.mp3 become builtin audio assets that are probed like uploads (contract §1)."""
+    from app.config import settings
+    from app.main import seed_builtin_assets
+
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "bgm.mp3").write_bytes(b"\x00" * 512)
+    (tmp_path / "audio" / "notes.txt").write_text("ignored")
+    (tmp_path / "stickers").mkdir()
+    (tmp_path / "stickers" / "s.png").write_bytes(png_bytes)
+    monkeypatch.setattr(settings, "samples_dir", tmp_path)
+
+    seed_builtin_assets()
+    rows = {a.name: a for a in db.query(Asset).all()}
+    assert set(rows) == {"bgm.mp3", "s.png"}
+    audio = rows["bgm.mp3"]
+    assert (audio.type, audio.kind, audio.status, audio.source) == ("audio", "audio", "preparing", "builtin")
+    assert audio.family is None and storage.asset_path(audio.id, "mp3").is_file()
+    assert enqueued.calls == [("hitgo.preprocess_asset", (audio.id,))]
+
+    # Idempotent: a second startup does not import the same files again.
+    seed_builtin_assets()
+    assert db.query(Asset).count() == 2

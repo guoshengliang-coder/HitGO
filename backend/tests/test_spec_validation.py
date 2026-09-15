@@ -223,3 +223,48 @@ def test_sticker_playback_defaults_and_validates():
 
     spec["layers"][0]["playback"] = "rewind"
     assert "playback" in errors_of(spec)
+
+
+# --- audio (contract §2 audio) ------------------------------------------------------
+
+
+def audio_spec(**audio):
+    spec = valid_spec()
+    spec["audio"] = {"source_volume": 1, "tracks": [], **audio}
+    return spec
+
+
+def test_audio_block_is_optional_and_defaults_fill_in():
+    assert validate(valid_spec()).audio is None
+    spec = validate(audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm"}]))
+    assert spec.audio.source_volume == 1.0
+    track = spec.audio.tracks[0]
+    assert (track.role, track.t, track.offset, track.volume, track.loop, track.fade_in, track.fade_out) == (
+        "bgm", "all", 0.0, 1.0, False, 0.0, 0.0
+    )
+    spec = validate(audio_spec(source_volume=0, tracks=[{"id": "au_1", "asset_id": "a_v", "role": "voice", "t": [1, 4], "offset": 0.5, "volume": 0.7, "fade_in": 1, "fade_out": 2}]))
+    assert spec.audio.source_volume == 0 and spec.audio.tracks[0].t == (1.0, 4.0)
+
+
+@pytest.mark.parametrize(
+    "audio,fragment",
+    [
+        ({"source_volume": 1.5}, "source_volume"),
+        ({"source_volume": -0.1}, "source_volume"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "volume": 2}]}, "volume"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "offset": -1}]}, "offset"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "t": [5, 3]}]}, "终点必须大于起点"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "loop": True, "offset": 2}]}, "循环播放时起始偏移必须为 0"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "t": [0, 3], "fade_in": 2, "fade_out": 2}]}, "淡入加淡出不能超过时段长度"),
+        ({"tracks": [{"id": "a", "asset_id": "x"}, {"id": "a", "asset_id": "y"}]}, "音轨 id 重复"),
+        ({"tracks": [{"id": "a", "asset_id": ""}]}, "asset_id"),
+        ({"tracks": [{"id": "a", "asset_id": "x", "role": "sfx"}]}, "role"),
+    ],
+)
+def test_audio_rules(audio, fragment):
+    assert fragment in errors_of(audio_spec(**audio))
+
+
+def test_audio_fades_may_fill_the_window_exactly_and_all_windows_skip_the_sum_check():
+    validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "t": [0, 3], "fade_in": 1.5, "fade_out": 1.5}]))
+    validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "t": "all", "fade_in": 30, "fade_out": 30}]))

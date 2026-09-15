@@ -9,9 +9,11 @@ Filter graph order:
            → canvas fill (blur | color | crop; crop honours an optional source window first)
            → one overlay per layer (enable='between(t,a,b)' for timed layers)
            → format=yuv420p
-    audio: source audio (trimmed like the video) is mapped as-is, unless some video
-           sticker layer has mix_audio — then its audio is windowed, delayed and
-           amix'ed on top of the source audio (or of silence when there is none).
+    audio: source audio (trimmed like the video) is mapped as-is, unless the spec asks
+           for more — a video sticker layer with mix_audio, or an ``audio`` block
+           (source gain + BGM / voice-over tracks). Then every extra track is windowed,
+           faded, delayed and amix'ed on top of the (gain-adjusted) source audio, or of
+           silence when the source is muted / has no track.
 """
 
 from __future__ import annotations
@@ -68,6 +70,14 @@ class ImageSource:
     @property
     def is_video(self) -> bool:
         return self.duration is not None
+
+
+@dataclass(frozen=True)
+class AudioSource:
+    """One audio asset (BGM / voice-over) resolved to a local file, for ``audio.tracks``."""
+
+    path: str
+    duration: float  # seconds
 
 
 @dataclass
@@ -141,11 +151,14 @@ def build_render_command(
     output_path: str,
     resolve_image_url: Callable[[str], ImageSource | None] | None = None,
     ffmpeg_bin: str = "ffmpeg",
+    audio_assets: Mapping[str, AudioSource] | None = None,
 ) -> RenderPlan:
     """Return the ffmpeg argv, expected output duration and any layer warnings.
 
     video_meta needs: duration (s), has_audio (bool). width/height are not required
-    because ffmpeg scales relative to the actual decoded frame.
+    because ffmpeg scales relative to the actual decoded frame. ``audio_assets`` maps
+    the ``audio.tracks[].asset_id`` values the caller could resolve; unresolved tracks
+    are skipped with a warning.
     """
     duration = float(video_meta["duration"])
     has_audio = bool(video_meta.get("has_audio", False))
@@ -305,20 +318,88 @@ def build_render_command(
     # ---- 4. final format ----------------------------------------------------
     chains.append(f"{current}format=yuv420p[vout]")
 
-    # ---- 5. sticker audio mix -------------------------------------------------
-    mixed_audio = bool(sticker_audio)
-    if mixed_audio:
-        if has_audio:
-            chains.append(f"{audio_label or '[0:a:0]'}{AUDIO_FORMAT}[abase]")
+    # ---- 5. audio tracks (contract §2 audio.tracks) ----------------------------
+    audio_spec = spec.audio
+    source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
+    track_audio: list[str] = []
+    for track in audio_spec.tracks if audio_spec is not None else []:
+        source = (audio_assets or {}).get(track.asset_id)
+        if source is None:
+            warnings.append(f"音轨 {track.id}：音频素材 {track.asset_id} 不存在或未就绪，已跳过")
+            continue
+        if track.t == "all":
+            t_start, t_end = 0.0, expected_duration
         else:
+            t_start, t_end = float(track.t[0]), min(float(track.t[1]), expected_duration)
+        window = t_end - t_start
+        if window <= MIN_SEGMENT:
+            warnings.append(f"音轨 {track.id}：出声时段起点超出剪后时长，已跳过")
+            continue
+        available = float(source.duration) - float(track.offset)
+        if available <= MIN_SEGMENT:
+            warnings.append(f"音轨 {track.id}：起始偏移不小于素材时长，已跳过")
+            continue
+
+        # Bounded by atrim=end below, like looped video stickers (and by -t at the end).
+        options = ["-stream_loop", "-1"] if track.loop else []
+        input_index = len(inputs)
+        inputs.append([*options, "-i", source.path])
+
+        steps: list[str] = []
+        if track.offset > 0:
+            steps.append(f"atrim=start={_fmt(track.offset)}")
+        steps += ["asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+        if track.volume != 1:
+            steps.append(f"volume={_fmt(track.volume)}")
+        # Fades run against the audible span: a non-looping file shorter than the
+        # window ends early, and the fade-out must land where the sound actually stops.
+        effective = window if track.loop else min(window, available)
+        fade_in = min(float(track.fade_in), effective)
+        fade_out = min(float(track.fade_out), effective)
+        if fade_in > 0:
+            steps.append(f"afade=t=in:st=0:d={_fmt(fade_in)}")
+        if fade_out > 0:
+            steps.append(f"afade=t=out:st={_fmt(effective - fade_out)}:d={_fmt(fade_out)}")
+        delay_ms = round(t_start * 1000)
+        if delay_ms > 0:
+            steps.append(f"adelay={delay_ms}:all=1")
+        steps.append(AUDIO_FORMAT)
+        label = f"[tk{len(track_audio) + 1}]"
+        chains.append(f"[{input_index}:a]" + ",".join(steps) + label)
+        track_audio.append(label)
+
+    # ---- 6. audio mix -----------------------------------------------------------
+    # Only when the spec asks for something beyond the plain source track; otherwise
+    # the argv stays exactly what it was before any audio feature existed.
+    overlays = sticker_audio + track_audio
+    graph_audio = bool(overlays) or source_volume != 1
+    source_heard = has_audio and source_volume > 0
+    audio_map: list[str]
+    if graph_audio:
+        if source_heard:
+            base = f"{audio_label or '[0:a:0]'}{AUDIO_FORMAT}"
+            if source_volume != 1:
+                base += f",volume={_fmt(source_volume)}"
+            chains.append(base + "[abase]")
+        elif overlays:
             # Silent bed so amix (duration=first) still spans the whole output.
             chains.append(
                 f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}[abase]"
             )
-        chains.append(
-            f"[abase]{''.join(sticker_audio)}amix=inputs={len(sticker_audio) + 1}"
-            ":duration=first:normalize=0:dropout_transition=0[aout]"
-        )
+        if overlays:
+            chains.append(
+                f"[abase]{''.join(overlays)}amix=inputs={len(overlays) + 1}"
+                ":duration=first:normalize=0:dropout_transition=0[aout]"
+            )
+            audio_map = ["-map", "[aout]"]
+        elif source_heard:
+            audio_map = ["-map", "[abase]"]  # only the source gain changed: no amix
+        else:
+            audio_map = ["-an"]  # muted source, nothing mixed in
+    elif has_audio:
+        audio_map = ["-map", audio_label if audio_label else "0:a:0"]
+    else:
+        audio_map = ["-an"]
     filter_complex = ";".join(chains)
 
     # ---- argv ---------------------------------------------------------------
@@ -326,19 +407,14 @@ def build_render_command(
     for group in inputs:
         argv += group
     argv += ["-filter_complex", filter_complex, "-map", "[vout]"]
-    # An explicit -map disables automatic stream selection, so sticker audio is only
-    # ever heard through the [aout] mix above.
-    if mixed_audio:
-        argv += ["-map", "[aout]"]
-    elif has_audio:
-        argv += ["-map", audio_label if audio_label else "0:a:0"]
-    else:
-        argv += ["-an"]
+    # An explicit -map disables automatic stream selection, so sticker / track audio
+    # is only ever heard through the [aout] mix above.
+    argv += audio_map
     argv += encode_args(getattr(variant, "quality", "standard"))
-    if has_video_layer:
-        # Belt and braces: overlay takes the longest input, so a sticker could
-        # otherwise stretch the output. Only added when a video layer exists, so
-        # still-image renders keep their exact argv.
+    if has_video_layer or track_audio:
+        # Belt and braces: overlay takes the longest input, so a sticker (or a looped
+        # audio track) could otherwise stretch the output. Only added when such an
+        # input exists, so still-image renders keep their exact argv.
         argv += ["-t", _fmt(expected_duration)]
     argv += ["-progress", "pipe:1", output_path]
 
