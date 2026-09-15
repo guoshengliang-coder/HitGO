@@ -140,6 +140,12 @@ export interface EditorState {
   updateSpec: (fn: (spec: EditSpec) => void, opts?: { history?: boolean; videoId?: string }) => void;
   /** 整体替换某条视频的草稿 spec（null = 重置为空 spec），可记入历史，并安排自动保存。 */
   replaceSpec: (videoId: string, spec: EditSpec | null, opts?: { history?: boolean }) => void;
+  /**
+   * 把给定快照压入当前（或指定）视频的历史栈。给「输入期间 history=false、提交时才记一条」的编辑用：
+   * 开始编辑时抓 cloneSpec(currentSpec) 存起来，提交时传进来；不要在提交时再用 updateLayer(id, {}, true)，
+   * 那样记下的是改完之后的 spec，撤销会变成空操作。spec 本身没变，所以不触发自动保存。
+   */
+  pushHistorySnapshot: (snapshot: EditSpec, videoId?: string) => void;
   undo: () => void;
   redo: () => void;
   canUndo: () => boolean;
@@ -581,6 +587,17 @@ export const useEditor = create<EditorState>((set, get) => {
       }
       set({ specs: { ...s.specs, [videoId]: next }, history, selectedLayerId: videoId === s.currentVideoId ? null : s.selectedLayerId });
       scheduleSave(videoId);
+    },
+    pushHistorySnapshot: (snapshot, videoId) => {
+      const id = videoId ?? get().currentVideoId;
+      if (!id) return;
+      const s = get();
+      const history = { ...s.history };
+      const h = { ...ensureHistory(history, id) };
+      h.past = [...h.past, cloneSpec(snapshot)].slice(-HISTORY_CAP);
+      h.future = [];
+      history[id] = h;
+      set({ history });
     },
     undo: () => {
       const videoId = get().currentVideoId;

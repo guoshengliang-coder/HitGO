@@ -1,12 +1,12 @@
 // 画布内联文字编辑：双击文字图层后，在图层所在位置叠一个 textarea 直接改字（对齐剪映）。
-// 输入实时写入 store 但不产生历史；失焦 / ⌘Enter 提交一条历史；Esc 还原双击时的原文并退出。
+// 输入实时写入 store 但不产生历史；失焦 / ⌘Enter 提交时把挂载时抓的 spec 快照压入历史；Esc 还原双击时的原文并退出。
 // 位置用 lib/layout.placeLayer 的契约公式算，与 Konva 节点同一套坐标；旋转绕中心，与图层一致。
 
 import { useEffect, useRef } from 'react';
 import { useEditor } from '../../store/editor';
 import { placeLayer } from '../../lib/layout';
-import { layerAspect } from '../../lib/spec';
-import type { TextLayer } from '../../types';
+import { cloneSpec, layerAspect } from '../../lib/spec';
+import type { EditSpec, TextLayer } from '../../types';
 
 const MIN_W = 120;
 const MIN_H = 40;
@@ -14,8 +14,15 @@ const MIN_H = 40;
 export function InlineTextEditor({ layer, W, H, onClose }: { layer: TextLayer; W: number; H: number; onClose: () => void }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const ref = useRef<HTMLTextAreaElement>(null);
   const original = useRef(layer.text); // 挂载时的原文，Esc 时还原
+  // 挂载时（还没改字）的整份 spec，提交时作为撤销点压入历史
+  const snapshot = useRef<EditSpec | null>(null);
+  if (snapshot.current === null) {
+    const spec = useEditor.getState().currentSpec();
+    snapshot.current = spec ? cloneSpec(spec) : null;
+  }
   const latest = useRef(layer.text);
   latest.current = layer.text;
   const ready = useRef(false); // 挂载聚焦完成前忽略 blur，避免双击的余波把编辑框立刻关掉
@@ -25,7 +32,7 @@ export function InlineTextEditor({ layer, W, H, onClose }: { layer: TextLayer; W
     if (closed.current) return;
     closed.current = true;
     if (mode === 'cancel') updateLayer(layer.id, { text: original.current }, false);
-    else if (latest.current !== original.current) updateLayer(layer.id, {}, true); // 只在真的改过时记一条历史
+    else if (latest.current !== original.current && snapshot.current) pushHistorySnapshot(snapshot.current); // 只在真的改过时记一条历史
     onClose();
   };
   const finishRef = useRef(finish);
