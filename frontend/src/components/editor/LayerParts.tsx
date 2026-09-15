@@ -1,5 +1,5 @@
 // 文本 / 贴纸两个模块右侧面板共用的部件（HIG-8 从原「图层」面板拆出）：
-// 同类图层列表、属性检查器、花字 / 气泡预设、批量应用底栏。
+// 同类图层列表、属性检查器（文字图层带「套用样式」预设分组）、批量应用底栏。
 // 属性检查器参考剪映的组织方式：文字内容在最上、位置区带六向对齐、
 // 描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
 
@@ -14,6 +14,7 @@ import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
+import { groupPresets } from '../../lib/textGallery';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconChevron, IconCopy, IconDown, IconEye, IconLock, IconReset, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
@@ -24,7 +25,7 @@ const REF = { W: 1080, H: 1920 };
 /** 预设缩略图：小画布渲染「花字」，按 id + 样式缓存 data URL。 */
 const thumbCache = new Map<string, string>();
 const THUMB_H = 400; // 渲染基准高（px）：字号 0.075 → 30 px，描边 / 阴影按同比例缩放
-function presetThumb(preset: TextStylePreset): string {
+export function presetThumb(preset: TextStylePreset): string {
   const key = `${preset.id}:${JSON.stringify(preset.style)}`;
   const hit = thumbCache.get(key);
   if (hit) return hit;
@@ -41,10 +42,6 @@ function presetThumb(preset: TextStylePreset): string {
 
 /** 颜色输入只接受 #RRGGBB；8 位（含透明度）的取前 7 位显示。 */
 const hex6 = (c: string) => (c && /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : '#000000');
-
-/** 预设分组：带背景的算「气泡」，其余算「花字」。 */
-export type PresetGroup = 'text' | 'bubble';
-const presetGroup = (p: TextStylePreset): PresetGroup => (p.style.background ? 'bubble' : 'text');
 
 const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.002, 0.004] };
 const DEFAULT_GLOW: TextGlow = { color: '#FFD84DCC', blur: 0.012 };
@@ -108,46 +105,64 @@ export function newTextLayer(style?: Partial<TextStyle>, text = '双击编辑文
 }
 
 /**
- * 花字 / 气泡预设墙。有选中的文字图层时点击套用到它；没有时新建一条带该样式的文字（onCreated 回调里切回列表）。
- * 「存为预设」需要一个选中的文字图层做样式来源。
+ * 属性里的「套用样式」分组（HIG-11）：花字 / 气泡缩略图单击即套用到当前文字图层（进历史，可撤销）。
+ * 新建带样式的文字在「文字」页双击卡片；「存为预设」保存当前图层的全部文字样式。
  */
-export function PresetGallery({ layer, group, onCreated }: { layer: TextLayer | null; group: PresetGroup; onCreated?: () => void }) {
+function StylePresetSection({ layer }: { layer: TextLayer }) {
   const presets = useEditor((s) => s.textPresets);
   const updateLayer = useEditor((s) => s.updateLayer);
-  const addLayer = useEditor((s) => s.addLayer);
   const savePreset = useEditor((s) => s.saveTextPreset);
   const deletePreset = useEditor((s) => s.deleteTextPreset);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
-  const thumbs = useMemo(() => presets.filter((p) => presetGroup(p) === group).map((p) => ({ p, url: presetThumb(p) })), [presets, group]);
+  const groups = useMemo(() => groupPresets(presets), [presets]);
 
-  const apply = (p: TextStylePreset) => {
-    if (!layer) {
-      addLayer(newTextLayer(p.style, group === 'bubble' ? '气泡文字' : '花字'));
-      onCreated?.();
-      return;
-    }
+  const apply = (p: TextStylePreset) =>
     updateLayer(layer.id, (l) => {
       if (l.type === 'text') Object.assign(l.style, p.style);
     });
-  };
   const submit = async () => {
     const nm = name.trim();
-    if (!nm || !layer) return;
+    if (!nm) return;
     await savePreset(nm, { ...layer.style });
     setName('');
     setNaming(false);
   };
+  const row = (label: string, list: TextStylePreset[]) => (
+    <>
+      <span className="span2">{label}</span>
+      <div className="preset-list span2">
+        {list.length === 0 && <span className="muted small">这一组还没有预设。</span>}
+        {list.map((p) => {
+          const url = presetThumb(p);
+          return (
+            <div key={p.id} className={`preset-item ${p.builtin ? '' : 'user'}`}>
+              <button className="preset-btn" title={`套用「${p.name}」`} onClick={() => apply(p)}>
+                {url ? <img src={url} alt="" /> : <span className="muted small">Aa</span>}
+                <span className="pname">{p.name}</span>
+              </button>
+              {!p.builtin && (
+                <button className="preset-del" aria-label={`删除预设 ${p.name}`} title="删除预设" onClick={() => void deletePreset(p.id)}>
+                  ✕
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
 
   return (
-    <div className="preset-strip">
-      <div className="section-title">
-        <span className="muted small">{layer ? `点击套用到「${layer.text.replace(/\n/g, ' ').slice(0, 10) || '文字'}」` : '点击新建一条这个样式的文字'}</span>
-        {!layer ? null : naming ? (
-          <span className="inline">
+    <Section title="套用样式" defaultOpen={false}>
+      {row('花字', groups.text)}
+      {row('气泡', groups.bubble)}
+      <div className="span2 inline">
+        {naming ? (
+          <>
             <input
               className="input sm"
-              style={{ width: 110 }}
+              style={{ flex: 1, minWidth: 0 }}
               autoFocus
               maxLength={40}
               placeholder="预设名称"
@@ -161,28 +176,15 @@ export function PresetGallery({ layer, group, onCreated }: { layer: TextLayer | 
             />
             <button className="btn sm primary" disabled={!name.trim()} onClick={() => void submit()}>保存</button>
             <button className="btn sm ghost" onClick={() => setNaming(false)}>取消</button>
-          </span>
+          </>
         ) : (
-          <button className="btn ghost sm" onClick={() => setNaming(true)} title="把当前图层的全部文字样式保存为预设">存为预设</button>
+          <>
+            <span className="muted small" style={{ flex: 1 }}>单击套用到当前图层</span>
+            <button className="btn ghost sm" onClick={() => setNaming(true)} title="把当前图层的全部文字样式保存为预设">存为预设</button>
+          </>
         )}
       </div>
-      <div className="preset-list">
-        {thumbs.length === 0 && <div className="hint">这一组还没有预设。</div>}
-        {thumbs.map(({ p, url }) => (
-          <div key={p.id} className={`preset-item ${p.builtin ? '' : 'user'}`}>
-            <button className="preset-btn" title={`套用「${p.name}」`} onClick={() => apply(p)}>
-              {url ? <img src={url} alt="" /> : <span className="muted small">Aa</span>}
-              <span className="pname">{p.name}</span>
-            </button>
-            {!p.builtin && (
-              <button className="preset-del" aria-label={`删除预设 ${p.name}`} title="删除预设" onClick={() => void deletePreset(p.id)}>
-                ✕
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
+    </Section>
   );
 }
 
@@ -547,6 +549,7 @@ export function LayerProps({ layer }: { layer: Layer }) {
               setSel(t.selectionStart !== t.selectionEnd ? [t.selectionStart, t.selectionEnd] : null);
             }}
           />
+          <StylePresetSection layer={layer} />
           <TextSections layer={layer} sel={sel} />
         </>
       )}
@@ -554,7 +557,7 @@ export function LayerProps({ layer }: { layer: Layer }) {
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />
       <TimeSection layer={layer} />
-      {layer.type === 'text' && <div className="hint">花字 / 气泡样式在上方「花字」「气泡」页里套用。文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
+      {layer.type === 'text' && <div className="hint">文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
     </div>
   );
 }

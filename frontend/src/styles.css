@@ -433,11 +433,13 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .seg-btn.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 500; }
 
 /* ---- 文字样式预设条 ---- */
-.preset-strip { display: flex; flex-direction: column; gap: 6px; }
 .preset-list { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 4px; }
 .preset-item { position: relative; flex: none; }
 .preset-btn { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 72px; padding: 4px 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); cursor: pointer; }
 .preset-btn:hover { border-color: var(--accent); }
+.preset-btn.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.preset-btn .font-sample { height: 28px; line-height: 28px; font-size: 20px; color: var(--ink); }
+.gallery-body { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
 .preset-btn img { height: 28px; max-width: 64px; object-fit: contain; background: repeating-conic-gradient(#d8dce3 0 25%, #f2f4f7 0 50%) 0 0 / 10px 10px; border-radius: 3px; }
 .preset-btn .pname { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 66px; }
 .preset-del { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink-3); font-size: 10px; line-height: 14px; padding: 0; cursor: pointer; display: none; }
