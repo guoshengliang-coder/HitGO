@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjustSpans, normalizeSpans, resolveBackgroundBox, setSpanColor, splitRuns } from './textSpans';
+import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, setSpanColor, splitRuns } from './textSpans';
 
 const RED = '#E3312B';
 const BLUE = '#0000FF';
@@ -100,5 +100,21 @@ describe('resolveBackgroundBox', () => {
   });
   it('指定宽度小于紧贴宽时不裁文字', () => {
     expect(resolveBackgroundBox({ contentW: 900, padPx: 10, strokePx: 0, backgroundWidth: 0.5, canvasW: 1080 })).toEqual({ boxW: 920, alignW: 900 });
+  });
+});
+
+describe('resolveOverflowPad', () => {
+  it('无阴影无发光 = 0', () => {
+    expect(resolveOverflowPad({ shadowBlurPx: 0, shadowDx: 0, shadowDy: 0, glowBlurPx: 0 })).toBe(0);
+  });
+  it('阴影：blur + 最大偏移，向上取整', () => {
+    expect(resolveOverflowPad({ shadowBlurPx: 19.2, shadowDx: 3.84, shadowDy: -7.68, glowBlurPx: 0 })).toBe(27);
+  });
+  it('发光：1.5 倍模糊半径，向上取整', () => {
+    expect(resolveOverflowPad({ shadowBlurPx: 0, shadowDx: 0, shadowDy: 0, glowBlurPx: 26.88 })).toBe(41);
+  });
+  it('两者同时存在取较大值', () => {
+    expect(resolveOverflowPad({ shadowBlurPx: 19.2, shadowDx: 3.84, shadowDy: 7.68, glowBlurPx: 26.88 })).toBe(41);
+    expect(resolveOverflowPad({ shadowBlurPx: 40, shadowDx: 10, shadowDy: 0, glowBlurPx: 10 })).toBe(50);
   });
 });

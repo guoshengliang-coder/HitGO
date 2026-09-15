@@ -5,6 +5,8 @@
 //   字号 px = font_size × 1920，描边 px = stroke_width × 1920，内边距 px = padding × 1920。
 // 输出 PNG 为紧贴文字（含内边距与描边溢出）的透明位图；有 background 时先画背景矩形，
 // background_width 指定时背景拉到该宽度（相对画布宽，通栏 = 1），background_radius 指定圆角。
+// 阴影（shadow）与发光（glow）都用 canvas 的 shadow* 画：发光是无偏移的光晕，叠画多遍才够亮，
+// 画在描边 / 填充之前，所以文字本体不会被光晕盖住。
 // 局部上色（layer.spans）由 textSpans.splitRuns 拆成片段，填充时逐段换色，描边全线同色。
 //
 // 文字图层的 width 语义：文字图层的宽度跟随其渲染尺寸，即 width = pngWidth / 1080，
@@ -13,9 +15,12 @@
 
 import type { TextLayer, TextSpan, TextStyle } from '../types';
 import { api } from '../api';
-import { resolveBackgroundBox, splitRuns, type TextRun } from './textSpans';
+import { resolveBackgroundBox, resolveOverflowPad, splitRuns, type TextRun } from './textSpans';
 
 export const TEXT_CANVAS = { W: 1080, H: 1920 };
+
+/** 发光叠画遍数：canvas 的 shadowBlur 单遍太淡，叠 3 遍才有剪映「发光」的亮度。 */
+const GLOW_PASSES = 3;
 
 export interface RenderedText {
   canvas: HTMLCanvasElement;
@@ -73,11 +78,12 @@ function measureLine(ctx: Ctx2D, runs: TextRun[], spacingPx: number, native: boo
   return Math.max(0, w - spacingPx);
 }
 
-function drawLine(ctx: Ctx2D, runs: TextRun[], x: number, y: number, spacingPx: number, native: boolean, mode: 'fill' | 'stroke', baseColor: string) {
+/** uniform = true 时忽略片段（spans）自己的颜色，整行用 baseColor（发光光源用）。 */
+function drawLine(ctx: Ctx2D, runs: TextRun[], x: number, y: number, spacingPx: number, native: boolean, mode: 'fill' | 'stroke', baseColor: string, uniform = false) {
   const paint = (t: string, px: number) => (mode === 'fill' ? ctx.fillText(t, px, y) : ctx.strokeText(t, px, y));
   let cx = x;
   for (const r of lineRuns(runs)) {
-    if (mode === 'fill') ctx.fillStyle = r.color ?? baseColor;
+    if (mode === 'fill') ctx.fillStyle = uniform ? baseColor : (r.color ?? baseColor);
     if (!spacingPx || native) {
       paint(r.text, cx);
       cx += ctx.measureText(r.text).width;
@@ -102,8 +108,10 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   const shadowBlurPx = shadow ? Math.max(0, shadow.blur * H) : 0;
   const shadowDx = shadow ? shadow.offset[0] * H : 0;
   const shadowDy = shadow ? shadow.offset[1] * H : 0;
-  // 阴影可能溢出文字框：左右上下各留 blur + |offset|
-  const shadowPad = shadow ? Math.ceil(shadowBlurPx + Math.max(Math.abs(shadowDx), Math.abs(shadowDy))) : 0;
+  const glow = style.glow ?? null;
+  const glowBlurPx = glow ? Math.max(0, glow.blur * H) : 0;
+  // 阴影 / 发光可能溢出文字框：四周留足边距（阴影 blur + |offset|，发光 1.5 × blur）
+  const shadowPad = resolveOverflowPad({ shadowBlurPx, shadowDx, shadowDy, glowBlurPx });
   const lines = splitRuns(text || ' ', spans);
 
   const measure = document.createElement('canvas').getContext('2d')! as Ctx2D;
@@ -172,6 +180,25 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
       if (strokePx > 0) drawLine(ctx, line, lineX(i), lineY(i), spacingPx, native, 'stroke', style.color);
       drawLine(ctx, line, lineX(i), lineY(i), spacingPx, native, 'fill', style.color);
     });
+    setShadow(false);
+  }
+
+  if (glow && glowBlurPx > 0) {
+    // 发光：只要模糊后的光晕、不要实心轮廓——把文字画到画布外，用 shadowOffset 把阴影拉回原位。
+    // 光源比文字略胖（描边 + 3% 字号），光晕从描边外缘发出；单遍太淡，叠画 GLOW_PASSES 遍。
+    const glowOff = width + Math.ceil(glowBlurPx * 3); // 光源整个挪出画布右侧
+    ctx.shadowColor = glow.color;
+    ctx.shadowBlur = glowBlurPx;
+    ctx.shadowOffsetX = -glowOff;
+    ctx.shadowOffsetY = 0;
+    ctx.strokeStyle = glow.color;
+    ctx.lineWidth = strokePx * 2 + fontPx * 0.03;
+    for (let pass = 0; pass < GLOW_PASSES; pass++) {
+      lines.forEach((line, i) => {
+        drawLine(ctx, line, lineX(i) + glowOff, lineY(i), spacingPx, native, 'stroke', glow.color);
+        drawLine(ctx, line, lineX(i) + glowOff, lineY(i), spacingPx, native, 'fill', glow.color, true);
+      });
+    }
     setShadow(false);
   }
 

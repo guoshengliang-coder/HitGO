@@ -297,6 +297,25 @@ def test_put_spec_validates_and_stores_raw(client, ready_video):
     assert r.status_code == 200 and r.json()["edited"] is False
 
 
+def test_put_spec_text_glow_round_trips(client, ready_video):
+    spec = valid_spec()
+    glow = {"color": "#FF7A1ACC", "blur": 0.014}
+    spec["layers"][1]["style"]["glow"] = glow
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    assert r.json()["edit_spec"]["layers"][1]["style"]["glow"] == glow
+    assert client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]["layers"][1]["style"]["glow"] == glow
+
+    spec["layers"][1]["style"]["glow"] = None
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    assert r.json()["edit_spec"]["layers"][1]["style"]["glow"] is None
+
+    spec["layers"][1]["style"]["glow"] = {"color": "#FFFFFF", "blur": -1}
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 400 and "glow" in r.json()["errors"][0]["field"]
+
+
 def test_put_spec_requires_ready_video(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     vid = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"])).json()[0]["id"]

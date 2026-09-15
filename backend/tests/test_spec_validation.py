@@ -102,6 +102,19 @@ def test_text_style_shadow_and_letter_spacing():
     assert "shadow" in errors_of(spec)
 
 
+def test_text_style_glow():
+    spec = valid_spec()
+    spec["layers"][1]["style"]["glow"] = {"color": "#FF7A1ACC", "blur": 0.014}
+    style = validate(spec).layers[1].style
+    assert style.glow.color == "#FF7A1ACC" and style.glow.blur == 0.014
+    spec["layers"][1]["style"]["glow"] = None
+    assert validate(spec).layers[1].style.glow is None
+    del spec["layers"][1]["style"]["glow"]
+    assert validate(spec).layers[1].style.glow is None
+    spec["layers"][1]["style"]["glow"] = {"color": "#FFFFFF", "blur": -0.01}
+    assert "glow" in errors_of(spec)
+
+
 def test_text_spans_and_background_fields():
     spec = valid_spec()
     layer = spec["layers"][1]

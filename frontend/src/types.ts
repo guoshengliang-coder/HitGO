@@ -212,6 +212,12 @@ export interface TextShadow {
   offset: [number, number]; // 相对画布高
 }
 
+/** 发光：以文字轮廓为中心、无偏移的模糊光晕（剪映「发光」）。 */
+export interface TextGlow {
+  color: string;
+  blur: number; // 光晕半径，相对画布高
+}
+
 export interface TextStyle {
   font_family: string;
   font_weight: number;
@@ -225,6 +231,8 @@ export interface TextStyle {
   line_height: number;
   /** 可选：投影；null / 缺省 = 无。 */
   shadow?: TextShadow | null;
+  /** 可选：发光；null / 缺省 = 无。与 shadow 一样由前端烤进 PNG，worker 不读取。 */
+  glow?: TextGlow | null;
   /** 可选：字距（em，可为负）。 */
   letter_spacing?: number;
   /** 可选：背景块宽度，相对画布宽 (0,1]；null / 缺省 = 紧贴文字。 */

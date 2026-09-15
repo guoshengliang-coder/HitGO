@@ -119,6 +119,16 @@ export function resolveBackgroundBox(o: { contentW: number; padPx: number; strok
   return { boxW, alignW: boxW - o.padPx * 2 - o.strokePx * 2 };
 }
 
+/**
+ * 文字框四周需要预留的溢出边距（px）：阴影要 blur + |offset|，发光是无偏移的光晕，
+ * 模糊半径按 1.5 倍留（多遍叠画后光晕拖尾比 shadowBlur 名义值更长），取两者较大值。
+ */
+export function resolveOverflowPad(o: { shadowBlurPx: number; shadowDx: number; shadowDy: number; glowBlurPx: number }): number {
+  const shadowPad = o.shadowBlurPx > 0 || o.shadowDx !== 0 || o.shadowDy !== 0 ? Math.ceil(o.shadowBlurPx + Math.max(Math.abs(o.shadowDx), Math.abs(o.shadowDy))) : 0;
+  const glowPad = o.glowBlurPx > 0 ? Math.ceil(o.glowBlurPx * 1.5) : 0;
+  return Math.max(0, shadowPad, glowPad);
+}
+
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, Number.isFinite(n) ? n : lo));
 }
