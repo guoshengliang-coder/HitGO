@@ -11,6 +11,7 @@ import { QuickBar } from '../components/editor/QuickBar';
 import { Transport } from '../components/editor/Transport';
 import { Timeline } from '../components/editor/Timeline';
 import { TrimPanel } from '../components/editor/TrimPanel';
+import { AudioPanel } from '../components/editor/AudioPanel';
 import { TextPanel } from '../components/editor/TextPanel';
 import { StickerPanel } from '../components/editor/StickerPanel';
 import { CropEditor } from '../components/editor/CropEditor';
@@ -117,6 +118,19 @@ function handleKey(e: KeyboardEvent) {
       case 'Escape':
         s.setInPoint(null);
         s.setSelectedRange(null);
+        return;
+    }
+  } else if (s.step === 'audio') {
+    switch (e.code) {
+      case 'Delete':
+      case 'Backspace':
+        if (s.selectedTrackId) {
+          e.preventDefault();
+          s.removeAudioTrack(s.selectedTrackId);
+        }
+        return;
+      case 'Escape':
+        s.setSelectedTrack(null);
         return;
     }
   } else if (layerTypeForStep(s.step)) {
@@ -268,11 +282,12 @@ export function EditorPage() {
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
           {step === 'trim' && <TrimPanel />}
+          {step === 'audio' && <AudioPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'text' && <TextPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'sticker' && <StickerPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
         </div>
       </div>
-      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={['layers']} onClose={() => setApplyOpen(false)} />}
+      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={step === 'audio' ? ['audio'] : ['layers']} onClose={() => setApplyOpen(false)} />}
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
       {progressOpen && <ProgressModal />}
       {shortcutsOpen && <ShortcutsModal />}

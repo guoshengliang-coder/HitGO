@@ -487,6 +487,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-audio.selected .lbl { color: var(--accent-ink); font-weight: 500; }
 .tl-bar.audio { top: 4px; bottom: 4px; background: #dcefe3; border-color: #7fbf98; color: #2f5f42; line-height: 16px; }
 .tl-bar.audio.voice { background: #f7e6d3; border-color: #d9a56b; color: #6a4a22; }
+.tl-bar.audio.sticker { background: #e9e3f7; border-color: #a996d6; color: #4d3f7a; }
 .tl-bar.audio.muted { opacity: 0.35; }
 .tl-bar.audio.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .track-list { display: flex; flex-direction: column; gap: 6px; }
@@ -496,6 +497,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .track-item .track-head .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .track-item .track-head .role { font-size: 10px; padding: 0 5px; border-radius: 3px; background: #dcefe3; color: #2f5f42; flex: none; }
 .track-item .track-head .role.voice { background: #f7e6d3; color: #6a4a22; }
+.track-item .track-head .role.sticker { background: #e9e3f7; color: #4d3f7a; }
 .track-item .prop-grid { grid-template-columns: 56px 1fr; }
 .asset-card .thumb.audio { flex-direction: column; gap: 6px; padding: 0 8px; }
 .asset-card .thumb.audio audio { width: 100%; height: 32px; }

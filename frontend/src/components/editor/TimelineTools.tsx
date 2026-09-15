@@ -1,4 +1,4 @@
-// 时间线工具条左侧的剪辑工具（对齐剪映：与被操作的轨道就近）：撤销 / 重做、删左 / 删右（剪辑）、删除（剪辑删区间 / 文本、贴纸删图层）。
+// 时间线工具条左侧的剪辑工具（对齐剪映：与被操作的轨道就近）：撤销 / 重做、删左 / 删右（剪辑）、删除（剪辑删区间 / 音频删音轨 / 文本、贴纸删图层）。
 // 提示文案走 lib/shortcuts 的 hintFor；这里用原生 title 而非 data-tip——.timeline 是 overflow: hidden，
 // 纯 CSS tooltip 从表头向上弹出会被裁掉。
 
@@ -20,13 +20,18 @@ export function TimelineTools() {
   const deleteRange = useEditor((s) => s.deleteRemoveRange);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const removeLayer = useEditor((s) => s.removeLayer);
+  const selectedTrackId = useEditor((s) => s.selectedTrackId);
+  const removeTrack = useEditor((s) => s.removeAudioTrack);
 
-  const canDelete = step === 'trim' ? selectedRange !== null : !!selectedLayerId;
+  const canDelete = step === 'trim' ? selectedRange !== null : step === 'audio' ? !!selectedTrackId : !!selectedLayerId;
   const onDelete = () => {
     if (step === 'trim') {
       if (selectedRange !== null) deleteRange(selectedRange);
+    } else if (step === 'audio') {
+      if (selectedTrackId) removeTrack(selectedTrackId);
     } else if (selectedLayerId) removeLayer(selectedLayerId);
   };
+  const deleteHint = step === 'trim' ? 'delete-range' : step === 'audio' ? 'delete-track' : 'delete-layer';
 
   return (
     <div className="tl-tools">
@@ -46,7 +51,7 @@ export function TimelineTools() {
           </button>
         </>
       )}
-      <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" title={step === 'trim' ? hintFor('delete-range') : hintFor('delete-layer')}>
+      <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" title={hintFor(deleteHint)}>
         <IconTrash />
       </button>
     </div>

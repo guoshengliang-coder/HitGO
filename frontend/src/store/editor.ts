@@ -461,15 +461,15 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
     setSelectedAll: (on) => set((s) => ({ selectedIds: on ? s.videos.map((v) => v.id) : [] })),
     setStep: (step) => {
       player.pause();
-      // 选中的图层 / 区间只属于原模块：文本模块里不能留着一个选中的贴纸
-      set({ step, selectedLayerId: null, selectedRangeIndex: null, cropEditing: false });
+      // 选中的图层 / 区间 / 音轨只属于原模块：文本模块里不能留着一个选中的贴纸
+      set({ step, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),

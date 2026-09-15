@@ -1,7 +1,8 @@
-// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间与音轨（剪辑模块，区间可拖边）/ 图层行（文本、贴纸模块各自只显示本类图层，可拖动、拉伸，轨道头可锁定 / 隐藏）。
-// 横轴为源时间；图层 t 基于剪后时间，显示时用 postToSource 映射。
+// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨、BGM / 口播可拖动拉伸、贴纸音轨只读）/
+// 图层行（文本、贴纸模块各自只显示本类图层，可拖动、拉伸，轨道头可锁定 / 隐藏）。
+// 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
-// 拖动区间 / 图层条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
+// 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useEditor } from '../../store/editor';
@@ -9,7 +10,7 @@ import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypeForStep } from '../../lib/steps';
-import { resolveTrack, sourceVolume } from '../../lib/audioTracks';
+import { resolveTrack, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { snapValue } from '../../lib/snap';
 import { hintFor } from '../../lib/shortcuts';
@@ -22,7 +23,7 @@ const MIN_PPS = 20;
 const MAX_PPS = 400;
 const SNAP_PX = 6;
 
-/** 剪辑模块的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
+/** 音频模块的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
 function SourceAudioRow({ hasAudio, volume, width, scrub }: { hasAudio: boolean; volume: number; width: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
   const muted = !hasAudio || volume === 0;
   const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
@@ -50,7 +51,7 @@ function useWidth(ref: React.RefObject<HTMLDivElement>) {
   return w;
 }
 
-type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move'; index: number; startX: number; orig: [number, number] };
+type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move' | 'track-l' | 'track-r' | 'track-move'; index: number; startX: number; orig: [number, number] };
 
 /** 标尺 / 轨道上的 scrub：按下暂停并定位，拖动时用 rAF 节流连续定位。 */
 function useScrub(xToTime: (clientX: number) => number) {
@@ -118,6 +119,7 @@ export function Timeline() {
   const assets = useEditor((s) => s.assets);
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
+  const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
   const timelinePps = useEditor((s) => s.timelinePps);
   const setTimelinePps = useEditor((s) => s.setTimelinePps);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -132,6 +134,9 @@ export function Timeline() {
   const remove = spec?.trim.remove ?? [];
   const postDuration = postTrimDuration(duration, remove);
   const trimStep = step === 'trim';
+  const audioStep = step === 'audio';
+  const tracks = spec?.audio?.tracks ?? [];
+  const stickerAudio = audioStep ? stickerAudioLayers(spec?.layers ?? [], assets) : [];
   const layerType = layerTypeForStep(step);
   // 本模块管理的图层行；保留在 spec.layers 里的下标，拖动时按它写回
   const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => r.l.type === layerType) : [];
@@ -211,11 +216,15 @@ export function Timeline() {
     setDragVal(d.orig);
     dragRef.current = d.orig;
     const isBar = d.kind.startsWith('bar');
-    const maxT = isBar ? postDuration : duration;
-    // 吸附候选：源时间（区间）或剪后时间（图层条）
-    const candidates: number[] = isBar
-      ? [0, postDuration, sourceToPost(time, remove), ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
-      : [0, duration, time, ...(inPoint !== null ? [inPoint] : []), ...remove.flatMap((r, i) => (i === d.index ? [] : r))];
+    const isTrack = d.kind.startsWith('track');
+    const postAxis = isBar || isTrack;
+    const maxT = postAxis ? postDuration : duration;
+    // 吸附候选：源时间（区间）或剪后时间（图层条、音轨条）
+    const candidates: number[] = isTrack
+      ? trackSnapCandidates({ tracks, layers: spec?.layers ?? [], excludeTrackId: tracks[d.index]?.id ?? '', postDuration, playhead: sourceToPost(time, remove) })
+      : isBar
+        ? [0, postDuration, sourceToPost(time, remove), ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
+        : [0, duration, time, ...(inPoint !== null ? [inPoint] : []), ...remove.flatMap((r, i) => (i === d.index ? [] : r))];
     const threshold = SNAP_PX / pps;
 
     const onMove = (ev: PointerEvent) => {
@@ -252,7 +261,7 @@ export function Timeline() {
       }
       setDragVal([a, b]);
       dragRef.current = [a, b];
-      setSnapX(hit === null ? null : (isBar ? postToSource(hit, remove) : hit) * pps);
+      setSnapX(hit === null ? null : (postAxis ? postToSource(hit, remove) : hit) * pps);
     };
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener('pointermove', onMove);
@@ -267,7 +276,11 @@ export function Timeline() {
       if (val) {
         const [a, b] = val;
         if (d.kind.startsWith('cut')) updateRemoveRange(d.index, a, b);
-        else {
+        else if (isTrack) {
+          // 只点了一下没拖：不写 spec，免得多出一条空的撤销记录
+          const track = tracks[d.index];
+          if (track && (a !== d.orig[0] || b !== d.orig[1])) updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
+        } else {
           const layer = spec?.layers[d.index];
           if (layer) updateLayer(layer.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
         }
@@ -387,14 +400,15 @@ export function Timeline() {
             </div>
           </div>
 
-          {trimStep && (
+          {audioStep && (
             <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} scrub={scrub.handlers} />
           )}
-          {trimStep &&
-            (spec?.audio?.tracks ?? []).map((t) => {
+          {audioStep &&
+            tracks.map((t, i) => {
               const r = resolveTrack(t);
               const all = r.t === 'all';
-              const [pa, pb] = windowRange(r.t, postDuration);
+              const win = windowRange(r.t, postDuration);
+              const [pa, pb] = drag && drag.kind.startsWith('track') && drag.index === i && dragVal ? dragVal : win;
               const left = postToSource(pa, remove) * pps;
               const right = postToSource(pb, remove) * pps;
               const sel = selectedTrackId === t.id;
@@ -403,19 +417,70 @@ export function Timeline() {
               return (
                 <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''}`} onClick={() => setSelectedTrack(t.id)}>
                   <div className="lbl" title={name}>
+                    <button
+                      className={`chip ${all ? 'active' : ''}`}
+                      style={{ height: 18, padding: '0 6px', fontSize: 10, flex: 'none' }}
+                      title="全程 / 区间"
+                      onClick={() => updateAudioTrack(t.id, { t: toggleTrackWindow(r.t, sourceToPost(time, remove), postDuration) })}
+                    >
+                      {all ? '全程' : '区间'}
+                    </button>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}</span>
                     <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
                   </div>
                   <div className="body" {...scrub.handlers}>
-                    <div className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 ? 'muted' : ''}`} style={{ left, width: Math.max(4, right - left), cursor: 'default' }} onPointerDown={(e) => { setSelectedTrack(t.id); e.stopPropagation(); }}>
+                    <div
+                      className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 ? 'muted' : ''}`}
+                      style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
+                      onPointerDown={(e) => {
+                        setSelectedTrack(t.id);
+                        if (all) {
+                          e.stopPropagation();
+                          return;
+                        }
+                        startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win });
+                      }}
+                    >
                       {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                       {r.loop ? ' ↻' : ''}
                       {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
+                      {!all && (
+                        <>
+                          <div className="edge l" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} />
+                          <div className="edge r" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} />
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
               );
             })}
+          {audioStep && tracks.length === 0 && (
+            <div className="tl-row" style={{ height: 30 }}>
+              <div className="lbl">BGM / 口播</div>
+              <div className="body hint" style={{ padding: '6px 8px' }}>还没有 BGM / 口播，在右侧添加；加入后可在这里拖动条调整时段。</div>
+            </div>
+          )}
+          {stickerAudio.map((l) => {
+            const [pa, pb] = windowRange(l.t, postDuration);
+            const left = postToSource(pa, remove) * pps;
+            const right = postToSource(pb, remove) * pps;
+            const on = !!l.mix_audio;
+            const name = layerName(l, assets);
+            return (
+              <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
+                <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改）`}>
+                  <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
+                  <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+                </div>
+                <div className="body" {...scrub.handlers}>
+                  <div className={`tl-bar audio sticker ${l.t === 'all' ? 'all' : ''} ${on ? '' : 'muted'}`} style={{ left, width: Math.max(4, right - left), cursor: 'default', pointerEvents: 'none' }}>
+                    {on ? '合成' : '不合成'} · {l.t === 'all' ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
 
           {layerRows.map(({ l, i }) => {
             const v = barVal(i, l);

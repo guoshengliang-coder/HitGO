@@ -4,7 +4,7 @@
 
 import type { Step } from './steps';
 
-export type ShortcutGroup = '全局' | '剪辑' | '图层' | '时间轴';
+export type ShortcutGroup = '全局' | '剪辑' | '音频' | '图层' | '时间轴';
 
 export interface Shortcut {
   id: string;
@@ -16,6 +16,7 @@ export interface Shortcut {
 }
 
 const TRIM: Step[] = ['trim'];
+const AUDIO: Step[] = ['audio'];
 const LAYER_STEPS: Step[] = ['text', 'sticker'];
 const TEXT: Step[] = ['text'];
 
@@ -37,6 +38,9 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'remove-before', keys: ['Q'], label: '删左', group: '剪辑', steps: TRIM },
   { id: 'remove-after', keys: ['W'], label: '删右', group: '剪辑', steps: TRIM },
   { id: 'delete-range', keys: ['Delete'], label: '删除选中区间', group: '剪辑', steps: TRIM },
+  // 音频
+  { id: 'track-drag', keys: ['拖动'], label: '拖动音轨条移动时段 / 拖两端调整', group: '音频', steps: AUDIO },
+  { id: 'delete-track', keys: ['Delete'], label: '删除选中音轨', group: '音频', steps: AUDIO },
   // 图层
   { id: 'copy-layer', keys: ['⌘', 'C'], label: '复制图层', group: '图层', steps: LAYER_STEPS },
   { id: 'paste-layer', keys: ['⌘', 'V'], label: '粘贴图层', group: '图层', steps: LAYER_STEPS },

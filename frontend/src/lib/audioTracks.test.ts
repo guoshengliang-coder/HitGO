@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { audibleSpan, contractAudio, isDefaultAudio, resolveTrack, trackDefaultsFor, trackGain, trackMediaTime } from './audioTracks';
-import type { AudioTrack } from '../types';
+import { audibleSpan, contractAudio, isDefaultAudio, resolveTrack, stickerAudioLayers, toggleTrackWindow, trackDefaultsFor, trackGain, trackMediaTime, trackSnapCandidates } from './audioTracks';
+import type { Asset, AudioTrack, Layer } from '../types';
 
 const D = 20.6; // 剪后时长
 
@@ -72,5 +72,37 @@ describe('audibleSpan / trackGain', () => {
   it('淡入淡出比时段长时钳到时段长', () => {
     const t: AudioTrack = { id: 'a', asset_id: 'x', t: [0, 2], fade_in: 5, loop: true };
     expect(trackGain(1, t, D, 3)).toBeCloseTo(0.5);
+  });
+});
+
+describe('音频模块（HIG-10）', () => {
+  const base = { anchor: 'center', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1 } as const;
+  const sticker = (id: string, assetId: string, t: Layer['t'] = 'all'): Layer => ({ ...base, margin: [0, 0], id, type: 'sticker', asset_id: assetId, t });
+  const text = (id: string, t: Layer['t']): Layer => ({ ...base, margin: [0, 0], id, type: 'text', text: id, style: {} as never, t });
+  const asset = (id: string, extra: Partial<Asset>): Asset => ({ id, type: 'sticker', name: `${id}.mp4`, url: '', source: 'upload', created_at: '', ...extra });
+
+  it('stickerAudioLayers 只保留带音轨的视频贴纸', () => {
+    const assets = [asset('v1', { kind: 'video', has_audio: true }), asset('v2', { kind: 'video', has_audio: false }), asset('v3', { kind: 'video', has_audio: null }), asset('img', { kind: 'image' })];
+    const layers = [sticker('s1', 'v1'), sticker('s2', 'v2'), sticker('s3', 'v3'), sticker('s4', 'img'), sticker('s5', 'gone'), text('t1', 'all')];
+    expect(stickerAudioLayers(layers, assets).map((l) => l.id)).toEqual(['s1']);
+  });
+
+  it('trackSnapCandidates 含 0、时长、播放头与其他音轨 / 图层端点，排除自身和全程', () => {
+    const tracks: AudioTrack[] = [
+      { id: 'a', asset_id: 'x', t: [1, 4] },
+      { id: 'b', asset_id: 'x', t: [5, 8] },
+      { id: 'c', asset_id: 'x', t: 'all' },
+    ];
+    const layers = [text('t1', [2, 3]), sticker('s1', 'v', 'all')];
+    expect(trackSnapCandidates({ tracks, layers, excludeTrackId: 'a', postDuration: D, playhead: 6.5 })).toEqual([0, D, 6.5, 5, 8, 2, 3]);
+  });
+
+  it('toggleTrackWindow：全程 → 播放头起 3 秒并截到时长；区间 → 全程', () => {
+    expect(toggleTrackWindow([1, 2], 5, D)).toBe('all');
+    expect(toggleTrackWindow('all', 5.123, D)).toEqual([5.12, 8.12]);
+    expect(toggleTrackWindow('all', 19, D)).toEqual([19, D]);
+    // 播放头在末尾：往前留出至少 0.1 秒，区间不会退化成一个点
+    expect(toggleTrackWindow('all', D, D)).toEqual([20.5, D]);
+    expect(toggleTrackWindow('all', -1, D)).toEqual([0, 3]);
   });
 });
