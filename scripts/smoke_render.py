@@ -58,7 +58,8 @@ spec = {
     ],
     "outputs": [
         {"variant_key": "9x16", "aspect": "9:16", "fill": "blur"},
-        {"variant_key": "1x1", "aspect": "1:1", "fill": "blur",
+        {"variant_key": "1x1", "aspect": "1:1", "fill": "crop",
+         "crop": {"x": 0.1, "y": 0.2, "w": 0.6, "h": 0.6},
          "layer_overrides": {"l_1": {"margin": [0.04, 0.04]}}},
     ],
 }
@@ -87,6 +88,11 @@ while True:
 print(f"finished in {time.time() - t0:.0f}s")
 for j in jobs:
     print(" ", j["variant_key"], j["status"], j["progress"], j["output"], (j["error"] or "")[:800])
+expected = {"9x16": (1080, 1920), "1x1": (1080, 1080)}
+for j in jobs:
+    if j["status"] == "done" and (j["output"]["width"], j["output"]["height"]) != expected[j["variant_key"]]:
+        print("unexpected output size for", j["variant_key"], j["output"])
+        sys.exit(1)
 if all(j["status"] == "done" for j in jobs):
     print("callback:", json.dumps(jobs[0]["callback"], ensure_ascii=False)[:280])
 else:

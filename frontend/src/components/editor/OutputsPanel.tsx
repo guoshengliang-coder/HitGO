@@ -3,6 +3,7 @@ import { VARIANT_DEFS, type FillMode, type OutputQuality, type OutputVariant, ty
 import { countSafeZoneOverlaps, effectivePlacement, layerName } from '../../lib/spec';
 import { formatSeconds } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
+import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
 
 const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
 const QUALITY_LABEL: Record<OutputQuality, string> = { standard: '标准', high: '高清' };
@@ -72,7 +73,12 @@ export function OutputsPanel({ onSaveAndRender, targetCount, fileCount }: { onSa
   const assets = useEditor((s) => s.assets);
   const rendering = useEditor((s) => s.rendering);
   const calibration = useEditor((s) => s.outputCalibration);
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
+  const cropEditing = useEditor((s) => s.cropEditing);
+  const setCropEditing = useEditor((s) => s.setCropEditing);
+  const setCrop = useEditor((s) => s.setCrop);
   const postDuration = usePostDuration();
+  const landscapeSource = !!video && video.width > video.height;
   const outputs = spec?.outputs ?? [];
   const overlaps = spec ? countSafeZoneOverlaps(spec, zone, assets) : 0;
   const estimates = Object.fromEntries(outputs.map((o) => [o.variant_key, estimateOutputBytes(o, postDuration, calibration)])) as Record<string, number>;
@@ -100,6 +106,7 @@ export function OutputsPanel({ onSaveAndRender, targetCount, fileCount }: { onSa
       <div className="panel-body">
         <div className="section">
           <div className="section-title">输出变体</div>
+          {landscapeSource && <div className="hint">横屏源：若内容只在画面中间（两侧是模糊 / 装饰），把填充改为「裁切」并调整裁切范围，只取中间那一条。</div>}
           {VARIANT_DEFS.map((def) => {
             const o = outputs.find((x) => x.variant_key === def.key);
             const on = !!o;
@@ -114,7 +121,18 @@ export function OutputsPanel({ onSaveAndRender, targetCount, fileCount }: { onSa
                 </div>
                 {on && o && (
                   <div className="inline" onClick={(e) => e.stopPropagation()}>
-                    <select className="select sm" value={o.fill} onChange={(e) => patch(def.key, { fill: e.target.value as FillMode, color: e.target.value === 'color' ? (o.color ?? '#000000') : undefined })}>
+                    <select
+                      className="select sm"
+                      value={o.fill}
+                      onChange={(e) => {
+                        const fill = e.target.value as FillMode;
+                        const p: Partial<OutputVariant> = { fill, color: fill === 'color' ? (o.color ?? '#000000') : undefined };
+                        // 切到裁切时先写入缺省（居中 cover）窗口，舞台与成片从一开始就一致
+                        if (fill === 'crop' && !o.crop && video) p.crop = defaultCropRect(video.width, video.height, def.width / def.height);
+                        patch(def.key, p);
+                        if (fill !== 'crop' && cropEditing && selectedVariant === def.key) setCropEditing(false);
+                      }}
+                    >
                       {(Object.keys(FILL_LABEL) as FillMode[]).map((f) => (
                         <option key={f} value={f}>{FILL_LABEL[f]}</option>
                       ))}
@@ -126,6 +144,28 @@ export function OutputsPanel({ onSaveAndRender, targetCount, fileCount }: { onSa
                       </>
                     )}
                     {o.layer_overrides && Object.keys(o.layer_overrides).length > 0 && <span className="pill edited">已微调 {Object.keys(o.layer_overrides).length}</span>}
+                  </div>
+                )}
+                {on && o && o.fill === 'crop' && (
+                  <div className="inline" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className={`btn sm ${cropEditing && selectedVariant === def.key ? 'on' : ''}`}
+                      onClick={() => {
+                        const next = !(cropEditing && selectedVariant === def.key);
+                        setSelectedVariant(def.key);
+                        setCropEditing(next);
+                      }}
+                    >
+                      {cropEditing && selectedVariant === def.key ? '完成裁切' : '调整裁切范围'}
+                    </button>
+                    <span className="mono muted small" title="裁切窗口在源画面上的像素尺寸 @ 左上角">
+                      {video && o.crop && !isDefaultCrop(o.crop, video.width, video.height, def.width / def.height) ? describeCrop(o.crop, video.width, video.height) : '居中（默认）'}
+                    </span>
+                    {video && o.crop && !isDefaultCrop(o.crop, video.width, video.height, def.width / def.height) && (
+                      <button className="btn ghost sm" onClick={() => setCrop(def.key, defaultCropRect(video.width, video.height, def.width / def.height))}>
+                        居中
+                      </button>
+                    )}
                   </div>
                 )}
                 {on && o && (

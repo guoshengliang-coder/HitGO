@@ -146,7 +146,9 @@
   "outputs": [
     { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high" },
     { "variant_key": "1x1",  "aspect": "1:1",  "fill": "blur",
-      "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } }
+      "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
+    { "variant_key": "4x5",  "aspect": "4:5",  "fill": "crop",
+      "crop": { "x": 0.3418, "y": 0, "w": 0.3164, "h": 1 } }   // 可选：源画面上的裁切窗口，见下方规则
   ]
 }
 ```
@@ -160,6 +162,7 @@
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
 - **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在图层步骤里对落在已删区间外的图层给提示。
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
+- **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
 - `layer_overrides` 只允许覆盖 `anchor | margin | width | rotate | opacity`。
@@ -277,7 +280,7 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 1. 解析 spec，取输出画幅 W×H，读取图层素材 / PNG。
 2. `filter_complex` 顺序：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
-   - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = `scale` cover + `crop=W:H`
+   - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
    - 输出 `format=yuv420p`
 3. 编码（按输出变体的 `quality`，1080p）：

@@ -132,6 +132,22 @@ def test_aspect_and_fill_enums():
     assert "color" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "color", "color": "red"}]))
 
 
+def test_crop_window_is_optional_and_bounded():
+    def out(crop):
+        return valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "crop", "crop": crop}])
+
+    assert validate(valid_spec()).outputs[0].crop is None
+    rect = validate(out({"x": 0.3418, "y": 0, "w": 0.3164, "h": 1})).outputs[0].crop
+    assert (rect.x, rect.y, rect.w, rect.h) == (0.3418, 0, 0.3164, 1)
+    assert validate(out({"w": 0.5, "h": 0.5})).outputs[0].crop.x == 0  # x / y 默认 0
+    assert "crop" in errors_of(out({"x": 0.6, "y": 0, "w": 0.5, "h": 1}))  # x + w > 1
+    assert "crop" in errors_of(out({"x": 0, "y": 0.5, "w": 1, "h": 0.6}))  # y + h > 1
+    assert "crop" in errors_of(out({"x": 0, "y": 0, "w": 0, "h": 1}))  # w 必须 > 0
+    assert "crop" in errors_of(out({"x": -0.1, "y": 0, "w": 0.5, "h": 1}))
+    # 非 crop 填充下带窗口也能通过校验（worker 忽略）
+    assert validate(valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "blur", "crop": {"w": 0.5, "h": 1}}])).outputs[0].crop is not None
+
+
 def test_anchor_enum_and_geometry_ranges():
     spec = valid_spec()
     spec["layers"][0]["anchor"] = "middle"

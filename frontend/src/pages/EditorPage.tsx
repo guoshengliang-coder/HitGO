@@ -12,6 +12,7 @@ import { TrimPanel } from '../components/editor/TrimPanel';
 import { LayersPanel } from '../components/editor/LayersPanel';
 import { OutputsPanel } from '../components/editor/OutputsPanel';
 import { VariantPreviews } from '../components/editor/VariantPreviews';
+import { CropEditor } from '../components/editor/CropEditor';
 import { ProgressModal } from '../components/editor/ProgressModal';
 import { ShortcutsModal } from '../components/editor/ShortcutsModal';
 
@@ -189,6 +190,7 @@ export function EditorPage() {
   const error = useEditor((s) => s.error);
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
+  const cropEditing = useEditor((s) => s.cropEditing);
   const videos = useEditor((s) => s.videos);
   const specs = useEditor((s) => s.specs);
   const currentVideoId = useEditor((s) => s.currentVideoId);
@@ -253,7 +255,7 @@ export function EditorPage() {
       <div className="editor-body">
         <VideoList />
         <div className="col-center">
-          {step === 3 && <VariantPreviews />}
+          {step === 3 && (cropEditing ? <CropEditor /> : <VariantPreviews />)}
           <Stage hidden={step === 3} />
           <QuickBar />
           <Transport />

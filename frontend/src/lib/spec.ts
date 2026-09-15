@@ -23,6 +23,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
     outputs: spec.outputs.map((o) => {
       const copy: OutputVariant = { ...o, quality: o.quality === 'high' ? 'high' : 'standard' };
       if (copy.fill !== 'color') delete copy.color;
+      if (copy.fill !== 'crop') delete copy.crop;
       if (copy.layer_overrides && Object.keys(copy.layer_overrides).length === 0) delete copy.layer_overrides;
       return copy;
     }),
