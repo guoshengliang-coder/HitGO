@@ -1,14 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Player } from './player';
 
 // node 环境没有 HTMLVideoElement：EventTarget + 播放器会读写的几个字段就够用
 function fakeVideo(src = '/media/a.mp4') {
-  const el = new EventTarget() as EventTarget & { src: string; currentTime: number; duration: number; readyState: number; pause: () => void };
+  const el = new EventTarget() as EventTarget & { src: string; currentTime: number; duration: number; readyState: number; pause: () => void; play: () => Promise<void> };
   el.src = src;
   el.currentTime = 0;
   el.duration = 10;
   el.readyState = 0;
-  el.pause = () => undefined;
+  el.pause = vi.fn();
+  el.play = vi.fn(() => Promise.resolve());
   return el as unknown as HTMLVideoElement;
 }
 
@@ -50,5 +51,87 @@ describe('Player 换元素（HIG-12）', () => {
     off();
     a.dispatchEvent(new Event('loadeddata'));
     expect(onFrame).not.toHaveBeenCalled();
+  });
+});
+
+describe('Player 封面段（HIG-9）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** 手动推进 rAF：每次 tick 把 performance.now 往前拨 ms 毫秒。 */
+  function manualFrames() {
+    let cb: FrameRequestCallback | null = null;
+    let now = 1000;
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => {
+      cb = fn;
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    return (ms: number) => {
+      now += ms;
+      const fn = cb;
+      cb = null;
+      fn?.(now);
+    };
+  }
+
+  function attached(preroll: number) {
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    p.duration = 10;
+    p.setPreroll(preroll);
+    return { p, v };
+  }
+
+  it('seek 的下限是 -preroll；封面变短时播放头夹回新封面的起点', () => {
+    const { p, v } = attached(2);
+    p.seek(-5);
+    expect(p.currentTime).toBe(-2);
+    expect(v.currentTime).toBe(0); // 正片停在第 0 帧
+    p.setPreroll(1);
+    expect(p.currentTime).toBe(-1);
+    p.setPreroll(0);
+    expect(p.currentTime).toBe(0);
+  });
+
+  it('从封面开始播：封面段不启动正片，跨过 0 时正片从头接上', () => {
+    const tick = manualFrames();
+    const { p, v } = attached(1);
+    p.seek(-1);
+    p.play();
+    expect(v.play).not.toHaveBeenCalled();
+    tick(500);
+    expect(p.currentTime).toBeCloseTo(-0.5);
+    expect(v.play).not.toHaveBeenCalled();
+    tick(600);
+    expect(p.currentTime).toBe(0);
+    expect(v.currentTime).toBe(0);
+    expect(v.play).toHaveBeenCalledTimes(1);
+    p.pause();
+  });
+
+  it('跨过 0 时先跳过开头的删除区间', () => {
+    const tick = manualFrames();
+    const { p, v } = attached(0.5);
+    p.remove = [[0, 2]];
+    p.seek(-0.5);
+    p.play();
+    tick(600);
+    expect(p.currentTime).toBe(2);
+    expect(v.currentTime).toBe(2);
+    p.pause();
+  });
+
+  it('播到头再按播放从封面起点重来', () => {
+    manualFrames();
+    const { p, v } = attached(1.5);
+    p.seek(10);
+    p.play();
+    expect(p.currentTime).toBe(-1.5);
+    expect(v.play).not.toHaveBeenCalled();
+    p.pause();
   });
 });

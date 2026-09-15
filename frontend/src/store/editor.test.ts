@@ -2,7 +2,7 @@
 // 提交时必须压入编辑前的快照（pushHistorySnapshot），否则 ⌘Z 回不到编辑前。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './editor';
-import { defaultTextStyle, emptySpec, type EditSpec, type TextLayer, type Video } from '../types';
+import { defaultTextStyle, emptySpec, type Asset, type EditSpec, type TextLayer, type Video } from '../types';
 import { cloneSpec } from '../lib/spec';
 
 const VIDEO = { id: 'v1', name: 'a.mp4', duration: 10, width: 1080, height: 1920 } as Video;
@@ -101,5 +101,41 @@ describe('toggleSafeZone', () => {
     useEditor.setState({ safeZoneView: 'none', safeZoneMode: 'frames' });
     useEditor.getState().toggleSafeZone();
     expect(useEditor.getState().safeZoneView).toBe('frames');
+  });
+});
+
+describe('封面（HIG-9）', () => {
+  const base = { url: '/media/x', source: 'upload', created_at: '' } as const;
+  const assets: Asset[] = [
+    { ...base, id: 'a_img', type: 'sticker', name: 'c.jpg', kind: 'image', width: 720, height: 1280 },
+    { ...base, id: 'a_prep', type: 'sticker', name: 'c.mp4', kind: 'video', status: 'preparing' },
+    { ...base, id: 'a_font', type: 'font', name: 'f.ttf' },
+  ];
+
+  it('只接受就绪的贴纸素材；默认 1 秒，调时长夹到 [0.1, 10]；可撤销', () => {
+    useEditor.setState({ assets });
+    const s = useEditor.getState();
+    s.setCover('a_font');
+    s.setCover('a_prep');
+    expect(useEditor.getState().currentSpec()?.cover).toBeUndefined();
+
+    s.setCover('a_img');
+    expect(useEditor.getState().currentSpec()?.cover).toEqual({ asset_id: 'a_img', duration: 1 });
+    useEditor.getState().setCoverDuration(42);
+    expect(useEditor.getState().currentSpec()?.cover?.duration).toBe(10);
+
+    useEditor.getState().clearCover();
+    expect(useEditor.getState().currentSpec()?.cover).toBeUndefined();
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.cover).toEqual({ asset_id: 'a_img', duration: 10 });
+  });
+
+  it('封面段里（time < 0）入点夹到 0，删左 / 删右不可用', () => {
+    useEditor.setState({ time: -0.5 });
+    const s = useEditor.getState();
+    expect(s.canRemoveBefore()).toBe(false);
+    expect(s.canRemoveAfter()).toBe(false);
+    s.setInPoint(-0.5);
+    expect(useEditor.getState().inPoint).toBe(0);
   });
 });

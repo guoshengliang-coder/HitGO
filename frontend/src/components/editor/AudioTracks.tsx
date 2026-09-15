@@ -47,8 +47,9 @@ function TrackAudio({ track }: { track: AudioTrack }) {
       if (Math.abs(el.currentTime - at) > tolerance) el.currentTime = at;
       if (el.paused) void el.play().catch(() => undefined);
     };
-    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying);
-    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing));
+    // 封面段（t < 0）不放 BGM / 口播：按暂停对齐（契约 §2 cover）
+    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0);
+    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0));
     return () => {
       unsub();
       el.pause();

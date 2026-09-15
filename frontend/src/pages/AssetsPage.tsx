@@ -6,6 +6,8 @@ import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
 
 /** 音频素材的 accept 与空态文案；剪辑步骤的音轨选择器也用。 */
+/** 贴纸 / 封面素材可上传的格式（契约 §3）；jpg 没有透明通道，主要给封面用（HIG-9）。 */
+export const STICKER_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm';
 export const AUDIO_ACCEPT = 'audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.mp3,.wav,.m4a';
 export const AUDIO_EMPTY_TEXT = '还没有音频。支持 mp3 / wav / m4a，单个不超过 50 MiB；上传后在「剪辑」步骤里加为 BGM 或口播。';
 
@@ -140,7 +142,7 @@ export function AssetsPage() {
 
   const accept =
     tab === 'sticker'
-      ? 'image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.webp,.gif,.mp4,.mov,.webm'
+      ? STICKER_ACCEPT
       : tab === 'audio'
         ? AUDIO_ACCEPT
         : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
@@ -150,7 +152,7 @@ export function AssetsPage() {
     bucket === 'library'
       ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : tab === 'audio' ? 'audio' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
       : tab === 'sticker'
-        ? '还没有贴纸。支持 png / webp / gif 与 mp4 / mov / webm；图片单个不超过 10 MiB，视频贴纸不超过 50 MiB、60 秒。'
+        ? '还没有贴纸。支持 png / jpg / webp / gif 与 mp4 / mov / webm；图片单个不超过 10 MiB，视频贴纸不超过 50 MiB、60 秒。'
         : tab === 'audio'
           ? AUDIO_EMPTY_TEXT
           : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';

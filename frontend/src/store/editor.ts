@@ -11,6 +11,7 @@ import { emptySpec, isAssetReady } from '../types';
 import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { nudgePlacement, round4 } from '../lib/layout';
 import { indexWithinType, layersOfType, moveWithinType } from '../lib/layerKind';
 import { layerTypeForStep, type Step } from '../lib/steps';
@@ -22,7 +23,7 @@ import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 
 export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
-export type ApplyModule = 'trim' | 'layers' | 'outputs' | 'audio';
+export type ApplyModule = 'trim' | 'layers' | 'outputs' | 'audio' | 'cover';
 export type SafeZoneView = 'frames' | 'overlay' | 'none';
 /** 安全区开启时的显示方式（SafeZoneView 去掉 none）。 */
 export type SafeZoneMode = Exclude<SafeZoneView, 'none'>;
@@ -92,7 +93,7 @@ export interface EditorState {
   specs: Record<string, EditSpec>;
   history: Record<string, History>;
   selectedLayerId: string | null;
-  time: number; // 源时间
+  time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
   saveState: SaveState;
   saveError: string | null;
@@ -207,6 +208,12 @@ export interface EditorState {
   pasteStyle: () => void;
   /** 按 1080×1920 参考像素平移图层。 */
   nudgeLayer: (id: string, dx: number, dy: number, history?: boolean) => void;
+
+  // 封面（契约 §2 cover，HIG-9）
+  /** 设封面素材（贴纸库里的图片 / 视频，须 ready）；已有图片封面时沿用它的时长。 */
+  setCover: (assetId: string) => void;
+  setCoverDuration: (sec: number, history?: boolean) => void;
+  clearCover: () => void;
 
   // 画面（唯一的 9:16 输出）
   patchOutput: (patch: Partial<OutputVariant>) => void;
@@ -520,8 +527,10 @@ export const useEditor = create<EditorState>((set, get) => {
     },
     setTimelinePps: (timelinePps) => set({ timelinePps }),
     setSelectedRange: (selectedRangeIndex) => set({ selectedRangeIndex }),
-    setInPoint: (inPoint) => set({ inPoint }),
-    setOutPoint: (t) => {
+    // 封面段（time < 0）不属于源视频：入出点夹到 0
+    setInPoint: (inPoint) => set({ inPoint: inPoint === null ? null : Math.max(0, inPoint) }),
+    setOutPoint: (t0) => {
+      const t = Math.max(0, t0);
       const ip = get().inPoint;
       if (ip === null) {
         set({ inPoint: t });
@@ -539,7 +548,7 @@ export const useEditor = create<EditorState>((set, get) => {
     canRemoveAfter: () => {
       const v = get().currentVideo();
       const t = get().time;
-      if (!v || v.duration - t < 0.05) return false;
+      if (!v || t < 0 || v.duration - t < 0.05) return false;
       return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration);
     },
     removeBefore: () => {
@@ -558,7 +567,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       if (!v) return;
       const t = get().time;
-      if (v.duration - t < 0.05) return;
+      if (t < 0 || v.duration - t < 0.05) return;
       if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration)) {
         set({ toast: '不能删除整条视频', toastAction: null });
         return;
@@ -712,6 +721,29 @@ export const useEditor = create<EditorState>((set, get) => {
         if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
       });
       if (get().selectedTrackId === id) set({ selectedTrackId: null });
+    },
+
+    setCover: (assetId) => {
+      const asset = get().assets.find((a) => a.id === assetId);
+      if (!isCoverAsset(asset) || !isAssetReady(asset)) return;
+      get().updateSpec((spec) => {
+        spec.cover = { asset_id: assetId, duration: clampCoverDuration(spec.cover?.duration ?? COVER_DEFAULT_DURATION) };
+      });
+    },
+    setCoverDuration: (sec, history = true) => {
+      if (!get().currentSpec()?.cover) return;
+      get().updateSpec(
+        (spec) => {
+          if (spec.cover) spec.cover.duration = clampCoverDuration(sec);
+        },
+        { history },
+      );
+    },
+    clearCover: () => {
+      if (!get().currentSpec()?.cover) return;
+      get().updateSpec((spec) => {
+        delete spec.cover;
+      });
     },
 
     addLayer: (layer) => {
@@ -991,6 +1023,16 @@ export function usePostDuration(): number {
     if (!v) return 0;
     return postTrimDuration(v.duration, spec?.trim.remove ?? []);
   });
+}
+
+/** 当前视频封面在成片里占的秒数（0 = 没有封面或封面不可用），与 worker 同一套判断。 */
+export function useCoverDuration(): number {
+  return useEditor((s) => coverDuration(s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null, s.assets));
+}
+
+/** 播放头是否处在封面段。 */
+export function useInCover(): boolean {
+  return useEditor((s) => s.time < 0);
 }
 
 export function usePostTime(): number {

@@ -483,6 +483,10 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
         if (src.edit_spec.audio) spec.audio = clone(src.edit_spec.audio);
         else delete spec.audio;
       }
+      if (modules.includes('cover')) {
+        if (src.edit_spec.cover) spec.cover = clone(src.edit_spec.cover);
+        else delete spec.cover;
+      }
       t.edit_spec = spec;
       t.edited = true;
       t.updated_at = now();

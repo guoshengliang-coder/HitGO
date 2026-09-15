@@ -24,6 +24,17 @@ describe('toContractSpec · audio', () => {
   });
 });
 
+describe('toContractSpec · cover（HIG-9）', () => {
+  it('没有封面时不带此字段，有封面时带上并规范化时长；toSingleOutput 保留封面', () => {
+    expect('cover' in toContractSpec(emptySpec())).toBe(false);
+    expect('cover' in toContractSpec({ ...emptySpec(), cover: null })).toBe(false);
+    const spec: EditSpec = { ...emptySpec(), cover: { asset_id: 'a_img', duration: 1.26 } };
+    expect(toContractSpec(spec).cover).toEqual({ asset_id: 'a_img', duration: 1.3 });
+    const multi: EditSpec = { ...spec, outputs: [...spec.outputs, { variant_key: '1x1', aspect: '1:1', fill: 'blur' }] };
+    expect(toSingleOutput(multi).cover).toEqual(spec.cover);
+  });
+});
+
 describe('toSingleOutput', () => {
   it('已经是单一 9x16 时原样返回同一个对象', () => {
     const spec = emptySpec();
