@@ -163,6 +163,12 @@ def build_render_command(
     duration = float(video_meta["duration"])
     has_audio = bool(video_meta.get("has_audio", False))
     canvas_w, canvas_h = CANVAS_SIZES[variant.aspect]
+    audio_spec = spec.audio
+    source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
+    # A muted source (audio.source_volume = 0) must not be decoded into the trim/concat
+    # graph at all: a concat output nobody consumes makes ffmpeg reject the whole graph
+    # ("Filter 'concat' has output 0 (at) unconnected").
+    source_heard = has_audio and source_volume > 0
 
     warnings: list[str] = []
     # One argv group per input: video stickers need per-input options (-stream_loop, -c:v).
@@ -181,16 +187,16 @@ def build_render_command(
         for i, (a, b) in enumerate(segments):
             chains.append(f"[0:v]trim=start={_fmt(a)}:end={_fmt(b)},setpts=PTS-STARTPTS[v{i}]")
             labels.append(f"[v{i}]")
-            if has_audio:
+            if source_heard:
                 chains.append(
                     f"[0:a]atrim=start={_fmt(a)}:end={_fmt(b)},asetpts=PTS-STARTPTS[a{i}]"
                 )
                 labels.append(f"[a{i}]")
         if len(segments) == 1:
-            video_label, audio_label = "[v0]", "[a0]" if has_audio else None
+            video_label, audio_label = "[v0]", "[a0]" if source_heard else None
         else:
             n = len(segments)
-            if has_audio:
+            if source_heard:
                 chains.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vt][at]")
                 video_label, audio_label = "[vt]", "[at]"
             else:
@@ -319,8 +325,6 @@ def build_render_command(
     chains.append(f"{current}format=yuv420p[vout]")
 
     # ---- 5. audio tracks (contract §2 audio.tracks) ----------------------------
-    audio_spec = spec.audio
-    source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
     track_audio: list[str] = []
     for track in audio_spec.tracks if audio_spec is not None else []:
         source = (audio_assets or {}).get(track.asset_id)
@@ -373,7 +377,6 @@ def build_render_command(
     # the argv stays exactly what it was before any audio feature existed.
     overlays = sticker_audio + track_audio
     graph_audio = bool(overlays) or source_volume != 1
-    source_heard = has_audio and source_volume > 0
     audio_map: list[str]
     if graph_audio:
         if source_heard:

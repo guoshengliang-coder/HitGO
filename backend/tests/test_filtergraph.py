@@ -633,8 +633,27 @@ def test_muted_source_with_a_looping_bgm_mixes_over_a_silent_bed():
     assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[abase]" in graph
     assert "[abase][tk1]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[aout]" in graph
     assert argv[argv.index("[vout]") + 1 : argv.index("[vout]") + 3] == ["-map", "[aout]"]
-    assert "[at]" not in graph.split("[abase]")[0].rsplit(";", 1)[-1]  # muted source is not decoded into the mix
+    # Muted source: its audio is not decoded at all — no atrim / concat audio leg, so no
+    # dangling [at] output for ffmpeg to reject ("Filter 'concat' has output 0 unconnected").
+    assert "concat=n=3:v=1:a=0[vt]" in graph
+    assert "[at]" not in graph and "[0:a]" not in graph
     assert argv[argv.index("-t") + 1] == "20.6"
+
+
+def test_muted_trimmed_source_without_tracks_has_no_audio_leg_at_all():
+    plan = audio_build(audio_spec(source_volume=0))
+    graph, argv = fc(plan), plan.argv
+    assert "concat=n=3:v=1:a=0[vt]" in graph
+    assert "[at]" not in graph and "[0:a]" not in graph and "anullsrc" not in graph
+    assert "-an" in argv
+
+
+def test_single_kept_segment_with_muted_source_skips_the_source_audio_trim():
+    track = {"id": "au_1", "asset_id": "a_bgm00001", "t": "all", "loop": True}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track], trim={"remove": [[0, 4.0]]}))
+    graph = fc(plan)
+    assert "[0:a]atrim" not in graph and "[a0]" not in graph
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[abase]" in graph
 
 
 def test_voice_track_is_windowed_offset_delayed_and_faded_against_its_real_end():
@@ -730,8 +749,10 @@ def test_real_ffmpeg_replaces_the_source_audio_with_a_windowed_bgm(tmp_path):
     )  # fmt: skip
 
     out = tmp_path / "out.mp4"
-    spec = valid_spec(trim={"remove": []}, layers=[])
-    spec["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": [1.5, 3.5], "loop": True}]}
+    # A real cut inside the clip: the trimmed video goes through concat while the muted
+    # source audio must be left out of the graph entirely (this used to fail with exit 234).
+    spec = valid_spec(trim={"remove": [[0.5, 1.0]]}, layers=[])  # post-trim length: 3.5 s
+    spec["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": [1.5, 3.0], "loop": True}]}
     spec = EditSpec.model_validate(spec)
     plan = build_render_command(
         spec, {"duration": 4.0, "has_audio": True}, {}, spec.outputs[0],
@@ -749,5 +770,5 @@ def test_real_ffmpeg_replaces_the_source_audio_with_a_windowed_bgm(tmp_path):
     assert codec == "aac"
     assert abs(float(duration) - plan.expected_duration) < 0.15
     assert _mean_volume(out, 0.1, 1.2) < -60  # source muted: silence before the window
-    assert _mean_volume(out, 1.7, 1.6) > -30  # inside (spans the loop point): the beep
-    assert _mean_volume(out, 3.6, 0.35) < -60  # after the window: silence again
+    assert _mean_volume(out, 1.7, 1.2) > -30  # inside (spans the loop point): the beep
+    assert _mean_volume(out, 3.1, 0.3) < -60  # after the window: silence again
