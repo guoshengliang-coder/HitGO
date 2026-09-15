@@ -582,3 +582,172 @@ def test_real_ffmpeg_mixes_sticker_audio_only_inside_its_window(tmp_path):
     assert abs(float(duration) - plan.expected_duration) < 0.15
     assert _mean_volume(out, 0.1, 1.2) < -60  # before the window: silence
     assert _mean_volume(out, 1.7, 1.6) > -30  # inside (spans the loop point): the beep
+
+
+# --- audio tracks (contract §2 audio) ----------------------------------------------
+
+from app.services.filtergraph import AudioSource  # noqa: E402
+
+BGM = AudioSource("/data/assets/a_bgm00001.mp3", 30.0)
+VOICE = AudioSource("/data/assets/a_voice0001.wav", 4.0)
+AUDIO_ASSETS = {"a_bgm00001": BGM, "a_voice0001": VOICE}
+
+
+def audio_spec(source_volume=1.0, tracks=(), **spec_overrides):
+    spec = valid_spec(**spec_overrides)
+    spec["audio"] = {"source_volume": source_volume, "tracks": list(tracks)}
+    return spec
+
+
+def audio_build(spec_dict, audio_assets=AUDIO_ASSETS, **kw):
+    spec = EditSpec.model_validate(spec_dict)
+    variant = spec.outputs[0]
+    return build_render_command(
+        spec,
+        kw.pop("meta", META),
+        {"a_sticker001": STICKER},
+        variant,
+        source_path="/data/src.mp4",
+        output_path="/data/tmp/j.mp4",
+        resolve_image_url=resolver,
+        ffmpeg_bin="ffmpeg",
+        audio_assets=audio_assets,
+        **kw,
+    )
+
+
+def test_spec_without_audio_block_keeps_the_exact_old_argv():
+    assert audio_build(valid_spec()).argv == build().argv
+    # An audio block with defaults and no tracks is the same as none at all.
+    assert audio_build(audio_spec()).argv == build().argv
+
+
+def test_muted_source_with_a_looping_bgm_mixes_over_a_silent_bed():
+    track = {"id": "au_1", "asset_id": "a_bgm00001", "t": "all", "loop": True, "volume": 0.6, "fade_out": 1}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track]))
+    graph, argv = fc(plan), plan.argv
+    i = argv.index(BGM.path)
+    assert argv[i - 3 : i + 1] == ["-stream_loop", "-1", "-i", BGM.path]
+    # Whole post-trim timeline (20.6 s), looped, so the fade-out sits at the window end.
+    assert f"[3:a]asetpts=PTS-STARTPTS,atrim=end=20.6,volume=0.6,afade=t=out:st=19.6:d=1,{AFMT}[tk1]" in graph
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[abase]" in graph
+    assert "[abase][tk1]amix=inputs=2:duration=first:normalize=0:dropout_transition=0[aout]" in graph
+    assert argv[argv.index("[vout]") + 1 : argv.index("[vout]") + 3] == ["-map", "[aout]"]
+    assert "[at]" not in graph.split("[abase]")[0].rsplit(";", 1)[-1]  # muted source is not decoded into the mix
+    assert argv[argv.index("-t") + 1] == "20.6"
+
+
+def test_voice_track_is_windowed_offset_delayed_and_faded_against_its_real_end():
+    track = {"id": "au_v", "asset_id": "a_voice0001", "role": "voice", "t": [2, 12], "offset": 1, "volume": 0.8, "fade_in": 0.2, "fade_out": 0.5}
+    plan = audio_build(audio_spec(source_volume=0.3, tracks=[track]))
+    graph = fc(plan)
+    # 4 s file from 1 s in = 3 s of sound inside a 10 s window: the fade-out ends at 3 s, not 10 s.
+    assert (
+        f"[3:a]atrim=start=1,asetpts=PTS-STARTPTS,atrim=end=10,volume=0.8,"
+        f"afade=t=in:st=0:d=0.2,afade=t=out:st=2.5:d=0.5,adelay=2000:all=1,{AFMT}[tk1]"
+    ) in graph
+    assert f"[at]{AFMT},volume=0.3[abase]" in graph  # trimmed source, lowered
+    assert "[abase][tk1]amix=inputs=2" in graph
+    assert "-stream_loop" not in plan.argv
+
+
+def test_source_gain_alone_maps_the_base_without_amix():
+    plan = audio_build(audio_spec(source_volume=0.5))
+    graph, argv = fc(plan), plan.argv
+    assert f"[at]{AFMT},volume=0.5[abase]" in graph
+    assert "amix" not in graph and "anullsrc" not in graph
+    assert argv[argv.index("[vout]") + 1 : argv.index("[vout]") + 3] == ["-map", "[abase]"]
+    assert "-t" not in argv  # no looped input: the old belt-and-braces stays off
+
+
+def test_source_gain_on_an_untrimmed_source_uses_its_first_audio_stream():
+    plan = audio_build(audio_spec(source_volume=0.5, trim={"remove": []}))
+    assert f"[0:a:0]{AFMT},volume=0.5[abase]" in fc(plan)
+
+
+def test_muted_source_with_nothing_mixed_in_drops_the_audio_stream():
+    plan = audio_build(audio_spec(source_volume=0))
+    assert "-an" in plan.argv and "-map" not in plan.argv[plan.argv.index("[vout]") + 1 :]
+    assert "abase" not in fc(plan)
+
+
+def test_silent_source_with_a_track_still_gets_a_bed_and_a_gain_is_ignored():
+    track = {"id": "au_1", "asset_id": "a_voice0001", "t": [0, 3]}
+    plan = audio_build(audio_spec(source_volume=0.5, tracks=[track]), meta={**META, "has_audio": False})
+    graph = fc(plan)
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[abase]" in graph and "volume=0.5" not in graph
+    assert f"[3:a]asetpts=PTS-STARTPTS,atrim=end=3,{AFMT}[tk1]" in graph
+
+
+def test_tracks_join_the_sticker_audio_mix():
+    spec = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5]}])
+    spec["layers"][0]["mix_audio"] = True
+    spec = EditSpec.model_validate(spec)
+    plan = build_render_command(
+        spec, META, {"a_sticker001": VOCAL_STICKER}, spec.outputs[0],
+        source_path="/data/src.mp4", output_path="/data/tmp/j.mp4", resolve_image_url=resolver,
+        audio_assets=AUDIO_ASSETS,
+    )  # fmt: skip
+    graph = fc(plan)
+    assert "[sa1]" in graph and f"[3:a]asetpts=PTS-STARTPTS,atrim=end=4,adelay=1000:all=1,{AFMT}[tk1]" in graph
+    assert "[abase][sa1][tk1]amix=inputs=3" in graph
+
+
+def test_unresolved_or_out_of_range_tracks_are_skipped_with_a_warning():
+    tracks = [
+        {"id": "au_missing", "asset_id": "a_nope", "t": "all"},
+        {"id": "au_late", "asset_id": "a_bgm00001", "t": [30, 40]},  # after the 20.6 s post-trim end
+        {"id": "au_past", "asset_id": "a_voice0001", "t": "all", "offset": 4.5},  # beyond the 4 s file
+        {"id": "au_ok", "asset_id": "a_voice0001", "t": "all"},
+    ]
+    plan = audio_build(audio_spec(tracks=tracks))
+    assert [w.split("：")[0] for w in plan.warnings] == ["音轨 au_missing", "音轨 au_late", "音轨 au_past"]
+    assert "不存在" in plan.warnings[0] and "超出剪后时长" in plan.warnings[1] and "起始偏移" in plan.warnings[2]
+    graph = fc(plan)
+    assert "[3:a]" in graph and "[tk1]" in graph and "[tk2]" not in graph
+    assert plan.argv.count("-i") == 4  # source, sticker, text PNG, the one usable track
+
+
+def test_track_window_is_clamped_to_the_post_trim_duration():
+    plan = audio_build(audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [18, 40], "loop": True}]))
+    assert "atrim=end=2.6" in fc(plan) and "adelay=18000:all=1" in fc(plan)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_replaces_the_source_audio_with_a_windowed_bgm(tmp_path):
+    """Beeping 4 s source, muted; 1 s beep looped over [1.5, 3.5] as BGM: sound only in the window."""
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=30:duration=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=4",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    bgm = tmp_path / "bgm.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=1", str(bgm)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+    out = tmp_path / "out.mp4"
+    spec = valid_spec(trim={"remove": []}, layers=[])
+    spec["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": [1.5, 3.5], "loop": True}]}
+    spec = EditSpec.model_validate(spec)
+    plan = build_render_command(
+        spec, {"duration": 4.0, "has_audio": True}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+        audio_assets={"a_bgm": AudioSource(str(bgm), 1.0)},
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name,duration", "-of", "default=nw=1:nk=1", str(out)],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    codec, duration = probe.stdout.split()
+    assert codec == "aac"
+    assert abs(float(duration) - plan.expected_duration) < 0.15
+    assert _mean_volume(out, 0.1, 1.2) < -60  # source muted: silence before the window
+    assert _mean_volume(out, 1.7, 1.6) > -30  # inside (spans the loop point): the beep
+    assert _mean_volume(out, 3.6, 0.35) < -60  # after the window: silence again

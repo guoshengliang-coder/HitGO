@@ -1,0 +1,100 @@
+// 音轨（契约 §2 audio）：预览与成片共用的一套规则。
+// 成片端（filtergraph.py）对每条 track：atrim=start=offset → atrim=end=时段长 → volume → afade in/out → adelay；
+// 这里给编辑器算"此刻素材该播到哪一秒 / 此刻的增益"，让 <audio> 的 currentTime / volume 跟成片一致。
+
+import type { AudioRole, AudioSpec, AudioTrack } from '../types';
+import { windowRange } from './stickerMedia';
+
+const EPS = 1e-6;
+
+export const TRACK_DEFAULTS = { role: 'bgm', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 } as const satisfies Omit<AudioTrack, 'id' | 'asset_id' | 't'>;
+
+export type ResolvedTrack = Required<AudioTrack>;
+
+/** 把契约里的可选字段补齐成缺省值。 */
+export function resolveTrack(track: AudioTrack): ResolvedTrack {
+  return {
+    ...TRACK_DEFAULTS,
+    ...Object.fromEntries(Object.entries(track).filter(([, v]) => v !== undefined)),
+  } as ResolvedTrack;
+}
+
+/** 新音轨按角色的默认值：BGM 循环、压低并淡出；口播原音量、播一遍。 */
+export function trackDefaultsFor(role: AudioRole): Partial<AudioTrack> {
+  return role === 'bgm' ? { loop: true, volume: 0.6, fade_out: 1 } : { loop: false, volume: 1 };
+}
+
+let seq = 0;
+export function newTrackId(): string {
+  seq += 1;
+  return `au_${Date.now().toString(36)}${seq.toString(36)}`;
+}
+
+export function sourceVolume(audio: AudioSpec | null | undefined): number {
+  return audio ? Math.max(0, Math.min(1, audio.source_volume)) : 1;
+}
+
+/** 没有 audio 块，或源音量 1 且没有音轨：等价于契约缺省，发给后端时省略。 */
+export function isDefaultAudio(audio: AudioSpec | null | undefined): boolean {
+  return !audio || (audio.source_volume === 1 && audio.tracks.length === 0);
+}
+
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+
+/** 发送给后端的 audio 块；缺省时返回 undefined（不带此字段）。 */
+export function contractAudio(audio: AudioSpec | null | undefined): AudioSpec | undefined {
+  if (isDefaultAudio(audio) || !audio) return undefined;
+  return {
+    source_volume: round3(audio.source_volume),
+    tracks: audio.tracks.map((t) => {
+      const copy: AudioTrack = { ...t };
+      if (copy.t !== 'all') copy.t = [round3(copy.t[0]), round3(copy.t[1])];
+      return copy;
+    }),
+  };
+}
+
+/**
+ * 素材实际出声的长度（秒，从时段起点算）：循环时等于时段长；否则受素材剩余时长（素材时长 − offset）限制。
+ * 淡出以它为终点——成片端同一条规则（filtergraph 里的 effective）。
+ */
+export function audibleSpan(track: AudioTrack, postDuration: number, mediaDuration: number): number {
+  const r = resolveTrack(track);
+  const [start, end] = windowRange(r.t, postDuration);
+  const window = Math.max(0, end - start);
+  if (r.loop) return window;
+  if (!(mediaDuration > 0)) return 0;
+  return Math.max(0, Math.min(window, mediaDuration - r.offset));
+}
+
+/**
+ * 剪后时刻 postTime 这条音轨应该定位到素材的第几秒；null = 此刻不出声（时段外、素材已播完、时长未知）。
+ * 循环时对素材时长取模（-stream_loop 从文件头重复，所以循环要求 offset = 0）。
+ */
+export function trackMediaTime(postTime: number, track: AudioTrack, postDuration: number, mediaDuration: number): number | null {
+  const r = resolveTrack(track);
+  const [start, end] = windowRange(r.t, postDuration);
+  if (postTime < start - EPS || postTime > end + EPS) return null;
+  if (!(mediaDuration > 0)) return null;
+  const elapsed = Math.max(0, postTime - start);
+  if (r.loop) return elapsed % mediaDuration;
+  const available = mediaDuration - r.offset;
+  if (available <= EPS || elapsed >= available - EPS) return null;
+  return r.offset + elapsed;
+}
+
+/** 此刻的增益（0–1）：音量 × 线性淡入淡出包络（ffmpeg afade 默认曲线 tri 也是线性）。时段外为 0。 */
+export function trackGain(postTime: number, track: AudioTrack, postDuration: number, mediaDuration: number): number {
+  const r = resolveTrack(track);
+  const [start, end] = windowRange(r.t, postDuration);
+  if (postTime < start - EPS || postTime > end + EPS) return 0;
+  const effective = audibleSpan(track, postDuration, mediaDuration);
+  if (effective <= EPS) return 0;
+  const elapsed = Math.max(0, postTime - start);
+  let gain = Math.max(0, Math.min(1, r.volume));
+  const fadeIn = Math.min(r.fade_in, effective);
+  const fadeOut = Math.min(r.fade_out, effective);
+  if (fadeIn > 0) gain *= Math.max(0, Math.min(1, elapsed / fadeIn));
+  if (fadeOut > 0) gain *= Math.max(0, Math.min(1, (effective - elapsed) / fadeOut));
+  return gain;
+}

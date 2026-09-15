@@ -21,7 +21,7 @@ export function canDelete(asset: Asset): boolean {
 
 // 契约 §3 的单文件上限。前端先挡一次，免得几百 MB 传完才被后端 400。
 const MiB = 1024 * 1024;
-export const UPLOAD_LIMITS = { image: 10 * MiB, video: 1024 * MiB, font: 20 * MiB } as const;
+export const UPLOAD_LIMITS = { image: 10 * MiB, video: 1024 * MiB, font: 20 * MiB, audio: 50 * MiB } as const;
 const VIDEO_STICKER_EXT = /\.(mp4|mov|webm)$/i;
 
 function humanSize(bytes: number): string {
@@ -31,6 +31,7 @@ function humanSize(bytes: number): string {
 /** 该素材文件的上限（字节）。视频贴纸按扩展名判断，多帧 gif / webp 仍按图片上限（与后端一致）。 */
 export function uploadLimit(type: AssetType, filename: string): number {
   if (type === 'font') return UPLOAD_LIMITS.font;
+  if (type === 'audio') return UPLOAD_LIMITS.audio;
   return VIDEO_STICKER_EXT.test(filename) ? UPLOAD_LIMITS.video : UPLOAD_LIMITS.image;
 }
 

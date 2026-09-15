@@ -22,6 +22,9 @@ JOB_ACTIVE = (JOB_QUEUED, JOB_RUNNING)
 
 ASSET_STICKER = "sticker"
 ASSET_FONT = "font"
+# Audio assets (contract §1): BGM / voice-over files for edit_spec.audio.tracks. Their
+# `kind` is the same string, so kind=video checks (posters, backfills) never match them.
+ASSET_AUDIO = "audio"
 
 # Asset.source (contract §1). "library" is reserved for the real material library we will
 # eventually point at; nothing in the prototype creates it. See docs/ASSETS.md.

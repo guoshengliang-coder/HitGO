@@ -20,6 +20,8 @@ import { coverBox, variantFrameBox } from '../../lib/videoBox';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
 import { InlineTextEditor } from './InlineTextEditor';
+import { sourceVolume } from '../../lib/audioTracks';
+import { AudioTracks } from './AudioTracks';
 import { isVideoAsset, variantDef, type CropRect, type Layer, type LayerOverride, type Rect as ZRect, type SafeZone, type TextLayer, type VariantKey } from '../../types';
 
 const SNAP_PX = 6;
@@ -379,6 +381,13 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const guidesRef = useRef(guides);
   guidesRef.current = guides;
 
+  // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上
+  const srcVolume = sourceVolume(spec?.audio);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el) el.volume = srcVolume;
+  }, [srcVolume, video?.id]);
+
   // 播放器挂载
   useEffect(() => {
     const el = videoRef.current;
@@ -449,7 +458,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           preload="auto"
           key={video?.id}
           style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: needsFill && fill === 'crop' ? 'hidden' : undefined }}
+          onLoadedMetadata={(e) => {
+            e.currentTarget.volume = srcVolume;
+          }}
         />
+        <AudioTracks />
         <div className="konva-layer">
           <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown}>
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>

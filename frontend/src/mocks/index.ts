@@ -123,6 +123,25 @@ function probeVideo(asset: Asset, url: string) {
   el.src = url;
 }
 
+/** mock 的音频"预处理"：拿到时长后置 ready。 */
+function probeAudio(asset: Asset, url: string) {
+  const el = document.createElement('audio');
+  el.preload = 'metadata';
+  const finish = (ok: boolean) => {
+    if (ok) {
+      asset.duration = Number.isFinite(el.duration) ? Math.round(el.duration * 100) / 100 : 3;
+      asset.has_audio = true;
+      asset.status = 'ready';
+    } else {
+      asset.status = 'failed';
+      asset.error = '无法解析该音频';
+    }
+  };
+  el.onloadedmetadata = () => window.setTimeout(() => finish(true), 600);
+  el.onerror = () => window.setTimeout(() => finish(false), 600);
+  el.src = url;
+}
+
 function stickerImage(text: string, color: string): { url: string; width: number; height: number } {
   const w = 600;
   const h = 240;
@@ -460,6 +479,10 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
       if (modules.includes('trim')) spec.trim = { remove: clone(src.edit_spec.trim.remove).filter(([a]) => a < t.duration).map(([a, b]) => [a, Math.min(b, t.duration)] as [number, number]) };
       if (modules.includes('layers')) spec.layers = layer_mode === 'style_only' ? mergeLayersStyleOnly(spec.layers, src.edit_spec.layers) : clone(src.edit_spec.layers);
       if (modules.includes('outputs')) spec.outputs = clone(src.edit_spec.outputs);
+      if (modules.includes('audio')) {
+        if (src.edit_spec.audio) spec.audio = clone(src.edit_spec.audio);
+        else delete spec.audio;
+      }
       t.edit_spec = spec;
       t.edited = true;
       t.updated_at = now();
@@ -510,13 +533,18 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
       return clone(assets.filter((a) => (!type || a.type === type) && (!source || a.source === source)));
     }
     const form = body as FormData;
-    const type = form.get('type') as 'sticker' | 'font';
+    const type = form.get('type') as 'sticker' | 'font' | 'audio';
     const files = form.getAll('files') as File[];
     const created: Asset[] = [];
     for (const f of files) {
       const url = URL.createObjectURL(f);
       const a: Asset = { id: nid('a'), type, name: f.name, url, source: 'upload', created_at: now() };
-      if (type !== 'sticker') {
+      if (type === 'audio') {
+        // 音频素材：后端只异步探测时长；这里用 <audio> 的 loadedmetadata 模拟
+        a.kind = 'audio';
+        a.status = 'preparing';
+        void probeAudio(a, url);
+      } else if (type !== 'sticker') {
         a.family = f.name.replace(/\.[a-z0-9]+$/i, '');
       } else if (/\.(mp4|mov|webm)$/i.test(f.name)) {
         // 视频贴纸：和后端一样先返回 preparing，稍后由 GET /api/assets/{id} 轮询到 ready

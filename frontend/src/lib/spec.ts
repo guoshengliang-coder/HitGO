@@ -4,12 +4,15 @@ import type { Anchor, Asset, EditSpec, Layer, LayerOverride, OutputVariant, Safe
 import { boxOverlapsRect, placeLayer } from './layout';
 import { normalizeRanges } from './time';
 import { getCachedText } from './textImage';
+import { contractAudio } from './audioTracks';
 
 const LOCAL_LAYER_FIELDS = ['name', 'visible', 'locked', 'width_manual'] as const;
 
-/** 发送给后端前剔除本地 UI 字段并规范化区间。 */
+/** 发送给后端前剔除本地 UI 字段并规范化区间；audio 块只在非缺省时带上，保持旧 spec 形状。 */
 export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
+  const audio = contractAudio(spec.audio);
   return {
+    ...(audio ? { audio } : {}),
     spec_version: 1,
     trim: { remove: normalizeRanges(spec.trim.remove, duration).map(([a, b]) => [round3(a), round3(b)]) },
     layers: spec.layers.map((l) => {

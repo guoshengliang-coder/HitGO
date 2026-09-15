@@ -12,6 +12,7 @@ from collections.abc import Iterable
 
 from app.db import iso
 from app.models import (
+    ASSET_AUDIO,
     ASSET_READY,
     ASSET_VIDEO,
     JOB_DONE,
@@ -133,6 +134,7 @@ def batch_detail_out(batch: Batch, videos: list[Video], jobs: Iterable[Job]) -> 
 
 def asset_out(asset: Asset) -> AssetOut:
     is_video = asset.kind == ASSET_VIDEO
+    is_audio = asset.kind == ASSET_AUDIO
     ready = asset.status == ASSET_READY
     return AssetOut(
         id=asset.id,
@@ -144,7 +146,7 @@ def asset_out(asset: Asset) -> AssetOut:
         error=asset.error,
         width=asset.width,
         height=asset.height,
-        duration=asset.duration if is_video else None,
+        duration=asset.duration if (is_video or is_audio) else None,
         fps=asset.fps if is_video else None,
         has_alpha=asset.has_alpha if is_video else None,
         has_audio=asset.has_audio if is_video else None,

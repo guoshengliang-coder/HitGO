@@ -57,14 +57,14 @@
 ```jsonc
 {
   "id": "a_s1t2u3",
-  "type": "sticker",              // sticker | font
-  "kind": "image",                // 可选，缺省 "image"：image | video（只对 sticker 有意义）
-  "status": "ready",              // 可选，缺省 "ready"：preparing | ready | failed（视频贴纸异步预处理）
+  "type": "sticker",              // sticker | font | audio
+  "kind": "image",                // 可选，缺省 "image"：image | video（sticker）| audio（audio 素材固定为 audio）
+  "status": "ready",              // 可选，缺省 "ready"：preparing | ready | failed（视频贴纸 / 音频素材异步预处理）
   "error": null,                  // status = failed 时的中文原因
   "name": "限时免费.png",
   "url": "/media/assets/a_s1t2u3.png",
   "width": 600, "height": 240,    // sticker 才有；视频贴纸在 status = ready 后才有
-  "duration": 2.4,                // 可选；kind = video 才有，秒
+  "duration": 2.4,                // 可选；kind = video | audio 才有，秒
   "fps": 30,                      // 可选；kind = video 才有
   "has_alpha": true,              // 可选；kind = video 才有：素材是否带透明通道
   "has_audio": false,             // 可选；kind = video 且预处理完才有：素材是否带音轨（null = 未知，旧素材回填前）
@@ -83,6 +83,11 @@
 探测（`preparing`），拿到宽高 / 时长 / 帧率 / 是否带透明通道，并生成首帧 `poster` 与浏览器可播的
 `preview` 代理，完成后转 `ready`；失败转 `failed` 并写 `error`。`preparing` 期间素材可以列出但不能用于
 渲染（worker 会跳过并记警告）。
+
+**音频素材**（`type = "audio"`，`kind = "audio"`）：上传 `mp3 / wav / m4a`，落盘后由 worker 异步 `ffprobe`
+时长（`preparing` → `ready`），没有 poster / preview 派生文件，`url` 就是原文件（浏览器能直接播）。
+`width / height / fps / has_alpha / has_audio / poster_url / preview_url` 一律为 null。用在第 2 节 `audio.tracks[]`
+里作 BGM / 口播；`preparing` 期间可以列出但不能用于渲染（worker 跳过并记警告）。
 
 **透明通道**：`mp4`（H.264）没有 alpha 通道，只能作为不透明矩形叠加；`mov`（ProRes 4444 /
 QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明。前端按 `has_alpha` 给出提示。
@@ -172,7 +177,22 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
     { "variant_key": "4x5",  "aspect": "4:5",  "fill": "crop",
       "crop": { "x": 0.3418, "y": 0, "w": 0.3164, "h": 1 } }   // 可选：源画面上的裁切窗口，见下方规则
-  ]
+  ],
+  "audio": {                                 // 可选；缺省 = 源音轨原样保留（即此前的行为）
+    "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
+    "tracks": [
+      {
+        "id": "au_1",
+        "asset_id": "a_bgm001",              // Asset.type = "audio"
+        "role": "bgm",                       // 可选，缺省 "bgm"：bgm | voice，只给界面分类，worker 不区分
+        "t": "all",                          // 出声时段，秒，基于剪后时间轴；同 layers[].t
+        "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时必须为 0
+        "volume": 1,                         // 可选，缺省 1：0–1
+        "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
+        "fade_in": 0, "fade_out": 0          // 可选，缺省 0：秒；两者之和不能超过时段长
+      }
+    ]
+  }
 }
 ```
 
@@ -200,6 +220,17 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   贴纸自己的第 0 秒开始；`loop` 时随画面循环，`freeze` / `once` 只放一遍；时段结束处截断。源视频
   没有音轨时成片音轨就是贴纸音轨（其余时间静音）。编辑器预览按同样的规则出声。批量套用
   `style_only` 时 `mix_audio` 跟随 `asset_id` 一起复制。
+- **音轨 `audio`**（可选，缺省 null）：成片音轨 = 源音轨（剪辑后）× `source_volume` + 各贴纸 `mix_audio`
+  音轨 + 各 `tracks`，按原音量直接叠加（`amix normalize=0`），不做闪避（ducking）。规则：
+  - `source_volume = 0` 或源视频没有音轨时，用静音垫底；此时若也没有任何叠加音轨，成片就没有音轨。
+  - 每条 track 只在 `t` 时段内出声，从素材的第 `offset` 秒起；`loop = true` 时素材播完从头循环（所以要求
+    `offset = 0`），`false` 时播完即静音，时段结束处截断。素材比时段长时一律在时段结束处截断。
+  - `fade_in` 从时段起点起淡入；`fade_out` 以**实际出声结束点**为准结束——不循环且素材短于时段时，淡出落在
+    素材播完处而不是时段末尾。
+  - 音量上限是 1（不能放大）：浏览器 `HTMLMediaElement.volume` 只到 1，这样编辑器预览能原样复现成片。
+  - `asset_id` 对应的素材不存在、不是音频、还没 `ready`，或 `offset` 不小于素材时长时，worker 跳过该 track
+    并在 job.error 里记警告（不失败）。track `id` 在同一 spec 内唯一。
+  - 批量套用 `audio` 模块时整块深拷贝；`t` 基于剪后时间轴，不做裁剪（同图层）。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -214,7 +245,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/batches/{id}` → `Batch & { videos: Video[] }`
 - `DELETE /api/batches/{id}` → 204（删除视频、任务、文件）
 - `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov）→ `Video[]`，每条立即入队预处理
-- `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间。
+- `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
     - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | spans | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
@@ -227,13 +258,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `DELETE /api/videos/{id}` → 204
 
 ### 素材
-- `GET /api/assets?type=sticker|font&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
-- `GET /api/assets/{id}` → `Asset` / 404（前端轮询视频贴纸的 `preparing → ready`）
+- `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
+- `GET /api/assets/{id}` → `Asset` / 404（前端轮询视频贴纸 / 音频素材的 `preparing → ready`）
 - `POST /api/assets` multipart：`type`，`files` → `Asset[]`。只产出 `source = "upload"` 的素材。
   - `sticker`：`png / webp / gif` 与 `mp4 / mov / webm`。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
     立即入队预处理并以 `status = "preparing"` 返回。
   - `font`：`ttf / otf / woff2`
-  - 单文件上限：图片 sticker 10 MiB、font 20 MiB、视频 sticker 1 GiB，超出 400。视频贴纸不限时长。
+  - `audio`：`mp3 / wav / m4a`，入队探测时长并以 `status = "preparing"` 返回。
+  - 单文件上限：图片 sticker 10 MiB、font 20 MiB、audio 50 MiB、视频 sticker 1 GiB，超出 400。视频贴纸与音频不限时长。
   - 请求头 `X-Upload-Ticket: <ticket>`（可选）：有效时本请求免 Cookie 校验，见下面的上传子域名。
 - `POST /api/assets/upload-ticket` → `{ "upload_url": "https://hitgo-upload.example.com/api/assets" | null, "ticket": "..." | null, "expires_at": "..." | null }`。
   需要正常的访问码 Cookie。服务端未配置 `UPLOAD_BASE_URL` 时三个字段都是 null，前端照旧同源上传。
@@ -329,6 +361,7 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
    `has_audio`。预览代理只给编辑器看，渲染始终用原文件。
 4. 服务启动时，`kind = video`、`status = ready` 但 `has_audio` 还是 null 的旧素材会重新入队预处理一次，补上
    `has_audio` 与带音轨的预览代理（素材保持 `ready`，不影响正在用它的 spec）。
+5. 音频素材（`type = audio`）只做第 1 步的 `ffprobe`：取 `format.duration`，没有音频流则 `failed`；不生成任何派生文件。
 
 ### 预处理（每条视频入库后）
 1. `ffprobe -v error -print_format json -show_format -show_streams`
@@ -351,6 +384,14 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
      `-stream_loop -1`），与主音轨（剪辑后的 `[at]` / 源 `0:a:0`；源无音轨时用 `anullsrc` 截到剪后时长）
      `amix=inputs=N:duration=first:normalize=0:dropout_transition=0` 混成 `[aout]` 再映射。没有这样的图层时
      命令与此前完全一致，贴纸音轨不映射。
+   - 音轨 `audio`（第 2 节）：每条 track 一个 `-i` 输入（`loop = true` 时前置 `-stream_loop -1`），滤镜链
+     `[i:a]atrim=start=offset,asetpts=PTS-STARTPTS,atrim=end=b−a,volume=v,afade=t=in:st=0:d=fade_in,`
+     `afade=t=out:st=E−fade_out:d=fade_out,adelay=a·1000:all=1,aformat=48000/stereo`（各段按需省略；`E` = 实际出声长度：
+     loop 时为 `b−a`，否则 `min(b−a, 素材时长−offset)`）。主音轨 `[abase]` = 剪辑后的源音轨接
+     `aformat,volume=source_volume`；`source_volume = 0` 或源无音轨时改用 `anullsrc` 截到剪后时长。`[abase]`、
+     贴纸音轨、各 track 多于一路时 `amix`（同上）成 `[aout]`；只有 `[abase]` 一路（只调了源音量）时直接映射它；
+     `source_volume = 0` 且没有任何叠加音轨时 `-an`。存在 track 时输出端同样补 `-t <剪后时长>`。spec 没有 `audio`
+     块时命令与此前完全一致。
    - 输出 `format=yuv420p`；本次渲染存在视频图层时，输出端补 `-t <剪后时长>` 兜底成片时长
 3. 编码（按输出变体的 `quality`，1080p）：
    - `standard`（默认）：`-c:v libx264 -preset veryfast -crf 20 -maxrate 8M -bufsize 16M -c:a aac -b:a 128k -movflags +faststart`

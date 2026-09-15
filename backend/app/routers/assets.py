@@ -1,9 +1,11 @@
-"""Assets: GET/POST/DELETE /api/assets (stickers and fonts, contract §3).
+"""Assets: GET/POST/DELETE /api/assets (stickers, fonts and audio, contract §3).
 
 Image stickers are probed inline with Pillow. Video stickers (mp4/mov/webm, plus
 animated gif/webp) cannot be — they need ffprobe, a poster and a browser-playable
 preview proxy — so they land as ``status=preparing`` and a Celery task finishes
 the job, mirroring how source videos are ingested in ``routers/batches.py``.
+Audio assets (mp3/wav/m4a) take the same asynchronous route, just to ffprobe their
+duration.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from app import ids, worker
 from app.config import settings
 from app.db import get_db
 from app.models import (
+    ASSET_AUDIO,
     ASSET_FONT,
     ASSET_IMAGE,
     ASSET_PREPARING,
@@ -40,11 +43,17 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 STICKER_IMAGE_EXTS = {"png", "webp", "gif"}
 STICKER_EXTS = STICKER_IMAGE_EXTS | set(VIDEO_STICKER_EXTS)
 FONT_EXTS = {"ttf", "otf", "woff2"}
-ALLOWED = {ASSET_STICKER: STICKER_EXTS, ASSET_FONT: FONT_EXTS}
+# Formats every browser plays natively (the editor previews the original file, contract §1).
+AUDIO_EXTS = {"mp3", "wav", "m4a"}
+ALLOWED = {ASSET_STICKER: STICKER_EXTS, ASSET_FONT: FONT_EXTS, ASSET_AUDIO: AUDIO_EXTS}
 
 # Contract §3: per-file upload ceilings. The prototype only ever holds a handful of small
 # overlays, and nginx's 2g body limit is far too loose to catch a mistaken drag-and-drop.
-MAX_BYTES = {ASSET_STICKER: 10 * 1024 * 1024, ASSET_FONT: 20 * 1024 * 1024}
+MAX_BYTES = {
+    ASSET_STICKER: 10 * 1024 * 1024,
+    ASSET_FONT: 20 * 1024 * 1024,
+    ASSET_AUDIO: 50 * 1024 * 1024,  # a few minutes of WAV; ads are short
+}
 # Video stickers are real footage (often 100+ MB), so their ceiling only guards against a
 # runaway drop; files this size go through the upload host, not the CDN (contract §3).
 MAX_VIDEO_STICKER_BYTES = 1024 * 1024 * 1024
@@ -81,7 +90,7 @@ def _read_image_sticker(path: Path, name: str) -> tuple[tuple[int, int], int]:
 
 @router.get("", response_model=list[AssetOut])
 def list_assets(
-    type: str | None = Query(default=None, pattern="^(sticker|font)$"),
+    type: str | None = Query(default=None, pattern="^(sticker|font|audio)$"),
     source: str | None = Query(default=None, pattern="^(upload|builtin|library)$"),
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
@@ -126,7 +135,7 @@ async def create_assets(
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
     if type not in ALLOWED:
-        raise HTTPException(400, "type 必须是 sticker 或 font")
+        raise HTTPException(400, "type 必须是 sticker、font 或 audio")
     if not files:
         raise HTTPException(400, "没有上传文件")
 
@@ -157,6 +166,11 @@ async def create_assets(
             )
             if type == ASSET_FONT:
                 asset.family = Path(name).stem
+            elif type == ASSET_AUDIO:
+                # Only the duration is needed, but ffprobe on a big VBR mp3 is a decode
+                # pass — keep it off the request thread, same as video stickers.
+                asset.kind, asset.status = ASSET_AUDIO, ASSET_PREPARING
+                pending.append(asset_id)
             elif is_video_ext:
                 asset.kind, asset.status = ASSET_VIDEO, ASSET_PREPARING
                 pending.append(asset_id)

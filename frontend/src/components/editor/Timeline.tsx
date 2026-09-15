@@ -8,6 +8,8 @@ import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
+import { resolveTrack, sourceVolume } from '../../lib/audioTracks';
+import { windowRange } from '../../lib/stickerMedia';
 import { snapValue } from '../../lib/snap';
 import { hintFor } from '../../lib/shortcuts';
 import { IconEye, IconFit, IconLock } from '../ui/Icons';
@@ -17,6 +19,20 @@ const LABEL_W = 112;
 const MIN_PPS = 20;
 const MAX_PPS = 400;
 const SNAP_PX = 6;
+
+/** 步骤 1 的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
+function SourceAudioRow({ hasAudio, volume, width, scrub }: { hasAudio: boolean; volume: number; width: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
+  const muted = !hasAudio || volume === 0;
+  const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
+  return (
+    <div className={`tl-row tl-audio ${muted ? 'muted' : ''}`}>
+      <div className="lbl" title={label}>{label}</div>
+      <div className="body" {...scrub}>
+        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''}`} style={{ left: 0, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume }} />}
+      </div>
+    </div>
+  );
+}
 
 function useWidth(ref: React.RefObject<HTMLDivElement>) {
   const [w, setW] = useState(600);
@@ -98,6 +114,8 @@ export function Timeline() {
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
+  const selectedTrackId = useEditor((s) => s.selectedTrackId);
+  const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
   const timelinePps = useEditor((s) => s.timelinePps);
   const setTimelinePps = useEditor((s) => s.setTimelinePps);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -360,6 +378,36 @@ export function Timeline() {
               {inPoint !== null && step === 1 && <div className="tl-inpoint" style={{ left: inPoint * pps }} title="入点" />}
             </div>
           </div>
+
+          {step === 1 && (
+            <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} scrub={scrub.handlers} />
+          )}
+          {step === 1 &&
+            (spec?.audio?.tracks ?? []).map((t) => {
+              const r = resolveTrack(t);
+              const all = r.t === 'all';
+              const [pa, pb] = windowRange(r.t, postDuration);
+              const left = postToSource(pa, remove) * pps;
+              const right = postToSource(pb, remove) * pps;
+              const sel = selectedTrackId === t.id;
+              const asset = assets.find((a) => a.id === t.asset_id);
+              const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
+              return (
+                <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''}`} onClick={() => setSelectedTrack(t.id)}>
+                  <div className="lbl" title={name}>
+                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}</span>
+                    <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+                  </div>
+                  <div className="body" {...scrub.handlers}>
+                    <div className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 ? 'muted' : ''}`} style={{ left, width: Math.max(4, right - left), cursor: 'default' }} onPointerDown={(e) => { setSelectedTrack(t.id); e.stopPropagation(); }}>
+                      {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
+                      {r.loop ? ' ↻' : ''}
+                      {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
 
           {step === 2 &&
             (spec?.layers ?? []).map((l, i) => {

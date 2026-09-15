@@ -1,6 +1,6 @@
 """Batch apply of edit_spec modules (contract §3, POST /api/batches/{id}/apply).
 
-Rules: deep-copy the chosen modules (trim | layers | outputs) from the source spec
+Rules: deep-copy the chosen modules (trim | layers | outputs | audio) from the source spec
 into each target; a target without a spec first gets an empty spec; when applying
 ``trim`` to a shorter target, ranges past its duration are dropped / clamped.
 
@@ -22,7 +22,7 @@ from typing import Any
 
 from app.schemas import empty_spec
 
-MODULES = ("trim", "layers", "outputs")
+MODULES = ("trim", "layers", "outputs", "audio")
 LAYER_MODES = ("replace", "style_only")
 
 # Keys copied from source → matched target in style_only mode, by layer type.
@@ -114,6 +114,13 @@ def apply_modules(
                 result["layers"] = copy.deepcopy(source_layers)
         elif module == "outputs":
             result["outputs"] = copy.deepcopy(source_spec.get("outputs") or [])
+        elif module == "audio":
+            # Whole block, or none: a source without audio settings clears the target's.
+            audio = source_spec.get("audio")
+            if audio is None:
+                result.pop("audio", None)
+            else:
+                result["audio"] = copy.deepcopy(audio)
 
     result.setdefault("trim", {"remove": []})
     result.setdefault("layers", [])

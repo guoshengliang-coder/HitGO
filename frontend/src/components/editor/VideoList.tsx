@@ -4,11 +4,13 @@ import { Pill, videoPillKind } from '../ui/Pill';
 import { Modal } from '../ui/Modal';
 import { formatSeconds } from '../../lib/time';
 import type { EditSpec } from '../../types';
+import { isDefaultAudio } from '../../lib/audioTracks';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
   { key: 'layers', label: '图层', desc: '贴纸 / 文字图层及其时段' },
   { key: 'outputs', label: '输出', desc: '画幅变体、填充方式与质量' },
+  { key: 'audio', label: '音频', desc: '源音轨音量与 BGM / 口播音轨（源没设置时清掉目标的）' },
 ];
 
 /** 目标草稿里该模块是否已有"非默认"配置（会被覆盖）。 */
@@ -16,6 +18,7 @@ export function moduleConfigured(spec: EditSpec | undefined, module: ApplyModule
   if (!spec) return false;
   if (module === 'trim') return spec.trim.remove.length > 0;
   if (module === 'layers') return spec.layers.length > 0;
+  if (module === 'audio') return !isDefaultAudio(spec.audio);
   return (
     spec.outputs.length > 1 ||
     spec.outputs.some((o) => (o.layer_overrides && Object.keys(o.layer_overrides).length > 0) || o.fill !== 'blur' || o.quality === 'high')
@@ -23,7 +26,7 @@ export function moduleConfigured(spec: EditSpec | undefined, module: ApplyModule
 }
 
 export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds: string[]; onClose: () => void; defaultModules?: ApplyModule[] }) {
-  const [modules, setModules] = useState<ApplyModule[]>(defaultModules ?? ['trim', 'layers', 'outputs']);
+  const [modules, setModules] = useState<ApplyModule[]>(defaultModules ?? ['trim', 'layers', 'outputs', 'audio']);
   const [styleOnly, setStyleOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const applyToTargets = useEditor((s) => s.applyToTargets);

@@ -31,7 +31,7 @@ ALLOWED_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 def seed_builtin_assets() -> None:
-    """Import samples/{stickers,fonts} as builtin assets once (contract: source=builtin)."""
+    """Import samples/{stickers,fonts,audio} as builtin assets once (contract: source=builtin)."""
     samples = settings.samples_dir
     if not samples or not samples.is_dir():
         return
@@ -41,6 +41,7 @@ def seed_builtin_assets() -> None:
     from app import ids, worker
     from app.db import SessionLocal
     from app.models import (
+        ASSET_AUDIO,
         ASSET_FONT,
         ASSET_PREPARING,
         ASSET_SOURCE_BUILTIN,
@@ -48,7 +49,7 @@ def seed_builtin_assets() -> None:
         ASSET_VIDEO,
         Asset,
     )
-    from app.routers.assets import FONT_EXTS, STICKER_EXTS
+    from app.routers.assets import AUDIO_EXTS, FONT_EXTS, STICKER_EXTS
     from app.services.ffprobe import ANIMATABLE_IMAGE_EXTS, VIDEO_STICKER_EXTS
 
     db = SessionLocal()
@@ -61,6 +62,7 @@ def seed_builtin_assets() -> None:
         for asset_type, sub, exts in (
             (ASSET_STICKER, "stickers", STICKER_EXTS),
             (ASSET_FONT, "fonts", FONT_EXTS),
+            (ASSET_AUDIO, "audio", AUDIO_EXTS),
         ):
             folder = samples / sub
             if not folder.is_dir():
@@ -79,8 +81,11 @@ def seed_builtin_assets() -> None:
                 dst = storage.asset_path(asset.id, ext)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(file, dst)
-                if asset_type != ASSET_STICKER:
+                if asset_type == ASSET_FONT:
                     asset.family = file.stem
+                elif asset_type == ASSET_AUDIO:
+                    asset.kind, asset.status = ASSET_AUDIO, ASSET_PREPARING
+                    pending.append(asset.id)
                 elif ext in VIDEO_STICKER_EXTS:
                     asset.kind, asset.status = ASSET_VIDEO, ASSET_PREPARING
                     pending.append(asset.id)
@@ -110,7 +115,7 @@ def seed_builtin_assets() -> None:
         except worker.QueueUnavailable:
             # Broker not up yet: the asset stays "preparing" and can be re-queued
             # by deleting and re-uploading it. Never block startup on Redis.
-            log.warning("builtin video sticker %s could not be queued", asset_id)
+            log.warning("builtin asset %s could not be queued for preprocessing", asset_id)
 
 
 def backfill_video_sticker_audio() -> None:

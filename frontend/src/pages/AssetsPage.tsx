@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
-import { isVideoAsset, type Asset, type AssetType } from '../types';
+import { isAudioAsset, isVideoAsset, type Asset, type AssetType } from '../types';
 import { canDelete, filterAssets, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
+
+/** 音频素材的 accept 与空态文案；剪辑步骤的音轨选择器也用。 */
+export const AUDIO_ACCEPT = 'audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.mp3,.wav,.m4a';
+export const AUDIO_EMPTY_TEXT = '还没有音频。支持 mp3 / wav / m4a，单个不超过 50 MiB；上传后在「剪辑」步骤里加为 BGM 或口播。';
 
 export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?: () => void; onPick?: () => void }) {
   const [fontReady, setFontReady] = useState(false);
@@ -14,7 +18,21 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
   const status = asset.status ?? 'ready';
   return (
     <div className={`asset-card ${onPick ? 'pick' : ''}`} onClick={onPick} role={onPick ? 'button' : undefined} tabIndex={onPick ? 0 : undefined} onKeyDown={(e) => onPick && e.key === 'Enter' && onPick()}>
-      {asset.type === 'sticker' ? (
+      {isAudioAsset(asset) ? (
+        <div className="thumb audio">
+          {status === 'ready' ? (
+            // 原文件浏览器就能播；点播放器不算"选中"这张卡
+            <audio src={asset.url} controls preload="none" aria-label={asset.name} onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()} />
+          ) : (
+            <div className="asset-state small muted">{status === 'failed' ? '处理失败' : '处理中…'}</div>
+          )}
+          {status === 'ready' && asset.duration ? (
+            <div className="asset-badges">
+              <span className="badge">{asset.duration.toFixed(1)}s</span>
+            </div>
+          ) : null}
+        </div>
+      ) : asset.type === 'sticker' ? (
         <div className="thumb checker">
           {!video ? (
             <img src={asset.url} alt={asset.name} />
@@ -123,28 +141,33 @@ export function AssetsPage() {
   const accept =
     tab === 'sticker'
       ? 'image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.webp,.gif,.mp4,.mov,.webm'
-      : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
+      : tab === 'audio'
+        ? AUDIO_ACCEPT
+        : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
   const shown = filterAssets(assets, { bucket });
-  const kind = tab === 'sticker' ? '贴纸' : '字体';
+  const kind = tab === 'sticker' ? '贴纸' : tab === 'audio' ? '音频' : '字体';
   const emptyText =
     bucket === 'library'
-      ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
+      ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : tab === 'audio' ? 'audio' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
       : tab === 'sticker'
         ? '还没有贴纸。支持 png / webp / gif 与 mp4 / mov / webm；图片单个不超过 10 MiB，视频贴纸不超过 50 MiB、60 秒。'
-        : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';
+        : tab === 'audio'
+          ? AUDIO_EMPTY_TEXT
+          : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';
 
   return (
     <div className="page">
       <div className="page-head">
         <h1>素材库</h1>
         <label className="btn primary" style={{ cursor: 'pointer' }}>
-          {progress !== null ? `上传中 ${Math.round(progress * 100)}%` : tab === 'sticker' ? '上传贴纸' : '上传字体'}
+          {progress !== null ? `上传中 ${Math.round(progress * 100)}%` : `上传${kind}`}
           <input type="file" multiple accept={accept} className="sr-only" disabled={progress !== null} onChange={(e) => { void upload(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
         </label>
       </div>
       <div className="tabs" style={{ marginBottom: 16 }}>
         <button className={`tab ${tab === 'sticker' ? 'active' : ''}`} onClick={() => setTab('sticker')}>贴纸</button>
         <button className={`tab ${tab === 'font' ? 'active' : ''}`} onClick={() => setTab('font')}>字体</button>
+        <button className={`tab ${tab === 'audio' ? 'active' : ''}`} onClick={() => setTab('audio')}>音频</button>
       </div>
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
       <div className="chips" style={{ marginBottom: 12 }}>
