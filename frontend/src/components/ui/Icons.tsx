@@ -121,3 +121,11 @@ export const IconChevron = ({ open }: { open: boolean }) => (
 export const IconReset = () => (
   <svg {...base}><path d="M3 8a5 5 0 1 0 1.5-3.6" /><path d="M3 2.5v3h3" /></svg>
 );
+
+/* 编辑器配色切换 */
+export const IconMoon = () => (
+  <svg {...base}><path d="M13.5 9.5A6 6 0 0 1 6.5 2.5a6 6 0 1 0 7 7z" /></svg>
+);
+export const IconSun = () => (
+  <svg {...base}><circle cx="8" cy="8" r="3" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>
+);

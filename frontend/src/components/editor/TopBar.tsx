@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useEditor, type SafeZoneView, type Step } from '../../store/editor';
-import { IconRedo, IconUndo } from '../ui/Icons';
+import { IconMoon, IconRedo, IconSun, IconUndo } from '../ui/Icons';
 
 const STEPS: { n: Step; label: string }[] = [
   { n: 1, label: '① 剪辑' },
@@ -32,6 +32,8 @@ export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndR
   const saveState = useEditor((s) => s.saveState);
   const saveError = useEditor((s) => s.saveError);
   const rendering = useEditor((s) => s.rendering);
+  const theme = useEditor((s) => s.theme);
+  const toggleTheme = useEditor((s) => s.toggleTheme);
 
   const saveText = { idle: '', dirty: '未保存', saving: '保存中…', saved: '已保存', error: '保存失败' }[saveState];
 
@@ -77,6 +79,9 @@ export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndR
         ))}
       </span>
       {overlayMissing && <span className="muted small">该预设无示意图，显示框线</span>}
+      <button className="btn icon" onClick={toggleTheme} aria-label={theme === 'dark' ? '切换为浅色' : '切换为深色'} title={theme === 'dark' ? '切换为浅色界面' : '切换为深色界面（看画面颜色更准）'}>
+        {theme === 'dark' ? <IconSun /> : <IconMoon />}
+      </button>
       <button className="btn icon" onClick={undo} disabled={!canUndo} aria-label="撤销" title="撤销（⌘Z）">
         <IconUndo />
       </button>
