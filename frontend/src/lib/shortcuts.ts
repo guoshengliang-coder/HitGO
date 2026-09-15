@@ -69,7 +69,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'tl-no-snap', keys: ['⌥', '拖动'], label: '拖动时不吸附', group: '时间轴' },
   { id: 'canvas-no-snap', keys: ['⌘', '拖动'], label: '画布拖动时不吸附', group: '时间轴' },
   // 无键位的按钮项（只给 hintFor 用，不出现在速查表里）
-  { id: 'safe-zone-view', keys: [], label: '安全区显示', group: '全局' },
+  { id: 'safe-zone-view', keys: [], label: '安全区开关', group: '全局' },
 ];
 
 export function isMac(): boolean {

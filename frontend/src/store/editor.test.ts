@@ -80,3 +80,26 @@ describe('pushHistorySnapshot', () => {
     expect(useEditor.getState().history.v1?.past.length ?? 0).toBe(0);
   });
 });
+
+// 安全区开关（HIG-13）：QuickBar 按钮只开 / 关，打开时恢复上次的显示方式。
+describe('toggleSafeZone', () => {
+  it('开着就关，关着就恢复上次的显示方式', () => {
+    useEditor.setState({ safeZoneView: 'frames', safeZoneMode: 'frames' });
+    const s = useEditor.getState();
+    s.setSafeZoneView('overlay');
+    expect(useEditor.getState().safeZoneMode).toBe('overlay');
+
+    s.toggleSafeZone();
+    expect(useEditor.getState().safeZoneView).toBe('none');
+    expect(useEditor.getState().safeZoneMode).toBe('overlay'); // 关闭不改记住的方式
+
+    s.toggleSafeZone();
+    expect(useEditor.getState().safeZoneView).toBe('overlay');
+  });
+
+  it('默认打开为框线', () => {
+    useEditor.setState({ safeZoneView: 'none', safeZoneMode: 'frames' });
+    useEditor.getState().toggleSafeZone();
+    expect(useEditor.getState().safeZoneView).toBe('frames');
+  });
+});

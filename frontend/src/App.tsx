@@ -8,6 +8,7 @@ import { EditorPage } from './pages/EditorPage';
 import { OutputsPage } from './pages/OutputsPage';
 import { useEditor } from './store/editor';
 import { ThemeToggle } from './components/ui/ThemeToggle';
+import { AppVersion } from './components/ui/AppVersion';
 
 type AuthState = 'checking' | 'ok' | 'required';
 
@@ -15,9 +16,12 @@ function Shell() {
   return (
     <>
       <nav className="app-nav">
-        <NavLink to="/" className="brand">
-          Hit<b>GO</b>
-        </NavLink>
+        <span className="brand-group">
+          <NavLink to="/" className="brand">
+            Hit<b>GO</b>
+          </NavLink>
+          <AppVersion />
+        </span>
         <NavLink to="/" end className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
           批次
         </NavLink>

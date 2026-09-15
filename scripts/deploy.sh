@@ -23,7 +23,9 @@ ssh_opts="${SSH_OPTS:-} -o BatchMode=yes -o ConnectTimeout=15"
 remote() { ssh $ssh_opts "$ssh_target" "$@"; }
 
 rev="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "==> deploying $rev to $ssh_target:$app_dir"
+# Version shown next to the HitGO brand: latest tag only (the image has no .git, so pass it in).
+ver="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+echo "==> deploying $rev (${ver:-no tag}) to $ssh_target:$app_dir"
 
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
   echo "!!  working tree has uncommitted changes — deploying them anyway (prototype)."
@@ -39,6 +41,7 @@ rsync -az --delete \
 # 2. build + restart, wait for health
 remote "set -e; cd '$app_dir'; ln -sfn '$data_dir' data; test -f .env || { echo 'missing $app_dir/.env'; exit 1; }
   echo '$rev' > VERSION
+  echo '$ver' > frontend/.hitgo-version
   sudo -n docker compose build 2>&1 | grep -E 'Built|ERROR' | tail -n 3
   sudo -n docker compose up -d 2>&1 | tail -n 2"
 

@@ -23,6 +23,8 @@ __pycache__/
 node_modules/
 dist/
 frontend/dist/
+# written by scripts/deploy.sh on the host before the image build
+frontend/.hitgo-version
 *.log
 npm-debug.log*
 
