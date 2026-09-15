@@ -13,6 +13,7 @@ import { windowRange } from '../../lib/stickerMedia';
 import { snapValue } from '../../lib/snap';
 import { hintFor } from '../../lib/shortcuts';
 import { IconEye, IconFit, IconLock } from '../ui/Icons';
+import { TimelineTools } from './TimelineTools';
 import type { Layer } from '../../types';
 
 const LABEL_W = 112;
@@ -314,6 +315,8 @@ export function Timeline() {
   return (
     <div className="timeline">
       <div className="tl-head">
+        <TimelineTools />
+        <span className="tl-sep" />
         <span>缩放</span>
         <input type="range" min={0} max={1000} value={zoomSlider} onChange={(e) => onSlider(Number(e.target.value))} aria-label="时间轴缩放" title={hintFor('tl-zoom')} />
         <span className="mono">{Math.round(pps)} px/s</span>
