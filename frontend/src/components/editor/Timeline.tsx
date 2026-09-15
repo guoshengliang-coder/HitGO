@@ -1,4 +1,4 @@
-// 时间轴：标尺 + 视频轨（雪碧图）+ 音频轨 + 删除区间（步骤 1 可拖边）/ 图层行（步骤 2 可拖动、拉伸）。
+// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（步骤 1 可拖边）/ 图层行（步骤 2 可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层 t 基于剪后时间，显示时用 postToSource 映射。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
@@ -10,10 +10,10 @@ import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/t
 import { layerName } from '../../lib/spec';
 import { snapValue } from '../../lib/snap';
 import { hintFor } from '../../lib/shortcuts';
-import { IconFit } from '../ui/Icons';
+import { IconEye, IconFit, IconLock } from '../ui/Icons';
 import type { Layer } from '../../types';
 
-const LABEL_W = 96;
+const LABEL_W = 112;
 const MIN_PPS = 20;
 const MAX_PPS = 400;
 const SNAP_PX = 6;
@@ -361,13 +361,6 @@ export function Timeline() {
             </div>
           </div>
 
-          {step === 1 && (
-            <div className="tl-row tl-audio">
-              <div className="lbl">音频</div>
-              <div className="body" {...scrub.handlers} style={{ opacity: video?.has_audio ? 1 : 0.2 }} />
-            </div>
-          )}
-
           {step === 2 &&
             (spec?.layers ?? []).map((l, i) => {
               const v = barVal(i, l);
@@ -376,9 +369,19 @@ export function Timeline() {
               const left = postToSource(pa, remove) * pps;
               const right = postToSource(pb, remove) * pps;
               const sel = selectedLayerId === l.id;
+              const hidden = l.visible === false;
+              const locked = !!l.locked;
               return (
-                <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''}`}>
+                <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
                   <div className="lbl" title={layerName(l, assets)}>
+                    <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                      <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: hidden }, false)}>
+                        <IconEye off={hidden} />
+                      </button>
+                      <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !locked }, false)}>
+                        <IconLock open={!locked} />
+                      </button>
+                    </span>
                     <button
                       className={`chip ${all ? 'active' : ''}`}
                       style={{ height: 18, padding: '0 6px', fontSize: 10 }}
@@ -392,15 +395,15 @@ export function Timeline() {
                     >
                       {all ? '全程' : '区间'}
                     </button>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
+                    <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
                   </div>
                   <div className="body" {...scrub.handlers}>
                     <div
-                      className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''}`}
-                      style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
+                      className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
+                      style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
                         setSelectedLayer(l.id);
-                        if (all) {
+                        if (all || locked) {
                           e.stopPropagation();
                           return;
                         }
@@ -408,7 +411,7 @@ export function Timeline() {
                       }}
                     >
                       {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
-                      {!all && (
+                      {!all && !locked && (
                         <>
                           <div className="edge l" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
                           <div className="edge r" onPointerDown={(e) => { setSelectedLayer(l.id); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: v as [number, number] }); }} />

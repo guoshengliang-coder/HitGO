@@ -289,15 +289,17 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .body { touch-action: none; }
 .tl-snap { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--focus); z-index: 5; pointer-events: none; }
 .tl-playhead .grip { position: absolute; top: 0; left: -7px; width: 14px; height: 20px; cursor: ew-resize; pointer-events: auto; touch-action: none; }
-.tl-row { position: relative; display: grid; grid-template-columns: 96px 1fr; border-bottom: 1px solid var(--line-soft); }
+.tl-row { position: relative; display: grid; grid-template-columns: 112px 1fr; border-bottom: 1px solid var(--line-soft); }
 .tl-row .lbl { font-size: 11px; color: var(--ink-2); padding: 4px 8px; border-right: 1px solid var(--line-soft); background: var(--panel); position: sticky; left: 0; z-index: 3; display: flex; align-items: center; gap: 4px; overflow: hidden; white-space: nowrap; }
+.tl-row .lbl .tl-acts { display: flex; flex: none; gap: 0; opacity: 0.7; }
+.tl-row .lbl .tl-acts .btn { width: 16px; height: 16px; padding: 0; }
+.tl-row .lbl .lname { min-width: 0; }
+.tl-layer.hidden .lbl .lname { color: var(--ink-3); text-decoration: line-through; }
 .tl-row .body { position: relative; height: 100%; overflow: hidden; }
 .tl-video { height: 64px; }
-.tl-audio { height: 22px; }
 .tl-layer { height: 30px; }
 .tl-layer.selected .lbl { color: var(--accent-ink); font-weight: 500; }
 .tl-sprite { position: absolute; top: 0; bottom: 0; background-repeat: no-repeat; }
-.tl-audio .body { background: repeating-linear-gradient(90deg, #cfd5de 0 2px, transparent 2px 5px); background-size: 100% 60%; background-position: 0 50%; background-repeat: repeat-x; opacity: 0.6; }
 .tl-cut {
   position: absolute; top: 0; bottom: 0;
   background: repeating-linear-gradient(135deg, rgba(217,72,31,0.35) 0 4px, rgba(217,72,31,0.08) 4px 8px);
@@ -309,6 +311,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-bar { position: absolute; top: 5px; bottom: 5px; background: #d7e2f5; border: 1px solid #8fa8d6; border-radius: 3px; cursor: grab; font-size: 10px; padding: 0 4px; overflow: hidden; white-space: nowrap; line-height: 18px; color: #3c5078; }
 .tl-bar.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar.all { background: #eceef2; border-style: dashed; }
+.tl-bar.locked { cursor: default; opacity: 0.75; }
 .tl-bar .edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
 .tl-bar .edge.l { left: 0; } .tl-bar .edge.r { right: 0; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
