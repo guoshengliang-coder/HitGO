@@ -102,6 +102,21 @@ def media_url(path: Path) -> str:
     return f"{MEDIA_PREFIX}/{rel.as_posix()}"
 
 
+def versioned_media_url(path: Path) -> str:
+    """``media_url`` plus ``?v=<mtime>`` for files regenerated in place.
+
+    /media responses carry no Cache-Control, so browsers reuse them heuristically. A
+    derived file rewritten under the same name (the video sticker preview the audio
+    backfill redoes) would keep playing the stale copy; a changed URL cannot.
+    StaticFiles ignores the query, and ``media_url_to_path`` strips it.
+    """
+    url = media_url(path)
+    try:
+        return f"{url}?v={int(path.stat().st_mtime)}"
+    except OSError:
+        return url
+
+
 def media_url_to_path(url: str) -> Path | None:
     """'/media/uploads/u_x.png' → absolute path, or None if it escapes DATA_DIR / is blocked."""
     if not url.startswith(MEDIA_PREFIX + "/"):

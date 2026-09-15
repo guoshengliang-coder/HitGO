@@ -149,12 +149,12 @@ def asset_out(asset: Asset) -> AssetOut:
         has_alpha=asset.has_alpha if is_video else None,
         has_audio=asset.has_audio if is_video else None,
         poster_url=(
-            storage.media_url(storage.asset_poster_path(asset.id))
+            storage.versioned_media_url(storage.asset_poster_path(asset.id))
             if is_video and ready
             else None
         ),
         preview_url=(
-            storage.media_url(storage.asset_preview_path(asset.id, asset.preview_ext))
+            storage.versioned_media_url(storage.asset_preview_path(asset.id, asset.preview_ext))
             if is_video and ready and asset.preview_ext
             else None
         ),
