@@ -43,7 +43,7 @@ export const TITLE_COMBOS: TitleCombo[] = [
     note: '黄字黑边大标题 · 深底青字副标题',
     layers: [
       { text: '大标题', preset: 'builtin:yellow-title', anchor: 'top-center', margin: [0, 0.08] },
-      { text: '副标题', preset: 'builtin:pill-subtitle', anchor: 'top-center', margin: [0, 0.175] },
+      { text: '副标题', preset: 'builtin:pill-subtitle', anchor: 'top-center', margin: [0, 0.185] },
     ],
   },
 ];
