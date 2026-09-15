@@ -102,6 +102,30 @@ def test_text_style_shadow_and_letter_spacing():
     assert "shadow" in errors_of(spec)
 
 
+def test_text_spans_and_background_fields():
+    spec = valid_spec()
+    layer = spec["layers"][1]
+    layer["spans"] = [{"start": 0, "end": 2, "color": "#E3312B"}, {"start": 2, "end": 4, "color": "#111111"}]
+    layer["style"].update({"background": "#F7D308FF", "background_width": 1.0, "background_radius": 0})
+    out = validate(spec).layers[1]
+    assert [(s.start, s.end, s.color) for s in out.spans] == [(0, 2, "#E3312B"), (2, 4, "#111111")]
+    assert out.style.background_width == 1.0 and out.style.background_radius == 0
+    # defaults: old specs without the fields still validate
+    plain = validate(valid_spec()).layers[1]
+    assert plain.spans is None and plain.style.background_width is None and plain.style.background_radius is None
+    # overlapping / inverted ranges
+    layer["spans"] = [{"start": 0, "end": 3, "color": "#E3312B"}, {"start": 2, "end": 4, "color": "#111111"}]
+    assert "spans" in errors_of(spec)
+    layer["spans"] = [{"start": 3, "end": 3, "color": "#E3312B"}]
+    assert "spans" in errors_of(spec)
+    layer["spans"] = None
+    layer["style"]["background_width"] = 1.5
+    assert "background_width" in errors_of(spec)
+    layer["style"]["background_width"] = 0.98
+    layer["style"]["background_radius"] = -0.01
+    assert "background_radius" in errors_of(spec)
+
+
 def test_aspect_and_fill_enums():
     assert "aspect" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "3:4"}]))
     assert "fill" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "stretch"}]))

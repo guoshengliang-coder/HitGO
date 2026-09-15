@@ -46,4 +46,23 @@ export const BUILTIN_TEXT_PRESETS: TextStylePreset[] = [
     builtin: true,
     style: { font_weight: 700, color: '#1A1A1A', stroke_color: '#000000', stroke_width: 0, background: '#FFFFFFCC', padding: 0.02, line_height: 1.25, shadow: { color: '#00000040', blur: 0.01, offset: [0, 0.003] }, letter_spacing: 0 },
   },
+  // 以下三个来自 HIG-2 的标题案例（颜色取自截图近似值）
+  {
+    id: 'builtin:banner-yellow',
+    name: '黄底通栏标题',
+    builtin: true,
+    style: { font_weight: 900, font_size: 0.05, color: '#111111', stroke_color: '#000000', stroke_width: 0, background: '#F7D308FF', background_width: 1, background_radius: 0, padding: 0.02, line_height: 1.2, shadow: null, letter_spacing: 0 },
+  },
+  {
+    id: 'builtin:banner-yellow-round',
+    name: '黄底圆角标题',
+    builtin: true,
+    style: { font_weight: 700, font_size: 0.035, color: '#111111', stroke_color: '#000000', stroke_width: 0, background: '#F7D308FF', background_width: 0.98, background_radius: 0.01, padding: 0.016, line_height: 1.25, shadow: null, letter_spacing: 0 },
+  },
+  {
+    id: 'builtin:pill-subtitle',
+    name: '深底青字副标题',
+    builtin: true,
+    style: { font_weight: 700, font_size: 0.028, color: '#86F5C4', stroke_color: '#000000', stroke_width: 0, background: '#000000A6', background_width: null, background_radius: 0.01, padding: 0.012, line_height: 1.2, shadow: null, letter_spacing: 0 },
+  },
 ];

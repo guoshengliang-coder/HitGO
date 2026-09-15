@@ -123,6 +123,7 @@
       "id": "l_2",
       "type": "text",
       "text": "限时免费",
+      "spans": [ { "start": 0, "end": 2, "color": "#E3312B" } ],   // 可选；局部上色：text 的 UTF-16 字符区间 [start,end) 用 color 填充，升序且互不重叠；缺省 / [] = 整段用 style.color
       "style": {
         "font_family": "Noto Sans SC", "font_weight": 700,
         "font_size": 0.05,                   // 相对画布高
@@ -131,7 +132,9 @@
         "padding": 0.01,                     // 相对画布高
         "align": "center", "line_height": 1.2,
         "shadow": { "color": "#00000080", "blur": 0.01, "offset": [0.002, 0.004] },   // 可选；blur / offset 相对画布高；null = 无阴影
-        "letter_spacing": 0.02               // 可选，em 单位，可为负
+        "letter_spacing": 0.02,              // 可选，em 单位，可为负
+        "background_width": null,            // 可选；背景块宽度，相对画布宽 (0,1]，1 = 通栏；null / 缺省 = 紧贴文字，文字按 align 在块内排
+        "background_radius": null            // 可选；背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）
       },
       "image_url": "/media/uploads/u_9k8j.png",   // 前端按输出分辨率渲染好的透明 PNG；worker 只用它
       "image_size": [540, 130],              // 该 PNG 的像素尺寸
@@ -161,7 +164,7 @@
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
 - `layer_overrides` 只允许覆盖 `anchor | margin | width | rotate | opacity`。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。
-- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）与 `letter_spacing`（em，可为负）都是可选字段，worker 不读取。
+- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
 
@@ -178,7 +181,7 @@
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
-    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
+    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | spans | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
 

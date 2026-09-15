@@ -103,6 +103,18 @@ def test_style_only_same_id_keeps_target_position_and_time_but_takes_style():
     assert src["layers"][1]["style"]["color"] == "#FFFFFF"
 
 
+def test_style_only_spans_follow_text():
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][1]["spans"] = [{"start": 0, "end": 2, "color": "#E3312B"}]
+    target["layers"][1]["spans"] = [{"start": 1, "end": 2, "color": "#00FF00"}]
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][1]["spans"] == [{"start": 0, "end": 2, "color": "#E3312B"}]
+    # a source without spans clears the target's: they belong to the source text
+    del src["layers"][1]["spans"]
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert "spans" not in out["layers"][1]
+
+
 def test_style_only_text_falls_back_to_identical_text_match():
     src = valid_spec()
     src["layers"][1]["id"] = "l_new"  # id no longer matches …

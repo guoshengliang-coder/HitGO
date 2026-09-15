@@ -184,6 +184,17 @@ export interface TextStyle {
   shadow?: TextShadow | null;
   /** 可选：字距（em，可为负）。 */
   letter_spacing?: number;
+  /** 可选：背景块宽度，相对画布宽 (0,1]；null / 缺省 = 紧贴文字。 */
+  background_width?: number | null;
+  /** 可选：背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）。 */
+  background_radius?: number | null;
+}
+
+/** 局部上色：text 的 UTF-16 字符区间 [start, end) 用 color 填充。 */
+export interface TextSpan {
+  start: number;
+  end: number;
+  color: string;
 }
 
 /** 文字样式预设：内置 + 用户保存（对应后端 Preset type=text_style）。 */
@@ -208,6 +219,8 @@ export interface TextLayer extends LayerBase {
   type: 'text';
   text: string;
   style: TextStyle;
+  /** 可选：局部上色区间，升序且互不重叠；缺省 / [] = 整段用 style.color。 */
+  spans?: TextSpan[];
   image_url?: string | null;
   image_size?: [number, number] | null;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */

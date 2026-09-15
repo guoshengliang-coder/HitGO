@@ -16,6 +16,8 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       // 浅拷贝即可：style（含 shadow / letter_spacing）等嵌套对象原样透传
       const copy: Record<string, unknown> = { ...l };
       for (const f of LOCAL_LAYER_FIELDS) delete copy[f];
+      // 没有局部上色时不发 spans，保持旧 spec 形状
+      if (l.type === 'text' && !l.spans?.length) delete copy.spans;
       return copy as unknown as Layer;
     }),
     outputs: spec.outputs.map((o) => {

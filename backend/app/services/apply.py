@@ -10,8 +10,9 @@ into each target; a target without a spec first gets an empty spec; when applyin
 - ``style_only``: each source layer is matched to a target layer (same ``id``; for
   text layers, falling back to the first target text layer with identical ``text``).
   A matched target keeps its own ``anchor`` / ``margin`` / ``t`` (and any other keys)
-  and only takes the source's type-specific fields plus ``width`` / ``rotate`` /
-  ``opacity``. Unmatched source layers are appended as deep copies.
+  and only takes the source's type-specific fields (for text: ``text`` together with
+  its ``spans``) plus ``width`` / ``rotate`` / ``opacity``. Unmatched source layers are
+  appended as deep copies.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ LAYER_MODES = ("replace", "style_only")
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "sticker": ("asset_id",),
-    "text": ("text", "style", "image_url", "image_size"),
+    "text": ("text", "spans", "style", "image_url", "image_size"),
 }
 
 
