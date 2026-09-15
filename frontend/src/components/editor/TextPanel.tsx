@@ -1,22 +1,25 @@
-// 「文本」模块右侧面板（HIG-8）：文字 / 花字 / 气泡 / 模板 / 字幕 五个 tab。
+// 「文本」模块右侧面板：图层 / 文字 / 模板 / 字幕 四个 tab（HIG-8 拆出，HIG-11 对齐贴纸面板重排）。
+// 「图层」列出文字图层并编辑选中的那条；「文字」平铺字体 / 花字 / 气泡卡片，双击新建图层。
+// 在画布 / 时间线 / 列表里选中文字图层时自动切回「图层」页；「文字」页自己新建的不切，方便连续添加。
 // 只管文字图层；贴纸在「贴纸」模块里。
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { defaultTextStyle, type TextLayer } from '../../types';
 import { newLayerId } from '../../lib/spec';
 import { TITLE_TEMPLATES, templateToLayers, type TitleTemplate } from '../../lib/titleTemplates';
 import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
 import { cuesToTextLayers, parseSrt } from '../../lib/srt';
+import { galleryLayerSeed, type GalleryItem } from '../../lib/textGallery';
 import { IconText } from '../ui/Icons';
-import { ApplyLayersFoot, LayerList, LayerProps, newTextLayer, PresetGallery } from './LayerParts';
+import { ApplyLayersFoot, LayerList, LayerProps, newTextLayer } from './LayerParts';
+import { TextGallery } from './TextGallery';
 
-type TextTab = 'layers' | 'fancy' | 'bubble' | 'templates' | 'subtitles';
+type TextTab = 'layers' | 'gallery' | 'templates' | 'subtitles';
 
 const TABS: { key: TextTab; label: string }[] = [
-  { key: 'layers', label: '文字' },
-  { key: 'fancy', label: '花字' },
-  { key: 'bubble', label: '气泡' },
+  { key: 'layers', label: '图层' },
+  { key: 'gallery', label: '文字' },
   { key: 'templates', label: '模板' },
   { key: 'subtitles', label: '字幕' },
 ];
@@ -32,6 +35,21 @@ export function TextPanel({ onApply, targetCount }: { onApply: () => void; targe
   const setToast = useEditor((s) => s.setToast);
   const postDuration = usePostDuration();
   const srtInputRef = useRef<HTMLInputElement>(null);
+  // 「文字」页双击新建的图层 id：它被自动选中时不切页
+  const createdIdRef = useRef<string | null>(null);
+  const selectedId = selected?.id ?? null;
+  useEffect(() => {
+    if (selectedId && selectedId === createdIdRef.current) return;
+    createdIdRef.current = null; // 选中别的或取消选中后，再选回这条就算主动选中
+    if (selectedId) setTab('layers');
+  }, [selectedId]);
+
+  const addFromGallery = (item: GalleryItem) => {
+    const { style, text } = galleryLayerSeed(item);
+    const layer = newTextLayer(style, text);
+    createdIdRef.current = layer.id;
+    addLayer(layer);
+  };
 
   const addTemplate = (c: TitleTemplate) => {
     addLayers(templateToLayers(c, newLayerId));
@@ -76,11 +94,11 @@ export function TextPanel({ onApply, targetCount }: { onApply: () => void; targe
                 <IconText /> 添加文字
               </button>
             </div>
-            <LayerList type="text" emptyHint="还没有文字图层。点「添加文字」，或在「花字」「气泡」「模板」「字幕」页里一键添加；加入后可在画布上双击直接改字。" />
+            <LayerList type="text" emptyHint="还没有文字图层。点「添加文字」，或在「文字」页双击字体 / 花字 / 气泡卡片、在「模板」「字幕」页里添加；加入后可在画布上双击直接改字。" />
             {selected && <LayerProps key={selected.id} layer={selected} />}
           </>
         )}
-        {(tab === 'fancy' || tab === 'bubble') && <PresetGallery layer={selected} group={tab === 'fancy' ? 'text' : 'bubble'} onCreated={() => setTab('layers')} />}
+        {tab === 'gallery' && <TextGallery onCreate={addFromGallery} />}
         {tab === 'templates' && (
           <>
             <div className="hint">标题模板：一键添加带样式与位置的文字图层，加入后只需改字。</div>
