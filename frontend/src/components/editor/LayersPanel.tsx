@@ -4,8 +4,8 @@
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
-import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
+import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type EditSpec, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { cloneSpec, layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
 import { filterAssets, type AssetBucket } from '../../lib/assets';
 import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
@@ -483,9 +483,12 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
 
 function LayerProps({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
+  const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const assets = useEditor((s) => s.assets);
   // 文本框里的当前选区（[start, end)，UTF-16 索引），给「选中上色」用
   const [sel, setSel] = useState<[number, number] | null>(null);
+  // 文字输入期间逐键写 store 但不记历史；聚焦时抓一份编辑前的 spec，失焦时若文字真的变了才压入历史
+  const textEditStart = useRef<{ layerId: string; text: string; spec: EditSpec } | null>(null);
   return (
     <div className="section inspector">
       <div className="section-title">属性 · {layerName(layer, assets)}</div>
@@ -510,7 +513,15 @@ function LayerProps({ layer }: { layer: Layer }) {
                 false,
               );
             }}
-            onBlur={() => updateLayer(layer.id, {}, true)}
+            onFocus={() => {
+              const spec = useEditor.getState().currentSpec();
+              textEditStart.current = spec ? { layerId: layer.id, text: layer.text, spec: cloneSpec(spec) } : null;
+            }}
+            onBlur={() => {
+              const start = textEditStart.current;
+              textEditStart.current = null;
+              if (start && start.layerId === layer.id && start.text !== layer.text) pushHistorySnapshot(start.spec);
+            }}
             onSelect={(e) => {
               const t = e.currentTarget;
               setSel(t.selectionStart !== t.selectionEnd ? [t.selectionStart, t.selectionEnd] : null);
