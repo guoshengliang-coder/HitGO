@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useParams } from 'react-router-dom';
 import { useEditor } from '../store/editor';
 import { player } from '../lib/player';
@@ -16,6 +16,8 @@ import { VariantPreviews } from '../components/editor/VariantPreviews';
 import { CropEditor } from '../components/editor/CropEditor';
 import { ProgressModal } from '../components/editor/ProgressModal';
 import { ShortcutsModal } from '../components/editor/ShortcutsModal';
+import { Splitter } from '../components/ui/Splitter';
+import { clampPrefs, LAYOUT_DEFAULTS, loadLayoutPrefs, saveLayoutPrefs, type LayoutPrefs } from '../lib/layoutPrefs';
 
 function isTyping(e: KeyboardEvent) {
   const el = e.target as HTMLElement | null;
@@ -205,6 +207,17 @@ export function EditorPage() {
   const flushSave = useEditor((s) => s.flushSave);
   const [applyOpen, setApplyOpen] = useState(false);
 
+  // 面板尺寸：右栏宽 / 时间线高，拖动分隔条调整，存本机
+  const [layout, setLayout] = useState<LayoutPrefs>(() => loadLayoutPrefs());
+  const resize = useCallback((patch: Partial<LayoutPrefs>) => {
+    setLayout((cur) => {
+      const next = clampPrefs({ ...cur, ...patch });
+      saveLayoutPrefs(next);
+      return next;
+    });
+  }, []);
+  const layoutStyle = { '--right-w': `${layout.rightW}px`, '--timeline-h': `${layout.timelineH}px` } as CSSProperties;
+
   useEffect(() => {
     if (id) void load(id);
   }, [id, load]);
@@ -250,7 +263,7 @@ export function EditorPage() {
   if (loading || !batch) return <div className="empty">加载中…</div>;
 
   return (
-    <div className="editor">
+    <div className="editor" style={layoutStyle}>
       <TopBar onSaveAndRender={() => void saveAndRender(targetIds)} targetCount={targetIds.length} fileCount={fileCount} />
       <div className="editor-body">
         <VideoList />
@@ -259,8 +272,14 @@ export function EditorPage() {
           <Stage hidden={step === 3} />
           <QuickBar />
           <Transport />
-          {step !== 3 && <Timeline />}
+          {step !== 3 && (
+            <>
+              <Splitter axis="y" label="调整时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
+              <Timeline />
+            </>
+          )}
         </div>
+        <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
           {step === 1 && <TrimPanel />}
           {step === 2 && <LayersPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
