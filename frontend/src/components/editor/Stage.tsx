@@ -11,7 +11,7 @@ import { marginFromBox, placeLayer, round4 } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { windowContains } from '../../lib/time';
 import { canvasGuides, snapValue } from '../../lib/snap';
-import { ensureTextRendered, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
+import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
 import { useImage } from '../../lib/useImage';
 import type { Layer, Rect as ZRect, SafeZone, TextLayer } from '../../types';
 
@@ -108,7 +108,8 @@ function LayerNode({
   const [, bump] = useState(0);
 
   // 文字图层：渲染 PNG 预览；未手动设宽时，width 跟随渲染尺寸（pngWidth / 1080）
-  const textKey = layer.type === 'text' ? (layer as TextLayer).text + ' ' + JSON.stringify((layer as TextLayer).style) : '';
+  // 缓存 key 与 textImage 一致（text + style + spans），任一变化都重新渲染
+  const textKey = layer.type === 'text' ? textCacheKey(layer as TextLayer) : '';
   const widthManual = layer.type === 'text' ? !!(layer as TextLayer).width_manual : true;
   useEffect(() => {
     if (layer.type !== 'text') return;

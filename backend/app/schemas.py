@@ -117,14 +117,43 @@ class TextStyle(BaseModel):
     line_height: float | None = Field(default=None, gt=0)
     shadow: TextShadow | None = None
     letter_spacing: float | None = None  # em units; negative tightens
+    background_width: float | None = Field(default=None, gt=0, le=1)  # relative to canvas width; None = hug text
+    background_radius: float | None = Field(default=None, ge=0)  # relative to canvas height; None = auto
+
+
+class TextSpan(BaseModel):
+    """A coloured run of a text layer: UTF-16 index range [start, end) of ``text`` (contract §2)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    color: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> TextSpan:
+        if self.end <= self.start:
+            raise ValueError("spans 区间终点必须大于起点")
+        return self
 
 
 class TextLayer(LayerBase):
     type: Literal["text"]
     text: str = ""
     style: TextStyle | None = None
+    spans: list[TextSpan] | None = None
     image_url: str | None = None
     image_size: tuple[int, int] | None = None
+
+    @field_validator("spans")
+    @classmethod
+    def _validate_spans(cls, v: list[TextSpan] | None) -> list[TextSpan] | None:
+        if not v:
+            return v
+        for prev, cur in zip(v, v[1:]):
+            if cur.start < prev.end:
+                raise ValueError("spans 区间必须升序且互不重叠")
+        return v
 
     @field_validator("image_url")
     @classmethod

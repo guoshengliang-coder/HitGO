@@ -205,6 +205,8 @@ function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
     if (s.type === 'sticker' && hit.type === 'sticker') hit.asset_id = s.asset_id;
     else if (s.type === 'text' && hit.type === 'text') {
       hit.text = s.text;
+      if (s.spans) hit.spans = s.spans;
+      else delete hit.spans;
       hit.style = s.style;
       hit.image_url = s.image_url;
       hit.image_size = s.image_size;

@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, type Anchor, type Layer, type StickerLayer, type TextLayer, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, type Anchor, type Layer, type StickerLayer, type TextLayer, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
 import { reanchor } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
+import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
+import { TITLE_COMBOS, comboToLayers, type TitleCombo } from '../../lib/titleCombos';
 import { AssetCard } from '../../pages/AssetsPage';
 import { IconCopy, IconDown, IconEye, IconLock, IconSticker, IconText, IconTrash, IconUp } from '../ui/Icons';
 
@@ -19,7 +21,7 @@ function presetThumb(preset: TextStylePreset): string {
   if (hit) return hit;
   let url = '';
   try {
-    const style: TextStyle = { ...defaultTextStyle(), ...preset.style, font_size: 0.075, align: 'center' };
+    const style: TextStyle = { ...defaultTextStyle(), ...preset.style, font_size: 0.075, align: 'center', background_width: null };
     url = drawTextImage('花字', style, THUMB_H).canvas.toDataURL('image/png');
   } catch {
     /* 非浏览器环境 / canvas 不可用 */
@@ -130,12 +132,24 @@ function LayerProps({ layer }: { layer: Layer }) {
   const postDuration = usePostDuration();
   const fonts = assets.filter((a) => a.type === 'font');
   const aspect = layerAspect(layer, assets);
+  // 文本框里的当前选区（[start, end)，UTF-16 索引）与待用的上色颜色
+  const [sel, setSel] = useState<[number, number] | null>(null);
+  const [spanColor, setSpanColorState] = useState('#E3312B');
 
   const setAnchor = (a: Anchor) => {
     const p = reanchor(layer, aspect, { W: 1080, H: 1920 }, a);
     updateLayer(layer.id, { anchor: a, margin: [Math.round(p.margin[0] * 10000) / 10000, Math.round(p.margin[1] * 10000) / 10000] });
   };
   const patchStyle = (patch: Partial<TextLayer['style']>) => updateLayer(layer.id, (l) => { if (l.type === 'text') Object.assign(l.style, patch); });
+  const patchSpans = (fn: (spans: TextSpan[], textLength: number) => TextSpan[]) =>
+    updateLayer(layer.id, (l) => {
+      if (l.type !== 'text') return;
+      const next = fn(l.spans ?? [], l.text.length);
+      if (next.length) l.spans = next;
+      else delete l.spans;
+    });
+  const spans = layer.type === 'text' ? normalizeSpans(layer.spans, layer.text.length) : [];
+  const onTextSelect = (t: HTMLTextAreaElement) => setSel(t.selectionStart !== t.selectionEnd ? [t.selectionStart, t.selectionEnd] : null);
 
   return (
     <div className="section">
@@ -186,8 +200,52 @@ function LayerProps({ layer }: { layer: Layer }) {
         <>
           <div className="section-title" style={{ marginTop: 6 }}>文字</div>
           <PresetStrip layer={layer} />
-          <textarea className="textarea" rows={3} value={layer.text} onChange={(e) => updateLayer(layer.id, { text: e.target.value }, false)} onBlur={() => updateLayer(layer.id, {}, true)} />
+          <textarea
+            className="textarea"
+            rows={3}
+            value={layer.text}
+            onChange={(e) => {
+              const next = e.target.value;
+              updateLayer(
+                layer.id,
+                (l) => {
+                  if (l.type !== 'text') return;
+                  const moved = adjustSpans(l.spans, l.text, next);
+                  if (moved.length) l.spans = moved;
+                  else delete l.spans;
+                  l.text = next;
+                },
+                false,
+              );
+            }}
+            onBlur={() => updateLayer(layer.id, {}, true)}
+            onSelect={(e) => onTextSelect(e.currentTarget)}
+          />
           <div className="prop-grid">
+            <span>选中上色</span>
+            <div className="inline">
+              <input type="color" className="color" value={spanColor} onChange={(e) => setSpanColorState(e.target.value.toUpperCase())} />
+              <button className="btn sm" disabled={!sel} title="给文本框里选中的文字上色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
+                上色
+              </button>
+              <button className="btn ghost sm" disabled={!sel} title="清除选中文字的颜色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], null, len))}>
+                清除
+              </button>
+              {!sel && <span className="muted small">先在文本框里选中文字</span>}
+            </div>
+            {spans.length > 0 && (
+              <>
+                <span>已上色</span>
+                <div className="span-chips">
+                  {spans.map((sp) => (
+                    <button key={`${sp.start}-${sp.end}`} className="span-chip" title="点击清除这一段的颜色" onClick={() => patchSpans((cur, len) => setSpanColor(cur, sp.start, sp.end, null, len))}>
+                      <i style={{ background: sp.color }} />
+                      <span className="stext">{layer.text.slice(sp.start, sp.end).replace(/\n/g, ' ')}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
             <span>字体</span>
             <select className="select sm" value={layer.style.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })}>
               <option value={BUILTIN_FONT_FAMILY}>{BUILTIN_FONT_FAMILY}（内置）</option>
@@ -259,6 +317,35 @@ function LayerProps({ layer }: { layer: Layer }) {
                 </>
               )}
             </div>
+            {layer.style.background && (
+              <>
+                <span>背景宽度</span>
+                <div className="inline">
+                  <button className={`chip ${layer.style.background_width == null ? 'active' : ''}`} onClick={() => patchStyle({ background_width: null })}>贴合</button>
+                  <button className={`chip ${layer.style.background_width != null ? 'active' : ''}`} onClick={() => layer.style.background_width == null && patchStyle({ background_width: 1 })}>通栏</button>
+                  {layer.style.background_width != null && (
+                    <Num value={layer.style.background_width} min={0.3} max={1} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ background_width: Math.max(0.3, Math.min(1, v)) })} />
+                  )}
+                </div>
+                <span>圆角</span>
+                <div className="inline">
+                  <Num
+                    value={layer.style.background_radius ?? Math.min(layer.style.padding, layer.style.font_size * 0.2)}
+                    min={0}
+                    max={0.05}
+                    step={0.001}
+                    scale={1000}
+                    suffix="‰ 高"
+                    onChange={(v) => patchStyle({ background_radius: Math.max(0, v) })}
+                  />
+                  {layer.style.background_radius != null && (
+                    <button className="btn ghost sm" onClick={() => patchStyle({ background_radius: null })} title="圆角重新跟随内边距 / 字号">
+                      自动
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
             <span>对齐</span>
             <div className="inline">
               {(['left', 'center', 'right'] as const).map((a) => (
@@ -284,6 +371,8 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const selectedId = useEditor((s) => s.selectedLayerId);
   const setSelected = useEditor((s) => s.setSelectedLayer);
   const addLayer = useEditor((s) => s.addLayer);
+  const addLayers = useEditor((s) => s.addLayers);
+  const [combos, setCombos] = useState(false);
   const updateLayer = useEditor((s) => s.updateLayer);
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
@@ -309,6 +398,11 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     addLayer(l);
     setTab('layers');
   };
+  const addCombo = (c: TitleCombo) => {
+    addLayers(comboToLayers(c, newLayerId));
+    setCombos(false);
+    setTab('layers');
+  };
   const addSticker = (assetId: string) => {
     const l: StickerLayer = { id: newLayerId(), type: 'sticker', asset_id: assetId, anchor: 'top-left', margin: [0.08, 0.12], width: 0.35, rotate: 0, opacity: 1, t: 'all' };
     addLayer(l);
@@ -326,7 +420,18 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
           <div className="inline">
             <button className="btn" onClick={() => setTab('assets')}><IconSticker /> 贴纸</button>
             <button className="btn" onClick={addText}><IconText /> 文字</button>
+            <button className="btn" onClick={() => setCombos((v) => !v)} title="一键添加带样式与位置的标题图层，加入后只需改字"><IconText /> 标题</button>
           </div>
+          {combos && (
+            <div className="combo-list">
+              {TITLE_COMBOS.map((c) => (
+                <button key={c.id} className="combo-item" onClick={() => addCombo(c)}>
+                  <span className="cname">{c.name}</span>
+                  <span className="muted small">{c.note}{c.layers.length > 1 ? ` · ${c.layers.length} 个图层` : ''}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="section">
             <div className="section-title"><span>图层（上层在前）</span><span className="mono muted">{layers.length}</span></div>
             {layers.length === 0 ? (
@@ -350,7 +455,7 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
               </div>
             )}
           </div>
-          {selected && <LayerProps layer={selected} />}
+          {selected && <LayerProps key={selected.id} layer={selected} />}
         </div>
       ) : (
         <div className="panel-body">
