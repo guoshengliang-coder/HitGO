@@ -3,6 +3,7 @@
 // 拖动时吸附到画布边 / 中线 / 安全区边（lib/snap.canvasGuides），按住 ⌘/Ctrl 关闭；命中的参考线画在最上层。
 // 画布比例跟随 selectedVariantKey：9:16 是基准，编辑写回图层本身；其他比例按该变体的填充模式绘制，
 // 图层按 effectivePlacement（含 layer_overrides）摆放，拖动 / 缩放 / 旋转写入该变体的 layer_overrides。
+// 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Konva from 'konva';
@@ -18,6 +19,7 @@ import { loadImage, useImage } from '../../lib/useImage';
 import { coverBox, variantFrameBox } from '../../lib/videoBox';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
+import { InlineTextEditor } from './InlineTextEditor';
 import { isVideoAsset, variantDef, type CropRect, type Layer, type LayerOverride, type Rect as ZRect, type SafeZone, type TextLayer, type VariantKey } from '../../types';
 
 const SNAP_PX = 6;
@@ -134,8 +136,10 @@ function LayerNode({
   H,
   selectable,
   selected,
+  hidden,
   guides,
   onSelect,
+  onEdit,
   onGuides,
   registerNode,
   variantKey,
@@ -147,8 +151,11 @@ function LayerNode({
   H: number;
   selectable: boolean;
   selected: boolean;
+  /** 内联编辑中：节点不画（textarea 叠在原位），避免旧 PNG 和输入框重影 */
+  hidden: boolean;
   guides: Guides;
   onSelect: () => void;
+  onEdit: () => void;
   onGuides: (g: Guides) => void;
   registerNode: (node: Konva.Image | null) => void;
   /** 当前画布对应的输出变体；'9x16' 为基准（编辑写回图层），其他写入该变体的 layer_overrides。 */
@@ -241,6 +248,10 @@ function LayerNode({
   const aspect = layerAspect(layer, assets);
   const box = placeLayer(eff, aspect, { W, H });
   const draggable = editable && !layer.locked;
+  const onDblClick = () => {
+    onSelect();
+    if (layer.type === 'text' && editable && !layer.locked) onEdit();
+  };
 
   const commitBox = (node: Konva.Image, newW: number, rotate?: number) => {
     const h = newW / aspect;
@@ -300,11 +311,13 @@ function LayerNode({
       offsetY={box.h / 2}
       rotation={eff.rotate}
       opacity={eff.opacity}
+      visible={!hidden}
       draggable={draggable}
       listening={selectable}
       onClick={onSelect}
       onTap={onSelect}
-      onDblClick={onSelect}
+      onDblClick={onDblClick}
+      onDblTap={onDblClick}
       onDragStart={onSelect}
       onDragMove={onDragMove}
       onDragEnd={(e) => {
@@ -351,6 +364,15 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const setPlaying = useEditor((s) => s.setPlaying);
   const postTime = usePostTime();
   const [hitGuides, setHitGuides] = useState<Guides>(NO_GUIDES);
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+
+  // 换选中 / 换视频 / 换步骤时退出内联编辑
+  useEffect(() => {
+    if (editingLayerId && selectedLayerId !== editingLayerId) setEditingLayerId(null);
+  }, [selectedLayerId, editingLayerId]);
+  useEffect(() => {
+    setEditingLayerId(null);
+  }, [video?.id, step]);
 
   // 安全区是按 9:16 平台 UI 定义的，其他比例只吸附画布边 / 中线
   const guides = canvasGuides(isBase ? zone : undefined, W, H);
@@ -381,10 +403,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   useEffect(() => {
     const tr = trRef.current;
     if (!tr) return;
-    const node = selectedLayerId && step === 2 && (isBase || !!variant) ? nodes.current[selectedLayerId] : null;
+    const node = selectedLayerId && step === 2 && (isBase || !!variant) && editingLayerId !== selectedLayerId ? nodes.current[selectedLayerId] : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedLayerId, step, spec, W, H, isBase, variant]);
+  }, [selectedLayerId, editingLayerId, step, spec, W, H, isBase, variant]);
 
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
@@ -410,6 +432,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, []);
 
   const layers = spec?.layers ?? [];
+  const editingLayer = step === 2 && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
   const hasSrc = !!video?.proxy_url;
   const overlayUrl = isBase && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
   const showFrames = isBase && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
@@ -442,8 +465,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     H={H}
                     selectable={step === 2}
                     selected={selectedLayerId === l.id && step === 2}
+                    hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
                     onSelect={() => setSelectedLayer(l.id)}
+                    onEdit={() => setEditingLayerId(l.id)}
                     onGuides={setHitGuides}
                     registerNode={(n) => {
                       nodes.current[l.id] = n;
@@ -481,6 +506,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             </KLayer>
           </KStage>
         </div>
+        {editingLayer && <InlineTextEditor key={editingLayer.id} layer={editingLayer} W={W} H={H} onClose={() => setEditingLayerId(null)} />}
         {!hasSrc && <div className="stage-hint">无代理视频（mock 示例）· 使用合成时钟播放</div>}
         {!isBase && (
           <div className="stage-hint stage-hint-top">
