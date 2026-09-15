@@ -16,24 +16,44 @@ export class Player {
   duration = 0;
   remove: Range[] = [];
 
+  private onLoadedMetadata = () => {
+    const v = this.video;
+    if (v && Number.isFinite(v.duration) && v.duration > 0) {
+      this.synthetic = false;
+      this.duration = v.duration;
+    }
+    this.emit();
+  };
+
+  private onError = () => {
+    this.synthetic = true;
+    this.emit();
+  };
+
+  private onEnded = () => {
+    this.pause();
+  };
+
+  /** 解绑当前元素的监听器。attach 会先调它，避免同一元素被反复挂上多份监听。 */
+  detach() {
+    const v = this.video;
+    if (v) {
+      v.removeEventListener('loadedmetadata', this.onLoadedMetadata);
+      v.removeEventListener('error', this.onError);
+      v.removeEventListener('ended', this.onEnded);
+    }
+    this.video = null;
+    this.synthetic = true;
+  }
+
   attach(video: HTMLVideoElement | null) {
+    this.detach();
     this.video = video;
     this.synthetic = !video || !video.src;
     if (video) {
-      video.addEventListener('loadedmetadata', () => {
-        if (Number.isFinite(video.duration) && video.duration > 0) {
-          this.synthetic = false;
-          this.duration = video.duration;
-        }
-        this.emit();
-      });
-      video.addEventListener('error', () => {
-        this.synthetic = true;
-        this.emit();
-      });
-      video.addEventListener('ended', () => {
-        this.pause();
-      });
+      video.addEventListener('loadedmetadata', this.onLoadedMetadata);
+      video.addEventListener('error', this.onError);
+      video.addEventListener('ended', this.onEnded);
     }
   }
 
@@ -134,7 +154,7 @@ export class Player {
   destroy() {
     this.pause();
     this.listeners.clear();
-    this.video = null;
+    this.detach();
   }
 }
 
