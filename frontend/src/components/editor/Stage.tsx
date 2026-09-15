@@ -94,8 +94,11 @@ function SafeZoneOverlay({ url, W, H }: { url: string; W: number; H: number }) {
  * 纯色 = 变体颜色做底；裁切 = 按 outputs[].crop 从当前帧取窗口再 cover（与 worker 顺序一致，
  * <video> 隐藏）。几何全部走 lib/videoBox，与 worker 同一份说法。每帧重绘（跟随 postTime）。
  */
-function FillBackdrop({ fill, color, crop, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; posterUrl?: string; W: number; H: number; postTime: number }) {
+function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; videoId?: string; posterUrl?: string; W: number; H: number; postTime: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // 暂停时 store 的 time 可能不变（换素材前后都是 0），帧就绪要单独触发重画，否则会停在旧素材的帧上（HIG-12）
+  const [frame, setFrame] = useState(0);
+  useEffect(() => player.onFrame(() => setFrame((n) => n + 1)), []);
   useEffect(() => {
     const c = ref.current;
     if (!c || fill === 'color') return;
@@ -122,10 +125,11 @@ function FillBackdrop({ fill, color, crop, posterUrl, W, H, postTime }: { fill: 
     const v = player.getVideo();
     if (v && v.readyState >= 2 && v.videoWidth) draw(v, v.videoWidth, v.videoHeight);
     else if (posterUrl) void loadImage(posterUrl).then((img) => draw(img, img.naturalWidth, img.naturalHeight)).catch(() => undefined);
+    else c.getContext('2d')?.clearRect(0, 0, c.width, c.height);
     return () => {
       alive = false;
     };
-  }, [fill, crop, posterUrl, W, H, postTime]);
+  }, [fill, crop, videoId, posterUrl, W, H, postTime, frame]);
   if (fill === 'color') return <div className="stage-fill" style={{ background: color ?? '#000000' }} />;
   // 模糊底图半分辨率即可；裁切是前景，按画布尺寸画
   const scale = fill === 'blur' ? 0.5 : 1;
@@ -384,6 +388,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     return () => {
       unsub();
       player.pause();
+      // 换素材时先解绑旧 <video>：子组件（填充底图）的 effect 先于这里的 attach 执行，不解绑会从旧元素抓帧（HIG-12）
+      player.detach();
     };
   }, [video?.id, video?.duration, setTime, setPlaying]);
 
@@ -433,7 +439,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined}>
       <div className="stage-box" style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
+        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}

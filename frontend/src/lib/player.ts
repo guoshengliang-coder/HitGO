@@ -4,6 +4,7 @@
 import { skipRemoved, type Range } from './time';
 
 type Listener = (t: number, playing: boolean) => void;
+type FrameListener = () => void;
 
 export class Player {
   private video: HTMLVideoElement | null = null;
@@ -13,6 +14,7 @@ export class Player {
   private raf = 0;
   private lastTs = 0;
   private listeners = new Set<Listener>();
+  private frameListeners = new Set<FrameListener>();
   duration = 0;
   remove: Range[] = [];
 
@@ -34,6 +36,11 @@ export class Player {
     this.pause();
   };
 
+  /** 当前元素有了新的可绘制帧（首帧解码完 / 跳转完成）。只挂在当前元素上，换元素时随 detach 解绑。 */
+  private onFrameReady = () => {
+    for (const l of this.frameListeners) l();
+  };
+
   /** 解绑当前元素的监听器。attach 会先调它，避免同一元素被反复挂上多份监听。 */
   detach() {
     const v = this.video;
@@ -41,6 +48,8 @@ export class Player {
       v.removeEventListener('loadedmetadata', this.onLoadedMetadata);
       v.removeEventListener('error', this.onError);
       v.removeEventListener('ended', this.onEnded);
+      v.removeEventListener('loadeddata', this.onFrameReady);
+      v.removeEventListener('seeked', this.onFrameReady);
     }
     this.video = null;
     this.synthetic = true;
@@ -54,6 +63,8 @@ export class Player {
       video.addEventListener('loadedmetadata', this.onLoadedMetadata);
       video.addEventListener('error', this.onError);
       video.addEventListener('ended', this.onEnded);
+      video.addEventListener('loadeddata', this.onFrameReady);
+      video.addEventListener('seeked', this.onFrameReady);
     }
   }
 
@@ -70,6 +81,17 @@ export class Player {
     this.listeners.add(fn);
     return () => {
       this.listeners.delete(fn);
+    };
+  }
+
+  /**
+   * 订阅"当前挂载的 <video> 有新帧可画"。暂停状态下 store 的 time 不一定变化（换素材时两边都是 0），
+   * 从 <video> 抓帧的画布（填充底图）靠它在帧真正就绪后重画（HIG-12）。
+   */
+  onFrame(fn: FrameListener) {
+    this.frameListeners.add(fn);
+    return () => {
+      this.frameListeners.delete(fn);
     };
   }
 
@@ -154,6 +176,7 @@ export class Player {
   destroy() {
     this.pause();
     this.listeners.clear();
+    this.frameListeners.clear();
     this.detach();
   }
 }
