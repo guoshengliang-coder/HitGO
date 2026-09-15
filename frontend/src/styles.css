@@ -24,6 +24,39 @@
   --st-failed-bg: #fbe3e0; --st-failed-fg: #b02a1c;
 }
 
+/* 编辑页深色配色（剪映风格，画面颜色在深底上更准）；只挂在 .editor 上，列表页保持浅色 */
+.editor.dark {
+  --bg: #15171b;
+  --panel: #1e2126;
+  --panel-2: #262a30;
+  --line: #3a3f48;
+  --line-soft: #2c3037;
+  --ink: #e4e6ea;
+  --ink-2: #aeb4be;
+  --ink-3: #7c828c;
+  --accent-soft: #3d2118;
+  --accent-ink: #f0906c;
+  --focus: #5b8def;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --st-preparing-bg: #2c3037; --st-preparing-fg: #aeb4be;
+  --st-ready-bg: #2c3037; --st-ready-fg: #aeb4be;
+  --st-edited-bg: #26324a; --st-edited-fg: #9db6e8;
+  --st-rendering-bg: #3f3110; --st-rendering-fg: #e8b74a;
+  --st-done-bg: #1d3a26; --st-done-fg: #6fd48e;
+  --st-failed-bg: #452420; --st-failed-fg: #f08a7e;
+  background: var(--bg);
+  color: var(--ink);
+  color-scheme: dark;
+}
+.editor.dark .btn:hover:not(:disabled), .editor.dark .quickbar .btn.on, .editor.dark .crop-bar .btn.on, .editor.dark .output-item.on { border-color: #4b515b; }
+.editor.dark .step-btn.active { border-color: #6a3524; }
+.editor.dark .vrow .poster { background-color: #2c3037; }
+.editor.dark .tl-bar { background: #2b3a55; border-color: #4a6295; color: #b9cbf0; }
+.editor.dark .tl-bar.all { background: #2c3037; }
+.editor.dark .tl-audio .body { background-image: repeating-linear-gradient(90deg, #4b515b 0 2px, transparent 2px 5px); }
+.editor.dark .preset-btn img { background: repeating-conic-gradient(#3a3f48 0 25%, #262a30 0 50%) 0 0 / 10px 10px; }
+.editor.dark .toast, .editor.dark [data-tip]::after { background: #e4e6ea; color: #15171b; }
+
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {

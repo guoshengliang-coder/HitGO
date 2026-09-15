@@ -30,6 +30,17 @@ export interface LastApply {
   prevSpecs: Record<string, EditSpec | null>;
 }
 
+export type EditorTheme = 'light' | 'dark';
+const THEME_KEY = 'hitgo.editorTheme';
+function loadTheme(): EditorTheme {
+  try {
+    if (localStorage.getItem(THEME_KEY) === 'dark') return 'dark';
+  } catch {
+    /* ignore */
+  }
+  return 'light';
+}
+
 const SAFE_ZONE_VIEW_KEY = 'hitgo.safeZoneView';
 function loadSafeZoneView(): SafeZoneView {
   try {
@@ -82,6 +93,8 @@ export interface EditorState {
   // 交互
   shortcutsOpen: boolean;
   safeZoneView: SafeZoneView;
+  /** 编辑器配色（只作用于编辑页，列表页保持浅色）；存本机 */
+  theme: EditorTheme;
   timelinePps: number | null; // null = 适应窗口
   layerClipboard: Layer[] | null;
   layerClipboardVideoId: string | null;
@@ -116,6 +129,7 @@ export interface EditorState {
   setToast: (m: string | null, action?: ToastAction | null) => void;
   setShortcutsOpen: (on: boolean) => void;
   setSafeZoneView: (v: SafeZoneView) => void;
+  toggleTheme: () => void;
   cycleSafeZoneView: () => void;
   setTimelinePps: (pps: number | null) => void;
 
@@ -293,6 +307,7 @@ export const useEditor = create<EditorState>((set, get) => {
     toastAction: null,
     shortcutsOpen: false,
     safeZoneView: loadSafeZoneView(),
+    theme: loadTheme(),
     timelinePps: null,
     layerClipboard: null,
     layerClipboardVideoId: null,
@@ -436,6 +451,15 @@ export const useEditor = create<EditorState>((set, get) => {
     setSaveScope: (saveScope) => set({ saveScope }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
     setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+    toggleTheme: () => {
+      const theme: EditorTheme = get().theme === 'dark' ? 'light' : 'dark';
+      try {
+        localStorage.setItem(THEME_KEY, theme);
+      } catch {
+        /* ignore */
+      }
+      set({ theme });
+    },
     setSafeZoneView: (safeZoneView) => {
       try {
         localStorage.setItem(SAFE_ZONE_VIEW_KEY, safeZoneView);

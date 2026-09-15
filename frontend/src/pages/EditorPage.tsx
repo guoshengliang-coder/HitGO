@@ -192,6 +192,7 @@ export function EditorPage() {
   const error = useEditor((s) => s.error);
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
+  const theme = useEditor((s) => s.theme);
   const cropEditing = useEditor((s) => s.cropEditing);
   const videos = useEditor((s) => s.videos);
   const specs = useEditor((s) => s.specs);
@@ -263,7 +264,7 @@ export function EditorPage() {
   if (loading || !batch) return <div className="empty">加载中…</div>;
 
   return (
-    <div className="editor" style={layoutStyle}>
+    <div className={`editor ${theme === 'dark' ? 'dark' : ''}`} style={layoutStyle}>
       <TopBar onSaveAndRender={() => void saveAndRender(targetIds)} targetCount={targetIds.length} fileCount={fileCount} />
       <div className="editor-body">
         <VideoList />
