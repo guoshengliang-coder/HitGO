@@ -1,4 +1,5 @@
-// 画布下方的快捷操作条：撤销 / 重做、删左 / 删右、删除、居中、安全区显示、比例、快捷键表。
+// 画布下方的快捷操作条，只放画布相关操作：居中（步骤 2）、安全区显示、画布比例、快捷键表。
+// 撤销 / 重做、删左 / 删右、删除在时间线工具条（TimelineTools），顶栏也有撤销 / 重做。
 // 提示文案统一走 lib/shortcuts 的 hintFor（纯 CSS tooltip：data-tip）。
 
 import { useEditor } from '../../store/editor';
@@ -6,27 +7,15 @@ import { hintFor } from '../../lib/shortcuts';
 import { alignPlacement, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { VARIANT_DEFS, type VariantKey } from '../../types';
-import { IconCenter, IconCenterH, IconCenterV, IconCutLeft, IconCutRight, IconHelp, IconRedo, IconSafeZone, IconTrash, IconUndo } from '../ui/Icons';
+import { IconCenter, IconCenterH, IconCenterV, IconHelp, IconSafeZone } from '../ui/Icons';
 
 const REF = { W: 1080, H: 1920 };
 const SAFE_VIEW_LABEL = { frames: '框线', overlay: '遮挡示意', none: '关闭' } as const;
 
 export function QuickBar() {
   const step = useEditor((s) => s.step);
-  const undo = useEditor((s) => s.undo);
-  const redo = useEditor((s) => s.redo);
-  const canUndo = useEditor((s) => s.canUndo());
-  const canRedo = useEditor((s) => s.canRedo());
-  const removeBefore = useEditor((s) => s.removeBefore);
-  const removeAfter = useEditor((s) => s.removeAfter);
-  const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
-  const canRemoveAfter = useEditor((s) => s.canRemoveAfter());
-  const selectedRange = useEditor((s) => s.selectedRangeIndex);
-  const deleteRange = useEditor((s) => s.deleteRemoveRange);
-  const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const layer = useEditor((s) => (s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((l) => l.id === s.selectedLayerId) ?? null : null));
   const assets = useEditor((s) => s.assets);
-  const removeLayer = useEditor((s) => s.removeLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const cycleSafeZoneView = useEditor((s) => s.cycleSafeZoneView);
@@ -45,41 +34,13 @@ export function QuickBar() {
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
 
-  const canDelete = step === 1 ? selectedRange !== null : step === 2 ? !!selectedLayerId : false;
-  const onDelete = () => {
-    if (step === 1 && selectedRange !== null) deleteRange(selectedRange);
-    else if (step === 2 && selectedLayerId) removeLayer(selectedLayerId);
-  };
   const layerOk = step === 2 && !!layer && !layer.locked;
   const overlayMissing = safeZoneView === 'overlay' && !zone?.overlay_url;
 
   return (
     <div className="quickbar">
-      <button className="btn icon" onClick={undo} disabled={!canUndo} aria-label="撤销" data-tip={hintFor('undo')}>
-        <IconUndo />
-      </button>
-      <button className="btn icon" onClick={redo} disabled={!canRedo} aria-label="重做" data-tip={hintFor('redo')}>
-        <IconRedo />
-      </button>
-      <span className="qb-sep" />
-      {step === 1 && (
-        <>
-          <button className="btn" onClick={removeBefore} disabled={!canRemoveBefore} data-tip={hintFor('remove-before')}>
-            <IconCutLeft /> 删左
-          </button>
-          <button className="btn" onClick={removeAfter} disabled={!canRemoveAfter} data-tip={hintFor('remove-after')}>
-            <IconCutRight /> 删右
-          </button>
-        </>
-      )}
-      {step !== 3 && (
-        <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" data-tip={step === 1 ? hintFor('delete-range') : hintFor('delete-layer')}>
-          <IconTrash />
-        </button>
-      )}
       {step === 2 && (
         <>
-          <span className="qb-sep" />
           <button className="btn icon" onClick={() => center('h')} disabled={!layerOk} aria-label="水平居中" data-tip={hintFor('center-h')}>
             <IconCenterH />
           </button>

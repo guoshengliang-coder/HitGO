@@ -321,6 +321,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-head { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--ink-3); background: var(--panel); }
 .tl-head input[type='range'] { width: 120px; height: 14px; accent-color: var(--accent); margin: 0; }
 .tl-head .btn { height: 20px; padding: 0 6px; font-size: 11px; }
+.tl-head .tl-tools { display: flex; align-items: center; gap: 4px; flex: none; }
+.tl-head .btn.icon { width: 20px; }
+.tl-head .tl-sep { width: 1px; height: 14px; background: var(--line-soft); margin: 0 2px; flex: none; }
 .tl-scroll { flex: 1; overflow: auto; position: relative; overscroll-behavior-x: contain; }
 .tl-scroll.scrubbing { cursor: ew-resize; user-select: none; }
 .tl-inner { position: relative; min-width: 100%; }
