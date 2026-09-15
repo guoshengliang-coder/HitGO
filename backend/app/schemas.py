@@ -190,6 +190,25 @@ class LayerOverride(BaseModel):
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
 
+class CropRect(BaseModel):
+    """Source-frame crop window for fill="crop" (contract §2): x/y/w/h relative to the source width/height."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    x: float = Field(default=0.0, ge=0, le=1)
+    y: float = Field(default=0.0, ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _inside_frame(self) -> "CropRect":
+        if self.x + self.w > 1 + 1e-6:
+            raise ValueError("crop 矩形超出源画面右边界（x + w 必须 ≤ 1）")
+        if self.y + self.h > 1 + 1e-6:
+            raise ValueError("crop 矩形超出源画面下边界（y + h 必须 ≤ 1）")
+        return self
+
+
 class OutputVariant(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -198,6 +217,7 @@ class OutputVariant(BaseModel):
     fill: Fill = "blur"
     color: str = "#000000"
     quality: Quality = "standard"
+    crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
 
     @field_validator("variant_key")

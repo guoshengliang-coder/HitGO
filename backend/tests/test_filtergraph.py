@@ -139,6 +139,43 @@ def test_fill_crop_16x9_and_4x5():
         assert f"[0:v]scale={size}:force_original_aspect_ratio=increase,crop={size}[c0]" in fc(plan)
 
 
+def test_fill_crop_with_source_window():
+    # 横屏源里只取正中的竖条：先按窗口裁源，再 cover 居中到画幅
+    spec = valid_spec(
+        trim={"remove": []},
+        layers=[],
+        outputs=[{"variant_key": "9x16", "aspect": "9:16", "fill": "crop", "crop": {"x": 0.3418, "y": 0, "w": 0.3164, "h": 1}}],
+    )
+    graph = fc(build(spec, meta={**META, "width": 1920, "height": 1080}))
+    assert "[0:v]crop=w='iw*0.3164':h='ih*1':x='iw*0.3418':y='ih*0'[cs]" in graph
+    assert "[cs]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[c0]" in graph
+    assert graph.endswith("[c0]format=yuv420p[vout]")
+
+
+def test_fill_crop_window_after_trim_uses_concat_label():
+    spec = valid_spec(
+        layers=[],
+        outputs=[{"variant_key": "9x16", "aspect": "9:16", "fill": "crop", "crop": {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.8}}],
+    )
+    graph = fc(build(spec))
+    assert "[vt]crop=w='iw*0.5':h='ih*0.8':x='iw*0.25':y='ih*0.1'[cs]" in graph
+    assert "[cs]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[c0]" in graph
+
+
+def test_crop_window_ignored_unless_fill_is_crop():
+    window = {"x": 0.25, "y": 0, "w": 0.5, "h": 1}
+    for fill in ("blur", "color"):
+        spec = valid_spec(
+            trim={"remove": []}, layers=[], outputs=[{"variant_key": "k", "aspect": "9:16", "fill": fill, "crop": window}]
+        )
+        assert "[cs]" not in fc(build(spec, variant_key="k"))
+    # 没有窗口时输出与以前完全一致
+    spec = valid_spec(trim={"remove": []}, layers=[], outputs=[{"variant_key": "k", "aspect": "9:16", "fill": "crop"}])
+    graph = fc(build(spec, variant_key="k"))
+    assert "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[c0]" in graph
+    assert "[cs]" not in graph
+
+
 # --- layers -----------------------------------------------------------------------
 
 

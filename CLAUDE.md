@@ -16,7 +16,7 @@ make deploy          # 从当前 main 部署到原型服务器（需要 SSH 权�
 ## 分支与提交
 
 - `main` 受保护：不能直接推送，只接受 PR，CI 必须绿。
-- 一个任务一个分支：`feat/<task>`、`fix/<task>`、`chore/<task>`，多 agent 并行时每个 agent 用自己的分支 + 独立 worktree（`git worktree add ../HitGO-<task> -b feat/<task>`），不要在同一个工作副本里交错改动。
+- 一个任务一个分支：`feat/<task>`、`fix/<task>`、`chore/<task>`，多 agent 并行时每个 agent 用自己的分支 + 独立 worktree（`git worktree add ../HitGO-<task> -b feat/<task>`，之后用 `cd` 进去；不要用 Claude Code 的 EnterWorktree 工具，它会把 worktree 建到别处并切换会话目录），不要在同一个工作副本里交错改动。
 - 提交信息：一行概述（≤72 字符，中文或英文均可），空一行，正文说明"为什么"；agent 生成的提交追加 `Co-Authored-By` 行。
 - PR 合并后：远程分支自动删除，本地跑 `make task-done b=<branch>` 清掉 worktree 和分支，不留僵尸分支。
 - 提交前必须本地 `make test` 通过；不要提交 `data/`、`.env`、`node_modules`、`dist`、`.venv`。

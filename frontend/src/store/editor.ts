@@ -5,7 +5,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, BatchDetail, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
+import type { Asset, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video, VariantKey } from '../types';
 import { emptySpec } from '../types';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
@@ -69,6 +69,8 @@ export interface EditorState {
   // 输出步骤
   selectedVariantKey: VariantKey;
   overrideMode: boolean;
+  /** 正在舞台上拖动 selectedVariantKey 变体的裁切窗口 */
+  cropEditing: boolean;
   saveScope: 'current' | 'selected' | 'all';
   // 渲染
   jobs: Job[];
@@ -109,6 +111,7 @@ export interface EditorState {
   setPlaying: (p: boolean) => void;
   setSelectedVariant: (k: VariantKey) => void;
   setOverrideMode: (on: boolean) => void;
+  setCropEditing: (on: boolean) => void;
   setSaveScope: (s: 'current' | 'selected' | 'all') => void;
   setToast: (m: string | null, action?: ToastAction | null) => void;
   setShortcutsOpen: (on: boolean) => void;
@@ -160,6 +163,8 @@ export interface EditorState {
 
   // 输出
   setOutputs: (outputs: OutputVariant[]) => void;
+  /** 写某个变体的裁切窗口；null = 删掉（回到 cover 居中）。 */
+  setCrop: (variantKey: VariantKey, rect: CropRect | null, history?: boolean) => void;
   setOverride: (variantKey: VariantKey, layerId: string, patch: Record<string, unknown> | null) => void;
 
   // 批量 / 渲染
@@ -253,6 +258,7 @@ export const useEditor = create<EditorState>((set, get) => {
     saveError: null,
     selectedVariantKey: '9x16',
     overrideMode: false,
+    cropEditing: false,
     saveScope: 'current',
     jobs: [],
     trackedJobIds: [],
@@ -384,22 +390,23 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, overrideMode: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, inPoint: null, time: 0, playing: false, overrideMode: false, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
     setSelectedAll: (on) => set((s) => ({ selectedIds: on ? s.videos.map((v) => v.id) : [] })),
     setStep: (step) => {
       player.pause();
-      set({ step, selectedLayerId: null, selectedRangeIndex: null, overrideMode: false });
+      set({ step, selectedLayerId: null, selectedRangeIndex: null, overrideMode: false, cropEditing: false });
       if (step === 3) void get().loadOutputCalibration();
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
-    setSelectedVariant: (selectedVariantKey) => set({ selectedVariantKey, overrideMode: false }),
+    setSelectedVariant: (selectedVariantKey) => set({ selectedVariantKey, overrideMode: false, cropEditing: false }),
     setOverrideMode: (overrideMode) => set({ overrideMode }),
+    setCropEditing: (cropEditing) => set({ cropEditing }),
     setSaveScope: (saveScope) => set({ saveScope }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
     setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
@@ -690,6 +697,17 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => {
         spec.outputs = outputs;
       });
+    },
+    setCrop: (variantKey, rect, history = true) => {
+      get().updateSpec(
+        (spec) => {
+          const o = spec.outputs.find((x) => x.variant_key === variantKey);
+          if (!o) return;
+          if (rect === null) delete o.crop;
+          else o.crop = { ...rect };
+        },
+        { history },
+      );
     },
     setOverride: (variantKey, layerId, patch) => {
       get().updateSpec((spec) => {

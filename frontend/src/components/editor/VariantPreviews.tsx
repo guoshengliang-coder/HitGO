@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useEditor, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { placeLayer } from '../../lib/layout';
+import { isDefaultCrop } from '../../lib/crop';
 import { effectivePlacement, layerAspect } from '../../lib/spec';
 import { windowContains } from '../../lib/time';
 import { ensureTextRendered } from '../../lib/textImage';
@@ -49,8 +50,20 @@ async function drawVariant(canvas: HTMLCanvasElement, video: Video, spec: EditSp
     ctx.drawImage(src!, (W - dw) / 2, (H - dh) / 2, dw, dh);
   };
   if (src) {
-    if (variant.fill === 'crop') drawScaled(coverScale);
-    else {
+    if (variant.fill === 'crop') {
+      const r = variant.crop;
+      if (r) {
+        // 先按源窗口取区域，再 cover 居中到画幅（与 worker 一致）
+        const sx = r.x * sw;
+        const sy = r.y * sh;
+        const cw = Math.max(1, r.w * sw);
+        const ch = Math.max(1, r.h * sh);
+        const s = Math.max(W / cw, H / ch);
+        const dw = cw * s;
+        const dh = ch * s;
+        ctx.drawImage(src, sx, sy, cw, ch, (W - dw) / 2, (H - dh) / 2, dw, dh);
+      } else drawScaled(coverScale);
+    } else {
       if (variant.fill === 'blur') {
         ctx.save();
         ctx.filter = 'blur(12px) brightness(0.7)';
@@ -126,7 +139,13 @@ function VariantBox({ variantKey, on, selected, onSelect }: { variantKey: string
       </div>
       <div className="vcap">
         <b>{def.label}</b> · {on ? def.note : '未选'}
-        {on && <div className="muted">{{ blur: '模糊背景', color: '纯色', crop: '裁切' }[variant.fill]}{variant.layer_overrides && Object.keys(variant.layer_overrides).length ? ' · 已微调' : ''}</div>}
+        {on && (
+          <div className="muted">
+            {{ blur: '模糊背景', color: '纯色', crop: '裁切' }[variant.fill]}
+            {variant.fill === 'crop' && video && !isDefaultCrop(variant.crop, video.width, video.height, def.width / def.height) ? '（已调整范围）' : ''}
+            {variant.layer_overrides && Object.keys(variant.layer_overrides).length ? ' · 已微调' : ''}
+          </div>
+        )}
       </div>
     </div>
   );

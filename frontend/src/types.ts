@@ -237,12 +237,21 @@ export type OutputQuality = 'standard' | 'high';
 
 export type LayerOverride = Partial<Pick<LayerBase, 'anchor' | 'margin' | 'width' | 'rotate' | 'opacity'>>;
 
+/** 源画面上的裁切窗口（相对源宽 / 高的 0–1 比例）；只在 fill = 'crop' 时生效，缺省 = cover 居中。 */
+export interface CropRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface OutputVariant {
   variant_key: VariantKey;
   aspect: AspectKey;
   fill: FillMode;
   color?: string;
   quality?: OutputQuality;
+  crop?: CropRect;
   layer_overrides?: Record<string, LayerOverride>;
 }
 

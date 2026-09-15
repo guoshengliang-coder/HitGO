@@ -21,7 +21,7 @@ const GUIDE_COLOR = '#d9481f';
 type Guides = { xs: number[]; ys: number[] };
 const NO_GUIDES: Guides = { xs: [], ys: [] };
 
-function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number) {
+export function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number) {
   const [size, setSize] = useState({ W: 270, H: 480 });
   useLayoutEffect(() => {
     const el = ref.current;

@@ -6,7 +6,7 @@ resolved are skipped and reported in ``RenderPlan.warnings``.
 
 Filter graph order:
     source → trim/atrim + concat (skipped when nothing is removed)
-           → canvas fill (blur | color | crop)
+           → canvas fill (blur | color | crop; crop honours an optional source window first)
            → one overlay per layer (enable='between(t,a,b)' for timed layers)
            → format=yuv420p
 """
@@ -186,6 +186,15 @@ def build_render_command(
             f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={ffmpeg_color(variant.color)}[c0]"
         )
     else:  # crop
+        if variant.crop is not None:
+            # Explicit source window first (relative to the decoded frame), then the same cover
+            # chain so a window whose ratio differs from the canvas is centre-cropped, not stretched.
+            r = variant.crop
+            chains.append(
+                f"{video_label}crop=w='iw*{_fmt(r.w)}':h='ih*{_fmt(r.h)}'"
+                f":x='iw*{_fmt(r.x)}':y='ih*{_fmt(r.y)}'[cs]"
+            )
+            video_label = "[cs]"
         chains.append(
             f"{video_label}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}[c0]"
         )
