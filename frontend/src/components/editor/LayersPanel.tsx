@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
+import { api } from '../../api';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextLayer, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
-import { filterAssets, type AssetBucket } from '../../lib/assets';
+import { acceptFor, filterAssets, type AssetBucket } from '../../lib/assets';
 import { reanchor } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
@@ -393,8 +394,11 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const [tab, setTab] = useState<'layers' | 'assets'>('layers');
   const [bucket, setBucket] = useState<AssetBucket>('mine');
   const [q, setQ] = useState('');
+  const [uploading, setUploading] = useState<number | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const assets = useEditor((s) => s.assets);
+  const loadAssets = useEditor((s) => s.loadAssets);
   const selectedId = useEditor((s) => s.selectedLayerId);
   const setSelected = useEditor((s) => s.setSelectedLayer);
   const addLayer = useEditor((s) => s.addLayer);
@@ -430,6 +434,23 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     setShowTemplates(false);
     setTab('layers');
   };
+  // 编辑器里直接传贴纸：此前上传入口只在「素材库」页，而编辑器没有任何通往那里的
+  // 导航，有贴纸时连空态里的那句提示都不出现，等于没有入口。
+  const uploadStickers = async (files: File[]) => {
+    if (!files.length) return;
+    setUploadError(null);
+    setUploading(0);
+    try {
+      await api.uploadAssets('sticker', files, setUploading);
+      await loadAssets();
+      setBucket('mine');
+    } catch (e) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(null);
+    }
+  };
+
   const addSticker = (assetId: string) => {
     const asset = assets.find((a) => a.id === assetId);
     if (!isAssetReady(asset)) return; // 还在预处理：加进去也渲染不出来
@@ -492,7 +513,19 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
           <div className="chips">
             <button className={`chip ${bucket === 'library' ? 'active' : ''}`} onClick={() => setBucket('library')}>原料库</button>
             <button className={`chip ${bucket === 'mine' ? 'active' : ''}`} onClick={() => setBucket('mine')}>我上传的</button>
+            <label className="btn sm upload-chip" title="上传贴纸：png / webp / gif、mp4 / mov / webm">
+              {uploading === null ? '上传贴纸' : `上传中 ${Math.round(uploading * 100)}%`}
+              <input
+                type="file"
+                multiple
+                accept={acceptFor('sticker')}
+                className="sr-only"
+                disabled={uploading !== null}
+                onChange={(e) => { void uploadStickers(Array.from(e.target.files ?? [])); e.target.value = ''; }}
+              />
+            </label>
           </div>
+          {uploadError && <div className="error-text">{uploadError}</div>}
           <input className="input sm" placeholder="搜索贴纸…" value={q} onChange={(e) => setQ(e.target.value)} />
           {stickers.length === 0 ? (
             <div className="empty small">
@@ -500,7 +533,7 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
                 ? '没有匹配的贴纸。'
                 : bucket === 'library'
                   ? '原料库为空 · 把文件放进仓库的 samples/stickers 作为内置示例，正式环境接原料库 API'
-                  : '还没有贴纸，去「素材库」上传。'}
+                  : '还没有贴纸。点右上角「上传贴纸」，或去「素材库」页批量整理。'}
             </div>
           ) : (
             <div className="sticker-grid">

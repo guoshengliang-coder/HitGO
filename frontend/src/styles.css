@@ -89,7 +89,10 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .pill.done { background: var(--st-done-bg); color: var(--st-done-fg); }
 .pill.failed { background: var(--st-failed-bg); color: var(--st-failed-fg); }
 
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* 「素材」tab 里的上传按钮：靠右，和来源 chip 同一行 */
+.chips .upload-chip { margin-left: auto; cursor: pointer; }
+.chips .upload-chip:has(input:disabled) { cursor: default; opacity: .7; }
 .chip {
   height: 24px; padding: 0 10px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--panel); font-size: 12px;

@@ -86,6 +86,9 @@ export function TopBar({ onSaveAndRender, targetCount, fileCount }: { onSaveAndR
       <span className={`save-indicator ${saveState === 'error' ? 'error' : ''}`} title={saveError ?? undefined}>
         {saveText}
       </span>
+      <Link to="/assets" target="_blank" rel="noopener" className="btn" title="素材库：批量上传、删除贴纸与字体（新标签页打开，不丢当前编辑状态）">
+        素材库
+      </Link>
       <Link to={`/batches/${batch?.id}/outputs`} className="btn">
         已回传
       </Link>
