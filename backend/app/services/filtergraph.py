@@ -9,6 +9,8 @@ Filter graph order:
            → canvas fill (blur | color | crop; crop honours an optional source window first)
            → one overlay per layer (enable='between(t,a,b)' for timed layers)
            → format=yuv420p
+           → (cover only) [cover v][cover a][main v][main a]concat=n=2 — the cover is laid on the
+             canvas with the same fill, the main part is exactly the chain above
     audio: source audio (trimmed like the video) is mapped as-is, unless the spec asks
            for more — a video sticker layer with mix_audio, or an ``audio`` block
            (source gain + BGM / voice-over tracks). Then every extra track is windowed,
@@ -23,7 +25,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.schemas import CANVAS_SIZES, EditSpec, OutputVariant, StickerLayer, TextLayer
+from app.schemas import CANVAS_SIZES, CropRect, EditSpec, OutputVariant, StickerLayer, TextLayer
 from app.services.layout import layer_box, rotated_overlay_position
 
 _AUDIO_ARGS: list[str] = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
@@ -80,6 +82,23 @@ class AudioSource:
     duration: float  # seconds
 
 
+@dataclass(frozen=True)
+class CoverSource:
+    """The resolved ``cover`` asset. ``media.is_video`` decides image vs. video cover."""
+
+    media: ImageSource
+    image_duration: float = 1.0  # spec cover.duration; ignored for video covers
+
+    @property
+    def duration(self) -> float:
+        if self.media.is_video:
+            return float(self.media.duration or 0.0)
+        return float(self.image_duration)
+
+
+DEFAULT_FPS = 30.0
+
+
 @dataclass
 class RenderPlan:
     argv: list[str]
@@ -120,6 +139,48 @@ def _fmt(v: float) -> str:
     return s if s not in ("", "-0") else "0"
 
 
+def fill_chains(
+    label: str,
+    fill: str,
+    color: str | None,
+    crop: CropRect | None,
+    W: int,
+    H: int,
+    out: str,
+    tag: str = "",
+) -> list[str]:
+    """Lay ``label`` onto the W×H canvas (contract §2 fill), ending in ``out``.
+
+    ``tag`` suffixes the intermediate labels so a second fill (the cover) can live in the same
+    graph; the main video uses no tag, which keeps its chains exactly as they always were.
+    """
+    chains: list[str] = []
+    if fill == "blur":
+        chains.append(f"{label}split=2[bg{tag}][fg{tag}]")
+        chains.append(
+            f"[bg{tag}]scale={W}:{H}:force_original_aspect_ratio=increase,"
+            f"crop={W}:{H},boxblur={BLUR_RADIUS}[bgb{tag}]"
+        )
+        chains.append(f"[fg{tag}]scale={W}:{H}:force_original_aspect_ratio=decrease[fgs{tag}]")
+        chains.append(f"[bgb{tag}][fgs{tag}]overlay=(W-w)/2:(H-h)/2{out}")
+    elif fill == "color":
+        chains.append(
+            f"{label}scale={W}:{H}:force_original_aspect_ratio=decrease,"
+            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={ffmpeg_color(color or '#000000')}{out}"
+        )
+    else:  # crop
+        if crop is not None:
+            # Explicit source window first (relative to the decoded frame), then the same cover
+            # chain so a window whose ratio differs from the canvas is centre-cropped, not stretched.
+            chains.append(
+                f"{label}crop=w='iw*{_fmt(crop.w)}':h='ih*{_fmt(crop.h)}'"
+                f":x='iw*{_fmt(crop.x)}':y='ih*{_fmt(crop.y)}'[cs{tag}]"
+            )
+            label = f"[cs{tag}]"
+        chains.append(f"{label}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}{out}")
+    return chains
+
+
 def apply_overrides(layer: StickerLayer | TextLayer, variant: OutputVariant) -> dict[str, Any]:
     """Effective geometry for a layer inside a variant (layer_overrides applied)."""
     geo = {
@@ -152,13 +213,16 @@ def build_render_command(
     resolve_image_url: Callable[[str], ImageSource | None] | None = None,
     ffmpeg_bin: str = "ffmpeg",
     audio_assets: Mapping[str, AudioSource] | None = None,
+    cover: CoverSource | None = None,
 ) -> RenderPlan:
     """Return the ffmpeg argv, expected output duration and any layer warnings.
 
-    video_meta needs: duration (s), has_audio (bool). width/height are not required
-    because ffmpeg scales relative to the actual decoded frame. ``audio_assets`` maps
-    the ``audio.tracks[].asset_id`` values the caller could resolve; unresolved tracks
-    are skipped with a warning.
+    video_meta needs: duration (s), has_audio (bool); fps is optional and only used to
+    pace a cover. width/height are not required because ffmpeg scales relative to the
+    actual decoded frame. ``audio_assets`` maps the ``audio.tracks[].asset_id`` values
+    the caller could resolve; unresolved tracks are skipped with a warning. ``cover`` is
+    the resolved ``spec.cover`` asset; when the spec has a cover the caller could not
+    resolve, the render goes on without it and says so in the warnings.
     """
     duration = float(video_meta["duration"])
     has_audio = bool(video_meta.get("has_audio", False))
@@ -207,32 +271,7 @@ def build_render_command(
 
     # ---- 2. canvas fill -----------------------------------------------------
     W, H = canvas_w, canvas_h
-    if variant.fill == "blur":
-        chains.append(f"{video_label}split=2[bg][fg]")
-        chains.append(
-            f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},boxblur={BLUR_RADIUS}[bgb]"
-        )
-        chains.append(f"[fg]scale={W}:{H}:force_original_aspect_ratio=decrease[fgs]")
-        chains.append(f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2[c0]")
-    elif variant.fill == "color":
-        chains.append(
-            f"{video_label}scale={W}:{H}:force_original_aspect_ratio=decrease,"
-            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color={ffmpeg_color(variant.color)}[c0]"
-        )
-    else:  # crop
-        if variant.crop is not None:
-            # Explicit source window first (relative to the decoded frame), then the same cover
-            # chain so a window whose ratio differs from the canvas is centre-cropped, not stretched.
-            r = variant.crop
-            chains.append(
-                f"{video_label}crop=w='iw*{_fmt(r.w)}':h='ih*{_fmt(r.h)}'"
-                f":x='iw*{_fmt(r.x)}':y='ih*{_fmt(r.y)}'[cs]"
-            )
-            video_label = "[cs]"
-        chains.append(
-            f"{video_label}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}[c0]"
-        )
+    chains += fill_chains(video_label, variant.fill, variant.color, variant.crop, W, H, "[c0]")
     current = "[c0]"
 
     # ---- 3. layers ----------------------------------------------------------
@@ -322,7 +361,20 @@ def build_render_command(
                 sticker_audio.append(label)
 
     # ---- 4. final format ----------------------------------------------------
-    chains.append(f"{current}format=yuv420p[vout]")
+    if spec.cover is not None and cover is None:
+        warnings.append(f"封面素材 {spec.cover.asset_id} 不存在或未就绪，已跳过封面")
+    elif cover is not None and cover.duration <= MIN_SEGMENT:
+        warnings.append("封面素材时长为 0，已跳过封面")
+        cover = None
+    main_duration = expected_duration
+    if cover is None:
+        chains.append(f"{current}format=yuv420p[vout]")
+    else:
+        # Concat needs identical size and SAR on both parts; trim holds the main part to
+        # its planned length so a long sticker cannot push the cover's successor around.
+        chains.append(
+            f"{current}format=yuv420p,setsar=1,trim=end={_fmt(main_duration)}[vmain]"
+        )
 
     # ---- 5. audio tracks (contract §2 audio.tracks) ----------------------------
     track_audio: list[str] = []
@@ -403,13 +455,51 @@ def build_render_command(
         audio_map = ["-map", audio_label if audio_label else "0:a:0"]
     else:
         audio_map = ["-an"]
+
+    # ---- 7. cover (contract §2 cover): [cover][main] concat ----------------------------
+    video_map = "[vout]"
+    if cover is not None:
+        n = cover.duration
+        fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
+        # Main audio as one labelled stream of exactly the main length, whatever shape the
+        # mapping above took (a filter label, the raw source stream, or no audio at all).
+        if audio_map == ["-an"]:
+            chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(main_duration)}[amain]")
+        else:
+            src = audio_map[1] if audio_map[1].startswith("[") else f"[{audio_map[1]}]"
+            chains.append(f"{src}{AUDIO_FORMAT},apad,atrim=end={_fmt(main_duration)}[amain]")
+
+        media = cover.media
+        input_index = len(inputs)
+        if media.is_video:
+            options = ["-c:v", media.decoder] if media.decoder else []
+            inputs.append([*options, "-i", media.path])
+        else:
+            inputs.append(["-loop", "1", "-framerate", fps, "-t", _fmt(n), "-i", media.path])
+        # The source crop window describes the source frame, so the cover never gets it.
+        chains += fill_chains(
+            f"[{input_index}:v]", variant.fill, variant.color, None, W, H, "[cvf]", tag="_cv"
+        )
+        chains.append(
+            f"[cvf]fps={fps},setsar=1,format=yuv420p,trim=end={_fmt(n)},setpts=PTS-STARTPTS[cv]"
+        )
+        if media.is_video and media.has_audio:
+            chains.append(
+                f"[{input_index}:a]asetpts=PTS-STARTPTS,{AUDIO_FORMAT},apad,atrim=end={_fmt(n)}[ca]"
+            )
+        else:
+            chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(n)}[ca]")
+        chains.append("[cv][ca][vmain][amain]concat=n=2:v=1:a=1[vfinal][afinal]")
+        video_map = "[vfinal]"
+        audio_map = ["-map", "[afinal]"]
+        expected_duration = n + main_duration
     filter_complex = ";".join(chains)
 
     # ---- argv ---------------------------------------------------------------
     argv: list[str] = [ffmpeg_bin, "-hide_banner", "-y", "-nostats"]
     for group in inputs:
         argv += group
-    argv += ["-filter_complex", filter_complex, "-map", "[vout]"]
+    argv += ["-filter_complex", filter_complex, "-map", video_map]
     # An explicit -map disables automatic stream selection, so sticker / track audio
     # is only ever heard through the [aout] mix above.
     argv += audio_map

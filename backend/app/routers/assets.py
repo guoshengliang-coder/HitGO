@@ -40,7 +40,8 @@ from app.services.ffprobe import ANIMATABLE_IMAGE_EXTS, VIDEO_STICKER_EXTS
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
-STICKER_IMAGE_EXTS = {"png", "webp", "gif"}
+# jpg/jpeg have no alpha; they are mainly there for covers (contract §2 cover, HIG-9).
+STICKER_IMAGE_EXTS = {"png", "jpg", "jpeg", "webp", "gif"}
 STICKER_EXTS = STICKER_IMAGE_EXTS | set(VIDEO_STICKER_EXTS)
 FONT_EXTS = {"ttf", "otf", "woff2"}
 # Formats every browser plays natively (the editor previews the original file, contract §1).

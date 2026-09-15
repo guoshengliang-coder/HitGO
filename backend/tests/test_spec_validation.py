@@ -268,3 +268,26 @@ def test_audio_rules(audio, fragment):
 def test_audio_fades_may_fill_the_window_exactly_and_all_windows_skip_the_sum_check():
     validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "t": [0, 3], "fade_in": 1.5, "fade_out": 1.5}]))
     validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "t": "all", "fade_in": 30, "fade_out": 30}]))
+
+
+# --- cover (HIG-9) -------------------------------------------------------------------
+
+
+def test_cover_is_optional_and_duration_defaults_to_one_second():
+    assert validate(valid_spec()).cover is None
+    spec = validate(valid_spec(cover={"asset_id": "a_cover"}))
+    assert spec.cover.asset_id == "a_cover" and spec.cover.duration == 1.0
+    assert validate(valid_spec(cover=None)).cover is None
+
+
+@pytest.mark.parametrize(
+    "cover,fragment",
+    [
+        ({"asset_id": ""}, "asset_id"),
+        ({}, "asset_id"),
+        ({"asset_id": "a", "duration": 0.05}, "duration"),
+        ({"asset_id": "a", "duration": 10.5}, "duration"),
+    ],
+)
+def test_cover_rules(cover, fragment):
+    assert fragment in errors_of(valid_spec(cover=cover))

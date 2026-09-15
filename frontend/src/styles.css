@@ -366,6 +366,16 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-bar .edge.l { left: 0; } .tl-bar .edge.r { right: 0; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 .tl-playhead::before { content: ''; position: absolute; top: 0; left: -6px; border: 5px solid transparent; border-top: 7px solid var(--accent); }
+/* 封面（HIG-9）：视频行最前面的封面块、标尺上的封面段、其余行封面期间的斜纹占位 */
+.tl-cover { position: absolute; top: 0; bottom: 0; left: 0; background-color: #1d2026; background-size: auto 100%; background-repeat: repeat-x; background-position: left center; border-right: 2px solid var(--accent); pointer-events: none; overflow: hidden; z-index: 1; }
+.tl-cover span { position: absolute; left: 4px; bottom: 3px; font-size: 10px; line-height: 14px; color: #fff; background: rgba(0, 0, 0, 0.6); padding: 0 4px; border-radius: 2px; white-space: nowrap; }
+.tl-ruler .tl-cover-mark { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent-soft); color: var(--accent-ink); font-size: 10px; line-height: 20px; padding-left: 4px; overflow: hidden; white-space: nowrap; pointer-events: none; }
+.tl-cover-gap { position: absolute; top: 0; bottom: 0; left: 0; pointer-events: none; background: repeating-linear-gradient(135deg, rgba(127, 127, 127, 0.14) 0 4px, transparent 4px 8px); }
+/* 剪辑面板的封面分组 */
+.cover-item { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.cover-item .cover-thumb { width: 44px; height: 78px; flex: none; border-radius: 4px; background: #1d2026 center / cover no-repeat; border: 1px solid var(--line-soft); }
+.cover-item .cover-meta { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cover-item .vname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-inpoint { position: absolute; top: 0; bottom: 0; border-left: 2px dashed var(--focus); z-index: 3; pointer-events: none; }
 
 /* 右侧面板 */

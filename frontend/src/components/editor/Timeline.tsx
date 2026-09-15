@@ -1,40 +1,55 @@
 // 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨、BGM / 口播可拖动拉伸、贴纸音轨只读）/
 // 图层行（文本、贴纸模块各自只显示本类图层，可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
+// 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
+// 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
-import { useEditor } from '../../store/editor';
+import { useCoverDuration, useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypeForStep } from '../../lib/steps';
 import { resolveTrack, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
+import { timelineTime, timelineX } from '../../lib/cover';
 import { snapValue } from '../../lib/snap';
 import { hintFor } from '../../lib/shortcuts';
 import { IconEye, IconFit, IconLock } from '../ui/Icons';
 import { TimelineTools } from './TimelineTools';
-import type { Layer } from '../../types';
+import type { Asset, Layer } from '../../types';
 
 const LABEL_W = 112;
 const MIN_PPS = 20;
 const MAX_PPS = 400;
 const SNAP_PX = 6;
 
+/** 封面段在非视频行里的占位斜纹（封面期间不叠图层、不放音轨）。 */
+function CoverGap({ width }: { width: number }) {
+  return width > 0 ? <div className="tl-cover-gap" style={{ width }} title="封面期间不叠加图层、不放音轨" /> : null;
+}
+
 /** 音频模块的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
-function SourceAudioRow({ hasAudio, volume, width, scrub }: { hasAudio: boolean; volume: number; width: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
+function SourceAudioRow({ hasAudio, volume, width, offset, scrub }: { hasAudio: boolean; volume: number; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
   const muted = !hasAudio || volume === 0;
   const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
   return (
     <div className={`tl-row tl-audio ${muted ? 'muted' : ''}`}>
       <div className="lbl" title={label}>{label}</div>
       <div className="body" {...scrub}>
-        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''}`} style={{ left: 0, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume }} />}
+        <CoverGap width={offset} />
+        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''}`} style={{ left: offset, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume }} />}
       </div>
     </div>
   );
+}
+
+/** 封面块的缩略图：视频用首帧，图片用原图。 */
+function coverThumb(asset: Asset | undefined): string | undefined {
+  if (!asset) return undefined;
+  return asset.kind === 'video' ? asset.poster_url ?? undefined : asset.url;
 }
 
 function useWidth(ref: React.RefObject<HTMLDivElement>) {
@@ -117,6 +132,11 @@ export function Timeline() {
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
+  const coverAsset = useEditor((s) => {
+    const cover = s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null;
+    return cover ? s.assets.find((a) => a.id === cover.asset_id) : undefined;
+  });
+  const preroll = useCoverDuration();
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
@@ -128,9 +148,11 @@ export function Timeline() {
   const dragRef = useRef<[number, number] | null>(null);
 
   const duration = Math.max(0.1, video?.duration ?? 0);
-  const fitPps = Math.max(1, containerW - LABEL_W - 2) / duration;
+  const fitPps = Math.max(1, containerW - LABEL_W - 2) / (duration + preroll);
   const pps = clamp(timelinePps ?? fitPps, MIN_PPS, MAX_PPS);
   const trackW = duration * pps;
+  // 封面块宽度：正片各行的横坐标都要加上它
+  const off = preroll * pps;
   const remove = spec?.trim.remove ?? [];
   const postDuration = postTrimDuration(duration, remove);
   const trimStep = step === 'trim';
@@ -142,6 +164,8 @@ export function Timeline() {
   const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => r.l.type === layerType) : [];
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
+  const prerollRef = useRef(preroll);
+  prerollRef.current = preroll;
 
   // ---- 缩放：围绕锚点保持光标下的时间不动 ----
   const zoomAnchor = useRef<{ time: number; offsetX: number } | null>(null);
@@ -156,7 +180,7 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!a || !el) return;
     zoomAnchor.current = null;
-    el.scrollLeft = Math.max(0, a.time * pps - a.offsetX);
+    el.scrollLeft = Math.max(0, timelineX(a.time, prerollRef.current, pps) - a.offsetX);
   }, [pps]);
 
   useEffect(() => {
@@ -169,7 +193,7 @@ export function Timeline() {
         const cur = ppsRef.current;
         const rect = el.getBoundingClientRect();
         const offsetX = e.clientX - rect.left - LABEL_W;
-        zoomTo(cur * Math.exp(-e.deltaY * 0.002), { time: (offsetX + el.scrollLeft) / cur, offsetX });
+        zoomTo(cur * Math.exp(-e.deltaY * 0.002), { time: (offsetX + el.scrollLeft) / cur - prerollRef.current, offsetX });
         return;
       }
       // 普通滚轮：横向滚动（轨道没有横向溢出时保留浏览器默认的纵向滚动）
@@ -188,16 +212,16 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el || !playing) return;
     const viewW = el.clientWidth - LABEL_W;
-    const x = time * pps;
+    const x = timelineX(time, preroll, pps);
     if (x < el.scrollLeft || x > el.scrollLeft + viewW) el.scrollLeft = Math.max(0, x - viewW * 0.2);
-  }, [time, playing, pps]);
+  }, [time, playing, pps, preroll]);
 
   const xToTime = (clientX: number) => {
     const el = scrollRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left - LABEL_W + el.scrollLeft;
-    return clamp(x / ppsRef.current, 0, duration);
+    return timelineTime(x, prerollRef.current, ppsRef.current, duration);
   };
   const scrub = useScrub(xToTime);
 
@@ -220,11 +244,12 @@ export function Timeline() {
     const postAxis = isBar || isTrack;
     const maxT = postAxis ? postDuration : duration;
     // 吸附候选：源时间（区间）或剪后时间（图层条、音轨条）
+    const head = Math.max(0, time); // 封面段里的播放头按正片开头算
     const candidates: number[] = isTrack
       ? trackSnapCandidates({ tracks, layers: spec?.layers ?? [], excludeTrackId: tracks[d.index]?.id ?? '', postDuration, playhead: sourceToPost(time, remove) })
       : isBar
         ? [0, postDuration, sourceToPost(time, remove), ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
-        : [0, duration, time, ...(inPoint !== null ? [inPoint] : []), ...remove.flatMap((r, i) => (i === d.index ? [] : r))];
+        : [0, duration, head, ...(inPoint !== null ? [inPoint] : []), ...remove.flatMap((r, i) => (i === d.index ? [] : r))];
     const threshold = SNAP_PX / pps;
 
     const onMove = (ev: PointerEvent) => {
@@ -261,7 +286,7 @@ export function Timeline() {
       }
       setDragVal([a, b]);
       dragRef.current = [a, b];
-      setSnapX(hit === null ? null : (postAxis ? postToSource(hit, remove) : hit) * pps);
+      setSnapX(hit === null ? null : off + (postAxis ? postToSource(hit, remove) : hit) * pps);
     };
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener('pointermove', onMove);
@@ -326,7 +351,7 @@ export function Timeline() {
     const el = scrollRef.current;
     const next = MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, v / 1000);
     const viewW = el ? el.clientWidth - LABEL_W : 0;
-    const center = el ? (el.scrollLeft + viewW / 2) / ppsRef.current : 0;
+    const center = el ? (el.scrollLeft + viewW / 2) / ppsRef.current - prerollRef.current : 0;
     zoomTo(next, { time: center, offsetX: viewW / 2 });
   };
 
@@ -345,12 +370,13 @@ export function Timeline() {
         <span>{hintFor('tl-zoom')} · {hintFor('tl-scroll')} · {hintFor('tl-no-snap')}</span>
       </div>
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''}`} ref={scrollRef}>
-        <div className="tl-inner" style={{ width: trackW + LABEL_W }}>
+        <div className="tl-inner" style={{ width: off + trackW + LABEL_W }}>
           <div className="tl-row" style={{ height: 20 }}>
             <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
+              {off > 0 && <div className="tl-cover-mark" style={{ width: off }}>封面</div>}
               {ticks.map((k) => (
-                <div key={k.t} className={`tick ${k.minor ? 'minor' : ''}`} style={{ left: k.t * pps }}>
+                <div key={k.t} className={`tick ${k.minor ? 'minor' : ''}`} style={{ left: off + k.t * pps }}>
                   {k.label}
                 </div>
               ))}
@@ -360,13 +386,22 @@ export function Timeline() {
           <div className="tl-row tl-video">
             <div className="lbl">视频</div>
             <div className="body" {...scrub.handlers}>
+              {off > 0 && (
+                <div
+                  className="tl-cover"
+                  style={{ width: off, backgroundImage: coverThumb(coverAsset) ? `url("${coverThumb(coverAsset)}")` : undefined }}
+                  title={`封面 ${preroll.toFixed(1)}s（在右侧「封面」里更换或移除）`}
+                >
+                  <span>封面 {preroll.toFixed(1)}s</span>
+                </div>
+              )}
               {sprite &&
                 tiles.map((i) => (
                   <div
                     key={i}
                     className="tl-sprite"
                     style={{
-                      left: i * tileSlot,
+                      left: off + i * tileSlot,
                       width: tileSlot,
                       backgroundImage: `url("${sprite.url}")`,
                       backgroundSize: `${sprite.columns * tileW}px auto`,
@@ -380,7 +415,7 @@ export function Timeline() {
                   <div
                     key={i}
                     className={`tl-cut ${selectedRange === i ? 'selected' : ''}`}
-                    style={{ left: a * pps, width: Math.max(2, (b - a) * pps), opacity: trimStep ? 1 : 0.5, pointerEvents: trimStep ? 'auto' : 'none' }}
+                    style={{ left: off + a * pps, width: Math.max(2, (b - a) * pps), opacity: trimStep ? 1 : 0.5, pointerEvents: trimStep ? 'auto' : 'none' }}
                     onPointerDown={(e) => {
                       setSelectedRange(i);
                       startDrag(e, { kind: 'cut-move', index: i, startX: e.clientX, orig: r });
@@ -396,12 +431,12 @@ export function Timeline() {
                   </div>
                 );
               })}
-              {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: inPoint * pps }} title="入点" />}
+              {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="入点" />}
             </div>
           </div>
 
           {audioStep && (
-            <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} scrub={scrub.handlers} />
+            <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} offset={off} scrub={scrub.handlers} />
           )}
           {audioStep &&
             tracks.map((t, i) => {
@@ -409,8 +444,8 @@ export function Timeline() {
               const all = r.t === 'all';
               const win = windowRange(r.t, postDuration);
               const [pa, pb] = drag && drag.kind.startsWith('track') && drag.index === i && dragVal ? dragVal : win;
-              const left = postToSource(pa, remove) * pps;
-              const right = postToSource(pb, remove) * pps;
+              const left = off + postToSource(pa, remove) * pps;
+              const right = off + postToSource(pb, remove) * pps;
               const sel = selectedTrackId === t.id;
               const asset = assets.find((a) => a.id === t.asset_id);
               const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
@@ -429,6 +464,7 @@ export function Timeline() {
                     <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
                   </div>
                   <div className="body" {...scrub.handlers}>
+                    <CoverGap width={off} />
                     <div
                       className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 ? 'muted' : ''}`}
                       style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
@@ -463,8 +499,8 @@ export function Timeline() {
           )}
           {stickerAudio.map((l) => {
             const [pa, pb] = windowRange(l.t, postDuration);
-            const left = postToSource(pa, remove) * pps;
-            const right = postToSource(pb, remove) * pps;
+            const left = off + postToSource(pa, remove) * pps;
+            const right = off + postToSource(pb, remove) * pps;
             const on = !!l.mix_audio;
             const name = layerName(l, assets);
             return (
@@ -474,6 +510,7 @@ export function Timeline() {
                   <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
                 </div>
                 <div className="body" {...scrub.handlers}>
+                  <CoverGap width={off} />
                   <div className={`tl-bar audio sticker ${l.t === 'all' ? 'all' : ''} ${on ? '' : 'muted'}`} style={{ left, width: Math.max(4, right - left), cursor: 'default', pointerEvents: 'none' }}>
                     {on ? '合成' : '不合成'} · {l.t === 'all' ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                   </div>
@@ -486,8 +523,8 @@ export function Timeline() {
             const v = barVal(i, l);
             const all = v === 'all';
             const [pa, pb] = all ? [0, postDuration] : v;
-            const left = postToSource(pa, remove) * pps;
-            const right = postToSource(pb, remove) * pps;
+            const left = off + postToSource(pa, remove) * pps;
+            const right = off + postToSource(pb, remove) * pps;
             const sel = selectedLayerId === l.id;
             const hidden = l.visible === false;
             const locked = !!l.locked;
@@ -508,7 +545,7 @@ export function Timeline() {
                     title="全程 / 区间"
                     onClick={() => {
                       if (all) {
-                        const cur = sourceToPost(time, remove);
+                        const cur = sourceToPost(Math.max(0, time), remove);
                         updateLayer(l.id, { t: [Math.round(cur * 100) / 100, Math.round(Math.min(postDuration, cur + 3) * 100) / 100] });
                       } else updateLayer(l.id, { t: 'all' });
                     }}
@@ -518,6 +555,7 @@ export function Timeline() {
                   <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
                 </div>
                 <div className="body" {...scrub.handlers}>
+                  <CoverGap width={off} />
                   <div
                     className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
                     style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
@@ -550,7 +588,7 @@ export function Timeline() {
           )}
 
           {snapX !== null && <div className="tl-snap" style={{ left: LABEL_W + snapX }} />}
-          <div className="tl-playhead" style={{ left: LABEL_W + time * pps }}>
+          <div className="tl-playhead" style={{ left: LABEL_W + timelineX(time, preroll, pps) }}>
             <div className="grip" {...scrub.handlers} title="拖动定位" />
           </div>
         </div>

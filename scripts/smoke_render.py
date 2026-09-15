@@ -9,7 +9,8 @@ sticker with its own audio track is available, that layer mixes its audio in
 (mix_audio) and the output must carry an audio stream. When an audio asset is
 available, the source track is muted and that asset is looped as BGM over the
 whole clip (edit_spec.audio), which must again yield an audio stream of the
-post-trim length.
+post-trim length. When an image sticker is available it is also used as a 1.5 s
+cover (edit_spec.cover), so the output must be 1.5 s longer than the trimmed clip.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
@@ -81,6 +82,12 @@ use_bgm = bool(audio_assets)
 if not use_bgm:
     print("no audio asset available — skipping the BGM part of the smoke test")
 
+image_stickers = [a for a in ready if a.get("kind", "image") == "image"]
+COVER_SECONDS = 1.5
+use_cover = bool(image_stickers)
+if not use_cover:
+    print("no image sticker available — skipping the cover part of the smoke test")
+
 video = videos[0]
 layers = [
     {"id": "l_1", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "top-left",
@@ -118,6 +125,9 @@ if use_bgm:
         "tracks": [{"id": "au_bgm", "asset_id": audio_assets[0]["id"], "role": "bgm", "t": "all",
                     "volume": 0.6, "loop": True, "fade_out": 1}],
     }
+if use_cover:
+    # Cover first, then the trimmed clip; layers and BGM keep their main-part timing.
+    spec["cover"] = {"asset_id": image_stickers[0]["id"], "duration": COVER_SECONDS}
 status, resp = call("PUT", f"/api/videos/{video['id']}/spec", {"edit_spec": spec})
 print("put spec", status, "ok" if status == 200 else resp)
 
@@ -144,8 +154,8 @@ print(f"finished in {time.time() - t0:.0f}s")
 for j in jobs:
     print(" ", j["variant_key"], j["status"], j["progress"], j["output"], (j["error"] or "")[:800])
 
-# A looping video sticker must not stretch the output past the post-trim duration.
-post_duration = round(video["duration"] - 2.0, 1)
+# A looping video sticker must not stretch the output past the post-trim duration (+ cover).
+post_duration = round(video["duration"] - 2.0 + (COVER_SECONDS if use_cover else 0.0), 1)
 for j in jobs:
     if j["status"] == "done" and abs(j["output"]["duration"] - post_duration) > 0.3:
         print(f"unexpected duration for {j['variant_key']}: "

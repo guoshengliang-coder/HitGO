@@ -337,12 +337,21 @@ export interface AudioSpec {
   tracks: AudioTrack[];
 }
 
+/** 契约 §2 cover（HIG-9）：成片最前面的封面。缺省（无此块）= 没有封面。 */
+export interface CoverSpec {
+  /** 贴纸素材：图片或视频。 */
+  asset_id: string;
+  /** 图片封面停留秒数，0.1–10，缺省 1；视频封面整段播放，忽略此字段。 */
+  duration?: number;
+}
+
 export interface EditSpec {
   spec_version: 1;
   trim: { remove: [number, number][] };
   layers: Layer[];
   outputs: OutputVariant[];
   audio?: AudioSpec | null;
+  cover?: CoverSpec | null;
 }
 
 export const VARIANT_DEFS: { key: VariantKey; aspect: AspectKey; width: number; height: number; label: string; note: string }[] = [

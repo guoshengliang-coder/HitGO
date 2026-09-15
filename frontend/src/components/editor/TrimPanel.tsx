@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
-import { useEditor, usePostDuration } from '../../store/editor';
+import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { hintFor } from '../../lib/shortcuts';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
 import { countSafeZoneOverlaps } from '../../lib/spec';
 import { IconClose, IconCutLeft, IconCutRight } from '../ui/Icons';
+import { CoverSection } from './CoverSection';
 import { variantDef, type FillMode, type OutputQuality } from '../../types';
 
 const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
@@ -31,6 +32,7 @@ function FrameSection() {
   const assets = useEditor((s) => s.assets);
   const batchId = useEditor((s) => s.batch?.id);
   const postDuration = usePostDuration();
+  const preroll = useCoverDuration();
 
   // 按本批次已完成任务的实际码率校准大小估算
   useEffect(() => {
@@ -116,7 +118,7 @@ function FrameSection() {
           </span>
           <span className="spacer" />
           <span className="mono muted small" title={calibrated ? '按本批次已完成任务的实际码率校准' : '按编码档位的典型码率估算'}>
-            约 {formatBytes(estimateOutputBytes(out, postDuration, calibration))}（估算）
+            约 {formatBytes(estimateOutputBytes(out, postDuration + preroll, calibration))}（估算）
           </span>
         </div>
         <span>安全区</span>
@@ -143,6 +145,7 @@ export function TrimPanel() {
   const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
   const canRemoveAfter = useEditor((s) => s.canRemoveAfter());
   const postDuration = usePostDuration();
+  const preroll = useCoverDuration();
   const remove = spec?.trim.remove ?? [];
 
   return (
@@ -199,6 +202,8 @@ export function TrimPanel() {
           )}
         </div>
 
+        <CoverSection />
+
         <FrameSection />
 
         <dl className="kv">
@@ -208,10 +213,18 @@ export function TrimPanel() {
           <dd>{formatSeconds(postDuration, 2)}</dd>
           <dt>删除合计</dt>
           <dd>−{formatSeconds((video?.duration ?? 0) - postDuration, 2)}</dd>
+          {preroll > 0 && (
+            <>
+              <dt>封面</dt>
+              <dd>+{formatSeconds(preroll, 2)}</dd>
+              <dt>成片时长</dt>
+              <dd>{formatSeconds(postDuration + preroll, 2)}</dd>
+            </>
+          )}
         </dl>
 
         <div className="hint">
-          删除区间基于源视频时间轴；文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴。修改剪辑不会自动改动图层和音轨时段，文本、贴纸模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。
+          删除区间基于源视频时间轴；文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。
         </div>
       </div>
     </div>

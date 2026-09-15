@@ -4,11 +4,12 @@
 // 画布固定 9:16（编辑器只产出这一个输出，HIG-8）；源画面比例不同时按输出的填充方式（模糊 / 纯色 / 裁切）画底。
 // 只有当前模块管理的那一类图层（文本 / 贴纸）能选中、拖动；另一类照常显示。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
+// 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect, Text as KText, Transformer, Group } from 'react-konva';
-import { useEditor, usePostDuration, usePostTime } from '../../store/editor';
+import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4 } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
@@ -17,7 +18,8 @@ import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
 import { loadImage, useImage } from '../../lib/useImage';
-import { coverBox, variantFrameBox } from '../../lib/videoBox';
+import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
+import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
 import { InlineTextEditor } from './InlineTextEditor';
@@ -94,8 +96,11 @@ function SafeZoneOverlay({ url, W, H }: { url: string; W: number; H: number }) {
  * 纯色 = 变体颜色做底；裁切 = 按 outputs[].crop 从当前帧取窗口再 cover（与 worker 顺序一致，
  * <video> 隐藏）。几何全部走 lib/videoBox，与 worker 同一份说法。每帧重绘（跟随 postTime）。
  */
-function FillBackdrop({ fill, color, crop, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; posterUrl?: string; W: number; H: number; postTime: number }) {
+function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; videoId?: string; posterUrl?: string; W: number; H: number; postTime: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  // 暂停时 store 的 time 可能不变（换素材前后都是 0），帧就绪要单独触发重画，否则会停在旧素材的帧上（HIG-12）
+  const [frame, setFrame] = useState(0);
+  useEffect(() => player.onFrame(() => setFrame((n) => n + 1)), []);
   useEffect(() => {
     const c = ref.current;
     if (!c || fill === 'color') return;
@@ -122,14 +127,91 @@ function FillBackdrop({ fill, color, crop, posterUrl, W, H, postTime }: { fill: 
     const v = player.getVideo();
     if (v && v.readyState >= 2 && v.videoWidth) draw(v, v.videoWidth, v.videoHeight);
     else if (posterUrl) void loadImage(posterUrl).then((img) => draw(img, img.naturalWidth, img.naturalHeight)).catch(() => undefined);
+    else c.getContext('2d')?.clearRect(0, 0, c.width, c.height);
     return () => {
       alive = false;
     };
-  }, [fill, crop, posterUrl, W, H, postTime]);
+  }, [fill, crop, videoId, posterUrl, W, H, postTime, frame]);
   if (fill === 'color') return <div className="stage-fill" style={{ background: color ?? '#000000' }} />;
   // 模糊底图半分辨率即可；裁切是前景，按画布尺寸画
   const scale = fill === 'blur' ? 0.5 : 1;
   return <canvas ref={ref} className="stage-fill" width={Math.max(1, Math.round(W * scale))} height={Math.max(1, Math.round(H * scale))} />;
+}
+
+/**
+ * 封面段（HIG-9，播放头在 [-N, 0)）：盖住正片，按输出的 fill 把封面铺满画布，和 worker 一致——
+ * 模糊 = 放大模糊做底 + contain；纯色 = 颜色做底 + contain；裁切 = cover 居中（源画面的裁切窗口不作用于封面）。
+ * 视频封面用浏览器可播的预览代理，对齐到 time + N，只在播放中出声（封面原声）。
+ */
+function CoverPreview({ fill, color, W, H }: { fill: 'blur' | 'color' | 'crop'; color?: string; W: number; H: number }) {
+  const asset = useEditor((s) => {
+    const cover = s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null;
+    return cover ? s.assets.find((a) => a.id === cover.asset_id) : undefined;
+  });
+  const active = useInCover();
+  const isVideo = isVideoAsset(asset);
+  const img = useImage(asset && !isVideo ? asset.url : undefined);
+  const { video, ready } = useVideo(asset && isVideo ? asset.preview_url ?? asset.url : undefined);
+  const poster = useImage(asset && isVideo && !ready ? asset.poster_url : undefined);
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    if (!video) return;
+    const sync = (t: number, playing: boolean) => {
+      const at = coverMediaTime(t, player.preroll);
+      if (at === null || !playing) {
+        video.muted = true;
+        if (!video.paused) video.pause();
+        if (at !== null && Math.abs(video.currentTime - at) > 0.01) video.currentTime = at;
+        return;
+      }
+      video.muted = false;
+      if (Math.abs(video.currentTime - at) > 0.25) video.currentTime = at;
+      if (video.paused) void video.play().catch(() => undefined);
+    };
+    sync(player.currentTime, player.isPlaying);
+    const unsub = player.subscribe(sync);
+    return () => {
+      unsub();
+      video.pause();
+      video.muted = true;
+    };
+  }, [video]);
+
+  // 每次渲染都重画：播放中 time 每帧变化，暂停时 useVideo / useImage 在帧或图片就绪后会触发重渲染
+  useEffect(() => {
+    const c = ref.current;
+    const ctx = c?.getContext('2d');
+    if (!c || !ctx) return;
+    const cw = c.width;
+    const ch = c.height;
+    let src: CanvasImageSource | undefined;
+    let sw = 0;
+    let sh = 0;
+    if (isVideo && ready && video && video.videoWidth) [src, sw, sh] = [video, video.videoWidth, video.videoHeight];
+    else if (isVideo && poster) [src, sw, sh] = [poster, poster.naturalWidth, poster.naturalHeight];
+    else if (!isVideo && img) [src, sw, sh] = [img, img.naturalWidth, img.naturalHeight];
+    ctx.fillStyle = fill === 'color' ? color ?? '#000000' : '#000000';
+    ctx.fillRect(0, 0, cw, ch);
+    if (!src || !sw || !sh) return;
+    if (fill === 'crop') {
+      const b = coverBox(sw, sh, cw, ch);
+      ctx.drawImage(src, b.x, b.y, b.w, b.h);
+      return;
+    }
+    if (fill === 'blur') {
+      const bg = coverBox(sw, sh, cw, ch, 1.05);
+      ctx.save();
+      ctx.filter = 'blur(12px) brightness(0.7)';
+      ctx.drawImage(src, bg.x, bg.y, bg.w, bg.h);
+      ctx.restore();
+    }
+    const fg = containBox(sw, sh, cw, ch);
+    ctx.drawImage(src, fg.x, fg.y, fg.w, fg.h);
+  });
+
+  if (!active || !asset) return null;
+  return <canvas ref={ref} className="stage-fill" width={Math.max(1, Math.round(W))} height={Math.max(1, Math.round(H))} />;
 }
 
 /** 单个图层节点。 */
@@ -203,8 +285,9 @@ function LayerNode({
         if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
       }
     };
-    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying);
-    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing));
+    // 封面段（t < 0）里图层不出现：按暂停对齐，不播也不出声
+    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0);
+    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0));
     return () => {
       unsub();
       stickerVideo.pause();
@@ -349,6 +432,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const setTime = useEditor((s) => s.setTime);
   const setPlaying = useEditor((s) => s.setPlaying);
   const postTime = usePostTime();
+  const preroll = useCoverDuration();
+  const coverActive = useInCover();
   const [hitGuides, setHitGuides] = useState<Guides>(NO_GUIDES);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
 
@@ -359,6 +444,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   useEffect(() => {
     setEditingLayerId(null);
   }, [video?.id, step]);
+  useEffect(() => {
+    if (coverActive) setEditingLayerId(null);
+  }, [coverActive]);
 
   const guides = canvasGuides(zone, W, H);
   const guidesRef = useRef(guides);
@@ -371,12 +459,20 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     if (el) el.volume = srcVolume;
   }, [srcVolume, video?.id]);
 
+  // 封面时长 → 播放头前面的封面段。必须写在「播放器挂载」之前：换视频时先有新的封面时长，挂载时才能退到封面起点。
+  useEffect(() => {
+    const wasOff = player.preroll === 0;
+    player.setPreroll(preroll);
+    // 刚加上封面（或素材列表刚载入）且播放头停在正片开头：退到封面起点，画布上就是成片第一帧
+    if (wasOff && preroll > 0 && !player.isPlaying && player.currentTime === 0) player.seek(-preroll);
+  }, [preroll]);
+
   // 播放器挂载
   useEffect(() => {
     const el = videoRef.current;
     player.attach(el);
     player.duration = video?.duration ?? 0;
-    player.seek(0);
+    player.seek(-player.preroll);
     const unsub = player.subscribe((t, playing) => {
       setTime(t);
       setPlaying(playing);
@@ -384,6 +480,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     return () => {
       unsub();
       player.pause();
+      // 换素材时先解绑旧 <video>：子组件（填充底图）的 effect 先于这里的 attach 执行，不解绑会从旧元素抓帧（HIG-12）
+      player.detach();
     };
   }, [video?.id, video?.duration, setTime, setPlaying]);
 
@@ -399,7 +497,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     const node = selected && selected.type === layerType && editingLayerId !== selectedLayerId ? nodes.current[selected.id] : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedLayerId, editingLayerId, layerType, spec, W, H]);
+  }, [selectedLayerId, editingLayerId, layerType, spec, W, H, coverActive]);
 
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
@@ -433,7 +531,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined}>
       <div className="stage-box" style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
+        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}
@@ -446,13 +544,14 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             e.currentTarget.volume = srcVolume;
           }}
         />
+        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} W={W} H={H} />}
         <AudioTracks />
         <div className="konva-layer">
           <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown}>
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
             <KLayer>
               {layers.map((l) => {
-                if (l.visible === false) return null;
+                if (l.visible === false || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
                 return (
                   <LayerNode

@@ -7,6 +7,7 @@ import pytest
 
 from app.schemas import EditSpec
 from app.services.filtergraph import (
+    CoverSource,
     ENCODE_ARGS,
     ENCODE_PRESETS,
     ImageSource,
@@ -772,3 +773,188 @@ def test_real_ffmpeg_replaces_the_source_audio_with_a_windowed_bgm(tmp_path):
     assert _mean_volume(out, 0.1, 1.2) < -60  # source muted: silence before the window
     assert _mean_volume(out, 1.7, 1.2) > -30  # inside (spans the loop point): the beep
     assert _mean_volume(out, 3.1, 0.3) < -60  # after the window: silence again
+
+
+# --- cover (contract §2 cover, HIG-9) ----------------------------------------------
+
+COVER_IMAGE = ImageSource("/data/assets/a_cover0001.jpg", 1080, 1920)
+COVER_VIDEO = ImageSource("/data/assets/a_cover0002.mp4", 1920, 1080, duration=2.5, has_audio=True)
+
+
+def cover_build(spec_dict, cover, meta=META, **kw):
+    spec = EditSpec.model_validate(spec_dict)
+    return build_render_command(
+        spec,
+        meta,
+        {"a_sticker001": STICKER},
+        spec.outputs[0],
+        source_path="/data/src.mp4",
+        output_path="/data/tmp/j.mp4",
+        resolve_image_url=resolver,
+        ffmpeg_bin="ffmpeg",
+        cover=cover,
+        **kw,
+    )
+
+
+def cover_spec(asset_id="a_cover0001", duration=1.0, **overrides):
+    return valid_spec(cover={"asset_id": asset_id, "duration": duration}, **overrides)
+
+
+def test_spec_without_cover_keeps_the_exact_old_argv():
+    assert cover_build(valid_spec(), None).argv == build().argv
+
+
+def test_image_cover_is_looped_filled_and_concatenated_before_the_main_part():
+    plan = cover_build(cover_spec(duration=1.5), CoverSource(COVER_IMAGE, 1.5), meta={**META, "fps": 25})
+    graph = fc(plan)
+    # The main part keeps its chains; only its tail is renamed and pinned to the post-trim length.
+    assert "format=yuv420p,setsar=1,trim=end=20.6[vmain]" in graph
+    assert "[vout]" not in graph
+    # Source audio went through trim/concat as [at]; it is padded to the same length.
+    assert f"[at]{AFMT},apad,atrim=end=20.6[amain]" in graph
+    i = plan.argv.index("/data/assets/a_cover0001.jpg")
+    assert plan.argv[i - 7 : i + 1] == ["-loop", "1", "-framerate", "25", "-t", "1.5", "-i", "/data/assets/a_cover0001.jpg"]
+    idx = plan.argv.count("-i") - 1
+    assert f"[{idx}:v]split=2[bg_cv][fg_cv]" in graph
+    assert "[bgb_cv][fgs_cv]overlay=(W-w)/2:(H-h)/2[cvf]" in graph
+    assert "[cvf]fps=25,setsar=1,format=yuv420p,trim=end=1.5,setpts=PTS-STARTPTS[cv]" in graph
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=1.5[ca]" in graph
+    assert graph.endswith("[cv][ca][vmain][amain]concat=n=2:v=1:a=1[vfinal][afinal]")
+    assert plan.argv[plan.argv.index("[vfinal]") - 1] == "-map"
+    assert ["-map", "[afinal]"] == plan.argv[plan.argv.index("[afinal]") - 1 : plan.argv.index("[afinal]") + 1]
+    assert plan.expected_duration == pytest.approx(22.1)
+
+
+def test_video_cover_keeps_its_own_sound_and_length_and_ignores_the_crop_window():
+    spec = cover_spec(asset_id="a_cover0002", duration=9)
+    spec["outputs"] = [{"variant_key": "9x16", "aspect": "9:16", "fill": "crop", "crop": {"x": 0.25, "y": 0, "w": 0.5, "h": 1}}]
+    plan = cover_build(spec, CoverSource(COVER_VIDEO, 9))
+    graph = fc(plan)
+    idx = plan.argv.count("-i") - 1
+    assert plan.argv[plan.argv.index("/data/assets/a_cover0002.mp4") - 1] == "-i"
+    assert "-loop" not in plan.argv
+    # Main part honours the window, the cover is a plain cover-crop (default 30 fps without meta).
+    assert "[0:v]trim=start=0:end=3.2" in graph and "crop=w='iw*0.5'" in graph
+    assert f"[{idx}:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920[cvf]" in graph
+    assert "[cvf]fps=30,setsar=1,format=yuv420p,trim=end=2.5,setpts=PTS-STARTPTS[cv]" in graph
+    assert f"[{idx}:a]asetpts=PTS-STARTPTS,{AFMT},apad,atrim=end=2.5[ca]" in graph
+    assert plan.expected_duration == pytest.approx(23.1)
+
+
+def test_cover_over_an_untrimmed_source_takes_its_first_audio_stream():
+    plan = cover_build(cover_spec(trim={"remove": []}), CoverSource(COVER_IMAGE))
+    assert f"[0:a:0]{AFMT},apad,atrim=end=24.6[amain]" in fc(plan)
+
+
+def test_cover_over_a_muted_or_silent_main_part_gets_a_silent_leg():
+    spec = cover_spec()
+    spec["audio"] = {"source_volume": 0, "tracks": []}
+    graph = fc(cover_build(spec, CoverSource(COVER_IMAGE)))
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[amain]" in graph
+    graph = fc(cover_build(cover_spec(), CoverSource(COVER_IMAGE), meta={**META, "has_audio": False}))
+    assert "anullsrc=r=48000:cl=stereo,atrim=end=20.6[amain]" in graph
+
+
+def test_cover_follows_an_audio_mix_and_extends_the_output_limit():
+    spec = cover_spec()
+    spec["audio"] = {"source_volume": 1, "tracks": [{"id": "au_1", "asset_id": "a_bgm00001", "t": "all", "loop": True}]}
+    plan = cover_build(spec, CoverSource(COVER_IMAGE, 2.0), audio_assets=AUDIO_ASSETS)
+    graph = fc(plan)
+    assert f"[aout]{AFMT},apad,atrim=end=20.6[amain]" in graph
+    # BGM timing is untouched: still relative to the main part.
+    assert "atrim=end=20.6" in graph and "adelay" not in graph
+    assert plan.argv[plan.argv.index("-t", plan.argv.index("-filter_complex")) + 1] == "22.6"
+
+
+def test_unresolved_cover_renders_without_it_and_warns():
+    plan = cover_build(cover_spec(), None)
+    assert plan.argv == build().argv
+    assert plan.warnings == ["封面素材 a_cover0001 不存在或未就绪，已跳过封面"]
+
+
+def _probe_duration(path, stream):
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", stream,
+         "-show_entries", "stream=duration", "-of", "default=nw=1:nk=1", str(path)],
+        check=True, capture_output=True, text=True,
+    )  # fmt: skip
+    return float(probe.stdout.strip())
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_image_cover_is_silent_and_precedes_the_trimmed_main_part(tmp_path):
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=960x540:rate=30:duration=3",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    cover = tmp_path / "cover.jpg"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:size=720x1280", "-frames:v", "1", str(cover)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    out = tmp_path / "out.mp4"
+    spec = EditSpec.model_validate(cover_spec(duration=1.2, trim={"remove": [[1, 1.5]]}, layers=[]))
+    plan = build_render_command(
+        spec, {"duration": 3.0, "has_audio": True, "fps": 30}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+        cover=CoverSource(ImageSource(str(cover), 720, 1280), 1.2),
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    assert plan.expected_duration == pytest.approx(3.7)
+    assert abs(_probe_duration(out, "v:0") - 3.7) < 0.15
+    assert abs(_probe_duration(out, "a:0") - 3.7) < 0.15
+    assert _mean_volume(out, 0.1, 0.9) < -60  # image cover: silence
+    assert _mean_volume(out, 1.5, 1.5) > -30  # main part: the source beep
+    # The picture really is the red cover first and the test pattern afterwards.
+    r, g, b = _centre_pixel(out, 0.5)
+    assert r > 180 and g < 60 and b < 60
+    assert _centre_pixel(out, 2.5) != (r, g, b)
+
+
+def _centre_pixel(path, at):
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1",
+         "-vf", "crop=8:8:iw/2-4:ih/2-4,scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        check=True, capture_output=True, timeout=60,
+    )  # fmt: skip
+    return tuple(proc.stdout[:3])
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_video_cover_keeps_its_sound_before_a_muted_untrimmed_source(tmp_path):
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=25:duration=2",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    cover = tmp_path / "cover.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=1.5",
+         "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=1.5",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(cover)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    out = tmp_path / "out.mp4"
+    spec = cover_spec(asset_id="a_cover", trim={"remove": []}, layers=[])
+    spec["outputs"] = [{"variant_key": "9x16", "aspect": "9:16", "fill": "color", "color": "#000000"}]
+    spec["audio"] = {"source_volume": 0, "tracks": []}
+    spec = EditSpec.model_validate(spec)
+    plan = build_render_command(
+        spec, {"duration": 2.0, "has_audio": True, "fps": 25}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+        cover=CoverSource(ImageSource(str(cover), 640, 360, duration=1.5, has_audio=True)),
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    assert plan.expected_duration == pytest.approx(3.5)
+    assert abs(_probe_duration(out, "v:0") - 3.5) < 0.15
+    assert abs(_probe_duration(out, "a:0") - 3.5) < 0.15
+    assert _mean_volume(out, 0.1, 1.2) > -30  # the cover's own beep
+    assert _mean_volume(out, 1.8, 1.5) < -60  # muted source

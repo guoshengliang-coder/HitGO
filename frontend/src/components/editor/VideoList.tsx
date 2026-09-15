@@ -11,6 +11,7 @@ const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'layers', label: '图层', desc: '文字与贴纸图层及其时段（两类一起套用）' },
   { key: 'outputs', label: '画面', desc: '填充方式、裁切范围与清晰度' },
   { key: 'audio', label: '音频', desc: '源音轨音量与 BGM / 口播音轨（源没设置时清掉目标的）' },
+  { key: 'cover', label: '封面', desc: '成片最前面的图片 / 视频封面（源没设置时清掉目标的）' },
 ];
 
 /** 目标草稿里该模块是否已有"非默认"配置（会被覆盖）。 */
@@ -19,11 +20,12 @@ export function moduleConfigured(spec: EditSpec | undefined, module: ApplyModule
   if (module === 'trim') return spec.trim.remove.length > 0;
   if (module === 'layers') return spec.layers.length > 0;
   if (module === 'audio') return !isDefaultAudio(spec.audio);
+  if (module === 'cover') return !!spec.cover;
   return spec.outputs.some((o) => o.fill !== 'blur' || o.quality === 'high');
 }
 
 export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds: string[]; onClose: () => void; defaultModules?: ApplyModule[] }) {
-  const [modules, setModules] = useState<ApplyModule[]>(defaultModules ?? ['trim', 'layers', 'outputs', 'audio']);
+  const [modules, setModules] = useState<ApplyModule[]>(defaultModules ?? ['trim', 'layers', 'outputs', 'audio', 'cover']);
   const [styleOnly, setStyleOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const applyToTargets = useEditor((s) => s.applyToTargets);
@@ -111,7 +113,7 @@ export function VideoList() {
       </div>
       <div className="vlist">
         {videos.map((v) => {
-          const hasDraft = !!specs[v.id] && (specs[v.id].trim.remove.length > 0 || specs[v.id].layers.length > 0);
+          const hasDraft = !!specs[v.id] && (specs[v.id].trim.remove.length > 0 || specs[v.id].layers.length > 0 || !!specs[v.id].cover);
           return (
             <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setCurrent(v.id)}>
               <input type="checkbox" checked={selectedIds.includes(v.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(v.id)} aria-label={`选择 ${v.name}`} />

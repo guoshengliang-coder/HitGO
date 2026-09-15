@@ -1106,3 +1106,67 @@ def test_startup_seeds_sample_audio_as_builtin_assets(monkeypatch, enqueued, db,
     # Idempotent: a second startup does not import the same files again.
     seed_builtin_assets()
     assert db.query(Asset).count() == 2
+
+
+# --- cover (HIG-9) --------------------------------------------------------------------
+
+
+def test_jpg_sticker_upload_is_a_ready_image(client, enqueued):
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (720, 1280), (200, 30, 30)).save(buf, "JPEG")
+    r = client.post(
+        "/api/assets",
+        data={"type": "sticker"},
+        files=[("files", ("封面.JPG", io.BytesIO(buf.getvalue()), "image/jpeg"))],
+    )
+    assert r.status_code == 200, r.text
+    a = r.json()[0]
+    assert a["kind"] == "image" and a["status"] == "ready" and (a["width"], a["height"]) == (720, 1280)
+    assert a["url"].endswith(".jpg") and enqueued.calls == []
+
+
+def test_collect_cover_resolves_only_ready_sticker_assets(ready_video, db, client):
+    from app.schemas import EditSpec
+    from app.services.render import build_plan, collect_cover
+
+    make_png(storage.asset_path("a_cover_img", "png"), (1080, 1920))
+    db.add_all([
+        Asset(id="a_cover_img", type="sticker", name="c.png", ext="png", kind="image", status="ready",
+              source="upload", width=1080, height=1920),
+        Asset(id="a_cover_vid", type="sticker", name="c.mp4", ext="mp4", kind="video", status="preparing",
+              source="upload"),
+        Asset(id="a_font", type="font", name="f.ttf", ext="ttf", source="upload"),
+    ])  # fmt: skip
+    db.commit()
+
+    def cover_of(asset_id, **extra):
+        return collect_cover(db, EditSpec.model_validate(valid_spec(cover={"asset_id": asset_id, **extra})))
+
+    cover = cover_of("a_cover_img", duration=2.5)
+    assert cover is not None and not cover.media.is_video and cover.duration == 2.5
+    assert cover_of("a_cover_vid") is None  # still preparing
+    assert cover_of("a_font") is None  # not a sticker asset
+    assert cover_of("a_missing") is None
+    assert collect_cover(db, EditSpec.model_validate(valid_spec())) is None
+
+    # The job plan carries the cover into the graph and the total duration.
+    put_spec(client, VIDEO, valid_spec(cover={"asset_id": "a_cover_img", "duration": 2.5}))
+    job = Job(id="j_cover0001", batch_id=BATCH, video_id=VIDEO, variant_key="9x16", status="queued")
+    db.add(job)
+    db.commit()
+    db.expire_all()  # the spec was written through the API in another session
+    plan = build_plan(db, job, db.get(Video, VIDEO))
+    assert "concat=n=2:v=1:a=1[vfinal][afinal]" in plan.filter_complex
+    assert plan.expected_duration == pytest.approx(2.5 + 20.6)
+
+
+def test_batch_apply_cover_module(client, ready_video, db):
+    other = Video(id="v_test000002", batch_id=BATCH, name="V02.mp4", order_index=1, status="ready", duration=10.0, has_audio=True)
+    db.add(other)
+    db.commit()
+    put_spec(client, VIDEO, valid_spec(cover={"asset_id": "a_cover", "duration": 1.5}))
+    r = client.post(f"/api/batches/{BATCH}/apply", json={"source_video_id": VIDEO, "target_video_ids": ["v_test000002"], "modules": ["cover"]})
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["edit_spec"]["cover"] == {"asset_id": "a_cover", "duration": 1.5}

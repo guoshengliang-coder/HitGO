@@ -1,6 +1,7 @@
-import { useEditor, usePostDuration, usePostTime } from '../../store/editor';
+import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTimecode, frameDuration } from '../../lib/time';
+import { outputTime } from '../../lib/cover';
 import { hintFor } from '../../lib/shortcuts';
 import type { Step } from '../../lib/steps';
 import { IconPause, IconPlay, IconStepBack, IconStepFwd } from '../ui/Icons';
@@ -18,8 +19,10 @@ export function Transport() {
   const step = useEditor((s) => s.step);
   const fps = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId)?.fps);
   const frame = frameDuration(fps);
-  const postTime = usePostTime();
+  const remove = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.trim.remove : undefined));
   const postDuration = usePostDuration();
+  // 左边是成片时间码（有封面时从封面算起）；右边是源时间，封面段里显示封面自己的位置
+  const preroll = useCoverDuration();
 
   return (
     <div className="transport">
@@ -33,11 +36,11 @@ export function Transport() {
         <IconStepFwd />
       </button>
       <span className="time">
-        {formatTimecode(postTime, fps)} / {formatTimecode(postDuration, fps)}
+        {formatTimecode(outputTime(time, remove ?? [], preroll), fps)} / {formatTimecode(postDuration + preroll, fps)}
       </span>
       <span className="hint">{STEP_HINT[step]} · 按 ? 查看全部快捷键</span>
       <span className="spacer" />
-      <span className="hint mono">源 {formatTimecode(time, fps)}</span>
+      <span className="hint mono">{time < 0 ? `封面 ${formatTimecode(time + preroll, fps)}` : `源 ${formatTimecode(time, fps)}`}</span>
     </div>
   );
 }

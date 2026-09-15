@@ -204,3 +204,16 @@ def test_apply_audio_copies_the_whole_block_or_clears_it():
     # Other modules leave the target's audio alone.
     out = apply_modules(valid_spec(), target, ["trim"], 10.0)
     assert out["audio"] == {"source_volume": 0.5, "tracks": []}
+
+
+def test_apply_cover_copies_the_whole_block_or_clears_it():
+    src = valid_spec(cover={"asset_id": "a_cover", "duration": 2.0})
+    target = {"spec_version": 1, "trim": {"remove": [[1, 2]]}, "layers": [], "outputs": [], "cover": {"asset_id": "a_old"}}
+    out = apply_modules(src, target, ["cover"], 10.0)
+    assert out["cover"] == {"asset_id": "a_cover", "duration": 2.0} and out["cover"] is not src["cover"]
+    assert out["trim"] == {"remove": [[1, 2]]}  # untouched module
+
+    out = apply_modules(valid_spec(), target, ["cover"], 10.0)
+    assert "cover" not in out
+    # Other modules leave the target's cover alone.
+    assert apply_modules(valid_spec(), target, ["trim", "layers", "outputs", "audio"], 10.0)["cover"] == {"asset_id": "a_old"}
