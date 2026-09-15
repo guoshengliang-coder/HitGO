@@ -24,6 +24,8 @@ export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 export type ApplyModule = 'trim' | 'layers' | 'outputs' | 'audio';
 export type SafeZoneView = 'frames' | 'overlay' | 'none';
+/** 安全区开启时的显示方式（SafeZoneView 去掉 none）。 */
+export type SafeZoneMode = Exclude<SafeZoneView, 'none'>;
 export interface ToastAction {
   label: string;
   run: () => void;
@@ -51,6 +53,18 @@ function loadSafeZoneView(): SafeZoneView {
   try {
     const v = localStorage.getItem(SAFE_ZONE_VIEW_KEY);
     if (v === 'frames' || v === 'overlay' || v === 'none') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'frames';
+}
+
+/** 上次开启安全区时的显示方式：关掉再打开时恢复它（HIG-13）。 */
+const SAFE_ZONE_MODE_KEY = 'hitgo.safeZoneMode';
+function loadSafeZoneMode(view: SafeZoneView): SafeZoneMode {
+  if (view !== 'none') return view;
+  try {
+    if (localStorage.getItem(SAFE_ZONE_MODE_KEY) === 'overlay') return 'overlay';
   } catch {
     /* ignore */
   }
@@ -94,6 +108,8 @@ export interface EditorState {
   // 交互
   shortcutsOpen: boolean;
   safeZoneView: SafeZoneView;
+  /** 上次开启时的显示方式，toggleSafeZone 打开时恢复 */
+  safeZoneMode: SafeZoneMode;
   /** 整站配色（类名挂在 <html> 上，见 App.tsx）；存本机 */
   theme: EditorTheme;
   timelinePps: number | null; // null = 适应窗口
@@ -128,7 +144,8 @@ export interface EditorState {
   setShortcutsOpen: (on: boolean) => void;
   setSafeZoneView: (v: SafeZoneView) => void;
   toggleTheme: () => void;
-  cycleSafeZoneView: () => void;
+  /** 安全区开关：开着就关（none），关着就恢复上次的显示方式 */
+  toggleSafeZone: () => void;
   setTimelinePps: (pps: number | null) => void;
 
   currentSpec: () => EditSpec | null;
@@ -324,6 +341,7 @@ export const useEditor = create<EditorState>((set, get) => {
     toastAction: null,
     shortcutsOpen: false,
     safeZoneView: loadSafeZoneView(),
+    safeZoneMode: loadSafeZoneMode(loadSafeZoneView()),
     theme: loadTheme(),
     timelinePps: null,
     layerClipboard: null,
@@ -490,15 +508,15 @@ export const useEditor = create<EditorState>((set, get) => {
     setSafeZoneView: (safeZoneView) => {
       try {
         localStorage.setItem(SAFE_ZONE_VIEW_KEY, safeZoneView);
+        if (safeZoneView !== 'none') localStorage.setItem(SAFE_ZONE_MODE_KEY, safeZoneView);
       } catch {
         /* ignore */
       }
-      set({ safeZoneView });
+      set(safeZoneView === 'none' ? { safeZoneView } : { safeZoneView, safeZoneMode: safeZoneView });
     },
-    cycleSafeZoneView: () => {
-      const order: SafeZoneView[] = ['frames', 'overlay', 'none'];
-      const cur = get().safeZoneView;
-      get().setSafeZoneView(order[(order.indexOf(cur) + 1) % order.length]);
+    toggleSafeZone: () => {
+      const { safeZoneView, safeZoneMode } = get();
+      get().setSafeZoneView(safeZoneView === 'none' ? safeZoneMode : 'none');
     },
     setTimelinePps: (timelinePps) => set({ timelinePps }),
     setSelectedRange: (selectedRangeIndex) => set({ selectedRangeIndex }),

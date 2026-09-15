@@ -36,6 +36,7 @@ curl -s http://127.0.0.1:8790/api/health
 ```
 
 - 镜像多阶段构建：`node:22-alpine` 构建 `frontend/dist` → `python:3.12-slim` + apt `ffmpeg` + `uv`，API 与 worker 共用同一镜像。
+- 界面上 HitGO 旁的版本号是构建期写死的最近 git tag（如 `v0.8.0`）：取值顺序 `HITGO_VERSION` 环境变量 → `frontend/.hitgo-version` → `git describe --tags --abbrev=0`，都没有显示 `dev`。镜像里没有 `.git`，`scripts/deploy.sh` 会在服务器构建前写入 `frontend/.hitgo-version`；手动 `git clone` 部署时在构建前自己写一份。在 `make release` 打 tag 之前部署，显示的是上一个 tag。
 - `api` 只监听 `127.0.0.1:8790`，由 nginx 反代；`redis` 不对外暴露端口。
 - 所有数据（SQLite、源片、成片）都在 `./data`，备份/迁移只需拷贝这个目录。
 - 更新：`git pull && docker compose build && docker compose up -d`。

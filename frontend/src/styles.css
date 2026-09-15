@@ -209,6 +209,8 @@ kbd {
 }
 .brand { font-weight: 700; letter-spacing: 0.02em; color: var(--ink); font-size: 14px; }
 .brand b { color: var(--accent); }
+.brand-group { display: inline-flex; align-items: baseline; gap: 6px; flex: none; }
+.app-version { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 .app-nav a.navlink { color: var(--ink-2); padding: 4px 6px; border-radius: 4px; }
 .app-nav a.navlink.active { color: var(--ink); background: var(--line-soft); }
 .page { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
@@ -258,7 +260,6 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
   display: flex; align-items: center; gap: 12px; padding: 0 12px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.topbar .batch-name { font-weight: 500; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .steps { display: flex; gap: 4px; margin-left: 12px; }
 .step-btn {
   height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid transparent; background: transparent; color: var(--ink-2);
@@ -282,6 +283,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .col-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .col-right { min-width: 0; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
 
+.vlist-batch { padding: 8px 10px 0; font-size: 13px; font-weight: 500; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vlist-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); font-size: 12px; color: var(--ink-2); }
 .vlist { flex: 1; overflow: auto; }
 .vrow {
@@ -425,7 +427,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---- 顶栏：安全区显示三态 ---- */
+/* ---- 分段按钮（QuickBar 的安全区显示方式等） ---- */
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .seg-btn { height: 24px; padding: 0 8px; font-size: 12px; border: 0; background: var(--panel); color: var(--ink-2); cursor: pointer; border-right: 1px solid var(--line-soft); }
 .seg-btn:last-child { border-right: 0; }
@@ -446,9 +448,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .preset-item.user:hover .preset-del { display: block; }
 .preset-del:hover { color: var(--st-failed-fg); border-color: var(--st-failed-fg); }
 
-/* ---- 顶栏安全区控件不被挤压 ---- */
-.topbar label.inline { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: none; }
-.topbar .seg, .topbar .seg-btn { white-space: nowrap; flex: none; }
+/* ---- 顶栏 / QuickBar 控件不被挤压 ---- */
+.quickbar .seg, .quickbar .seg-btn { white-space: nowrap; flex: none; }
 .topbar .save-indicator { white-space: nowrap; }
 
 /* 标题模板列表（文本面板「模板」页） */

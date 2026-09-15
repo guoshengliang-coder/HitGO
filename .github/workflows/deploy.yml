@@ -34,6 +34,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          # full history + tags: scripts/deploy.sh reads the latest tag for the version shown in the UI
+          fetch-depth: 0
 
       - name: Check secrets are configured
         run: |

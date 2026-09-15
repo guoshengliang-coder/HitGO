@@ -92,11 +92,16 @@ export function VideoList() {
   const setCurrent = useEditor((s) => s.setCurrent);
   const toggleSelected = useEditor((s) => s.toggleSelected);
   const setSelectedAll = useEditor((s) => s.setSelectedAll);
+  const batchName = useEditor((s) => s.batch?.name);
   const [applyOpen, setApplyOpen] = useState(false);
   const allOn = videos.length > 0 && selectedIds.length === videos.length;
 
   return (
     <div className="col-left">
+      {/* 批次名放在「全选」上方（HIG-14），顶栏只留品牌与版本号 */}
+      <div className="vlist-batch" title={batchName}>
+        {batchName ?? '…'}
+      </div>
       <div className="vlist-head">
         <label className="inline">
           <input type="checkbox" checked={allOn} onChange={(e) => setSelectedAll(e.target.checked)} />
