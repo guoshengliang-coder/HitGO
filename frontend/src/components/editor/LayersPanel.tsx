@@ -2,7 +2,7 @@
 // 属性检查器参考剪映的组织方式：文字内容在最上、样式预设分「花字 / 气泡」两组、
 // 位置区带六向对齐、描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
 
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
@@ -565,6 +565,47 @@ function LayerProps({ layer }: { layer: Layer }) {
   );
 }
 
+/** 图层名：双击进入编辑，Enter / 失焦提交，Esc 取消；清空则恢复自动名。 */
+function LayerNameCell({ layer, editing, onEdit, onDone }: { layer: Layer; editing: boolean; onEdit: () => void; onDone: () => void }) {
+  const assets = useEditor((s) => s.assets);
+  const updateLayer = useEditor((s) => s.updateLayer);
+  const shown = layerName(layer, assets);
+  const [draft, setDraft] = useState(shown);
+  // 提交 / 取消只处理一次：Enter 会触发 blur，Esc 卸载时部分浏览器也会补一个 blur
+  const settled = useRef(false);
+  if (!editing) {
+    return (
+      <span className="lname" title="双击重命名" onDoubleClick={(e) => { e.stopPropagation(); setDraft(shown); settled.current = false; onEdit(); }}>{shown}</span>
+    );
+  }
+  const finish = (save: boolean) => {
+    if (settled.current) return;
+    settled.current = true;
+    if (save) {
+      const v = draft.trim();
+      updateLayer(layer.id, { name: v || undefined }, false);
+    }
+    onDone();
+  };
+  return (
+    <input
+      className="input sm lname-input"
+      autoFocus
+      value={draft}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => finish(true)}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      }}
+    />
+  );
+}
+
 // ---------------------------------------------------------------- 面板
 
 export function LayersPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
@@ -585,8 +626,34 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
   const moveLayerTo = useEditor((s) => s.moveLayerTo);
+  const moveLayerToIndex = useEditor((s) => s.moveLayerToIndex);
   const duplicateLayer = useEditor((s) => s.duplicateLayer);
   const layers = spec?.layers ?? [];
+  // 图层列表：正在改名的图层 / 正在拖的图层 / 插入位置指示（列表按 z 序倒序显示：before = 视觉上方 = 更靠上层）
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [drop, setDrop] = useState<{ id: string; side: 'before' | 'after' } | null>(null);
+  const clearDrag = () => { setDragId(null); setDrop(null); };
+  const onRowDragOver = (e: DragEvent<HTMLDivElement>, id: string) => {
+    if (!dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const r = e.currentTarget.getBoundingClientRect();
+    const side = e.clientY < r.top + r.height / 2 ? 'before' : 'after';
+    if (drop?.id !== id || drop.side !== side) setDrop({ id, side });
+  };
+  const onRowDrop = (e: DragEvent<HTMLDivElement>, overId: string) => {
+    e.preventDefault();
+    if (!dragId || !drop) return clearDrag();
+    const from = layers.findIndex((l) => l.id === dragId);
+    const over = layers.findIndex((l) => l.id === overId);
+    if (from < 0 || over < 0) return clearDrag();
+    // 视觉上方 = spec.layers 里 over 之后；先把自己拿掉再算最终下标
+    let target = drop.side === 'before' ? over + 1 : over;
+    if (from < target) target -= 1;
+    clearDrag();
+    if (target !== from) moveLayerToIndex(dragId, target);
+  };
   const selected = layers.find((l) => l.id === selectedId) ?? null;
   const stickers = useMemo(() => filterAssets(assets, { type: 'sticker', bucket, q }), [assets, bucket, q]);
 
@@ -682,11 +749,27 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
             {layers.length === 0 ? (
               <div className="hint">还没有图层。添加贴纸或文字后，可在预览里拖动、缩放、旋转。</div>
             ) : (
-              <div className="layer-list">
+              <div className="layer-list" onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(null); }}>
                 {[...layers].reverse().map((l) => (
-                  <div key={l.id} className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''}`} onClick={() => setSelected(l.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setSelected(l.id)}>
+                  <div
+                    key={l.id}
+                    className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
+                    onClick={() => setSelected(l.id)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === 'Enter' && setSelected(l.id)}
+                    draggable={editingId !== l.id}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', l.id); // Firefox 不 setData 不会开始拖
+                      setDragId(l.id);
+                    }}
+                    onDragOver={(e) => onRowDragOver(e, l.id)}
+                    onDrop={(e) => onRowDrop(e, l.id)}
+                    onDragEnd={clearDrag}
+                  >
                     <span className="muted">{l.type === 'text' ? <IconText /> : <IconSticker />}</span>
-                    <span className="lname" title={layerName(l, assets)}>{layerName(l, assets)}</span>
+                    <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
                     <span className="acts" onClick={(e) => e.stopPropagation()}>
                       <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
                       <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !l.locked }, false)}><IconLock open={!l.locked} /></button>

@@ -10,6 +10,7 @@ import { emptySpec } from '../types';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { nudgePlacement, round4 } from '../lib/layout';
+import { reorder } from '../lib/order';
 import { bakeTextLayer } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
@@ -167,6 +168,8 @@ export interface EditorState {
   removeLayer: (id: string) => void;
   moveLayer: (id: string, dir: -1 | 1) => void;
   moveLayerTo: (id: string, where: 'top' | 'bottom') => void;
+  /** 把图层挪到 spec.layers 的 index 位置（越界夹到边界；末尾 = 最上层）。 */
+  moveLayerToIndex: (id: string, index: number) => void;
   duplicateLayer: (id: string) => void;
   copyLayer: () => void;
   pasteLayer: () => void;
@@ -671,6 +674,16 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => {
         const [item] = spec.layers.splice(i, 1);
         spec.layers.splice(target, 0, item);
+      });
+    },
+    moveLayerToIndex: (id, index) => {
+      const layers = get().currentSpec()?.layers ?? [];
+      const i = layers.findIndex((l) => l.id === id);
+      if (i < 0) return;
+      const target = Math.min(layers.length - 1, Math.max(0, Math.trunc(index)));
+      if (i === target) return;
+      get().updateSpec((spec) => {
+        spec.layers = reorder(spec.layers, i, target);
       });
     },
     duplicateLayer: (id) => {

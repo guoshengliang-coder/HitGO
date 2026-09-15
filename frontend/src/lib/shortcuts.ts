@@ -40,6 +40,8 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'layer-down', keys: ['['], label: '下移一层', group: '图层', step: 2 },
   { id: 'layer-top', keys: ['⇧', ']'], label: '置顶', group: '图层', step: 2 },
   { id: 'layer-bottom', keys: ['⇧', '['], label: '置底', group: '图层', step: 2 },
+  { id: 'layer-drag', keys: ['拖动'], label: '拖动图层调整层级', group: '图层', step: 2 },
+  { id: 'layer-rename', keys: ['双击'], label: '重命名图层', group: '图层', step: 2 },
   { id: 'nudge', keys: ['↑↓←→'], label: '微移 1 px（参考 1080×1920）', group: '图层', step: 2 },
   { id: 'nudge-10', keys: ['⇧', '↑↓←→'], label: '微移 10 px', group: '图层', step: 2 },
   { id: 'frame-step-alt', keys: ['⌥', '←→'], label: '选中图层时仍逐帧', group: '图层', step: 2 },
