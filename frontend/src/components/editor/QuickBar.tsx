@@ -3,7 +3,7 @@
 
 import { useEditor } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
-import { anchorParts, makeAnchor, reanchor, round4 } from '../../lib/layout';
+import { alignPlacement, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { VARIANT_DEFS, type VariantKey } from '../../types';
 import { IconCenter, IconCenterH, IconCenterV, IconCutLeft, IconCutRight, IconHelp, IconRedo, IconSafeZone, IconTrash, IconUndo } from '../ui/Icons';
@@ -40,11 +40,10 @@ export function QuickBar() {
   const center = (axis: 'h' | 'v' | 'both') => {
     if (!layer || layer.locked) return;
     const aspect = layerAspect(layer, assets);
-    const { ax, ay } = anchorParts(layer.anchor);
-    const next = axis === 'both' ? 'center' : axis === 'h' ? makeAnchor('center', ay) : makeAnchor(ax, 'center');
-    const p = reanchor(layer, aspect, REF, next);
-    const margin: [number, number] = [axis === 'v' ? round4(p.margin[0]) : 0, axis === 'h' ? round4(p.margin[1]) : 0];
-    updateLayer(layer.id, { anchor: next, margin });
+    const edges: AlignEdge[] = axis === 'both' ? ['center-h', 'center-v'] : axis === 'h' ? ['center-h'] : ['center-v'];
+    let p = { anchor: layer.anchor, margin: layer.margin, width: layer.width };
+    for (const e of edges) p = alignPlacement(p, aspect, REF, e);
+    updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
 
   const canDelete = step === 1 ? selectedRange !== null : step === 2 ? !!selectedLayerId : false;

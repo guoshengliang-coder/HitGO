@@ -95,3 +95,19 @@ export function boxOverlapsRect(
 export function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
+
+export type AlignEdge = 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom';
+
+/**
+ * 六向对齐（剪映属性面板的 左 / 水平居中 / 右 / 上 / 垂直居中 / 下）：
+ * 只改所选轴的 anchor 并把该轴 margin 归零，另一轴保持视觉位置不变（通过 reanchor 反算）。
+ */
+export function alignPlacement(p: Placement, aspectRatio: number, c: Canvas, edge: AlignEdge): Placement {
+  const { ax, ay } = anchorParts(p.anchor);
+  const horizontal = edge === 'left' || edge === 'center-h' || edge === 'right';
+  const nextAx = edge === 'left' ? 'left' : edge === 'center-h' ? 'center' : edge === 'right' ? 'right' : ax;
+  const nextAy = edge === 'top' ? 'top' : edge === 'center-v' ? 'center' : edge === 'bottom' ? 'bottom' : ay;
+  const r = reanchor(p, aspectRatio, c, makeAnchor(nextAx, nextAy));
+  const margin: [number, number] = horizontal ? [0, round4(r.margin[1])] : [round4(r.margin[0]), 0];
+  return { anchor: r.anchor, margin, width: p.width };
+}

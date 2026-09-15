@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { anchorParts, boxOverlapsRect, makeAnchor, marginFromBox, nudgePlacement, placeLayer, reanchor, round4 } from './layout';
+import { alignPlacement, anchorParts, boxOverlapsRect, makeAnchor, marginFromBox, nudgePlacement, placeLayer, reanchor, round4 } from './layout';
 import { ANCHORS } from '../types';
 
 const c = { W: 1080, H: 1920 };
@@ -88,4 +88,39 @@ describe('boxOverlapsRect', () => {
     expect(boxOverlapsRect(box, c, { x: 0, y: 0, w: 1, h: 0.08 })).toBe(true);
     expect(boxOverlapsRect(box, c, { x: 0, y: 0.78, w: 1, h: 0.22 })).toBe(false);
   });
+});
+
+describe('alignPlacement（六向对齐）', () => {
+  const p = { anchor: 'top-left' as const, margin: [0.1, 0.2] as [number, number], width: 0.3 };
+  it('贴左：水平 margin 归零，垂直保持视觉位置', () => {
+    const r = alignPlacement(p, 1, c, 'left');
+    expect(r.anchor).toBe('top-left');
+    expect(r.margin).toEqual([0, 0.2]);
+  });
+  it('贴右：anchor 换到右列且 margin.x = 0，y 不变', () => {
+    const r = alignPlacement(p, 1, c, 'right');
+    expect(r.anchor).toBe('top-right');
+    expect(r.margin).toEqual([0, 0.2]);
+    expect(placeLayer(r, 1, c).x).toBeCloseTo(1080 - 0.3 * 1080);
+  });
+  it('水平居中后再贴底：变成 bottom-center，两轴都归零', () => {
+    const r1 = alignPlacement(p, 1, c, 'center-h');
+    expect(r1.anchor).toBe('top-center');
+    expect(placeLayer(r1, 1, c).x).toBeCloseTo((1080 - 324) / 2);
+    const r2 = alignPlacement(r1, 1, c, 'bottom');
+    expect(r2.anchor).toBe('bottom-center');
+    expect(r2.margin).toEqual([0, 0]);
+  });
+  it('垂直居中保留水平视觉位置（center 锚点带偏移）', () => {
+    const q = { anchor: 'center' as const, margin: [0.1, 0.3] as [number, number], width: 0.2 };
+    const r = alignPlacement(q, 1, c, 'center-v');
+    expect(r.anchor).toBe('center');
+    expect(r.margin).toEqual([0.1, 0]);
+  });
+  for (const a of ANCHORS) {
+    it(`任意锚点 ${a} 贴上后 y = 0`, () => {
+      const r = alignPlacement({ anchor: a, margin: [0.05, 0.05], width: 0.25 }, 2, c, 'top');
+      expect(placeLayer(r, 2, c).y).toBeCloseTo(0);
+    });
+  }
 });
