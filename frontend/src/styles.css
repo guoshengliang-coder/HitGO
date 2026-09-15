@@ -382,6 +382,12 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .layer-item .lname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-item .acts { display: flex; gap: 0; opacity: 0.7; }
 .layer-item .acts .btn { width: 20px; height: 20px; padding: 0; }
+.layer-item.dragging { opacity: 0.5; }
+.layer-item.drop-before, .layer-item.drop-after { position: relative; }
+.layer-item.drop-before::before, .layer-item.drop-after::after { content: ''; position: absolute; left: 4px; right: 4px; height: 2px; background: var(--accent); border-radius: 1px; pointer-events: none; }
+.layer-item.drop-before::before { top: -2px; }
+.layer-item.drop-after::after { bottom: -2px; }
+.layer-item .lname-input { min-width: 0; height: 22px; }
 .layer-item.hidden .lname { color: var(--ink-3); text-decoration: line-through; }
 
 .prop-grid { display: grid; grid-template-columns: 72px 1fr; gap: 6px 8px; align-items: center; font-size: 12px; }
