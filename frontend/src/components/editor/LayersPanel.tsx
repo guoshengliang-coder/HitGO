@@ -2,7 +2,7 @@
 // 属性检查器参考剪映的组织方式：文字内容在最上、样式预设分「花字 / 气泡」两组、
 // 位置区带六向对齐、描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { ANCHORS, defaultTextStyle, isAssetReady, isVideoAsset, type Anchor, type Layer, type Playback, type StickerLayer, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
@@ -14,6 +14,8 @@ import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { TITLE_TEMPLATES, templateToLayers, type TitleTemplate } from '../../lib/titleTemplates';
+import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
+import { cuesToTextLayers, parseSrt } from '../../lib/srt';
 import { AssetCard } from '../../pages/AssetsPage';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconChevron, IconCopy, IconDown, IconEye, IconLock, IconReset, IconSticker, IconText, IconTrash, IconUp,
@@ -559,6 +561,9 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
   const setSelected = useEditor((s) => s.setSelectedLayer);
   const addLayer = useEditor((s) => s.addLayer);
   const addLayers = useEditor((s) => s.addLayers);
+  const setToast = useEditor((s) => s.setToast);
+  const postDuration = usePostDuration();
+  const srtInputRef = useRef<HTMLInputElement>(null);
   const updateLayer = useEditor((s) => s.updateLayer);
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
@@ -589,6 +594,28 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
     setShowTemplates(false);
     setTab('layers');
   };
+  // 导入本地字幕（对应剪映）：每条 .srt 字幕 → 一个带时段的文字图层，套「黑底白字字幕条」样式贴底居中。
+  const importSrt = async (file: File) => {
+    let text = '';
+    try {
+      text = await file.text();
+    } catch {
+      setToast('读取字幕文件失败');
+      return;
+    }
+    const cues = parseSrt(text);
+    const preset = BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar');
+    const style = { ...defaultTextStyle(), ...(preset?.style ?? {}) };
+    const layers = cuesToTextLayers(cues, { style, newId: newLayerId, maxEnd: postDuration > 0 ? postDuration : undefined });
+    if (!layers.length) {
+      setToast('没有解析到字幕');
+      return;
+    }
+    addLayers(layers);
+    setShowTemplates(false);
+    setTab('layers');
+    setToast(`已导入 ${layers.length} 条字幕`);
+  };
   const addSticker = (assetId: string) => {
     const asset = assets.find((a) => a.id === assetId);
     if (!isAssetReady(asset)) return; // 还在预处理：加进去也渲染不出来
@@ -610,6 +637,18 @@ export function LayersPanel({ onApply, targetCount }: { onApply: () => void; tar
             <button className="btn" onClick={() => setTab('assets')}><IconSticker /> 贴纸</button>
             <button className="btn" onClick={addText}><IconText /> 文字</button>
             <button className="btn" onClick={() => setShowTemplates((v) => !v)} title="标题模板：一键添加带样式与位置的文字图层，加入后只需改字"><IconText /> 标题模板</button>
+            <button className="btn" onClick={() => srtInputRef.current?.click()} title="导入本地字幕：把 .srt 文件的每条字幕变成一个带时段的文字图层"><IconText /> 导入字幕</button>
+            <input
+              ref={srtInputRef}
+              type="file"
+              accept=".srt,.vtt,text/plain"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = ''; // 允许重复导入同一个文件
+                if (f) void importSrt(f);
+              }}
+            />
           </div>
           {showTemplates && (
             <div className="template-list">
