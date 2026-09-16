@@ -507,6 +507,139 @@ class SeparationOut(BaseModel):
     updated_at: str | None = None
 
 
+# --- localization (contract §1 Video.localization, §3 /localize) ---------------------------
+
+LANG_CODE = Field(min_length=2, max_length=8, pattern=r"^[a-z]{2,8}$")
+
+
+class TermIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source: str = Field(min_length=1, max_length=100)
+    target: str = Field(min_length=1, max_length=100)
+
+
+class LocalizeIn(BaseModel):
+    source_lang: str = Field(default="auto", min_length=2, max_length=8)
+    target_langs: list[str] = Field(min_length=1, max_length=5)
+    voices: dict[str, str] | None = None
+    terms: list[TermIn] = Field(default_factory=list, max_length=200)
+    retranscribe: bool = False
+
+    @field_validator("target_langs")
+    @classmethod
+    def _unique_langs(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for lang in v:
+            lang = lang.strip()
+            if lang and lang not in out:
+                out.append(lang)
+        if not out:
+            raise ValueError("至少选择一个目标语言")
+        return out
+
+
+class TranscriptCueIn(BaseModel):
+    i: int = Field(ge=0)
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("句子不能为空")
+        return v
+
+
+class TranscriptCuesIn(BaseModel):
+    cues: list[TranscriptCueIn] = Field(default_factory=list, max_length=400)
+    source_lang: str | None = Field(default=None, min_length=2, max_length=8)
+
+
+class VersionCueIn(BaseModel):
+    i: int = Field(ge=0)
+    translated: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("translated")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("译文不能为空")
+        return v
+
+
+class VersionCuesIn(BaseModel):
+    cues: list[VersionCueIn] = Field(default_factory=list, max_length=400)
+    voice: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class TranscriptCueOut(BaseModel):
+    i: int
+    start: float
+    end: float
+    text: str
+
+
+class TranscriptOut(BaseModel):
+    status: str
+    error: str | None = None
+    cues: list[TranscriptCueOut] = Field(default_factory=list)
+    updated_at: str | None = None
+
+
+class VersionCueOut(BaseModel):
+    i: int
+    translated: str
+
+
+class TermOut(BaseModel):
+    source: str
+    target: str
+
+
+class VersionOut(BaseModel):
+    status: str
+    stage: str | None = None
+    voice: str | None = None
+    terms: list[TermOut] = Field(default_factory=list)
+    cues: list[VersionCueOut] = Field(default_factory=list)
+    stale: bool = False
+    error: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    voice_asset_id: str | None = None
+    updated_at: str | None = None
+
+
+class LocalizationOut(BaseModel):
+    """``pending`` (the worker's to-do) is internal and deliberately not exposed."""
+
+    source_lang: str = "auto"
+    transcript: TranscriptOut | None = None
+    versions: dict[str, VersionOut] = Field(default_factory=dict)
+
+
+class LangOut(BaseModel):
+    code: str
+    label: str
+
+
+class VoiceOut(BaseModel):
+    id: str
+    label: str
+
+
+class TargetLangOut(LangOut):
+    voices: list[VoiceOut] = Field(default_factory=list)
+
+
+class LocalizeOptionsOut(BaseModel):
+    enabled: bool
+    source_langs: list[LangOut]
+    target_langs: list[TargetLangOut]
+
+
 class VideoOut(BaseModel):
     id: str
     batch_id: str
@@ -527,6 +660,7 @@ class VideoOut(BaseModel):
     edited: bool
     render_status: str
     separation: SeparationOut | None = None
+    localization: LocalizationOut | None = None
     updated_at: str
 
 

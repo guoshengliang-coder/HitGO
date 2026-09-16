@@ -16,6 +16,7 @@ os.environ["PUBLIC_BASE_URL"] = "https://hitgo.example"
 os.environ["SAMPLES_DIR"] = "-"
 os.environ["ENV"] = "dev"
 os.environ["FRONTEND_DIST"] = str(_TMP / "no-dist")
+os.environ["LOCALIZE_PROVIDER"] = "fake"  # never dashscope / the network in tests
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

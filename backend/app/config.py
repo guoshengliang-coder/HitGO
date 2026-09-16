@@ -32,6 +32,17 @@ class Settings:
     # Vocals / instrumental separation (separator worker, contract §6).
     separate_threads: int
     separate_max_seconds: int
+    # Localization (ASR → MT → TTS via Alibaba DashScope, contract §6). provider = dashscope | fake.
+    dashscope_api_key: str
+    localize_provider: str
+    localize_asr_model: str
+    localize_mt_model: str
+    localize_tts_model: str
+    localize_max_seconds: int
+    localize_max_tempo: float
+    localize_timeout_seconds: int
+    # "ko=loongkyong_v3,ja=loongtomoka_v3": per-language default voice overrides.
+    localize_voices: str
 
     @property
     def is_dev(self) -> bool:
@@ -67,6 +78,15 @@ def load_settings() -> Settings:
         samples_dir=samples_dir,
         separate_threads=int(_env("SEPARATE_THREADS", "4")),
         separate_max_seconds=int(_env("SEPARATE_MAX_SECONDS", "600")),
+        dashscope_api_key=_env("DASHSCOPE_API_KEY", "").strip(),
+        localize_provider=_env("LOCALIZE_PROVIDER", "dashscope").strip().lower(),
+        localize_asr_model=_env("LOCALIZE_ASR_MODEL", "paraformer-realtime-v2"),
+        localize_mt_model=_env("LOCALIZE_MT_MODEL", "qwen-mt-plus"),
+        localize_tts_model=_env("LOCALIZE_TTS_MODEL", "cosyvoice-v3-flash"),
+        localize_max_seconds=int(_env("LOCALIZE_MAX_SECONDS", "600")),
+        localize_max_tempo=float(_env("LOCALIZE_MAX_TEMPO", "1.3")),
+        localize_timeout_seconds=int(_env("LOCALIZE_TIMEOUT_SECONDS", "900")),
+        localize_voices=_env("LOCALIZE_VOICES", "").strip(),
     )
 
 

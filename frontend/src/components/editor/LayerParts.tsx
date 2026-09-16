@@ -11,7 +11,7 @@ import { layersOfType, type LayerType } from '../../lib/layerKind';
 import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
 import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
-import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
+import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
@@ -375,7 +375,13 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
       <Section title="字体" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
         <span>字体</span>
         <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })}>
-          <option value={BUILTIN_FONT_FAMILY}>{BUILTIN_FONT_FAMILY}（内置）</option>
+          {BUILTIN_WEB_FONTS.map((f) => (
+            <option key={f.family} value={f.family}>{f.family}（{f.label}）</option>
+          ))}
+          {/* 图层用的是别的字体（旧 spec / 已删的上传字体）：保留为一个选项，免得下拉显示成第一项而实际不是 */}
+          {st.font_family !== BUILTIN_FONT_FAMILY && !BUILTIN_WEB_FONTS.some((f) => f.family === st.font_family) && !fonts.some((f) => f.family === st.font_family) && (
+            <option value={st.font_family}>{st.font_family}</option>
+          )}
           {fonts.map((f) => (
             <option key={f.id} value={f.family}>{f.family}</option>
           ))}

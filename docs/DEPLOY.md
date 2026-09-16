@@ -148,6 +148,13 @@ ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契
 | `WORKER_CONCURRENCY` | `1` | worker 并行渲染数 |
 | `SEPARATE_THREADS` | `4` | separator 里 torch 的线程数（4 核机器上 4；和渲染并行时可减到 2） |
 | `SEPARATE_MAX_SECONDS` | `600` | 分离接受的最长源音轨（秒），更长直接 failed |
+| `DASHSCOPE_API_KEY` | 空 | 阿里云百炼 key，改语言（听写 / 翻译 / 配音）用；空则 `GET /api/localize/options` 返回 `enabled=false`，前端禁用模块 |
+| `LOCALIZE_PROVIDER` | `dashscope` | `dashscope` \| `fake`（假听写 / 假翻译 / 静音配音，只用于测试和演示） |
+| `LOCALIZE_ASR_MODEL` / `LOCALIZE_MT_MODEL` / `LOCALIZE_TTS_MODEL` | `paraformer-realtime-v2` / `qwen-mt-plus` / `cosyvoice-v3-flash` | 百炼模型；换 TTS 模型必须同时换音色（`_v3` 音色只配 v3 系列） |
+| `LOCALIZE_MAX_SECONDS` | `600` | 改语言接受的最长源视频（秒） |
+| `LOCALIZE_MAX_TEMPO` | `1.3` | 译文配音塞不进原句时段时最多加速几倍；仍超出时写进版本 `warnings` |
+| `LOCALIZE_TIMEOUT_SECONDS` | `900` | 一次改语言任务的软超时（秒）；超时后进行中的版本记 failed |
+| `LOCALIZE_VOICES` | 空 | `ko=loongjihun_v3,de=<voice>`：按语言覆盖默认音色或给还没有默认音色的语言加一个（该语言随即出现在目标语言列表） |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 
@@ -159,3 +166,15 @@ ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契
 - nginx：`deploy/nginx/hitgo.conf` → `/etc/nginx/conf.d/hitgo.conf`，`sudo nginx -t && sudo systemctl reload nginx`。DNS 为 Cloudflare 代理记录（橙色云）。
 - 演示素材：`scripts/make_demo_media.sh /srv/hitgo/demo` 生成占位视频与贴纸；`scripts/seed_demo.sh http://127.0.0.1:8790 <code> /srv/hitgo/demo` 建演示批次；`scripts/smoke_render.py` 走一遍剪辑 + 贴纸 + 双变体渲染。
 - 更新流程：本机改代码 → rsync → `sudo docker compose build && sudo docker compose up -d`（约 1–2 分钟，镜像层有缓存）。
+
+## 百炼（改语言）接入自检
+
+拿到 API-KEY 后先在本机跑一遍，不用部署：
+
+```bash
+cd backend && DASHSCOPE_API_KEY=sk-xxx uv run python ../scripts/check_dashscope.py --target ko
+```
+
+脚本按 TTS → ASR → 翻译 → 目标语言 TTS 走一圈，逐步打印耗时与百炼返回的原因（key 无效、模型未开通、余额不足会直接看到）。
+三步都通再把 key 写进服务器 `.env` 的 `DASHSCOPE_API_KEY`，`docker compose up -d` 重启 api / worker 即可。worker 需要能出网访问
+`dashscope.aliyuncs.com:443`（ASR / TTS 走 WebSocket）。

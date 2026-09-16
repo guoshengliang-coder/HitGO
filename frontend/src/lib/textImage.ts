@@ -35,10 +35,14 @@ export function fontString(style: TextStyle, px: number): string {
   return `${style.font_weight} ${px}px ${fam}`;
 }
 
-export async function waitForFont(style: TextStyle, px = 40): Promise<void> {
+/**
+ * 等字体就绪再测量 / 绘制。sample 要传图层的实际文字：Google Fonts 按 unicode-range 分片下载，
+ * 用固定的「汉字Aa」做样本时韩文 / 日文分片不会被触发，首次烤 PNG 就用了回退字体还被缓存住。
+ */
+export async function waitForFont(style: TextStyle, px = 40, sample = '汉字Aa'): Promise<void> {
   try {
     if (typeof document !== 'undefined' && document.fonts?.load) {
-      await document.fonts.load(fontString(style, px), '汉字Aa');
+      await document.fonts.load(fontString(style, px), sample || '汉字Aa');
     }
   } catch {
     /* 字体不可用时退回系统字体 */
@@ -232,7 +236,7 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 }
 
 export async function renderTextImage(layer: TextLayer): Promise<RenderedText> {
-  await waitForFont(layer.style);
+  await waitForFont(layer.style, 40, layer.text);
   return drawTextImage(layer.text, layer.style, TEXT_CANVAS.H, layer.spans);
 }
 
@@ -249,9 +253,18 @@ export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
     image_size: [up.width || rendered.width, up.height || rendered.height],
   };
   if (!layer.width_manual || !layer.width) {
-    next.width = rendered.width / TEXT_CANVAS.W;
+    next.width = bakedWidth(rendered.width);
   }
   return next;
+}
+
+/**
+ * 烤好的 PNG 在画布上的相对宽度。文字不自动换行，一条长字幕（SRT 导入、改语言的译文）会比画布还宽，
+ * 契约要求 width ≤ 1，超出就按画布宽缩放（整段等比缩小，仍是一行）。
+ */
+export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W): number {
+  if (!(renderedPx > 0) || !(canvasW > 0)) return 1;
+  return Math.min(1, renderedPx / canvasW);
 }
 
 // ---- 预览缓存：同一文字 + 样式 + 上色只渲染一次 ----

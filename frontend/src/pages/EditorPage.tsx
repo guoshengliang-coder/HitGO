@@ -15,6 +15,7 @@ import { AudioPanel } from '../components/editor/AudioPanel';
 import { TextPanel } from '../components/editor/TextPanel';
 import { StickerPanel } from '../components/editor/StickerPanel';
 import { SubtitlePanel } from '../components/editor/SubtitlePanel';
+import { LocalizePanel } from '../components/editor/LocalizePanel';
 import { CropEditor } from '../components/editor/CropEditor';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { ProgressModal } from '../components/editor/ProgressModal';
@@ -289,9 +290,10 @@ export function EditorPage() {
           {step === 'text' && <TextPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'sticker' && <StickerPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
           {step === 'subtitle' && <SubtitlePanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
+          {step === 'localize' && <LocalizePanel />}
         </div>
       </div>
-      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={step === 'audio' ? ['audio'] : ['layers']} onClose={() => setApplyOpen(false)} />}
+      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={step === 'audio' ? ['audio'] : step === 'localize' ? ['layers', 'audio'] : ['layers']} onClose={() => setApplyOpen(false)} />}
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
       {progressOpen && <ProgressModal />}
       {shortcutsOpen && <ShortcutsModal />}

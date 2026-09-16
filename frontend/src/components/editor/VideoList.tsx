@@ -5,6 +5,7 @@ import { Modal } from '../ui/Modal';
 import { formatSeconds } from '../../lib/time';
 import type { EditSpec } from '../../types';
 import { isDefaultAudio } from '../../lib/audioTracks';
+import { applyCrossVideoWarnings } from '../../lib/localize';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
@@ -33,6 +34,8 @@ export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds:
   const specs = useEditor((s) => s.specs);
   const targets = targetIds.filter((id) => id !== currentId);
   const overwriteCount = (m: ApplyModule) => targets.filter((id) => moduleConfigured(specs[id], m)).length;
+  // 分离结果 / 改语言的层与轨是按当前这条视频算的：勾了图层或音频时提醒会错位
+  const crossWarnings = modules.includes('layers') || modules.includes('audio') ? applyCrossVideoWarnings(currentId ? specs[currentId] : null) : [];
   return (
     <Modal
       title={`批量应用当前配置 → ${targets.length} 条`}
@@ -81,6 +84,9 @@ export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds:
           </div>
         );
       })}
+      {crossWarnings.map((w) => (
+        <div key={w} className="error-text">{w}</div>
+      ))}
       {targets.length === 0 && <div className="error-text">请先在左侧勾选除当前视频以外的目标。</div>}
     </Modal>
   );

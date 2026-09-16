@@ -317,6 +317,22 @@ def test_put_spec_text_glow_round_trips(client, ready_video):
     assert r.status_code == 400 and "glow" in r.json()["errors"][0]["field"]
 
 
+def test_put_spec_keeps_localize_markers_on_layers_and_tracks(client, ready_video):
+    """origin / lang are frontend markers (contract §2): validated as extra, stored and returned raw."""
+    spec = valid_spec()
+    spec["layers"][1]["origin"] = "localize"
+    spec["layers"][1]["lang"] = "ko"
+    spec["audio"] = {
+        "source_volume": 0,
+        "tracks": [{"id": "au_1", "asset_id": "a_dub", "role": "voice", "align": "source", "t": "all", "origin": "localize", "lang": "ko"}],
+    }  # fmt: skip
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    got = client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]
+    assert got["layers"][1]["origin"] == "localize" and got["layers"][1]["lang"] == "ko"
+    assert got["audio"]["tracks"][0]["origin"] == "localize" and got["audio"]["tracks"][0]["lang"] == "ko"
+
+
 def test_put_spec_requires_ready_video(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     vid = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"])).json()[0]["id"]

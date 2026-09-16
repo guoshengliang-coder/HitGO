@@ -6,9 +6,10 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
+import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
@@ -197,6 +198,24 @@ export interface EditorState {
    */
   useStem: (stem: 'vocals' | 'instrumental') => string | null;
 
+  // 改语言（契约 §1 localization / §3 localize）
+  /** GET /api/localize/options 的结果；null = 还没拉。拉失败（旧后端没有这个接口等）按 enabled=false 处理。 */
+  localizeOptions: LocalizeOptions | null;
+  loadLocalizeOptions: () => Promise<void>;
+  /** POST localize：听写（模板未就绪时）+ 逐语言生成；发起后轮询到全部结束。成功返回 true。 */
+  localizeVideo: (body: LocalizeIn) => Promise<boolean>;
+  /** 修正模板文本（PUT transcript）；不触发任务，已有版本会被标为 stale。 */
+  updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
+  /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
+  resynthesizeVersion: (lang: string, edits: { i: number; translated: string }[], voice?: string) => Promise<boolean>;
+  deleteVersion: (lang: string) => Promise<boolean>;
+  /**
+   * 把某个语言版本套用到当前视频：一次 updateSpec = 一步历史，toast 带「撤销」。
+   * 已是当前套用的版本时不重复套（返回 false，不记历史）；force 强制重建层 / 轨（沿用已调过的字幕样式）。
+   * 版本不可用（没生成完 / 配音素材不存在）时 toast 原因并返回 false。
+   */
+  applyVersion: (lang: string, opts?: { force?: boolean }) => boolean;
+
   // 图层
   /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省放最上层。 */
   addLayer: (layer: Layer, opts?: { belowType?: LayerType }) => void;
@@ -309,31 +328,57 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
   assetPollTimer = window.setTimeout(tick, 2000);
 }
 
-let separationTimers: Record<string, number> = {};
+/** 视频上会异步变化、需要轮询的字段：分离（separation）和改语言（localization）。 */
+type PolledField = 'separation' | 'localization';
+const fieldTimers: Record<string, number> = {};
 
-/** 分离是后台任务：每 2 秒拉一次视频，直到 done / failed；完成后重新拉素材列表让新音轨出现。 */
-function pollSeparation(videoId: string, set: (fn: (s: EditorState) => Partial<EditorState>) => void, get: () => EditorState) {
-  if (separationTimers[videoId]) return;
+/** 该字段是否还有后台任务在跑：分离看 status；改语言看听写和所有版本。 */
+function fieldActive(video: Video | null | undefined, field: PolledField): boolean {
+  if (field === 'separation') {
+    const st = video?.separation?.status;
+    return st === 'queued' || st === 'running';
+  }
+  return isLocalizationActive(video?.localization);
+}
+
+/**
+ * 分离 / 改语言都是后台任务：每 2 秒拉一次视频，只更新那个字段，直到它不再 active；
+ * 结束后重新拉素材列表让新音轨出现，并按字段各自给一句提示。load() 时对进行中的视频也会调它恢复轮询。
+ */
+function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: EditorState) => Partial<EditorState>) => void, get: () => EditorState) {
+  const key = `${field}:${videoId}`;
+  if (fieldTimers[key]) return;
+  // 起点快照：改语言结束时只报告这轮里变过的版本
+  const before = get().videos.find((v) => v.id === videoId)?.localization ?? null;
   const tick = async () => {
-    delete separationTimers[videoId];
+    delete fieldTimers[key];
     let fresh: Video | null = null;
     try {
       fresh = await api.getVideo(videoId);
     } catch {
       /* 断网 / 视频被删：下一轮再试；被删时 videos 里也不会再有它 */
     }
-    if (fresh) set((s) => ({ videos: s.videos.map((v) => (v.id === fresh!.id ? { ...v, separation: fresh!.separation } : v)) }));
-    const status = fresh?.separation?.status;
-    if (status === 'done' || status === 'failed') {
+    if (fresh) set((s) => ({ videos: s.videos.map((v) => (v.id === fresh!.id ? { ...v, [field]: fresh![field] } : v)) }));
+    if (fresh && !fieldActive(fresh, field)) {
       await get().loadAssets();
-      if (status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
-      else get().setToast(`分离失败：${fresh?.separation?.error ?? '未知原因'}`);
+      if (field === 'separation') {
+        if (fresh.separation?.status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
+        else get().setToast(`分离失败：${fresh.separation?.error ?? '未知原因'}`);
+      } else {
+        const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
+        if (text) get().setToast(text);
+      }
       return;
     }
     if (!get().videos.some((v) => v.id === videoId)) return;
-    separationTimers[videoId] = window.setTimeout(tick, 2000);
+    fieldTimers[key] = window.setTimeout(tick, 2000);
   };
-  separationTimers[videoId] = window.setTimeout(tick, 2000);
+  fieldTimers[key] = window.setTimeout(tick, 2000);
+}
+
+/** 把服务器回的视频里的某个字段合进 videos（202 回的是整条 Video，但只信任任务字段，草稿 spec 不动）。 */
+function mergeVideoField(set: (fn: (s: EditorState) => Partial<EditorState>) => void, updated: Video, field: PolledField) {
+  set((s) => ({ videos: s.videos.map((v) => (v.id === updated.id ? { ...v, [field]: updated[field] } : v)) }));
 }
 
 function ensureAudio(spec: EditSpec): AudioSpec {
@@ -436,6 +481,7 @@ export const useEditor = create<EditorState>((set, get) => {
     safeZoneMode: loadSafeZoneMode(loadSafeZoneView()),
     theme: loadTheme(),
     textPresets: BUILTIN_TEXT_PRESETS,
+    localizeOptions: null,
 
     load: async (batchId) => {
       // 切批次时 /batches/:id 的 element 不变，EditorPage 不卸载，它的 cleanup 不跑：
@@ -479,6 +525,11 @@ export const useEditor = create<EditorState>((set, get) => {
         for (const id of collapsed) scheduleSave(id);
         void get().loadAssets();
         void get().loadTextPresets();
+        // 刷新页面时分离 / 改语言可能还在跑：恢复轮询，结束时照常提示
+        for (const v of batch.videos) {
+          if (fieldActive(v, 'separation')) pollVideoField(v.id, 'separation', set, get);
+          if (fieldActive(v, 'localization')) pollVideoField(v.id, 'localization', set, get);
+        }
         // 恢复未完成的渲染任务
         try {
           const jobs = await api.batchJobs(batchId);
@@ -808,8 +859,8 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!video) return;
       try {
         const updated = await api.separateVideo(video.id, model);
-        set((s) => ({ videos: s.videos.map((v) => (v.id === updated.id ? { ...v, separation: updated.separation } : v)) }));
-        pollSeparation(video.id, set, get);
+        mergeVideoField(set, updated, 'separation');
+        pollVideoField(video.id, 'separation', set, get);
       } catch (e) {
         get().setToast(e instanceof ApiError ? e.message : '分离请求失败');
       }
@@ -829,6 +880,105 @@ export const useEditor = create<EditorState>((set, get) => {
       });
       set({ selectedTrackId: id });
       return id;
+    },
+
+    loadLocalizeOptions: async () => {
+      if (get().localizeOptions) return;
+      try {
+        set({ localizeOptions: await api.getLocalizeOptions() });
+      } catch {
+        // 旧后端没有这个接口 / 网络错误：当作没配置，面板禁用并提示
+        set({ localizeOptions: { enabled: false, source_langs: [], target_langs: [] } });
+      }
+    },
+    localizeVideo: async (body) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        const updated = await api.localizeVideo(video.id, body);
+        mergeVideoField(set, updated, 'localization');
+        pollVideoField(video.id, 'localization', set, get);
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '改语言请求失败');
+        return false;
+      }
+    },
+    updateTranscript: async (edits, sourceLang) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        const updated = await api.updateTranscript(video.id, { cues: edits, ...(sourceLang ? { source_lang: sourceLang } : {}) });
+        mergeVideoField(set, updated, 'localization');
+        const n = Object.keys(updated.localization?.versions ?? {}).length;
+        get().setToast(n ? `模板已保存；已有的 ${n} 个版本译文已过时，在版本列表里点「重译」更新` : '模板已保存');
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '保存模板失败');
+        return false;
+      }
+    },
+    resynthesizeVersion: async (lang, edits, voice) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        const updated = await api.updateVersionCues(video.id, lang, { cues: edits, ...(voice ? { voice } : {}) });
+        mergeVideoField(set, updated, 'localization');
+        pollVideoField(video.id, 'localization', set, get);
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '重新合成请求失败');
+        return false;
+      }
+    },
+    deleteVersion: async (lang) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        await api.deleteVersion(video.id, lang);
+        set((s) => ({
+          videos: s.videos.map((v) => {
+            if (v.id !== video.id || !v.localization) return v;
+            const versions = { ...v.localization.versions };
+            delete versions[lang];
+            return { ...v, localization: { ...v.localization, versions } };
+          }),
+        }));
+        void get().loadAssets(); // 配音素材随版本一起删了
+        const label = langLabel(get().localizeOptions, lang);
+        const cur = appliedVersion(get().currentSpec(), video.localization);
+        get().setToast(cur?.lang === lang ? `已删除${label}版；已套用的字幕层和配音轨还在，配音素材已失效，可 ⌘Z 撤销套用或手动删除` : `已删除${label}版`);
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '删除版本失败');
+        return false;
+      }
+    },
+    applyVersion: (lang, opts) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return false;
+      const check = canApplyVersion(video, lang, get().assets);
+      if (!check.ok) {
+        get().setToast(check.reason);
+        return false;
+      }
+      const label = langLabel(get().localizeOptions, lang);
+      if (!opts?.force) {
+        const cur = appliedVersion(spec, video.localization);
+        if (cur?.lang === lang && cur.state === 'applied') {
+          get().setToast(`${label}版已是当前套用的版本`);
+          return false;
+        }
+      }
+      const assets = get().assets;
+      let warnings: string[] = [];
+      get().updateSpec((s) => {
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, langLabel: label, newLayerId, newTrackId });
+      });
+      set({ selectedLayerId: null, selectedTrackId: null });
+      get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
+      return true;
     },
 
     setCover: (assetId) => {

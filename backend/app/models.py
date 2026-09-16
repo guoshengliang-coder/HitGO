@@ -31,7 +31,7 @@ ASSET_AUDIO = "audio"
 ASSET_SOURCE_UPLOAD = "upload"
 ASSET_SOURCE_BUILTIN = "builtin"
 ASSET_SOURCE_LIBRARY = "library"
-# Produced by the system from a video (vocals / instrumental stems, contract §1).
+# Produced by the system from a video (vocals / instrumental stems, dubbed voice, contract §1).
 ASSET_SOURCE_DERIVED = "derived"
 ASSET_SOURCES = (ASSET_SOURCE_UPLOAD, ASSET_SOURCE_BUILTIN, ASSET_SOURCE_LIBRARY, ASSET_SOURCE_DERIVED)
 
@@ -41,6 +41,13 @@ SEP_RUNNING = "running"
 SEP_DONE = "done"
 SEP_FAILED = "failed"
 SEP_ACTIVE = (SEP_QUEUED, SEP_RUNNING)
+
+# Video.localization.transcript.status / versions[lang].status (contract §1)
+LOC_QUEUED = "queued"
+LOC_RUNNING = "running"
+LOC_DONE = "done"
+LOC_FAILED = "failed"
+LOC_ACTIVE = (LOC_QUEUED, LOC_RUNNING)
 
 # Asset.kind / status (contract §1). Video stickers are probed asynchronously.
 ASSET_IMAGE = "image"
@@ -88,6 +95,9 @@ class Video(Base):
     edit_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Vocals / instrumental separation state (contract §1); None = never run.
     separation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Localization state: transcript template + per-language dubbed versions (contract §1);
+    # None = never requested.
+    localization: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -120,7 +130,7 @@ class Asset(Base):
     has_audio: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     decoder: Mapped[str | None] = mapped_column(String(32), nullable=True)
     preview_ext: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    # source = derived only: {video_id, video_name, stem} (contract §1).
+    # source = derived only: {video_id, video_name, stem[, lang]} (contract §1).
     derived_from: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 

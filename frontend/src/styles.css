@@ -540,3 +540,21 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .sticker-grid .asset-card .thumb.audio { height: 64px; }
 .track-item .track-head .role.source { background: #e6e3f7; color: #4a3f8f; }
 .track-item .track-head .role.sticker { background: #e8e8ea; color: #444; }
+
+/* ---- 改语言（LocalizePanel）：逐句列表 + 版本行 ---- */
+.cue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+.cue-item { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 2px 6px; align-items: start; padding: 4px 6px; border: 1px solid var(--line-soft); border-radius: 4px; font-size: 12px; }
+.cue-item.current { border-color: var(--accent); background: var(--accent-soft); }
+.cue-item .cue-time { grid-row: 1 / span 2; font-family: var(--mono); font-size: 11px; color: var(--ink-3); background: transparent; border: 0; padding: 3px 0; text-align: left; cursor: pointer; white-space: nowrap; }
+.cue-item .cue-time:hover { color: var(--accent-ink); }
+.cue-item .cue-src { grid-column: 2; color: var(--ink-3); font-size: 11px; line-height: 1.4; word-break: break-word; }
+.cue-item .cue-text { grid-column: 2; width: 100%; min-width: 0; min-height: 24px; padding: 3px 6px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: var(--ink); resize: none; line-height: 1.4; font-size: 12px; }
+.cue-item .cue-text:hover, .cue-item .cue-text:focus { border-color: var(--line); background: var(--panel); outline: none; }
+.cue-item .cue-text.edited { border-color: var(--accent); }
+.cue-item .cue-text:disabled { color: var(--ink-3); cursor: default; }
+.version-item .track-head .role.lang { background: #dde8f7; color: #2c4f8a; }
+.version-item .warn-list { margin: 0; padding-left: 16px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
+.badge-stale { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-edited-bg); color: var(--st-edited-fg); flex: none; }
+.badge-ok { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-done-bg); color: var(--st-done-fg); flex: none; }
+.dark .cue-item .cue-text:hover, .dark .cue-item .cue-text:focus { background: var(--panel-2); }
+.dark .version-item .track-head .role.lang { background: #24344d; color: #a9c3ec; }
