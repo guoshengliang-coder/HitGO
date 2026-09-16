@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import shutil
 import wave
 from pathlib import Path
@@ -105,6 +106,40 @@ def test_cues_from_sentences_splits_a_run_on_sentence():
     cues = localize.cues_from_sentences([{"begin_time": 0, "end_time": 3000, "text": "One. Two. Three."}], 10.0)
     assert [c["text"] for c in cues] == ["One.", "Two.", "Three."]
     assert [c["i"] for c in cues] == [0, 1, 2] and cues[-1]["end"] == 3.0
+
+
+def test_voice_models_and_env_overrides_with_model():
+    table = localize.voice_table(settings)
+    assert localize.voice_model("ko", "loongkyong_v3", table) == "cosyvoice-v3-flash"
+    assert localize.voice_model("es", "Cherry", table) == "qwen3-tts-flash"
+    assert {"es", "pt", "fr", "de", "it", "ru"} <= set(table)
+    assert "ar" not in table  # no Bailian Arabic voice yet: only via LOCALIZE_VOICES
+    assert localize.parse_voice_overrides("ar=loongmary@qwen-audio-3.0-tts-flash, ko=loongjihun_v3,junk") == {
+        "ar": {"id": "loongmary", "model": "qwen-audio-3.0-tts-flash"},
+        "ko": {"id": "loongjihun_v3"},
+    }
+    cfg = replace(settings, localize_voices="ar=loongmary@qwen-audio-3.0-tts-flash")
+    table = localize.voice_table(cfg)
+    assert table["ar"][0] == {"id": "loongmary", "label": "loongmary", "model": "qwen-audio-3.0-tts-flash"}
+    assert localize.voice_model("ar", "loongmary", table, cfg) == "qwen-audio-3.0-tts-flash"
+    ar = next(t for t in localize.target_langs(cfg) if t["code"] == "ar")
+    assert ar["rtl"] is True and ar["voices"] == [{"id": "loongmary", "label": "loongmary"}]  # model stays internal
+    assert localize.tts_api_for("qwen3-tts-flash") == "qwen3" and localize.tts_api_for("cosyvoice-v3-flash") == "tts_v2"
+    assert localize.supports_speech_rate("qwen-audio-3.0-tts-flash") and not localize.supports_speech_rate("qwen3-tts-flash")
+    assert localize.language_type_for("es") == "Spanish" and localize.language_type_for("ar") == "Auto"
+
+
+def test_build_version_passes_the_voice_model_and_skips_rate_resynthesis_for_qwen3(ready_video, db, no_ffmpeg):
+    queue(db, ["es"], transcript=DONE_TRANSCRIPT, source_lang="en")
+    tts = localize.FakeTts(seconds=5.0)  # cue 0 overflows its 2.58 s slot
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=tts)
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    es = db.get(Video, VIDEO).localization["versions"]["es"]
+    assert es["status"] == "done" and es["voice"] == "Cherry"
+    assert set(tts.models) == {"qwen3-tts-flash"}
+    assert all(len(c) == 2 for c in tts.calls)  # no speech_rate re-synthesis on Qwen3-TTS
+    assert es["warnings"] and "加速" in es["warnings"][0]  # atempo covers it and says so
 
 
 def test_cue_slots_and_speech_rate_for():
@@ -224,19 +259,19 @@ def test_voice_names_and_previous_asset_ids():
 def test_voice_table_and_resolve_voice(monkeypatch):
     table = localize.voice_table(settings)
     assert table["ko"][0]["id"] == KO_VOICE and table["ja"][0]["id"] == JA_VOICE
-    assert "de" not in table  # no confirmed cosyvoice-v3-flash voice yet
+    assert "ar" not in table  # no confirmed cosyvoice-v3-flash voice yet
     assert localize.resolve_voice("ko", None, table) == KO_VOICE
     assert localize.resolve_voice("ko", "loongjihun_v3", table) == "loongjihun_v3"
     with pytest.raises(ValueError):
         localize.resolve_voice("ko", JA_VOICE, table)
     with pytest.raises(ValueError):
-        localize.resolve_voice("de", None, table)
-    monkeypatch.setattr(settings, "localize_voices", "de=some_de_voice, ko=loongjihun_v3,bogus,xx=1")
+        localize.resolve_voice("ar", None, table)
+    monkeypatch.setattr(settings, "localize_voices", "ar=some_ar_voice, ko=loongjihun_v3,bogus,xx=1")
     table = localize.voice_table(settings)
-    assert table["de"] == [{"id": "some_de_voice", "label": "some_de_voice"}]
+    assert table["ar"] == [{"id": "some_ar_voice", "label": "some_ar_voice"}]
     assert [v["id"] for v in table["ko"]] == ["loongjihun_v3", KO_VOICE]
     codes = [t["code"] for t in localize.target_langs(settings)]
-    assert codes.index("de") > codes.index("ko")  # LANGS order, not env order
+    assert codes.index("ar") > codes.index("ko")  # LANGS order, not env order
 
 
 def test_apply_cue_edits():
@@ -346,14 +381,14 @@ def test_running_task_does_not_clobber_a_version_queued_meanwhile(ready_video, d
     providers = localize.fake_providers()
     real = providers.tts.synthesize
 
-    def add_ja_meanwhile(text, voice):
+    def add_ja_meanwhile(text, voice, *args, **kw):
         video = db.get(Video, VIDEO)
         loc = copy.deepcopy(video.localization)
         loc["versions"]["ja"] = {"status": "queued", "stage": None, "voice": JA_VOICE, "terms": [], "cues": [], "stale": False, "error": None, "warnings": [], "voice_asset_id": None}  # fmt: skip
         loc["pending"] = {"target_langs": ["ko", "ja"], "retranscribe": False}
         video.localization = loc
         db.commit()
-        return real(text, voice)
+        return real(text, voice, *args, **kw)
 
     providers.tts.synthesize = add_ja_meanwhile
     localize.run_localization(db, VIDEO, providers)
@@ -489,7 +524,7 @@ def test_run_localization_without_dashscope_fails_cleanly(ready_video, db, no_ff
 
 def test_soft_time_limit_fails_whatever_is_left_with_a_readable_reason(ready_video, db, no_ffmpeg):
     class SlowTts(localize.FakeTts):
-        def synthesize(self, text, voice, speech_rate=1.0):
+        def synthesize(self, text, voice, speech_rate=1.0, **kw):
             raise SoftTimeLimitExceeded()
 
     queue(db, ["ko", "ja"], transcript=DONE_TRANSCRIPT, source_lang="en")
@@ -581,7 +616,7 @@ def test_localize_endpoint_reuses_a_done_transcript_and_carries_queued_languages
 def test_localize_endpoint_validates_languages_voices_and_readiness(client, ready_video, enqueued, db):
     post = lambda body: client.post(f"/api/videos/{VIDEO}/localize", json=body)  # noqa: E731
     assert post({"target_langs": ["xx"]}).status_code == 400
-    assert post({"target_langs": ["de"]}).status_code == 400  # no voice yet
+    assert post({"target_langs": ["ar"]}).status_code == 400  # no voice yet
     assert post({"target_langs": []}).status_code == 400
     assert post({"target_langs": ["ko"] * 6}).status_code == 400
     assert post({"target_langs": ["ko"], "source_lang": "th"}).status_code == 400  # ASR cannot do Thai

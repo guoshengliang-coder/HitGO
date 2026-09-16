@@ -132,6 +132,8 @@ export interface LangOption {
 }
 
 export interface TargetLangOption extends LangOption {
+  /** 可选，缺省 false：从右到左书写（阿拉伯语等）。 */
+  rtl?: boolean;
   voices: { id: string; label: string }[];
 }
 

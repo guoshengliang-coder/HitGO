@@ -88,7 +88,29 @@ LANGS: dict[str, dict[str, Any]] = {
     "id": {"label": "印尼语", "mt_name": "Indonesian", "asr": False, "font_hint": "Noto Sans SC"},
     "vi": {"label": "越南语", "mt_name": "Vietnamese", "asr": False, "font_hint": "Noto Sans SC"},
     "es": {"label": "西班牙语", "mt_name": "Spanish", "asr": False, "font_hint": "Noto Sans SC"},
+    "it": {"label": "意大利语", "mt_name": "Italian", "asr": False, "font_hint": "Noto Sans SC"},
+    "ar": {"label": "阿拉伯语", "mt_name": "Arabic", "asr": False, "font_hint": "Noto Sans Arabic", "rtl": True},
 }
+
+# Which DashScope API a TTS model goes through. CosyVoice / Qwen-Audio-TTS use the
+# tts_v2 SpeechSynthesizer (has speech_rate); Qwen3-TTS uses MultiModalConversation and
+# returns a URL (no speech_rate: the atempo step covers overruns).
+QWEN3_TTS_PREFIX = "qwen3-tts"
+# Qwen3-TTS language_type values; anything else is sent as "Auto".
+QWEN3_TTS_LANGUAGE_TYPES = {"zh": "Chinese", "en": "English", "de": "German", "it": "Italian", "pt": "Portuguese", "es": "Spanish", "ja": "Japanese", "ko": "Korean", "fr": "French", "ru": "Russian"}
+
+
+def tts_api_for(model: str) -> str:
+    """``"qwen3"`` (MultiModalConversation, URL result) or ``"tts_v2"`` (SpeechSynthesizer bytes)."""
+    return "qwen3" if model.startswith(QWEN3_TTS_PREFIX) else "tts_v2"
+
+
+def supports_speech_rate(model: str) -> bool:
+    return tts_api_for(model) == "tts_v2"
+
+
+def language_type_for(lang: str) -> str:
+    return QWEN3_TTS_LANGUAGE_TYPES.get(lang, "Auto")
 
 # cosyvoice-v3-flash voices per language (help.aliyun.com/zh/model-studio/cosyvoice-voice-list,
 # checked 2026-09-16). The first entry is the default. Languages without a confirmed voice
@@ -122,7 +144,18 @@ DEFAULT_VOICES: dict[str, list[dict[str, str]]] = {
     "id": [
         {"id": "loongindah_v3", "label": "Indah（印尼女）"},
     ],
+    # Spanish / Portuguese / French (and German / Italian / Russian) have no CosyVoice system
+    # voice; Qwen3-TTS-Flash's voices speak all ten of its languages (voice list page, 2026-09-16).
+    **{
+        lang: [
+            {"id": "Cherry", "label": "Cherry（女·亲切）", "model": "qwen3-tts-flash"},
+            {"id": "Serena", "label": "Serena（女·温柔）", "model": "qwen3-tts-flash"},
+            {"id": "Ethan", "label": "Ethan（男·阳光）", "model": "qwen3-tts-flash"},
+        ]
+        for lang in ("es", "pt", "fr", "de", "it", "ru")
+    },
 }
+# Voices without a "model" key belong to the configured default (LOCALIZE_TTS_MODEL, cosyvoice-v3-flash).
 
 
 def source_langs() -> list[dict[str, str]]:
@@ -132,32 +165,53 @@ def source_langs() -> list[dict[str, str]]:
     return out
 
 
-def parse_voice_overrides(raw: str) -> dict[str, str]:
-    """``LOCALIZE_VOICES="ko=loongkyong_v3,de=some_voice"`` → {lang: voice}. Junk is ignored."""
-    out: dict[str, str] = {}
+def parse_voice_overrides(raw: str) -> dict[str, dict[str, str]]:
+    """``LOCALIZE_VOICES="ko=loongkyong_v3,ar=loongmary@qwen-audio-3.0-tts-flash"`` → {lang: {id[, model]}}.
+
+    ``@model`` names the TTS model the voice belongs to (defaults to LOCALIZE_TTS_MODEL). Junk is ignored.
+    """
+    out: dict[str, dict[str, str]] = {}
     for item in (raw or "").split(","):
         if "=" not in item:
             continue
         lang, voice = (p.strip() for p in item.split("=", 1))
+        model = ""
+        if "@" in voice:
+            voice, model = (p.strip() for p in voice.split("@", 1))
         if lang in LANGS and voice:
-            out[lang] = voice
+            out[lang] = {"id": voice, **({"model": model} if model else {})}
     return out
 
 
 def voice_table(cfg: Settings | None = None) -> dict[str, list[dict[str, str]]]:
-    """Voices per target language: defaults with the env override moved to (or added at) the front."""
+    """Voices per target language: defaults with the env override moved to (or added at) the front.
+
+    Each entry is ``{id, label[, model]}``; no ``model`` = the configured default TTS model.
+    """
     cfg = cfg or settings
     table = {lang: list(voices) for lang, voices in DEFAULT_VOICES.items()}
-    for lang, voice in parse_voice_overrides(cfg.localize_voices).items():
+    for lang, override in parse_voice_overrides(cfg.localize_voices).items():
+        voice = override["id"]
         voices = [v for v in table.get(lang, []) if v["id"] != voice]
         known = next((v for v in table.get(lang, []) if v["id"] == voice), None)
-        table[lang] = [known or {"id": voice, "label": voice}, *voices]
+        entry = dict(known) if known else {"id": voice, "label": voice}
+        if override.get("model"):
+            entry["model"] = override["model"]
+        table[lang] = [entry, *voices]
     return {lang: table[lang] for lang in LANGS if table.get(lang)}
+
+
+def voice_model(lang: str, voice: str, table: dict[str, list[dict[str, str]]] | None = None, cfg: Settings | None = None) -> str:
+    """The TTS model a voice belongs to (contract §6): its own ``model`` or LOCALIZE_TTS_MODEL."""
+    cfg = cfg or settings
+    table = table if table is not None else voice_table(cfg)
+    entry = next((v for v in table.get(lang, []) if v["id"] == voice), None)
+    return str((entry or {}).get("model") or cfg.localize_tts_model)
 
 
 def target_langs(cfg: Settings | None = None) -> list[dict[str, Any]]:
     return [
-        {"code": lang, "label": LANGS[lang]["label"], "voices": voices}
+        {"code": lang, "label": LANGS[lang]["label"], "rtl": bool(LANGS[lang].get("rtl")), "voices": [{"id": v["id"], "label": v["label"]} for v in voices]}
         for lang, voices in voice_table(cfg).items()
     ]
 
@@ -520,7 +574,7 @@ class TranslateProvider(Protocol):
 
 
 class TtsProvider(Protocol):
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes: ...
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes: ...
 
 
 @dataclass
@@ -573,8 +627,11 @@ class FakeTts:
     fail_voices: set[str] = field(default_factory=set)
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes:
+    models: list[str | None] = field(default_factory=list)
+
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes:
         self.calls.append((text, voice) if speech_rate == 1.0 else (text, voice, speech_rate))
+        self.models.append(model)
         if voice in self.fail_voices:
             raise LocalizeError(f"音色 {voice} 合成失败")
         return silent_wav(self.seconds / speech_rate)
@@ -706,6 +763,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     _save(db, video, loc, langs=[lang])
     translated_by_i = {int(c["i"]): str(c.get("translated") or "").strip() for c in version["cues"]}
     voice = str(version.get("voice") or resolve_voice(lang, None))
+    model = voice_model(lang, voice)
     spoken: list[dict[str, Any]] = []
     clip_paths: list[Path] = []
     clip_durations: list[float] = []
@@ -717,13 +775,13 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         if not text:
             continue
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
-        clip.write_bytes(providers.tts.synthesize(text, voice))
+        clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang))
         seconds = wav_duration(clip)
         # Translations often run longer than the source (Korean ≈ 2× English): ask the model to
         # speak faster before falling back to atempo, which only sounds fine up to ~1.3×.
-        rate = speech_rate_for(seconds, slots[int(cue["i"])])
+        rate = speech_rate_for(seconds, slots[int(cue["i"])]) if supports_speech_rate(model) else 1.0
         if rate > 1.0:
-            clip.write_bytes(providers.tts.synthesize(text, voice, rate))
+            clip.write_bytes(providers.tts.synthesize(text, voice, rate, model=model, lang=lang))
             seconds = wav_duration(clip)
         spoken.append(cue)
         clip_paths.append(clip)
