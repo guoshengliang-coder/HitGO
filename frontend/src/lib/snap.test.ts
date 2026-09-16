@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canvasGuides, snapValue } from './snap';
+import { canvasGuides, snapActive, snapValue } from './snap';
 import type { SafeZone } from '../types';
 
 describe('snapValue', () => {
@@ -38,5 +38,14 @@ describe('canvasGuides', () => {
     const g = canvasGuides({ ...zone, zones: [], inner: { label: '', x: 0.05, y: 0.05, w: 0.9, h: 0.9 }, outer: null }, 100, 200);
     expect(g.xs).toEqual([0, 5, 50, 95, 100]);
     expect(g.ys).toEqual([0, 10, 100, 190, 200]);
+  });
+});
+
+describe('snapActive', () => {
+  it('开关与临时键取异或', () => {
+    expect(snapActive(true, false)).toBe(true);
+    expect(snapActive(true, true)).toBe(false);
+    expect(snapActive(false, false)).toBe(false);
+    expect(snapActive(false, true)).toBe(true);
   });
 });

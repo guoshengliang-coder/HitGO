@@ -135,3 +135,84 @@ describe('Player 封面段（HIG-9）', () => {
     p.pause();
   });
 });
+
+describe('Player 倍速 / 倒放（HIG-30）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function manualFrames() {
+    let cb: FrameRequestCallback | null = null;
+    let now = 1000;
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => {
+      cb = fn;
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    return (ms: number) => {
+      now += ms;
+      const fn = cb;
+      cb = null;
+      fn?.(now);
+    };
+  }
+
+  it('合成时钟按倍速推进；暂停后倍速回到 1', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 10;
+    p.shuttle(2);
+    expect(p.rate).toBe(2);
+    expect(p.mediaRate).toBe(2);
+    tick(500);
+    expect(p.currentTime).toBeCloseTo(1);
+    p.shuttle(0);
+    expect(p.isPlaying).toBe(false);
+    expect(p.rate).toBe(1);
+    expect(p.mediaRate).toBe(0);
+  });
+
+  it('正放给 <video> 设 playbackRate，切到倒放时暂停元素并逐帧 seek', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    const v = fakeVideo() as HTMLVideoElement & { playbackRate: number };
+    p.attach(v);
+    v.dispatchEvent(new Event('loadedmetadata'));
+    p.seek(5);
+    p.shuttle(4);
+    expect(v.playbackRate).toBe(4);
+    expect(v.play).toHaveBeenCalledTimes(1);
+    p.shuttle(-1);
+    expect(v.pause).toHaveBeenCalled();
+    expect(p.mediaRate).toBe(0);
+    tick(500);
+    expect(p.currentTime).toBeCloseTo(4.5);
+    expect(v.currentTime).toBeCloseTo(4.5);
+    p.pause();
+    expect(v.playbackRate).toBe(1);
+  });
+
+  it('倒放跳过删除区间，走到开头停下', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 10;
+    p.remove = [[1, 3]];
+    p.seek(3.5);
+    p.shuttle(-1);
+    tick(600);
+    expect(p.currentTime).toBeLessThan(1);
+    tick(2000);
+    expect(p.currentTime).toBe(0);
+    expect(p.isPlaying).toBe(false);
+  });
+
+  it('停在开头时倒放不启动', () => {
+    manualFrames();
+    const p = new Player();
+    p.duration = 10;
+    p.shuttle(-1);
+    expect(p.isPlaying).toBe(false);
+  });
+});

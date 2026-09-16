@@ -110,6 +110,8 @@ export interface EditorState {
   toastAction: ToastAction | null;
   // 交互
   shortcutsOpen: boolean;
+  /** 吸附开关（N，HIG-30）：时间轴与画布拖动共用；拖动时按 ⌥ / ⌘ 临时取反。 */
+  snapEnabled: boolean;
   safeZoneView: SafeZoneView;
   /** 上次开启时的显示方式，toggleSafeZone 打开时恢复 */
   safeZoneMode: SafeZoneMode;
@@ -154,6 +156,7 @@ export interface EditorState {
   setCropEditing: (on: boolean) => void;
   setToast: (m: string | null, action?: ToastAction | null) => void;
   setShortcutsOpen: (on: boolean) => void;
+  toggleSnap: () => void;
   setSafeZoneView: (v: SafeZoneView) => void;
   toggleTheme: () => void;
   /** 安全区开关：开着就关（none），关着就恢复上次的显示方式 */
@@ -315,6 +318,7 @@ const PER_BATCH_INITIAL = {
   toast: null,
   toastAction: null,
   shortcutsOpen: false,
+  snapEnabled: true,
   timelinePps: null,
   layerClipboard: null,
   layerClipboardVideoId: null,
@@ -817,6 +821,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCropEditing: (cropEditing) => set({ cropEditing }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
     setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+    toggleSnap: () => set((st) => ({ snapEnabled: !st.snapEnabled, toast: st.snapEnabled ? '吸附已关闭' : '吸附已开启', toastAction: null })),
     toggleTheme: () => {
       const theme: EditorTheme = get().theme === 'dark' ? 'light' : 'dark';
       try {

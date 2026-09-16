@@ -17,7 +17,7 @@ import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layo
 import { layerAspect } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
 import { sourceToPost, windowContains } from '../../lib/time';
-import { canvasGuides, snapValue } from '../../lib/snap';
+import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
 import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
@@ -168,11 +168,12 @@ function CoverPreview({ fill, color, W, H }: { fill: 'blur' | 'color' | 'crop'; 
         return;
       }
       video.muted = false;
-      if (Math.abs(video.currentTime - at) > 0.25) video.currentTime = at;
+      if (video.playbackRate !== player.mediaRate) video.playbackRate = player.mediaRate;
+      if (Math.abs(video.currentTime - at) > 0.25 * player.mediaRate) video.currentTime = at;
       if (video.paused) void video.play().catch(() => undefined);
     };
-    sync(player.currentTime, player.isPlaying);
-    const unsub = player.subscribe(sync);
+    sync(player.currentTime, player.mediaRate > 0);
+    const unsub = player.subscribe((t) => sync(t, player.mediaRate > 0));
     return () => {
       unsub();
       video.pause();
@@ -280,7 +281,8 @@ function LayerNode({
         if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
       } else if (playing) {
         // 播放中只在明显漂移时纠正，否则每帧 seek 会让画面抖
-        if (Math.abs(stickerVideo.currentTime - at) > 0.25) stickerVideo.currentTime = at;
+        if (stickerVideo.playbackRate !== player.mediaRate) stickerVideo.playbackRate = player.mediaRate;
+        if (Math.abs(stickerVideo.currentTime - at) > 0.25 * player.mediaRate) stickerVideo.currentTime = at;
         if (stickerVideo.paused) void stickerVideo.play().catch(() => undefined);
       } else {
         if (!stickerVideo.paused) stickerVideo.pause();
@@ -288,8 +290,8 @@ function LayerNode({
       }
     };
     // 封面段（t < 0）里图层不出现：按暂停对齐，不播也不出声
-    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0);
-    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0));
+    sync(sourceToPost(player.currentTime, player.remove), player.mediaRate > 0 && player.currentTime >= 0);
+    const unsub = player.subscribe((t) => sync(sourceToPost(t, player.remove), player.mediaRate > 0 && t >= 0));
     return () => {
       unsub();
       stickerVideo.pause();
@@ -504,7 +506,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     const tr = trRef.current;
     if (!tr || tr.getActiveAnchor() === 'rotater') return newPos;
     const me = evt as MouseEvent | undefined;
-    if (me?.ctrlKey || me?.metaKey) {
+    if (!snapActive(useEditor.getState().snapEnabled, !!(me?.ctrlKey || me?.metaKey))) {
       setHitGuides(NO_GUIDES);
       return newPos;
     }

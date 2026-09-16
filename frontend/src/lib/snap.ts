@@ -22,6 +22,11 @@ export function snapValue(v: number, candidates: number[], threshold: number): S
   return best === null ? { value: v, hit: null } : { value: best, hit: best };
 }
 
+/** 吸附此刻是否生效：吸附开关（N）与拖动时按住的临时键（时间轴 ⌥ / 画布 ⌘）取异或。 */
+export function snapActive(enabled: boolean, bypassHeld: boolean): boolean {
+  return enabled !== bypassHeld;
+}
+
 function uniqSorted(xs: number[]): number[] {
   const out: number[] = [];
   for (const x of [...xs].sort((a, b) => a - b)) {
