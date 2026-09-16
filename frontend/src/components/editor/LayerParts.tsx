@@ -5,7 +5,7 @@
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isVideoAsset, variantDef, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, isVideoAsset, variantDef, type Anchor, type Asset, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { cloneSpec, layerName, layerOutsideDuration, newLayerId, outputFor } from '../../lib/spec';
 import { layersOfType, type LayerType } from '../../lib/layerKind';
 import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
@@ -119,7 +119,7 @@ function StylePresetSection({ layer }: { layer: TextLayer }) {
   );
 
   return (
-    <Section title="套用样式" defaultOpen={false}>
+    <Section title="套用样式" defaultOpen={false} hint="单击套用到当前图层">
       {row('花字', groups.text)}
       {row('气泡', groups.bubble)}
       <div className="span2 inline">
@@ -219,7 +219,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
   return (
-    <Section title="位置">
+    <Section title="位置" hint="九宫锚点 · 边距按画布比例">
       <VariantFitRow layer={layer} />
       <span>对齐</span>
       <div className="align-row" role="group" aria-label="对齐">
@@ -571,7 +571,13 @@ export function LayerProps({ layer }: { layer: Layer }) {
   const textEditStart = useRef<{ layerId: string; text: string; spec: EditSpec } | null>(null);
   return (
     <div className="section inspector">
-      <div className="section-title">属性 · {layerName(layer, assets)}</div>
+      <div className="insp-head">
+        <span className="insp-ico">{layerIcon(layer.type)}</span>
+        <span className="insp-who">
+          <span className="insp-name">{layerName(layer, assets)}</span>
+          <span className="insp-type">{layerSubtitle(layer, assets)}</span>
+        </span>
+      </div>
       {layer.type === 'text' && (
         <>
           <textarea
@@ -667,6 +673,18 @@ function LayerNameCell({ layer, editing, onEdit, onDone }: { layer: Layer; editi
 
 const LIST_TITLES: Record<LayerType, string> = { text: '文字图层', sticker: '贴纸图层', mask: '遮盖图层' };
 const layerIcon = (type: LayerType) => (type === 'text' ? <IconText /> : type === 'mask' ? <IconMask /> : <IconSticker />);
+
+/** 属性头部第二行：图层类型 + 一项最有辨识度的信息（字数 / 素材尺寸 / 遮盖方式）。 */
+function layerSubtitle(layer: Layer, assets: Asset[]): string {
+  if (layer.type === 'text') {
+    const n = Array.from(layer.text.replace(/\s+/g, '')).length;
+    return `文字图层 · ${n} 字`;
+  }
+  if (layer.type === 'mask') return `遮盖图层 · ${MASK_MODE_LABEL[layer.mode]}`;
+  const a = assets.find((x) => x.id === layer.asset_id);
+  const dims = a?.width && a?.height ? ` · ${a.width}×${a.height}` : '';
+  return `${isVideoAsset(a) ? '视频贴纸' : '贴纸图层'}${dims}`;
+}
 
 /** 某一类（文字 / 贴纸 / 遮盖）图层的列表：上层在前，拖动 / 上下移只在这一类里换序（lib/layerKind）。 */
 export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: ReactNode }) {
