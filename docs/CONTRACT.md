@@ -380,7 +380,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice? }` → 202 `Video`。改译文 / 换音色后只重跑
   合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice`；该版本没有译文 400；进行中 409；503 同上。
 - `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
-- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, voices: [{ id, label }] }] }`。
+- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, voices: [{ id, label }] }] }`。
+  `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。
   `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
 - `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）
 
@@ -512,7 +513,9 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 2. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
    - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
      回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。
-   - tts：每句用版本的 `voice` 调 `cosyvoice-v3-flash` 出 wav（每句一个新实例）。译文常比原句长（韩语约为英文 2 倍），
+   - tts：每句用版本的 `voice` 出 wav。音色各自属于某个 TTS 模型：中 / 英 / 日 / 韩 / 粤 / 印尼用 `cosyvoice-v3-flash`（每句一个新实例），
+     西 / 葡 / 法 / 德 / 意 / 俄用 `qwen3-tts-flash`（HTTP 调用，返回 24 小时有效的 wav 地址，worker 立即下载；这个模型没有语速参数，
+     超长只靠下一步的 `atempo`）；`LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），
      一句配音超过它到下一句起点的间隔时，按比例用 `speech_rate`（上限 2.0）加速重合成一次，剩余再交给下一步的 `atempo`。
    - mix：每句放在模板里该句的源起点；配音比到下一句起点的间隔长时 `atempo` 加速，上限 `LOCALIZE_MAX_TEMPO`（缺省 1.3），
      仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`

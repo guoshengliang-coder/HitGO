@@ -154,7 +154,7 @@ ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契
 | `LOCALIZE_MAX_SECONDS` | `600` | 改语言接受的最长源视频（秒） |
 | `LOCALIZE_MAX_TEMPO` | `1.3` | 译文配音塞不进原句时段时最多加速几倍；仍超出时写进版本 `warnings` |
 | `LOCALIZE_TIMEOUT_SECONDS` | `900` | 一次改语言任务的软超时（秒）；超时后进行中的版本记 failed |
-| `LOCALIZE_VOICES` | 空 | `ko=loongjihun_v3,de=<voice>`：按语言覆盖默认音色或给还没有默认音色的语言加一个（该语言随即出现在目标语言列表） |
+| `LOCALIZE_VOICES` | 空 | `lang=voice[@model]`，如 `ko=loongjihun_v3,ar=loongmary@qwen-audio-3.0-tts-flash`：按语言覆盖默认音色或给还没有默认音色的语言加一个（该语言随即出现在目标语言列表）；`@model` 缺省为 `LOCALIZE_TTS_MODEL` |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 

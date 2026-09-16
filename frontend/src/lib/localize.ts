@@ -31,6 +31,8 @@ const LANG_LABEL_FALLBACK: Record<string, string> = {
   id: '印尼语',
   vi: '越南语',
   auto: '自动识别',
+  it: '意大利语',
+  ar: '阿拉伯语',
 };
 
 /** 语言码 → 中文名：优先 options 里的 label，其次兜底表，再不行原样返回码。 */
@@ -129,6 +131,7 @@ export const FONT_BY_LANG: Record<string, string> = {
   ko: 'Noto Sans KR',
   ja: 'Noto Sans JP',
   th: 'Noto Sans Thai',
+  ar: 'Noto Sans Arabic',
 };
 
 export function fontForLang(lang: string): string {
@@ -191,6 +194,7 @@ export interface LocalizedLayersOptions {
 /** 每种文字大致的字宽 / 字高比：CJK 与韩文接近 1，拉丁字母约 0.55，泰文约 0.7。 */
 function charWidthFactor(lang: string): number {
   if (lang === 'th') return 0.7;
+  if (lang === 'ar') return 0.6;
   if (['zh', 'ja', 'ko', 'yue'].includes(lang)) return 1;
   return 0.55;
 }

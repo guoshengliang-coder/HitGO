@@ -6,19 +6,22 @@ worker when a localization actually runs, and tests must never touch it or the n
     ASR  paraformer-realtime-v2  Recognition(...).call(local wav) → sentences with ms timestamps
     MT   qwen-mt-plus            Generation.call(translation_options={source_lang, target_lang, terms})
     TTS  cosyvoice-v3-flash      SpeechSynthesizer(model, voice, WAV 22.05 kHz mono).call(text) → bytes
+         qwen3-tts-flash         MultiModalConversation.call(text, voice, language_type) → wav URL → bytes
 """
 
 from __future__ import annotations
 
 import logging
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.services.localize import MT_DOMAINS, AsrResult, LocalizeError, Providers
+from app.services.localize import MT_DOMAINS, AsrResult, LocalizeError, Providers, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
 
@@ -141,7 +144,14 @@ class DashScopeTts:
     api_key: str
     model: str
 
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes:
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes:
+        model = model or self.model
+        if tts_api_for(model) == "qwen3":
+            return self._synthesize_qwen3(text, voice, model, lang)
+        return self._synthesize_tts_v2(text, voice, speech_rate, model)
+
+    def _synthesize_tts_v2(self, text: str, voice: str, speech_rate: float, model: str) -> bytes:
+        """CosyVoice / Qwen-Audio-TTS: WebSocket synthesizer, bytes back, speech_rate honoured."""
         dashscope = _import_dashscope()
         from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer  # noqa: PLC0415
 
@@ -151,7 +161,7 @@ class DashScopeTts:
         def call() -> Any:
             # A synthesizer instance is single-use: new one per call.
             synthesizer = SpeechSynthesizer(
-                model=self.model, voice=voice, format=AudioFormat.WAV_22050HZ_MONO_16BIT, speech_rate=rate
+                model=model, voice=voice, format=AudioFormat.WAV_22050HZ_MONO_16BIT, speech_rate=rate
             )
             audio = synthesizer.call(text)
             if not audio:
@@ -160,6 +170,37 @@ class DashScopeTts:
             return audio
 
         return bytes(_with_retry("合成", call))
+
+    def _synthesize_qwen3(self, text: str, voice: str, model: str, lang: str | None) -> bytes:
+        """Qwen3-TTS: HTTP call, the wav comes back as a 24-hour URL that we download at once."""
+        dashscope = _import_dashscope()
+        from dashscope import MultiModalConversation  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        language_type = language_type_for(lang) if lang else "Auto"
+
+        def call() -> Any:
+            return MultiModalConversation.call(
+                api_key=self.api_key, model=model, text=text, voice=voice, language_type=language_type, stream=False
+            )
+
+        result = _with_retry("合成", call)
+        url = None
+        try:
+            audio = result.output.audio
+            url = audio.get("url") if isinstance(audio, dict) else getattr(audio, "url", None)
+        except AttributeError:
+            url = None
+        if not url:
+            raise LocalizeError(f"合成失败（音色 {voice}）：百炼未返回音频地址")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 - vendor-issued https URL
+                data = resp.read()
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise LocalizeError(f"下载合成音频失败：{exc}") from exc
+        if not data:
+            raise LocalizeError(f"合成失败（音色 {voice}）：音频为空")
+        return data
 
 
 def make_providers(cfg: Settings) -> Providers:

@@ -346,3 +346,14 @@ describe('wrapCueText', () => {
     expect(wrapCueText('a\n\nb', 'en', 0.05)).toBe('a\nb');
   });
 });
+
+describe('新增语言', () => {
+  it('阿拉伯语用 Noto Sans Arabic，西葡法用内置字体', () => {
+    expect(fontForLang('ar')).toBe('Noto Sans Arabic');
+    expect(fontForLang('es')).toBe(fontForLang('fr'));
+  });
+  it('阿拉伯语译文按空格折行', () => {
+    const s = wrapCueText('مرحبا بكم في هيت جو أسرع طريقة لترجمة إعلانات الفيديو الخاصة بك في دقائق', 'ar', 0.05);
+    expect(s.split('\n').length).toBeGreaterThan(1);
+  });
+});

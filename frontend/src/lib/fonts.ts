@@ -39,4 +39,5 @@ export const BUILTIN_WEB_FONTS: { family: string; label: string }[] = [
   { family: 'Noto Sans KR', label: '韩文' },
   { family: 'Noto Sans JP', label: '日文' },
   { family: 'Noto Sans Thai', label: '泰文' },
+  { family: 'Noto Sans Arabic', label: '阿拉伯文' },
 ];

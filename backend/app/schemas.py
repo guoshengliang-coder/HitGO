@@ -631,6 +631,7 @@ class VoiceOut(BaseModel):
 
 
 class TargetLangOut(LangOut):
+    rtl: bool = False  # 从右到左书写（阿拉伯语等），前端排字幕时用
     voices: list[VoiceOut] = Field(default_factory=list)
 
 
