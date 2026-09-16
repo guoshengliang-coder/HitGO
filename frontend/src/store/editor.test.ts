@@ -240,3 +240,65 @@ describe('切换任务时重置（HIG-18）', () => {
     expect(putSpec.mock.calls[0][0]).toBe('v1');
   });
 });
+
+// 遮盖层（契约 §2 type = "mask"）：新建 / 粘贴都压在第一个文字图层之下。
+describe('遮盖层的插入位置', () => {
+  const mask = (id: string) => ({ id, type: 'mask' as const, mode: 'blur' as const, anchor: 'bottom-center' as const, margin: [0, 0.1] as [number, number], width: 1, height: 0.12, rotate: 0, opacity: 1, t: 'all' as const });
+  const sticker = (id: string) => ({ id, type: 'sticker' as const, asset_id: 'a', anchor: 'center' as const, margin: [0, 0] as [number, number], width: 0.3, rotate: 0, opacity: 1, t: 'all' as const });
+  const ids = () => useEditor.getState().currentSpec()!.layers.map((l) => l.id);
+
+  it('addLayer 缺省放最上层；belowType 指定时插到该类第一个之前', () => {
+    const s = useEditor.getState();
+    s.addLayer(sticker('S1'));
+    expect(ids()).toEqual(['L1', 'S1']);
+    useEditor.getState().addLayer(mask('M1'), { belowType: 'text' });
+    expect(ids()).toEqual(['M1', 'L1', 'S1']);
+    expect(useEditor.getState().selectedLayerId).toBe('M1');
+    // 没有该类图层时等于放最上层
+    useEditor.getState().addLayer(mask('M2'), { belowType: 'sticker' });
+    expect(ids()).toEqual(['M1', 'L1', 'M2', 'S1']);
+    // 一步历史，可撤销
+    useEditor.getState().undo();
+    expect(ids()).toEqual(['M1', 'L1', 'S1']);
+  });
+
+  it('pasteLayer：字幕模块里粘贴遮盖插到文字之下，文字仍放最上层', () => {
+    useEditor.setState({ step: 'subtitle' });
+    let s = useEditor.getState();
+    s.addLayer(mask('M1'), { belowType: 'text' });
+    useEditor.getState().setSelectedLayer('M1');
+    useEditor.getState().copyLayer();
+    useEditor.getState().pasteLayer();
+    s = useEditor.getState();
+    const layers = s.currentSpec()!.layers;
+    expect(layers.map((l) => l.type)).toEqual(['mask', 'mask', 'text']);
+    expect(layers[1].margin).toEqual([0.03, 0.13]); // 同一视频里粘贴错开 3%
+    expect(s.selectedLayerId).toBe(layers[1].id);
+
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().copyLayer();
+    useEditor.getState().pasteLayer();
+    expect(useEditor.getState().currentSpec()!.layers.map((l) => l.type)).toEqual(['mask', 'mask', 'text', 'text']);
+  });
+
+  it('pasteLayer：遮盖只能粘到字幕模块，提示切模块', () => {
+    useEditor.setState({ step: 'subtitle' });
+    useEditor.getState().addLayer(mask('M1'), { belowType: 'text' });
+    useEditor.getState().setSelectedLayer('M1');
+    useEditor.getState().copyLayer();
+    useEditor.setState({ step: 'text' });
+    useEditor.getState().pasteLayer();
+    expect(useEditor.getState().toast).toContain('遮盖');
+    expect(useEditor.getState().toast).toContain('字幕');
+    expect(ids()).toEqual(['M1', 'L1']);
+    // 贴纸粘到字幕模块同样拦下
+    useEditor.setState({ step: 'sticker' });
+    useEditor.getState().addLayer(sticker('S1'));
+    useEditor.getState().setSelectedLayer('S1');
+    useEditor.getState().copyLayer();
+    useEditor.setState({ step: 'subtitle' });
+    useEditor.getState().pasteLayer();
+    expect(useEditor.getState().toast).toContain('贴纸');
+    expect(ids()).toEqual(['M1', 'L1', 'S1']);
+  });
+});

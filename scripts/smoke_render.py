@@ -9,7 +9,10 @@ sticker with its own audio track is available, that layer mixes its audio in
 (mix_audio) and the output must carry an audio stream. When an audio asset is
 available, the source track is muted and that asset is looped as BGM over the
 whole clip (edit_spec.audio), which must again yield an audio stream of the
-post-trim length. When the first video has audio, it is also sent through the
+post-trim length. Two mask layers (edit_spec layers[].type = "mask") are always part
+of the spec: a blurred band across the bottom, where burnt-in subtitles usually sit,
+and a translucent solid box in a corner — both exercise the region filters on the
+server's ffmpeg. When the first video has audio, it is also sent through the
 vocals / instrumental separation (separator worker, Demucs on the CPU); the
 vocals stem is then laid over the clip aligned to the source timeline. A
 separation that does not finish within SMOKE_SEPARATE_TIMEOUT seconds (default
@@ -141,6 +144,13 @@ if video_stickers:
         print("no video sticker with audio — skipping the sticker-audio part of the smoke test")
 else:
     print("no video sticker available — skipping the video-layer part of the smoke test")
+# Region masks need no asset: a timed blur band over the subtitle area + a translucent box.
+layers += [
+    {"id": "l_mask_blur", "type": "mask", "mode": "blur", "blur": 2, "anchor": "bottom-center",
+     "margin": [0, 0.10], "width": 1.0, "height": 0.12, "rotate": 0, "opacity": 1, "t": [0, 5]},
+    {"id": "l_mask_solid", "type": "mask", "mode": "solid", "color": "#112233", "anchor": "top-right",
+     "margin": [0.04, 0.04], "width": 0.3, "height": 0.08, "rotate": 0, "opacity": 0.8, "t": "all"},
+]
 
 spec = {
     "spec_version": 1,

@@ -1,5 +1,5 @@
 // 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨、BGM / 口播可拖动拉伸、贴纸音轨只读）/
-// 图层行（文本、字幕模块显示文字图层，贴纸模块显示贴纸图层；可拖动、拉伸，轨道头可锁定 / 隐藏）。
+// 图层行（文本模块显示文字图层，字幕模块显示文字 + 遮盖图层，贴纸模块显示贴纸图层；可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
 // 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
@@ -11,7 +11,7 @@ import { useCoverDuration, useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
-import { layerTypeForStep } from '../../lib/steps';
+import { layerTypesForStep } from '../../lib/steps';
 import { resolveTrack, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
@@ -159,9 +159,10 @@ export function Timeline() {
   const audioStep = step === 'audio';
   const tracks = spec?.audio?.tracks ?? [];
   const stickerAudio = audioStep ? stickerAudioLayers(spec?.layers ?? [], assets) : [];
-  const layerType = layerTypeForStep(step);
+  const layerTypes = layerTypesForStep(step);
+  const layerType = layerTypes[0] ?? null;
   // 本模块管理的图层行；保留在 spec.layers 里的下标，拖动时按它写回
-  const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => r.l.type === layerType) : [];
+  const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => layerTypes.includes(r.l.type)) : [];
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
   const prerollRef = useRef(preroll);
@@ -557,7 +558,7 @@ export function Timeline() {
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
                   <div
-                    className={`tl-bar ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
+                    className={`tl-bar ${l.type === 'mask' ? 'mask' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
                     style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
                     onPointerDown={(e) => {
                       setSelectedLayer(l.id);
@@ -584,7 +585,7 @@ export function Timeline() {
             <div className="tl-row" style={{ height: 30 }}>
               <div className="lbl">{step === 'subtitle' ? '字幕' : layerType === 'text' ? '文字' : '贴纸'}</div>
               <div className="body hint" style={{ padding: '6px 8px' }}>
-                {step === 'subtitle' ? '还没有字幕，在右侧选择 .srt 文件导入。' : layerType === 'text' ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。' : '还没有贴纸，在右侧素材里点选添加。'}
+                {step === 'subtitle' ? '还没有字幕，在右侧选择 .srt 文件导入；要遮住画面里的原字幕，在右侧「遮盖原字幕」里添加。' : layerType === 'text' ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。' : '还没有贴纸，在右侧素材里点选添加。'}
               </div>
             </div>
           )}

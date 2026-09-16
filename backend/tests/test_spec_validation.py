@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import CANVAS_SIZES, EditSpec, LayerOverride, StickerLayer, TextLayer, empty_spec
+from app.schemas import CANVAS_SIZES, EditSpec, LayerOverride, MaskLayer, StickerLayer, TextLayer, empty_spec
 from tests.conftest import valid_spec
 
 
@@ -300,3 +300,47 @@ def test_audio_track_align_source_forbids_loop_and_offset():
     assert "对齐源时间轴" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "loop": True}]))
     assert "对齐源时间轴" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "offset": 2}]))
     assert "align" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "sideways"}]))
+
+
+# --- mask layers (contract §2 type = "mask") ------------------------------------------
+
+
+def mask_spec(**mask):
+    spec = valid_spec()
+    spec["layers"].insert(1, {"id": "l_m", "type": "mask", "anchor": "bottom-center", "margin": [0, 0.1], "width": 1.0, **mask})
+    return spec
+
+
+def test_mask_layer_defaults_fill_in():
+    layer = validate(mask_spec()).layers[1]
+    assert isinstance(layer, MaskLayer)
+    assert (layer.height, layer.mode, layer.blur, layer.color) == (0.12, "blur", 2, "#000000")
+    assert (layer.width, layer.rotate, layer.opacity, layer.t) == (1.0, 0.0, 1.0, "all")
+    layer = validate(mask_spec(height=0.2, mode="solid", blur=3, color="#a1B2c3", opacity=0.5, t=[1, 4])).layers[1]
+    assert (layer.height, layer.mode, layer.blur, layer.color, layer.opacity, layer.t) == (0.2, "solid", 3, "#a1B2c3", 0.5, (1.0, 4.0))
+
+
+@pytest.mark.parametrize(
+    "mask,fragment",
+    [
+        ({"mode": "pixelate"}, "mode"),
+        ({"color": "#00000080"}, "color 必须是 #RRGGBB"),
+        ({"color": "black"}, "color 必须是 #RRGGBB"),
+        ({"blur": 0}, "blur"),
+        ({"blur": 4}, "blur"),
+        ({"height": 1.5}, "height"),
+        ({"height": 0}, "height"),
+    ],
+)
+def test_mask_rules(mask, fragment):
+    assert fragment in errors_of(mask_spec(**mask))
+
+
+def test_layer_override_height():
+    spec = mask_spec()
+    spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 0.2, "width": 0.8}
+    out = validate(spec)
+    assert out.outputs[1].layer_overrides["l_m"].as_dict() == {"width": 0.8, "height": 0.2}
+    spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 1.2}
+    assert "height" in errors_of(spec)
+    assert LayerOverride(height=0.3).as_dict() == {"height": 0.3}

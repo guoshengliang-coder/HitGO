@@ -11,8 +11,10 @@ into each target; a target without a spec first gets an empty spec; when applyin
   text layers, falling back to the first target text layer with identical ``text``).
   A matched target keeps its own ``anchor`` / ``margin`` / ``t`` (and any other keys)
   and only takes the source's type-specific fields (for text: ``text`` together with
-  its ``spans``) plus ``width`` / ``rotate`` / ``opacity``. Unmatched source layers are
-  appended as deep copies.
+  its ``spans``; for masks: ``mode`` / ``color`` / ``blur`` / ``height``) plus ``width`` /
+  ``rotate`` / ``opacity``. Unmatched source layers are appended as deep copies — except
+  masks, which go in front of the target's first text layer so they stay under the
+  subtitles they are meant to cover.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "sticker": ("asset_id", "playback", "mix_audio"),
     "text": ("text", "spans", "style", "image_url", "image_size"),
+    "mask": ("mode", "color", "blur", "height"),
 }
 
 
@@ -65,6 +68,15 @@ def _match_target_layer(
     return None
 
 
+def _insert_index(source: dict[str, Any], targets: list[dict[str, Any]]) -> int:
+    """Where an unmatched source layer lands: masks under the first text layer, the rest at the end."""
+    if source.get("type") == "mask":
+        for i, t in enumerate(targets):
+            if t.get("type") == "text":
+                return i
+    return len(targets)
+
+
 def merge_layers_style_only(
     source_layers: list[dict[str, Any]], target_layers: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -74,7 +86,9 @@ def merge_layers_style_only(
     for src in source_layers:
         idx = _match_target_layer(src, result, taken)
         if idx is None:
-            result.append(copy.deepcopy(src))
+            pos = _insert_index(src, result)
+            result.insert(pos, copy.deepcopy(src))
+            taken = {i + 1 if i >= pos else i for i in taken}
             continue
         taken.add(idx)
         dst = result[idx]

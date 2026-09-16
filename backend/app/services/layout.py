@@ -1,7 +1,8 @@
 """Layer geometry: anchor / margin / width → pixel box on a canvas (contract §2 formulas).
 
 Pure functions, shared by the render filtergraph and unit-tested directly.
-Formulas (canvas W×H, layer width w = width·W, height h from the image aspect):
+Formulas (canvas W×H, layer width w = width·W, height h from the image aspect — or, for
+mask layers, h = height·H):
 
     x: left   → margin.x·W          y: top    → margin.y·H
        center → (W−w)/2 + margin.x·W   center → (H−h)/2 + margin.y·H
@@ -55,6 +56,25 @@ def layer_box(
         raise ValueError("image size must be positive")
     w = width * canvas_w
     h = w * image_h / image_w
+    return _place(anchor, margin, w, h, canvas_w, canvas_h)
+
+
+def mask_box(
+    anchor: str,
+    margin: tuple[float, float],
+    width: float,
+    height: float,
+    canvas_w: int,
+    canvas_h: int,
+) -> Box:
+    """Mask layer rectangle: no media aspect, ``height`` is relative to the canvas height."""
+    return _place(anchor, margin, width * canvas_w, height * canvas_h, canvas_w, canvas_h)
+
+
+def _place(
+    anchor: str, margin: tuple[float, float], w: float, h: float, canvas_w: int, canvas_h: int
+) -> Box:
+    """Anchor + margin arithmetic shared by every layer kind (contract §2 formulas)."""
     mx, my = margin
     v, hz = split_anchor(anchor)
 

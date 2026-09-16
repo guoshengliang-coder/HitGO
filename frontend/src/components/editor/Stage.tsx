@@ -2,18 +2,20 @@
 // 图层位置全部由 lib/layout.ts 的契约公式计算；拖动 / 缩放 / 旋转后反算回 margin / width / rotate。
 // 拖动时吸附到画布边 / 中线 / 安全区边（lib/snap.canvasGuides），按住 ⌘/Ctrl 关闭；命中的参考线画在最上层。
 // 画布固定 9:16（编辑器只产出这一个输出，HIG-8）；源画面比例不同时按输出的填充方式（模糊 / 纯色 / 裁切）画底。
-// 只有当前模块管理的那一类图层（文本 / 贴纸；字幕沿用文本）能选中、拖动；另一类照常显示。
+// 只有当前模块管理的那几类图层（文本 / 贴纸；字幕管文字 + 遮盖）能选中、拖动；其它类照常显示。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
+// 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
+// 拉伸不锁比例、没有旋转把手。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Konva from 'konva';
 import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect, Text as KText, Transformer, Group } from 'react-konva';
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
-import { marginFromBox, placeLayer, round4 } from '../../lib/layout';
+import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
-import { layerTypeForStep } from '../../lib/steps';
+import { layerTypesForStep } from '../../lib/steps';
 import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
@@ -25,13 +27,13 @@ import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/sti
 import { InlineTextEditor } from './InlineTextEditor';
 import { sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
+import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
+import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
 import { isVideoAsset, variantDef, type CropRect, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
-const SNAP_PX = 6;
-const GUIDE_COLOR = '#d9481f';
-
-type Guides = { xs: number[]; ys: number[] };
-const NO_GUIDES: Guides = { xs: [], ys: [] };
+// Transformer 把手：文字 / 贴纸锁比例只留四角；遮盖不锁比例，八向都能拉
+const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', 'middle-left', 'middle-right', 'bottom-center'];
 
 export function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number) {
   const [size, setSize] = useState({ W: 270, H: 480 });
@@ -344,30 +346,8 @@ function LayerNode({
     });
   };
 
-  // 拖动中：外接矩形（考虑旋转）的左 / 中 / 右、上 / 中 / 下 吸附到参考线
-  const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => {
-    const node = e.target as Konva.Image;
-    if (e.evt?.ctrlKey || e.evt?.metaKey) {
-      onGuides(NO_GUIDES);
-      return;
-    }
-    const r = node.getClientRect({ skipStroke: true });
-    const snapAxis = (edges: number[], lines: number[]) => {
-      let best: { d: number; delta: number; hit: number } | null = null;
-      for (const v of edges) {
-        const s = snapValue(v, lines, SNAP_PX);
-        if (s.hit === null) continue;
-        const d = Math.abs(s.hit - v);
-        if (!best || d < best.d) best = { d, delta: s.hit - v, hit: s.hit };
-      }
-      return best;
-    };
-    const sx = snapAxis([r.x, r.x + r.width / 2, r.x + r.width], guides.xs);
-    const sy = snapAxis([r.y, r.y + r.height / 2, r.y + r.height], guides.ys);
-    if (sx) node.x(node.x() + sx.delta);
-    if (sy) node.y(node.y() + sy.delta);
-    onGuides({ xs: sx ? [sx.hit] : [], ys: sy ? [sy.hit] : [] });
-  };
+  // 拖动中：外接矩形（考虑旋转）的左 / 中 / 右、上 / 中 / 下 吸附到参考线（stageSnap，与遮盖共用）
+  const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => snapDraggedNode(e.target, e.evt, guides, onGuides);
 
   return (
     <KImage
@@ -413,7 +393,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
-  const nodes = useRef<Record<string, Konva.Image | null>>({});
+  const nodes = useRef<Record<string, Konva.Node | null>>({});
   const def = variantDef('9x16');
   const { W, H } = useFitSize(wrapRef, def.width / def.height);
 
@@ -424,7 +404,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
   const needsFill = !!video && Math.abs(video.width / video.height - def.width / def.height) > 0.01;
   const step = useEditor((s) => s.step);
-  const layerType = layerTypeForStep(step);
+  const layerTypes = layerTypesForStep(step);
   const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
@@ -436,6 +416,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const coverActive = useInCover();
   const [hitGuides, setHitGuides] = useState<Guides>(NO_GUIDES);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  // 正在拖动 / 拉伸的遮盖的实时框：预览 div 跟着它走，松手后回到 spec 算出的框
+  const [liveMask, setLiveMask] = useState<{ id: string; box: LayerBox } | null>(null);
+  const backdrop = useMemo(supportsBackdropBlur, []);
 
   // 换选中 / 换视频 / 换步骤时退出内联编辑
   useEffect(() => {
@@ -494,10 +477,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     const tr = trRef.current;
     if (!tr) return;
     const selected = selectedLayerId ? spec?.layers.find((l) => l.id === selectedLayerId) : undefined;
-    const node = selected && selected.type === layerType && editingLayerId !== selectedLayerId ? nodes.current[selected.id] : null;
+    const node = selected && layerTypes.includes(selected.type) && editingLayerId !== selectedLayerId ? nodes.current[selected.id] : null;
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
-  }, [selectedLayerId, editingLayerId, layerType, spec, W, H, coverActive]);
+  }, [selectedLayerId, editingLayerId, step, spec, W, H, coverActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
@@ -523,7 +506,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, []);
 
   const layers = spec?.layers ?? [];
-  const editingLayer = layerType === 'text' && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
+  const editingLayer = layerTypes.includes('text') && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
+  const selectedIsMask = !!selectedLayerId && layers.some((l) => l.id === selectedLayerId && l.type === 'mask');
   const hasSrc = !!video?.proxy_url;
   const overlayUrl = safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
   const showFrames = safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl);
@@ -546,6 +530,12 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         />
         {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} W={W} H={H} />}
         <AudioTracks />
+        {!coverActive &&
+          layers.map((l) => {
+            if (l.type !== 'mask' || l.visible === false || !windowContains(l.t, postTime)) return null;
+            const box = liveMask?.id === l.id ? liveMask.box : maskStageBox(l, W, H);
+            return <MaskPreview key={l.id} layer={l} box={box} W={W} backdrop={backdrop} />;
+          })}
         <div className="konva-layer">
           <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown}>
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
@@ -553,14 +543,35 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               {layers.map((l) => {
                 if (l.visible === false || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
+                const selectable = layerTypes.includes(l.type);
+                if (l.type === 'mask') {
+                  return (
+                    <MaskNode
+                      key={l.id}
+                      layer={l}
+                      W={W}
+                      H={H}
+                      selectable={selectable}
+                      selected={selectedLayerId === l.id && selectable}
+                      backdrop={backdrop}
+                      guides={guides}
+                      onSelect={() => setSelectedLayer(l.id)}
+                      onGuides={setHitGuides}
+                      onLive={(box) => setLiveMask(box ? { id: l.id, box } : null)}
+                      registerNode={(n) => {
+                        nodes.current[l.id] = n;
+                      }}
+                    />
+                  );
+                }
                 return (
                   <LayerNode
                     key={l.id}
                     layer={l}
                     W={W}
                     H={H}
-                    selectable={l.type === layerType}
-                    selected={selectedLayerId === l.id && l.type === layerType}
+                    selectable={selectable}
+                    selected={selectedLayerId === l.id && selectable}
                     hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
                     onSelect={() => setSelectedLayer(l.id)}
@@ -572,12 +583,12 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   />
                 );
               })}
-              {layerType && (
+              {layerTypes.length > 0 && (
                 <Transformer
                   ref={trRef}
-                  keepRatio
-                  enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']}
-                  rotateEnabled
+                  keepRatio={!selectedIsMask}
+                  enabledAnchors={selectedIsMask ? ALL_ANCHORS : CORNER_ANCHORS}
+                  rotateEnabled={!selectedIsMask}
                   anchorSize={8}
                   anchorStroke={GUIDE_COLOR}
                   anchorFill="#fff"

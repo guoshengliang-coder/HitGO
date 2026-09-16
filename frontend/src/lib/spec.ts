@@ -49,12 +49,17 @@ export function newLayerId(): string {
 export function layerName(layer: Layer, assets: Asset[]): string {
   if (layer.name) return layer.name;
   if (layer.type === 'text') return layer.text.replace(/\n/g, ' ').slice(0, 12) || '文字';
+  if (layer.type === 'mask') return '遮盖';
   const a = assets.find((x) => x.id === layer.asset_id);
   return a ? a.name.replace(/\.[a-z0-9]+$/i, '') : '贴纸';
 }
 
-/** 图层素材宽高比（宽/高）；未知时返回 1。 */
+/** 图层素材宽高比（宽/高）；未知时返回 1。遮盖层没有素材，按 9:16 画布把 width / height 换成比例。 */
 export function layerAspect(layer: Layer, assets: Asset[]): number {
+  if (layer.type === 'mask') {
+    if (!(layer.width > 0) || !(layer.height > 0)) return 1;
+    return (layer.width * 1080) / (layer.height * 1920);
+  }
   if (layer.type === 'sticker') {
     const a = assets.find((x) => x.id === layer.asset_id);
     if (a?.width && a?.height) return a.width / a.height;
@@ -91,7 +96,7 @@ export function countSafeZoneOverlaps(spec: EditSpec, zone: SafeZone | undefined
   const c = { W: 1080, H: 1920 };
   let n = 0;
   for (const layer of spec.layers) {
-    if (layer.visible === false) continue;
+    if (layer.visible === false || layer.type === 'mask') continue; // 遮盖压在画面上，不算遮挡平台 UI
     const box = placeLayer(layer, layerAspect(layer, assets), c);
     if (zone.zones.some((r) => boxOverlapsRect(box, c, r))) n += 1;
   }

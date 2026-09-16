@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { toContractSpec, toSingleOutput } from './spec';
-import { emptySpec, type EditSpec } from '../types';
+import { countSafeZoneOverlaps, layerAspect, layerName, toContractSpec, toSingleOutput } from './spec';
+import { emptySpec, type EditSpec, type MaskLayer, type SafeZone } from '../types';
 
 describe('toContractSpec · audio', () => {
   it('没有 audio 块、或全是缺省值时不带此字段（保持旧 spec 形状）', () => {
@@ -70,5 +70,27 @@ describe('toSingleOutput', () => {
   it('其他字段不动', () => {
     const spec: EditSpec = { ...emptySpec(), trim: { remove: [[1, 2]] }, outputs: [{ variant_key: '4x5', aspect: '4:5', fill: 'blur' }] };
     expect(toSingleOutput(spec).trim).toBe(spec.trim);
+  });
+});
+
+describe('遮盖层', () => {
+  const mask: MaskLayer = { id: 'm', type: 'mask', mode: 'blur', anchor: 'bottom-center', margin: [0, 0.1], width: 1, height: 0.12, rotate: 0, opacity: 1, t: 'all' };
+  it('layerAspect 按 9:16 画布把 width / height 换成宽高比，非法尺寸回 1', () => {
+    expect(layerAspect(mask, [])).toBeCloseTo((1 * 1080) / (0.12 * 1920));
+    expect(layerAspect({ ...mask, width: 0.5, height: 0.5 }, [])).toBeCloseTo(1080 / 1920);
+    expect(layerAspect({ ...mask, height: 0 }, [])).toBe(1);
+  });
+  it('layerName 缺省「遮盖」，本地 name 优先', () => {
+    expect(layerName(mask, [])).toBe('遮盖');
+    expect(layerName({ ...mask, name: '遮原字幕' }, [])).toBe('遮原字幕');
+  });
+  it('安全区重叠统计跳过遮盖层', () => {
+    const zone: SafeZone = { key: 'z', name: 'z', aspect: '9:16', zones: [{ label: '', x: 0, y: 0.8, w: 1, h: 0.2 }] };
+    const spec: EditSpec = { ...emptySpec(), layers: [mask] };
+    expect(countSafeZoneOverlaps(spec, zone, [])).toBe(0);
+  });
+  it('toContractSpec 剔除本地字段后原样透传遮盖字段', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [{ ...mask, name: 'x', blur: 3, color: '#112233' }] };
+    expect(toContractSpec(spec).layers[0]).toEqual({ ...mask, blur: 3, color: '#112233' });
   });
 });

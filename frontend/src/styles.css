@@ -60,6 +60,7 @@ html.dark {
 .dark .vrow .poster { background-color: #2c3037; }
 .dark .tl-bar { background: #2b3a55; border-color: #4a6295; color: #b9cbf0; }
 .dark .tl-bar.all { background: #2c3037; }
+.dark .tl-bar.mask { background: repeating-linear-gradient(135deg, #3a4150 0 4px, #2b3140 4px 8px); border-color: #5b6578; color: #b6bfd0; }
 .dark .tl-audio .body { background-image: repeating-linear-gradient(90deg, #4b515b 0 2px, transparent 2px 5px); }
 .dark .preset-btn img { background: repeating-conic-gradient(#3a3f48 0 25%, #262a30 0 50%) 0 0 / 10px 10px; }
 .dark .toast, .dark [data-tip]::after { background: #e4e6ea; color: #15171b; }
@@ -309,6 +310,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .stage-box > canvas.crop-bg { position: absolute; inset: 0; display: block; }
 .crop-bar .btn.on { border-color: #b9bfc9; background: var(--panel-2); }
 .stage-fill { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* 遮盖层预览：叠在 <video> 之上、Konva 之下，backdrop-filter 实时模糊画面；不接事件，命中交给 Konva */
+.stage-box .mask-preview { position: absolute; pointer-events: none; }
 /* 画布内联文字编辑框：叠在文字图层原位，白字 + 半透明深底 + 强调色描边，让人一眼看出是在编辑 */
 .inline-text-editor {
   position: absolute; z-index: 2; box-sizing: border-box; margin: 0; padding: 4px 6px;
@@ -369,6 +372,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-bar.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar.all { background: #eceef2; border-style: dashed; }
 .tl-bar.locked { cursor: default; opacity: 0.75; }
+/* 遮盖层（字幕模块里与字幕行并列）：灰底斜纹，和文字条区分 */
+.tl-bar.mask { background: repeating-linear-gradient(135deg, #cfd6e0 0 4px, #e6eaf0 4px 8px); border-color: #8f9bb0; color: #3c4658; }
+.tl-bar.mask.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar .edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
 .tl-bar .edge.l { left: 0; } .tl-bar .edge.r { right: 0; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }

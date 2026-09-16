@@ -1027,3 +1027,168 @@ def test_real_ffmpeg_source_aligned_stem_follows_the_cut(tmp_path):
     assert _mean_volume(out, 0.6, 0.8) > -30  # the beep now sits at [0.5, 1.5]
     assert _mean_volume(out, 1.7, 0.7) < -60  # after it
 
+
+
+# --- mask layers (contract §2 type = "mask") ------------------------------------------------
+
+
+def mask_layer(**extra):
+    """Default contract mask: a full-width band 12% high, 10% above the bottom edge, shown 0–6 s."""
+    return {"id": "l_m", "type": "mask", "anchor": "bottom-center", "margin": [0, 0.10], "width": 1.0,
+            "height": 0.12, "rotate": 0, "opacity": 1, "t": [0, 6], **extra}
+
+
+def mask_build(layers, **kw):
+    return build(valid_spec(trim={"remove": []}, layers=layers), **kw)
+
+
+def test_blur_mask_splits_crops_blurs_and_overlays_without_an_input():
+    plan = mask_build([mask_layer()])
+    graph = fc(plan)
+    # 9:16 canvas: 1080 wide, 0.12·1920 = 230.4 → 230 high, y = 1920 − 230.4 − 192 = 1497.6 → 1498
+    assert "[c0]split=2[m1s][m1b]" in graph
+    assert "[m1b]format=rgba,crop=1080:230:0:1498,boxblur=lr=20:lp=2:enable='between(t,0,6)'[m1x]" in graph
+    assert "[m1s][m1x]overlay=0:1498:enable='between(t,0,6)'[c1]" in graph
+    assert graph.endswith("[c1]format=yuv420p[vout]")
+    assert plan.argv.count("-i") == 1  # no media behind a mask
+    assert "-t" not in plan.argv  # not a video layer: the still-image argv shape is kept
+    assert plan.warnings == []
+
+
+def test_blur_levels_and_opacity_and_all_window():
+    graph = fc(mask_build([mask_layer(blur=1, t="all")]))
+    assert "boxblur=lr=10:lp=1[m1x]" in graph and "enable" not in graph
+    graph = fc(mask_build([mask_layer(blur=3, opacity=0.5, t="all")]))
+    assert "boxblur=lr=40:lp=3,colorchannelmixer=aa=0.5[m1x]" in graph
+    assert "[m1s][m1x]overlay=0:1498[c1]" in graph
+
+
+def test_solid_mask_is_a_drawbox_with_the_alpha_from_opacity():
+    graph = fc(mask_build([mask_layer(mode="solid", color="#112233", opacity=0.8, t="all")]))
+    assert "[c0]drawbox=x=0:y=1498:w=1080:h=230:color=0x112233@0.8:t=fill[c1]" in graph
+    assert "split" not in graph.split("[c0]", 1)[1] and "boxblur=lr" not in graph
+    graph = fc(mask_build([mask_layer(mode="solid", color="#FF0000")]))
+    assert "[c0]drawbox=x=0:y=1498:w=1080:h=230:color=0xFF0000:t=fill:enable='between(t,0,6)'[c1]" in graph
+
+
+def test_mask_window_is_clamped_to_the_post_trim_duration():
+    spec = valid_spec(layers=[mask_layer(t=[3, 30])])  # 20.6 s post-trim
+    graph = fc(build(spec))
+    assert "boxblur=lr=20:lp=2:enable='between(t,3,20.6)'[m1x]" in graph
+    assert "overlay=0:1498:enable='between(t,3,20.6)'[c1]" in graph
+
+
+def test_mask_between_sticker_and_text_keeps_the_canvas_numbering():
+    spec = valid_spec()
+    spec["layers"] = [spec["layers"][0], mask_layer(), spec["layers"][1]]
+    plan = build(spec)
+    graph = fc(plan)
+    assert plan.argv.count("-i") == 3
+    assert "[c0][l1]overlay=86:230:eof_action=repeat:enable='between(t,0,6)'[c1]" in graph
+    assert "[c1]split=2[m2s][m2b]" in graph
+    assert "[m2s][m2x]overlay=0:1498:enable='between(t,0,6)'[c2]" in graph
+    assert "[2:v]format=rgba,scale=540:130[l3]" in graph
+    assert "[c2][l3]overlay=270:115:eof_action=repeat[c3]" in graph
+    assert graph.endswith("[c3]format=yuv420p[vout]")
+
+
+def test_mask_region_is_clamped_to_the_canvas():
+    # top-left, pushed half off the left edge and a bit above the top: only the visible part is blurred
+    graph = fc(mask_build([mask_layer(anchor="top-left", margin=[-0.5, -0.05], t="all")]))
+    assert "crop=540:134:0:0,boxblur=lr=20:lp=2[m1x]" in graph
+    assert "[m1s][m1x]overlay=0:0[c1]" in graph
+
+
+def test_mask_off_canvas_is_skipped_without_consuming_a_canvas_label():
+    spec = valid_spec(trim={"remove": []})
+    spec["layers"] = [mask_layer(anchor="top-left", margin=[0, -0.2], height=0.1), spec["layers"][1]]
+    plan = build(spec)
+    graph = fc(plan)
+    assert any("l_m" in w and "不在画布内" in w for w in plan.warnings)
+    assert "split" not in graph.split("[c0]", 1)[1] and "boxblur=lr" not in graph
+    assert "[c0][l1]overlay=270:115:eof_action=repeat[c1]" in graph  # the text still lands on [c1]
+    assert graph.endswith("[c1]format=yuv420p[vout]")
+
+
+def test_mask_blur_radius_shrinks_to_fit_a_small_region_or_skips_it():
+    # 0.03·1080 = 32 wide, 0.01·1920 = 19 high → radius must be < 19 // 2 → 8
+    graph = fc(mask_build([mask_layer(anchor="top-left", margin=[0, 0], width=0.03, height=0.01, t="all")]))
+    assert "crop=32:19:0:0,boxblur=lr=8:lp=2[m1x]" in graph
+    # 2×4 px: nothing left to blur → skipped with a warning; a solid box of that size is still drawn
+    plan = mask_build([mask_layer(anchor="top-left", margin=[0, 0], width=0.002, height=0.002, t="all")])
+    assert any("l_m" in w and "太小" in w for w in plan.warnings)
+    assert fc(plan).endswith("[c0]format=yuv420p[vout]")
+    plan = mask_build([mask_layer(anchor="top-left", margin=[0, 0], width=0.002, height=0.002, t="all", mode="solid")])
+    assert plan.warnings == [] and "drawbox=x=0:y=0:w=2:h=4:color=0x000000:t=fill[c1]" in fc(plan)
+
+
+def test_mask_ignores_rotate():
+    plain = fc(mask_build([mask_layer(t="all")]))
+    rotated = fc(mask_build([mask_layer(t="all", rotate=45)]))
+    assert rotated == plain and "rotate=" not in rotated
+
+
+def test_mask_override_height_and_width_apply_per_variant():
+    spec = valid_spec(layers=[mask_layer(t="all")])
+    spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 0.2, "width": 0.5}
+    graph = fc(build(spec, variant_key="1x1"))
+    # 1:1 canvas: w = 540, h = 216, x = 270, y = 1080 − 216 − 108 = 756
+    assert "crop=540:216:270:756,boxblur=lr=20:lp=2[m1x]" in graph
+    assert "[m1s][m1x]overlay=270:756[c1]" in graph
+    mask = EditSpec.model_validate(spec).layers[0]
+    geo = apply_overrides(mask, EditSpec.model_validate(spec).outputs[1])
+    assert geo["height"] == 0.2 and geo["width"] == 0.5
+    # a height override on a sticker is accepted by the schema but means nothing to the layout
+    sticker_spec = valid_spec()
+    sticker_spec["outputs"][1]["layer_overrides"]["l_1"]["height"] = 0.5
+    parsed = EditSpec.model_validate(sticker_spec)
+    assert "height" not in apply_overrides(parsed.layers[0], parsed.outputs[1])
+    assert "scale=324:130[l1]" in fc(build(sticker_spec, variant_key="1x1"))
+
+
+def test_mask_never_resolves_an_image(monkeypatch):
+    import app.services.filtergraph as fg
+
+    def boom(*_a, **_k):
+        raise AssertionError("_resolve_layer_image must not be called for masks")
+
+    monkeypatch.setattr(fg, "_resolve_layer_image", boom)
+    plan = mask_build([mask_layer(), mask_layer(id="l_m2", mode="solid")], assets={})
+    assert plan.warnings == [] and "[c2]format=yuv420p[vout]" in fc(plan)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_renders_blur_and_solid_masks(tmp_path):
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=30:duration=3",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-c:a", "aac", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    layers = [
+        mask_layer(t=[0.5, 1.5]),  # timed blur band at the bottom
+        mask_layer(id="l_m2", mode="solid", color="#112233", opacity=0.8, anchor="top-right",
+                   margin=[0.03, 0.03], width=0.3, height=0.08, t="all"),
+        # odd geometry + partly off-canvas + opacity: the crop / overlay must still be accepted
+        mask_layer(id="l_m3", anchor="center-left", margin=[-0.1, 0.017], width=0.4, height=0.093, blur=3, opacity=0.6),
+    ]
+    spec = EditSpec.model_validate(valid_spec(trim={"remove": [[1, 2]]}, layers=layers))
+    plan = build_render_command(
+        spec,
+        {"duration": 3.0, "has_audio": True},
+        {},
+        spec.outputs[0],
+        source_path=str(src),
+        output_path=str(tmp_path / "out.mp4"),
+    )
+    assert plan.warnings == []
+    subprocess.run(plan.argv, check=True, capture_output=True)
+    out = tmp_path / "out.mp4"
+    assert out.stat().st_size > 0
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(out)],
+        capture_output=True, text=True,
+    )  # fmt: skip
+    if probe.returncode == 0:
+        assert probe.stdout.strip() == "1080,1920"

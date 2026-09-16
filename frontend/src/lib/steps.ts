@@ -13,10 +13,19 @@ export const STEPS: { key: Step; label: string }[] = [
   { key: 'subtitle', label: '字幕' },
 ];
 
-/** 该模块管理的图层类型；不管图层的模块（剪辑、音频）返回 null。 */
-export function layerTypeForStep(step: Step): Layer['type'] | null {
+/**
+ * 该模块管理的图层类型（画布上可选中、时间线上有行、⌘V 能粘进来）；不管图层的模块（剪辑、音频）返回 []。
+ * 字幕模块除了文字图层，还管遮住原字幕的遮盖层。
+ */
+export function layerTypesForStep(step: Step): Layer['type'][] {
   // 字幕导入后仍是带时段的文字图层；字幕模块沿用文字图层的画布与时间线交互。
-  if (step === 'text' || step === 'subtitle') return 'text';
-  if (step === 'sticker') return 'sticker';
-  return null;
+  if (step === 'text') return ['text'];
+  if (step === 'subtitle') return ['text', 'mask'];
+  if (step === 'sticker') return ['sticker'];
+  return [];
+}
+
+/** 该模块的主图层类型（第一项）；不管图层的模块返回 null。 */
+export function layerTypeForStep(step: Step): Layer['type'] | null {
+  return layerTypesForStep(step)[0] ?? null;
 }

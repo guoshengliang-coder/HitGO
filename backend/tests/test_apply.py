@@ -217,3 +217,63 @@ def test_apply_cover_copies_the_whole_block_or_clears_it():
     assert "cover" not in out
     # Other modules leave the target's cover alone.
     assert apply_modules(valid_spec(), target, ["trim", "layers", "outputs", "audio"], 10.0)["cover"] == {"asset_id": "a_old"}
+
+
+# --- mask layers -----------------------------------------------------------------------
+
+
+def _mask(id_="l_m", **extra):
+    return {"id": id_, "type": "mask", "mode": "blur", "blur": 2, "color": "#000000", "height": 0.12,
+            "anchor": "bottom-center", "margin": [0, 0.1], "width": 1.0, "rotate": 0, "opacity": 1, "t": [0, 6], **extra}
+
+
+def test_style_only_mask_copies_mode_color_blur_height_and_common_keys():
+    src = [_mask(mode="solid", color="#112233", blur=3, height=0.2, width=0.8, opacity=0.5, rotate=0)]
+    target = [_mask(anchor="top-left", margin=[0.05, 0.05], t="all", width=1.0, ui_color="#abc")]
+    (out,) = merge_layers_style_only(src, target)
+    assert (out["mode"], out["color"], out["blur"], out["height"]) == ("solid", "#112233", 3, 0.2)
+    assert (out["width"], out["opacity"], out["rotate"]) == (0.8, 0.5, 0)
+    # target keeps its own placement / time and extra keys
+    assert out["anchor"] == "top-left" and out["margin"] == [0.05, 0.05] and out["t"] == "all"
+    assert out["ui_color"] == "#abc"
+    # type fields absent from the source are dropped (they fall back to the contract defaults)
+    src = [{"id": "l_m", "type": "mask", "width": 1.0}]
+    (out,) = merge_layers_style_only(src, target)
+    assert "mode" not in out and "blur" not in out and "color" not in out and "height" not in out
+
+
+def test_style_only_masks_never_match_by_text_and_are_not_matched_by_text_layers():
+    src = [_mask("l_new")]
+    target = [{"id": "l_t", "type": "text", "text": "x", "anchor": "center"}]
+    out = merge_layers_style_only(src, target)
+    assert [l["type"] for l in out] == ["mask", "text"]  # unmatched: inserted, text untouched
+    assert out[1] == target[0]
+
+
+def test_style_only_unmatched_mask_goes_under_the_first_text_layer():
+    src = valid_spec()
+    src["layers"] = [src["layers"][0], _mask("l_9"), src["layers"][1]]
+    src["layers"][0]["id"] = "l_s9"  # unmatched sticker → appended at the end
+    target = _target_with_layers()  # l_1 sticker, l_2 text
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert [l["id"] for l in out["layers"]] == ["l_1", "l_9", "l_2", "l_s9"]
+    assert out["layers"][1] == _mask("l_9") and out["layers"][1] is not src["layers"][1]
+    # matched text after the insertion still gets the source's style (indices shifted correctly)
+    assert out["layers"][2]["style"] == src["layers"][2]["style"] and out["layers"][2]["anchor"] == "center"
+
+
+def test_style_only_unmatched_mask_without_text_layers_is_appended():
+    src = [_mask("l_9")]
+    target = [{"id": "l_s", "type": "sticker", "asset_id": "a"}]
+    assert [l["id"] for l in merge_layers_style_only(src, target)] == ["l_s", "l_9"]
+    # a matched mask stays where the target had it
+    src = [_mask("l_m", mode="solid")]
+    target = [{"id": "l_t", "type": "text", "text": "x"}, _mask("l_m")]
+    out = merge_layers_style_only(src, target)
+    assert [l["id"] for l in out] == ["l_t", "l_m"] and out[1]["mode"] == "solid"
+
+
+def test_replace_mode_keeps_mask_order_as_is():
+    src = valid_spec(layers=[valid_spec()["layers"][1], _mask()])
+    out = apply_modules(src, _target_with_layers(), ["layers"], 24.6)
+    assert [l["type"] for l in out["layers"]] == ["text", "mask"]
