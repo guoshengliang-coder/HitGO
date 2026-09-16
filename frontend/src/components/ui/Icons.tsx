@@ -78,6 +78,10 @@ export const IconCutLeft = () => (
 export const IconCutRight = () => (
   <svg {...base}><path d="M7 2.5v11" /><path d="m9.5 5.5 4 4M13.5 5.5l-4 4" /><path d="M2 8h3" strokeDasharray="1.5 1.5" /></svg>
 );
+/** 拆分：播放头竖线把一条轨切成两段。 */
+export const IconSplit = () => (
+  <svg {...base}><path d="M8 1.5v13" /><rect x="1.5" y="5.5" width="4.5" height="5" rx="1" /><rect x="10" y="5.5" width="4.5" height="5" rx="1" /></svg>
+);
 export const IconCenterH = () => (
   <svg {...base}><path d="M8 1.5v13" strokeDasharray="2 1.5" /><rect x="3" y="5" width="10" height="6" rx="1" /></svg>
 );

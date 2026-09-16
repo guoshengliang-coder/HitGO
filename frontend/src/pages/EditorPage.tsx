@@ -3,7 +3,8 @@ import { useParams } from 'react-router-dom';
 import { useEditor } from '../store/editor';
 import { player } from '../lib/player';
 import { layerTypeForStep } from '../lib/steps';
-import { frameDuration } from '../lib/time';
+import { frameDuration, sourceToPost } from '../lib/time';
+import { SOURCE_TRACK_ID } from '../lib/audioTracks';
 import { TopBar } from '../components/editor/TopBar';
 import { ApplyDialog, VideoList } from '../components/editor/VideoList';
 import { Stage } from '../components/editor/Stage';
@@ -123,15 +124,49 @@ function handleKey(e: KeyboardEvent) {
         return;
     }
   } else if (s.step === 'audio') {
+    const onSource = s.selectedTrackId === SOURCE_TRACK_ID;
     switch (e.code) {
+      case 'KeyS':
+        if (s.selectedTrackId && !onSource) s.splitAudioTrack(s.selectedTrackId);
+        return;
+      case 'KeyQ':
+        if (s.selectedTrackId) s.cutTrackBefore(s.selectedTrackId);
+        return;
+      case 'KeyW':
+        if (s.selectedTrackId) s.cutTrackAfter(s.selectedTrackId);
+        return;
+      case 'KeyI':
+        // 原声静音区间的入点 / 出点：存源时间，出点时换算成剪后时间（同剪辑模块的 I / O）
+        s.setSelectedTrack(SOURCE_TRACK_ID);
+        s.setInPoint(s.time);
+        return;
+      case 'KeyO': {
+        const spec = s.currentSpec();
+        if (s.inPoint === null || !spec) {
+          s.setSelectedTrack(SOURCE_TRACK_ID);
+          s.setInPoint(s.time);
+          return;
+        }
+        const remove = spec.trim.remove;
+        s.addSourceMute(sourceToPost(s.inPoint, remove), sourceToPost(Math.max(0, s.time), remove));
+        s.setInPoint(null);
+        return;
+      }
       case 'Delete':
       case 'Backspace':
-        if (s.selectedTrackId) {
+        if (onSource) {
+          if (s.selectedMuteIndex !== null) {
+            e.preventDefault();
+            s.deleteSourceMute(s.selectedMuteIndex);
+          }
+        } else if (s.selectedTrackId) {
           e.preventDefault();
           s.removeAudioTrack(s.selectedTrackId);
         }
         return;
       case 'Escape':
+        s.setInPoint(null);
+        s.setSelectedMute(null);
         s.setSelectedTrack(null);
         return;
     }

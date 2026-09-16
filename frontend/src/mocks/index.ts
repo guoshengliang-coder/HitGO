@@ -521,6 +521,19 @@ function tickJobs() {
           const [w, h] = dims[j.variant_key] ?? [1080, 1920];
           j.output_url = v?.proxy_url || '';
           j.output = { width: w, height: h, duration: v?.duration ?? 0, size: 5832211, codec: 'h264/aac' };
+          // 同 worker（契约 §1 Job output.audio，HIG-26）：spec 带 audio 块时记下实际混进的音轨，素材不在的算跳过
+          const audio = v?.edit_spec?.audio;
+          if (audio) {
+            const found = audio.tracks.map((t) => ({ t, a: assets.find((x) => x.id === t.asset_id && x.type === 'audio') }));
+            const skipped = found.filter((x) => !x.a).map((x) => x.t.id);
+            j.output.audio = {
+              source_volume: v?.has_audio ? audio.source_volume : 0,
+              source_mute: audio.source_mute?.length ?? 0,
+              tracks: found.flatMap(({ t, a }) => (a ? [{ id: t.id, asset_id: t.asset_id, name: a.name, role: t.role ?? 'bgm' }] : [])),
+              skipped,
+            };
+            if (skipped.length) j.error = '警告：' + skipped.map((id) => `音轨 ${id}：音频素材不存在或未就绪，已跳过`).join('；');
+          }
           j.callback = {
             session_id: j.batch_id,
             source_id: j.video_id,

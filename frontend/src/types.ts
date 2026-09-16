@@ -217,12 +217,21 @@ export function isAssetReady(asset: Asset | undefined): boolean {
   return !asset || (asset.status ?? 'ready') === 'ready';
 }
 
+/** 成片实际混进了哪些音轨（契约 §1 Job output.audio，HIG-26）；spec 没有 audio 块或旧任务没有。 */
+export interface JobOutputAudio {
+  source_volume: number;
+  source_mute: number;
+  tracks: { id: string; asset_id: string; name: string; role: AudioRole }[];
+  skipped: string[];
+}
+
 export interface JobOutput {
   width: number;
   height: number;
   duration: number;
   size: number;
   codec: string;
+  audio?: JobOutputAudio;
 }
 
 export interface Job {
@@ -472,7 +481,7 @@ export interface AudioTrack {
   align?: AudioAlign;
   /** 出声时段，剪后时间轴。 */
   t: TimeWindow;
-  /** 从素材第几秒开始播；loop 时必须为 0。 */
+  /** 从素材第几秒开始播；loop 时是第一遍的起点（HIG-25）。 */
   offset?: number;
   /** 0–1。 */
   volume?: number;
@@ -488,6 +497,8 @@ export interface AudioTrack {
 export interface AudioSpec {
   /** 0–1；0 = 源音轨静音。 */
   source_volume: number;
+  /** 可选（HIG-25）：源音轨在这些剪后时段静音，画面不动。升序、不重叠。 */
+  source_mute?: [number, number][];
   tracks: AudioTrack[];
 }
 

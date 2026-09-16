@@ -9,7 +9,7 @@ import { api } from '../api';
 import type { BatchDetail, Job } from '../types';
 import { formatSeconds } from '../lib/time';
 import { fmtDateOr, fmtSize } from '../lib/datetime';
-import { latestJobIds, outputFileName, sortByFinishedDesc } from '../lib/outputs';
+import { audioMixSummary, jobWarning, outputFileName, sortByFinishedDesc, versionTags } from '../lib/outputs';
 import { matchesQuery } from '../lib/search';
 import { variantDef, type VariantKey } from '../types';
 
@@ -212,7 +212,8 @@ function OutputsTable({ jobs, mode, batchName, emptyText }: { jobs: Job[] | null
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (jobs === null) return <div className="empty">加载中…</div>;
   if (jobs.length === 0) return <div className="empty">{emptyText ?? '还没有完成的渲染任务。'}</div>;
-  const latest = mode === 'batch' ? latestJobIds(jobs) : null;
+  // 同一视频同一变体重复导出时标出最新那条（HIG-26：旧成片不含后来加的音轨，容易听错）
+  const versions = versionTags(jobs);
 
   return (
     <table className="table">
@@ -235,7 +236,11 @@ function OutputsTable({ jobs, mode, batchName, emptyText }: { jobs: Job[] | null
           const vd = variantDef(j.variant_key as VariantKey);
           return (
             <tr key={j.id}>
-              <td>{j.video_name ?? j.video_id}</td>
+              <td>
+                {j.video_name ?? j.video_id}
+                {audioMixSummary(j.output?.audio) && <div className="muted small">{audioMixSummary(j.output?.audio)}</div>}
+                {jobWarning(j) && <div className="warn-text small" title={jobWarning(j) ?? undefined}>警告：{jobWarning(j)}</div>}
+              </td>
               <td>{j.name ?? <span className="muted">—</span>}</td>
               {mode === 'all' && (
                 <td>
@@ -251,7 +256,8 @@ function OutputsTable({ jobs, mode, batchName, emptyText }: { jobs: Job[] | null
               <td className="mono">{j.output ? fmtSize(j.output.size) : '—'}</td>
               <td className="mono">
                 {fmtDateOr(j.finished_at)}
-                {latest?.has(j.id) && <span className="muted small"> · 最新</span>}
+                {versions.get(j.id) === 'latest' && <span className="pill done" style={{ marginLeft: 6 }} title="同一视频同一变体里最近生成的一条">最新</span>}
+                {versions.get(j.id) === 'older' && <span className="muted small" style={{ whiteSpace: 'nowrap' }} title="同一视频同一变体后来又导出过；这条不含之后的改动"> · 旧版本</span>}
               </td>
               <td>
                 {j.output_url ? (

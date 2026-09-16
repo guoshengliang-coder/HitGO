@@ -25,7 +25,7 @@ import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
 import { InlineTextEditor } from './InlineTextEditor';
-import { sourceVolume } from '../../lib/audioTracks';
+import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
@@ -435,12 +435,22 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const guidesRef = useRef(guides);
   guidesRef.current = guides;
 
-  // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上
+  // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上；
+  // 有原声静音区间（source_mute，HIG-25）时跟着播放头逐帧取增益，落进区间就是 0。
   const srcVolume = sourceVolume(spec?.audio);
+  const srcAudio = spec?.audio;
   useEffect(() => {
     const el = videoRef.current;
-    if (el) el.volume = srcVolume;
-  }, [srcVolume, video?.id]);
+    if (!el) return;
+    el.volume = srcVolume;
+    if (!srcAudio?.source_mute?.length) return;
+    const apply = (t: number) => {
+      const v = videoRef.current;
+      if (v) v.volume = sourceGainAt(srcAudio, sourceToPost(Math.max(0, t), player.remove));
+    };
+    apply(player.currentTime);
+    return player.subscribe((t) => apply(t));
+  }, [srcVolume, srcAudio, video?.id]);
 
   // 封面时长 → 播放头前面的封面段。必须写在「播放器挂载」之前：换视频时先有新的封面时长，挂载时才能退到封面起点。
   useEffect(() => {

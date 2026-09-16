@@ -40,7 +40,12 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'delete-range', keys: ['Delete'], label: '删除选中区间', group: '剪辑', steps: TRIM },
   // 音频
   { id: 'track-drag', keys: ['拖动'], label: '拖动音轨条移动时段 / 拖两端调整', group: '音频', steps: AUDIO },
-  { id: 'delete-track', keys: ['Delete'], label: '删除选中音轨', group: '音频', steps: AUDIO },
+  { id: 'split-track', keys: ['S'], label: '在播放头处拆分选中音轨', group: '音频', steps: AUDIO },
+  { id: 'cut-track-before', keys: ['Q'], label: '删左（音轨删掉播放头左侧；原声静音左侧）', group: '音频', steps: AUDIO },
+  { id: 'cut-track-after', keys: ['W'], label: '删右（音轨删掉播放头右侧；原声静音右侧）', group: '音频', steps: AUDIO },
+  { id: 'mute-in', keys: ['I'], label: '原声静音入点', group: '音频', steps: AUDIO },
+  { id: 'mute-out', keys: ['O'], label: '原声静音出点（加一段静音）', group: '音频', steps: AUDIO },
+  { id: 'delete-track', keys: ['Delete'], label: '删除选中音轨 / 原声静音区间', group: '音频', steps: AUDIO },
   // 图层
   { id: 'copy-layer', keys: ['⌘', 'C'], label: '复制图层', group: '图层', steps: LAYER_STEPS },
   { id: 'paste-layer', keys: ['⌘', 'V'], label: '粘贴图层', group: '图层', steps: LAYER_STEPS },

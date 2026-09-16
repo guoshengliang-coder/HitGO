@@ -6,7 +6,7 @@ import { useEditor, usePostDuration } from '../../store/editor';
 import { api } from '../../api';
 import { formatSeconds } from '../../lib/time';
 import { BUCKET_LABEL, filterAssets, type AssetBucket } from '../../lib/assets';
-import { audibleSpan, resolveTrack, sourceVolume, stickerAudioLayers } from '../../lib/audioTracks';
+import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, stickerAudioLayers } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { layerName } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
@@ -77,6 +77,8 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
   const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '（素材已删除）';
   const mediaDuration = asset?.duration ?? 0;
   const span = audibleSpan(track, postDuration, mediaDuration);
+  const allTracks = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio?.tracks : undefined));
+  const cont = r.loop && allTracks ? continuationOffset(track, allTracks, postDuration, mediaDuration) : null;
   const [ws, we] = r.t === 'all' ? [0, postDuration] : r.t;
   const windowLen = Math.max(0, Math.min(we, postDuration) - ws);
   const notReady = !asset || (asset.status ?? 'ready') !== 'ready';
@@ -87,6 +89,7 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
         {r.align === 'source' && <span className="role source" title="对齐源时间轴：随剪辑一起裁，不循环、无偏移">源</span>}
         <span className="tname" title={asset?.name}>{name}</span>
         {mediaDuration > 0 && <span className="mono muted">{formatSeconds(mediaDuration, 1)}</span>}
+        {!asset && <span className="error-text small" title="素材已被删除或被重新分离 / 重新配音替换掉，导出时会跳过这条音轨">素材已失效，导出会跳过</span>}
         <button className="btn ghost icon sm danger" aria-label="删除音轨" onClick={(e) => { e.stopPropagation(); remove(track.id); }}>
           <IconTrash />
         </button>
@@ -115,10 +118,26 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
             <>
               <span>循环</span>
               <div className="inline">
-                <button className={`chip ${r.loop ? 'active' : ''}`} title="素材短于时段时从头重复；循环时起始偏移固定为 0" onClick={() => update(track.id, { loop: !r.loop })}>{r.loop ? '循环' : '播一遍'}</button>
-                <span className="muted small">起始偏移</span>
-                <Num value={r.offset} scale={1} step={0.5} min={0} max={mediaDuration > 0 ? Math.max(0, mediaDuration - 0.1) : undefined} suffix="s" disabled={r.loop} title="从素材第几秒开始播" onChange={(v) => update(track.id, { offset: Math.round(v * 100) / 100 })} />
+                <button className={`chip ${r.loop ? 'active' : ''}`} title="素材短于时段时重复播放" onClick={() => update(track.id, { loop: !r.loop })}>{r.loop ? '循环' : '播一遍'}</button>
+                <span className="muted small">起点</span>
+                <Num value={r.offset} scale={1} step={0.5} min={0} max={mediaDuration > 0 ? Math.max(0, mediaDuration - 0.1) : undefined} suffix="s" title={r.loop ? '第一遍从素材第几秒开始，之后从头循环' : '从素材第几秒开始播'} onChange={(v) => update(track.id, { offset: Math.round(v * 100) / 100 })} />
               </div>
+              {r.loop && (
+                <>
+                  <span />
+                  <div className="inline" title="拆分出来的后半段默认接着前半段放；也可以改成从素材开头重新放">
+                    <button
+                      className={`chip ${cont !== null && Math.abs(r.offset - cont) < 1e-3 ? 'active' : ''}`}
+                      disabled={cont === null}
+                      title={cont === null ? '前面没有紧挨着的同一素材音轨可接' : `从前一段结束处（素材 ${formatSeconds(cont, 1)}）接着放`}
+                      onClick={() => cont !== null && update(track.id, { offset: cont })}
+                    >
+                      接着放
+                    </button>
+                    <button className={`chip ${r.offset === 0 ? 'active' : ''}`} onClick={() => r.offset !== 0 && update(track.id, { offset: 0 })}>从头放</button>
+                  </div>
+                </>
+              )}
             </>
           )}
           <span>淡入</span>
@@ -142,6 +161,7 @@ function SourceSection() {
   const audio = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio : null));
   const setSourceVolume = useEditor((s) => s.setSourceVolume);
   const sv = sourceVolume(audio);
+  const mutes = audio?.source_mute ?? [];
   const hasAudio = !!video?.has_audio;
   return (
     <div className="section">
@@ -154,6 +174,12 @@ function SourceSection() {
         <Slider value={sv} disabled={!hasAudio} onChange={setSourceVolume} />
       </div>
       {!hasAudio && <div className="hint">源视频没有音轨；加 BGM / 口播后成片才有声音。</div>}
+      {hasAudio && sv > 0 && (
+        <div className="hint">
+          {mutes.length > 0 ? `已静音 ${mutes.length} 段原声（${mutes.map(([a, b]) => `${a.toFixed(1)}–${b.toFixed(1)}s`).join('、')}，剪后时间）。` : ''}
+          要剪掉一段原声：在时间线上点「源音轨」，按 Q / W 静音播放头左 / 右侧，或 I、O 标一段；画面不受影响。
+        </div>
+      )}
     </div>
   );
 }

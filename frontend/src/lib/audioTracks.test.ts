@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { audibleSpan, contractAudio, isDefaultAudio, resolveTrack, stickerAudioLayers, toggleTrackWindow, trackDefaultsFor, trackGain, trackMediaTime, trackSnapCandidates } from './audioTracks';
+import { addMuteRange, audibleSpan, continuationOffset, contractAudio, isDefaultAudio, resolveTrack, sourceGainAt, sourceMutedAt, splitTrackAt, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackDefaultsFor, trackGain, trackMediaTime, trackSnapCandidates } from './audioTracks';
 import type { Asset, AudioTrack, Layer } from '../types';
 
 const D = 20.6; // 剪后时长
@@ -124,5 +124,106 @@ describe('align = source（分离出的人声 / 伴奏）', () => {
   });
   it('缺省 align 为 post', () => {
     expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' }).align).toBe('post');
+  });
+});
+
+describe('剪切音轨（HIG-25）', () => {
+  const bgm: AudioTrack = { id: 'b', asset_id: 'x', t: 'all', loop: true, volume: 0.6, fade_in: 0.5, fade_out: 1 };
+
+  it('全程轨在播放头处拆成首尾相接的两段，淡入留前、淡出留后，循环轨接着放', () => {
+    const parts = splitTrackAt(bgm, 7, D, 3, 'b2');
+    expect(parts).toEqual([
+      { id: 'b', asset_id: 'x', t: [0, 7], loop: true, volume: 0.6, fade_in: 0.5 },
+      { id: 'b2', asset_id: 'x', t: [7, D], loop: true, volume: 0.6, fade_out: 1, offset: 1 }, // 7 mod 3
+    ]);
+  });
+
+  it('拆开后每一刻的素材位置和增益都和拆之前一样（淡变除外的中段）', () => {
+    const [l, r] = splitTrackAt(bgm, 7, D, 3, 'b2')!;
+    for (const t of [2, 6.9, 7.2, 12.3, 19]) {
+      const whole = trackMediaTime(t, bgm, D, 3);
+      const half = t < 7 ? trackMediaTime(t, l, D, 3) : trackMediaTime(t, r, D, 3);
+      expect(half).toBeCloseTo(whole!, 6);
+      expect(t < 7 ? trackGain(t, l, D, 3) : trackGain(t, r, D, 3)).toBeCloseTo(trackGain(t, bgm, D, 3), 6);
+    }
+  });
+
+  it('不循环的口播：后一段 offset 顺延，播完素材后仍静音', () => {
+    const voice: AudioTrack = { id: 'v', asset_id: 'x', role: 'voice', t: [2, 12], offset: 1 };
+    const [l, r] = splitTrackAt(voice, 3.5, D, 4, 'v2')!;
+    expect(l).toEqual({ id: 'v', asset_id: 'x', role: 'voice', t: [2, 3.5], offset: 1 });
+    expect(r).toEqual({ id: 'v2', asset_id: 'x', role: 'voice', t: [3.5, 12], offset: 2.5 });
+    expect(trackMediaTime(4, r, D, 4)).toBeCloseTo(3);
+    expect(trackMediaTime(6, r, D, 4)).toBeNull(); // 4 s 素材从 1 s 起只够到 5 s
+    // 素材早已播完时拆分：offset 夹在素材时长内
+    expect(splitTrackAt(voice, 10, D, 4, 'v3')![1].offset).toBe(4);
+  });
+
+  it('align = source 只拆时段，不加 offset', () => {
+    const stem: AudioTrack = { id: 's', asset_id: 'x', align: 'source', t: [1, 9] };
+    expect(splitTrackAt(stem, 4, D, 24, 's2')).toEqual([
+      { id: 's', asset_id: 'x', align: 'source', t: [1, 4] },
+      { id: 's2', asset_id: 'x', align: 'source', t: [4, 9] },
+    ]);
+  });
+
+  it('播放头离两端不足 0.1 秒或在时段外时不拆；淡变按新时段长收紧', () => {
+    const w: AudioTrack = { id: 'w', asset_id: 'x', t: [2, 6], fade_in: 3, fade_out: 3 };
+    expect(splitTrackAt(w, 2.05, D, 10, 'n')).toBeNull();
+    expect(splitTrackAt(w, 5.95, D, 10, 'n')).toBeNull();
+    expect(splitTrackAt(w, 8, D, 10, 'n')).toBeNull();
+    const [l, r] = splitTrackAt(w, 3, D, 10, 'n')!;
+    expect(l.fade_in).toBe(1);
+    expect(r.fade_out).toBe(3);
+  });
+
+  it('continuationOffset：找紧挨在前面的同素材轨，算出「接着放」的起点', () => {
+    const [l, r] = splitTrackAt(bgm, 7, D, 3, 'b2')!;
+    const reset = { ...r, offset: 0 };
+    expect(continuationOffset(reset, [l, reset], D, 3)).toBe(1);
+    expect(continuationOffset(l, [l, reset], D, 3)).toBeNull(); // 前面没有
+    expect(continuationOffset({ ...reset, asset_id: 'other' }, [l, reset], D, 3)).toBeNull();
+    expect(continuationOffset({ ...reset, align: 'source' }, [l, reset], D, 3)).toBeNull();
+  });
+
+  it('原声静音区间：加入时排序合并、裁到剪后时长，预览增益在区间内为 0', () => {
+    let m = addMuteRange(undefined, 5, 3, D);
+    expect(m).toEqual([[3, 5]]);
+    m = addMuteRange(m, 4.5, 8, D);
+    expect(m).toEqual([[3, 8]]);
+    m = addMuteRange(m, 19, 40, D);
+    expect(m).toEqual([[3, 8], [19, 20.6]]);
+    expect(addMuteRange(m, 10, 10.01, D)).toBe(m); // 太短不加
+    const audio = { source_volume: 0.8, source_mute: m, tracks: [] };
+    expect(sourceMutedAt(audio, 3)).toBe(true);
+    expect(sourceMutedAt(audio, 8)).toBe(false); // 区间右端开
+    expect(sourceGainAt(audio, 5)).toBe(0);
+    expect(sourceGainAt(audio, 9)).toBe(0.8);
+    expect(sourceGainAt(undefined, 9)).toBe(1);
+  });
+
+  it('contractAudio / isDefaultAudio 认 source_mute；空数组不发', () => {
+    expect(isDefaultAudio({ source_volume: 1, source_mute: [[1, 2]], tracks: [] })).toBe(false);
+    expect(isDefaultAudio({ source_volume: 1, source_mute: [], tracks: [] })).toBe(true);
+    expect(contractAudio({ source_volume: 1, source_mute: [[1.23456, 2]], tracks: [] })).toEqual({ source_volume: 1, source_mute: [[1.235, 2]], tracks: [] });
+    expect(contractAudio({ source_volume: 0.5, source_mute: [], tracks: [] })).toEqual({ source_volume: 0.5, tracks: [] });
+  });
+
+  it('循环轨带 offset：第一遍从 offset 起，之后对素材时长取模', () => {
+    const loop: AudioTrack = { id: 'l', asset_id: 'x', t: [4, 10], loop: true, offset: 2.5 };
+    expect(trackMediaTime(4, loop, D, 3)).toBeCloseTo(2.5);
+    expect(trackMediaTime(4.6, loop, D, 3)).toBeCloseTo(0.1);
+  });
+});
+
+describe('trackAssetProblem（HIG-26）', () => {
+  const assets = [
+    { id: 'a_ok', type: 'audio', kind: 'audio', status: 'ready' },
+    { id: 'a_wait', type: 'audio', kind: 'audio', status: 'preparing' },
+  ] as Asset[];
+  it('素材不在 → missing；还在处理 → not-ready；就绪 → null', () => {
+    expect(trackAssetProblem({ id: 't', asset_id: 'a_gone', t: 'all' }, assets)).toBe('missing');
+    expect(trackAssetProblem({ id: 't', asset_id: 'a_wait', t: 'all' }, assets)).toBe('not-ready');
+    expect(trackAssetProblem({ id: 't', asset_id: 'a_ok', t: 'all' }, assets)).toBeNull();
   });
 });

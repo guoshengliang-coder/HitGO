@@ -464,6 +464,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .progress-table { width: 100%; border-collapse: collapse; }
 .progress-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); font-size: 12px; vertical-align: middle; }
 .progress-table td.bar { width: 220px; }
+.warn-text { color: var(--st-preparing-fg); }
+.progress-table td.err.warn-text { color: var(--st-preparing-fg); }
 .progress-table td.err { color: var(--st-failed-fg); font-size: 11px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload-list { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 
@@ -544,6 +546,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-bar.audio.sticker { background: #e9e3f7; border-color: #a996d6; color: #4d3f7a; }
 .tl-bar.audio.muted { opacity: 0.35; }
 .tl-bar.audio.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+/* HIG-25：源音轨行里的原声静音区间（复用 .tl-cut 的斜纹和拖边），HIG-26：素材失效的音轨 */
+.tl-cut.tl-mute { top: 3px; bottom: 3px; z-index: 2; cursor: grab; }
+.tl-audio.broken .tl-bar.audio { border-style: dashed; border-color: var(--danger, #d9481f); }
 .track-list { display: flex; flex-direction: column; gap: 6px; }
 .track-item { border: 1px solid var(--line-soft); border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .track-item.selected { border-color: var(--accent); background: var(--accent-soft); }
