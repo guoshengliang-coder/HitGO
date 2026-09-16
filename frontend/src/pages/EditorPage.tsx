@@ -7,7 +7,7 @@ import { frameDuration, postToSource, sourceToPost } from '../lib/time';
 import { SOURCE_TRACK_ID } from '../lib/audioTracks';
 import { adjacentCutPoint, cutPoints, nextShuttleRate, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
 import { TopBar } from '../components/editor/TopBar';
-import { ApplyDialog, VideoList } from '../components/editor/VideoList';
+import { VideoList } from '../components/editor/VideoList';
 import { Stage } from '../components/editor/Stage';
 import { QuickBar } from '../components/editor/QuickBar';
 import { Transport } from '../components/editor/Transport';
@@ -320,15 +320,12 @@ export function EditorPage() {
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
   const cropEditing = useEditor((s) => s.cropEditing);
-  const currentVideoId = useEditor((s) => s.currentVideoId);
-  const selectedIds = useEditor((s) => s.selectedIds);
   const progressOpen = useEditor((s) => s.progressOpen);
   const shortcutsOpen = useEditor((s) => s.shortcutsOpen);
   const toast = useEditor((s) => s.toast);
   const toastAction = useEditor((s) => s.toastAction);
   const setToast = useEditor((s) => s.setToast);
   const flushSave = useEditor((s) => s.flushSave);
-  const [applyOpen, setApplyOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
 
   // 面板尺寸：右栏宽 / 时间线高，拖动分隔条调整，存本机
@@ -367,8 +364,6 @@ export function EditorPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const applyTargets = selectedIds.filter((x) => x !== currentVideoId);
-
   if (error) {
     return (
       <div className="page">
@@ -397,14 +392,13 @@ export function EditorPage() {
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
           {step === 'trim' && <TrimPanel />}
-          {step === 'audio' && <AudioPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
-          {step === 'text' && <TextPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
-          {step === 'sticker' && <StickerPanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
-          {step === 'subtitle' && <SubtitlePanel onApply={() => setApplyOpen(true)} targetCount={applyTargets.length} />}
+          {step === 'audio' && <AudioPanel />}
+          {step === 'text' && <TextPanel />}
+          {step === 'sticker' && <StickerPanel />}
+          {step === 'subtitle' && <SubtitlePanel />}
           {step === 'localize' && <LocalizePanel />}
         </div>
       </div>
-      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={step === 'audio' ? ['audio'] : step === 'localize' ? ['layers', 'audio'] : ['layers']} onClose={() => setApplyOpen(false)} />}
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
       {progressOpen && <ProgressModal />}
       {shortcutsOpen && <ShortcutsModal />}

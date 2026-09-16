@@ -31,3 +31,17 @@ export function layerTypesForStep(step: Step): Layer['type'][] {
 export function layerTypeForStep(step: Step): Layer['type'] | null {
   return layerTypesForStep(step)[0] ?? null;
 }
+
+/** 批量应用可选的模块（与 store 的 ApplyModule 一致；放这里避免 lib 反向依赖 store）。 */
+export type ApplyModuleKey = 'trim' | 'layers' | 'outputs' | 'audio' | 'cover';
+
+/**
+ * 批量应用弹窗默认勾中的模块跟随当前模块（docs/DESIGN.md §9.2）：
+ * 音频只勾音频，改语言勾图层 + 音频，剪辑全勾，其余图层类模块只勾图层。弹窗里都能改。
+ */
+export function defaultApplyModules(step: Step): ApplyModuleKey[] {
+  if (step === 'audio') return ['audio'];
+  if (step === 'localize') return ['layers', 'audio'];
+  if (step === 'trim') return ['trim', 'layers', 'outputs', 'audio', 'cover'];
+  return ['layers'];
+}

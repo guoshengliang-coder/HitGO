@@ -1,4 +1,4 @@
-// 时间线工具条左侧的剪辑工具（对齐剪映：与被操作的轨道就近）：撤销 / 重做、删左 / 删右（剪辑）、
+// 时间线工具（挂在 Transport 工具条里）：删左 / 删右（剪辑）、
 // 拆分 / 删左 / 删右（音频：作用于选中的音轨；选中源音轨行时删左 / 删右是给原声加静音区间，HIG-25）、
 // 删除（剪辑删区间 / 音频删音轨或原声静音区间 / 文本、贴纸、字幕删图层）。
 // 提示文案走 lib/shortcuts 的 hintFor；这里用原生 title 而非 data-tip——.timeline 是 overflow: hidden，
@@ -7,14 +7,10 @@
 import { useEditor } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
 import { SOURCE_TRACK_ID } from '../../lib/audioTracks';
-import { IconCutLeft, IconCutRight, IconRedo, IconSplit, IconTrash, IconUndo } from '../ui/Icons';
+import { IconCutLeft, IconCutRight, IconSplit, IconTrash } from '../ui/Icons';
 
 export function TimelineTools() {
   const step = useEditor((s) => s.step);
-  const undo = useEditor((s) => s.undo);
-  const redo = useEditor((s) => s.redo);
-  const canUndo = useEditor((s) => s.canUndo());
-  const canRedo = useEditor((s) => s.canRedo());
   const removeBefore = useEditor((s) => s.removeBefore);
   const removeAfter = useEditor((s) => s.removeAfter);
   const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
@@ -46,12 +42,6 @@ export function TimelineTools() {
 
   return (
     <div className="tl-tools">
-      <button className="btn icon" onClick={undo} disabled={!canUndo} aria-label="撤销" title={hintFor('undo')}>
-        <IconUndo />
-      </button>
-      <button className="btn icon" onClick={redo} disabled={!canRedo} aria-label="重做" title={hintFor('redo')}>
-        <IconRedo />
-      </button>
       {step === 'trim' && (
         <>
           <button className="btn" onClick={removeBefore} disabled={!canRemoveBefore} title={hintFor('remove-before')}>

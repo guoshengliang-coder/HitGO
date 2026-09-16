@@ -767,13 +767,3 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
   );
 }
 
-/** 面板底栏：把当前视频的图层（文字 + 贴纸 + 遮盖一起）批量应用到左侧勾选的视频。 */
-export function ApplyLayersFoot({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
-  return (
-    <div className="panel-foot">
-      <button className="btn" disabled={targetCount === 0} onClick={onApply} title="文字、贴纸和遮盖图层会一起套用到目标视频">
-        把图层（文字 + 贴纸 + 遮盖）应用到选中 {targetCount} 条
-      </button>
-    </div>
-  );
-}

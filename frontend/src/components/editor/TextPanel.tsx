@@ -10,7 +10,7 @@ import { newLayerId } from '../../lib/spec';
 import { TITLE_TEMPLATES, templateToLayers, type TitleTemplate } from '../../lib/titleTemplates';
 import { galleryLayerSeed, type GalleryItem } from '../../lib/textGallery';
 import { IconText } from '../ui/Icons';
-import { ApplyLayersFoot, LayerList, LayerProps, newTextLayer } from './LayerParts';
+import { LayerList, LayerProps, newTextLayer } from './LayerParts';
 import { TextGallery } from './TextGallery';
 
 type TextTab = 'layers' | 'gallery' | 'templates';
@@ -21,7 +21,7 @@ const TABS: { key: TextTab; label: string }[] = [
   { key: 'templates', label: '模板' },
 ];
 
-export function TextPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
+export function TextPanel() {
   const [tab, setTab] = useState<TextTab>('layers');
   const selected = useEditor((s) => {
     const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
@@ -88,7 +88,6 @@ export function TextPanel({ onApply, targetCount }: { onApply: () => void; targe
           </>
         )}
       </div>
-      <ApplyLayersFoot onApply={onApply} targetCount={targetCount} />
     </div>
   );
 }

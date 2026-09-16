@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useEditor, type ApplyModule } from '../../store/editor';
-import { Pill, videoPillKind } from '../ui/Pill';
+import { PILL_LABELS, videoPillKind } from '../ui/Pill';
 import { Modal } from '../ui/Modal';
 import { formatSeconds } from '../../lib/time';
 import type { EditSpec, Video } from '../../types';
@@ -10,6 +10,7 @@ import { VIDEO_ACCEPT, rejectedText } from '../../lib/fileDrop';
 import { DropZone } from '../ui/DropZone';
 import { InlineName } from '../ui/InlineName';
 import { IconTrash } from '../ui/Icons';
+import { defaultApplyModules } from '../../lib/steps';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
@@ -42,7 +43,7 @@ export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds:
   const crossWarnings = modules.includes('layers') || modules.includes('audio') ? applyCrossVideoWarnings(currentId ? specs[currentId] : null) : [];
   return (
     <Modal
-      title={`批量应用当前配置 → ${targets.length} 条`}
+      title={`把当前配置应用到已勾选 ${targets.length} 条`}
       onClose={onClose}
       className="apply-dialog"
       footer={
@@ -105,6 +106,7 @@ export function VideoList() {
   const toggleSelected = useEditor((s) => s.toggleSelected);
   const setSelectedAll = useEditor((s) => s.setSelectedAll);
   const batchName = useEditor((s) => s.batch?.name);
+  const step = useEditor((s) => s.step);
   const renameBatch = useEditor((s) => s.renameBatch);
   const renameVideo = useEditor((s) => s.renameVideo);
   const deleteVideos = useEditor((s) => s.deleteVideos);
@@ -114,6 +116,7 @@ export function VideoList() {
   const [applyOpen, setApplyOpen] = useState(false);
   const allOn = videos.length > 0 && selectedIds.length === videos.length;
   const checked = videos.filter((v) => selectedIds.includes(v.id));
+  const targetCount = selectedIds.filter((id) => id !== currentId).length;
 
   // 删除前二次确认（HIG-20）：产物文件一起删，分离 / 配音素材留在素材库
   const confirmDelete = (targets: Video[]) => {
@@ -144,39 +147,47 @@ export function VideoList() {
           <input type="checkbox" checked={allOn} onChange={(e) => setSelectedAll(e.target.checked)} />
           全选
         </label>
-        <span className="mono">{selectedIds.length} / {videos.length}</span>
+        <span className="mono muted">已勾选 {selectedIds.length} / {videos.length}</span>
       </div>
       <div className="vlist">
         {videos.map((v) => {
-          const hasDraft = !!specs[v.id] && (specs[v.id].trim.remove.length > 0 || specs[v.id].layers.length > 0 || !!specs[v.id].cover);
+          const spec = specs[v.id];
+          const hasDraft = !!spec && (spec.trim.remove.length > 0 || spec.layers.length > 0 || !!spec.cover);
+          const kind = videoPillKind(v, hasDraft);
+          const layerCount = spec?.layers.length ?? 0;
+          const picked = selectedIds.includes(v.id);
           return (
-            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && setCurrent(v.id)}>
-              <input type="checkbox" checked={selectedIds.includes(v.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(v.id)} aria-label={`选择 ${v.name}`} />
-              <div className="poster" style={{ backgroundImage: v.poster_url ? `url("${v.poster_url}")` : undefined }} />
+            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''} ${picked ? 'picked' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && setCurrent(v.id)}>
+              <div className="poster" style={{ backgroundImage: v.poster_url ? `url("${v.poster_url}")` : undefined }}>
+                {/* 勾选框常显在海报左上角：勾选 = 批量目标，橙条 = 当前正在编辑，两件事分开（§4.2） */}
+                <input type="checkbox" className="vck" checked={picked} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(v.id)} aria-label={`勾选 ${v.name}`} />
+              </div>
               <div className="vbody">
                 <div className="vname">
                   <InlineName value={v.name} label="视频名" onSave={(name) => renameVideo(v.id, name)} inputClassName="vlist-rename" />
                 </div>
-                <div className="vmeta">
-                  <span className="mono">
-                    {formatSeconds(v.duration)} · {v.width}×{v.height}
-                  </span>
-                  <span>
-                    <Pill kind={videoPillKind(v, hasDraft)} />
-                  </span>
+                <div className="vmeta mono">
+                  {formatSeconds(v.duration)} · {v.width}×{v.height}
+                </div>
+                <div className={`vstate ${kind}`}>
+                  <i />
+                  {PILL_LABELS[kind]}
+                  {kind === 'edited' && layerCount > 0 && ` · ${layerCount} 图层`}
                 </div>
               </div>
-              <button
-                className="btn ghost icon sm danger vrow-delete"
-                title="删除这条视频"
-                aria-label={`删除 ${v.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  confirmDelete([v]);
-                }}
-              >
-                <IconTrash />
-              </button>
+              <span className="vrow-acts">
+                <button
+                  className="btn ghost icon sm danger"
+                  title="从批次移除这条视频"
+                  aria-label={`移除 ${v.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    confirmDelete([v]);
+                  }}
+                >
+                  <IconTrash />
+                </button>
+              </span>
             </div>
           );
         })}
@@ -193,16 +204,16 @@ export function VideoList() {
         ) : (
           <div className="hint small vlist-drop-hint">拖入 mp4 / mov 追加到本批次</div>
         )}
-        <button className="btn" disabled={selectedIds.filter((id) => id !== currentId).length === 0} onClick={() => setApplyOpen(true)}>
-          批量应用当前配置 → 选中 {selectedIds.filter((id) => id !== currentId).length} 条
+        <button className="btn" disabled={targetCount === 0} onClick={() => setApplyOpen(true)} title="把当前视频的配置深拷贝到勾选的其他视频，弹窗里可选模块">
+          {targetCount === 0 ? '先在上方勾选目标视频' : `把当前配置应用到已勾选 ${targetCount} 条`}
         </button>
         {checked.length > 0 && (
           <button className="btn danger" onClick={() => confirmDelete(checked)}>
-            <IconTrash /> 删除勾选的 {checked.length} 条
+            <IconTrash /> 移除勾选的 {checked.length} 条
           </button>
         )}
       </div>
-      {applyOpen && <ApplyDialog targetIds={selectedIds} onClose={() => setApplyOpen(false)} />}
+      {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={defaultApplyModules(step)} onClose={() => setApplyOpen(false)} />}
     </DropZone>
   );
 }

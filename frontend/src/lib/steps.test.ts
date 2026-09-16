@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layerTypeForStep, layerTypesForStep, STEPS } from './steps';
+import { defaultApplyModules, layerTypeForStep, layerTypesForStep, STEPS } from './steps';
 
 describe('STEPS', () => {
   it('顶栏顺序：字幕作为贴纸右侧的独立模块（HIG-15），改语言在最后', () => {
@@ -19,5 +19,14 @@ describe('STEPS', () => {
     expect(layerTypesForStep('sticker')).toEqual(['sticker']);
     expect(layerTypesForStep('trim')).toEqual([]);
     expect(layerTypesForStep('audio')).toEqual([]);
+  });
+});
+
+describe('defaultApplyModules', () => {
+  it('跟随当前模块：音频只勾音频，改语言勾图层 + 音频，剪辑全勾，其余只勾图层', () => {
+    expect(defaultApplyModules('audio')).toEqual(['audio']);
+    expect(defaultApplyModules('localize')).toEqual(['layers', 'audio']);
+    expect(defaultApplyModules('trim')).toEqual(['trim', 'layers', 'outputs', 'audio', 'cover']);
+    for (const s of ['text', 'sticker', 'subtitle'] as const) expect(defaultApplyModules(s)).toEqual(['layers']);
   });
 });
