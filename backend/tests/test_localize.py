@@ -38,6 +38,24 @@ def test_silent_wav_and_wav_duration(tmp_path):
         assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == 22050
 
 
+def test_wav_duration_ignores_a_streaming_placeholder_header(tmp_path):
+    """CosyVoice streams its wav: the header's data size is a placeholder, only the bytes on disk count."""
+    good = tmp_path / "good.wav"
+    good.write_bytes(localize.silent_wav(1.5))
+    assert localize.wav_duration(good) == pytest.approx(1.5, abs=1e-3)
+
+    data = bytearray(localize.silent_wav(1.5))
+    pos = data.index(b"data")
+    data[pos + 4 : pos + 8] = (0xFFFFFFFF).to_bytes(4, "little")  # what the vendor writes
+    streamed = tmp_path / "streamed.wav"
+    streamed.write_bytes(bytes(data))
+    assert localize.wav_duration(streamed) == pytest.approx(1.5, abs=1e-3)
+
+    data[pos + 4 : pos + 8] = (0).to_bytes(4, "little")  # zero-size placeholder
+    streamed.write_bytes(bytes(data))
+    assert localize.wav_duration(streamed) == pytest.approx(1.5, abs=1e-3)
+
+
 def test_cues_from_sentences_drops_empty_clamps_and_renumbers():
     sentences = [
         {"begin_time": 3000, "end_time": 5500, "text": " second "},

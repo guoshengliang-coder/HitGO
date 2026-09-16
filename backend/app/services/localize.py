@@ -208,10 +208,25 @@ def extract_args(src: Path, dst: Path, ffmpeg_bin: str | None = None) -> list[st
 
 
 def wav_duration(path: Path) -> float:
-    """Seconds of audio in a PCM wav (TTS clips, the ASR input)."""
+    """Seconds of audio in a PCM wav (TTS clips, the ASR input).
+
+    Measured from the bytes actually on disk, not the header: CosyVoice streams its wav and
+    leaves a placeholder data size in the header (``wave`` then reports hours of audio).
+    """
     with wave.open(str(path), "rb") as w:
-        rate = w.getframerate()
-        return w.getnframes() / rate if rate else 0.0
+        rate, channels, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+    if not rate or not channels or not width:
+        return 0.0
+    data = path.read_bytes()
+    pos = 12  # after "RIFF" <size> "WAVE"
+    while pos + 8 <= len(data):
+        chunk_id = data[pos : pos + 4]
+        size = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        if chunk_id == b"data":
+            payload = len(data) - (pos + 8)
+            return min(size, payload) / (rate * channels * width) if size else payload / (rate * channels * width)
+        pos += 8 + size + (size & 1)
+    return 0.0
 
 
 def silent_wav(seconds: float, rate: int = 22050) -> bytes:
