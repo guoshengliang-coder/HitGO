@@ -44,7 +44,7 @@ export function TopBar({ onExport }: { onExport: () => void }) {
         {STEPS.map((s) => {
           const Icon = STEP_ICON[s.key];
           return (
-            <button key={s.key} role="tab" aria-selected={step === s.key} className={`mode ${step === s.key ? 'active' : ''}`} onClick={() => setStep(s.key)}>
+            <button key={s.key} role="tab" aria-selected={step === s.key} aria-label={s.label} className={`mode ${step === s.key ? 'active' : ''}`} onClick={() => setStep(s.key)}>
               <Icon />
               <span>{s.label}</span>
             </button>

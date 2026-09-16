@@ -634,21 +634,55 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .insp-name { display: block; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .insp-type { display: block; font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 卡片里的输入 / 下拉下沉一档 */
-.sec .input, .sec .select, .sec .textarea, .sec .num-step, .sec .cp-trigger, .sec .anchor-grid button { background: var(--s2); border-color: var(--s1-line); }
+.sec .input, .sec .select, .sec .textarea, .sec .cp-trigger, .sec .anchor-grid button { background: var(--s2); border-color: var(--s1-line); }
+.sec .anchor-tile .anchor-grid button { background: var(--s1); border-color: var(--s1-line); }
 .sec .anchor-grid button.active { background: var(--accent); border-color: var(--accent); }
 .sec .btn:not(.primary):not(.ghost) { background: var(--s2); border-color: var(--s1-line); }
 .sec .btn.ghost:hover:not(:disabled) { background: var(--s2); }
 .section-title { font-size: 11px; letter-spacing: 0.04em; }
-.num-wrap { display: inline-flex; align-items: center; gap: 2px; }
-.num-wrap .input.num { width: 62px; padding: 0 4px; }
-.num-step { width: 18px; height: 24px; padding: 0; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); font-size: 13px; line-height: 1; border-radius: 4px; cursor: pointer; }
-.num-step:hover { background: var(--panel-2); color: var(--ink); }
-.num-wrap .muted { margin-left: 2px; }
-.slider-row { flex-wrap: nowrap; }
+/* ---- 输入块 / 分段组 / 锚点块（docs/DESIGN.md §3.2–3.3）：卡片里下沉一档的 30px 块 ---- */
+.tile { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 8px 0 9px; border-radius: 6px; background: var(--s2); border: 1px solid transparent; min-width: 0; }
+.tile:hover { border-color: var(--line); }
+.tile .l { font-size: 11px; color: var(--ink-3); flex: none; white-space: nowrap; }
+.tile .v { flex: 1; min-width: 0; text-align: right; font-size: 12.5px; color: var(--ink); }
+.tile .u { font-size: 11px; color: var(--ink-3); flex: none; white-space: nowrap; }
+.tile.num { cursor: ew-resize; user-select: none; touch-action: none; }
+.tile.num input { width: 100%; min-width: 0; height: 100%; border: 0; background: transparent; padding: 0; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--ink); outline: none; cursor: inherit; }
+.tile.num input:not([readonly]) { cursor: text; }
+.tile.num:focus-within { border-color: var(--focus); cursor: text; }
+.tile.num.scrubbing { border-color: var(--accent); }
+.tile.disabled { opacity: 0.5; cursor: default; }
+.tile.compact { width: 76px; flex: none; padding: 0 6px; }
+.tile.field .v { display: inline-flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.tile.field .select { flex: 1; min-width: 0; height: 24px; border: 0; background: transparent; padding: 0 2px; font-size: 12.5px; color: var(--ink); text-align: right; }
+.tile.field .cp-wrap { justify-content: flex-end; }
+.tile.field .cp-trigger { width: 20px; height: 20px; border-radius: 4px; }
+.tile.field .segt.inner { height: 24px; padding: 2px; border: 0; background: var(--s1); }
+.tile.field .segt.inner button { padding: 0 8px; }
+.tile.field .segt.inner button.active { background: var(--s2); }
+.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.stack-2 { display: flex; flex-direction: column; gap: 6px; }
+.tile-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.tile-row > .tile { flex: 1; }
+.segt { display: flex; height: 30px; padding: 3px; gap: 2px; border-radius: 6px; background: var(--s2); border: 1px solid var(--s1-line); }
+.segt button { flex: 1; min-width: 0; padding: 0 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink-2); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
+.segt button:hover:not(:disabled) { color: var(--ink); }
+.segt button.active { background: var(--s1); border-color: var(--line); color: var(--ink); font-weight: 500; }
+.segt button.active svg { color: var(--accent); }
+.segt .sp { width: 1px; background: var(--s1-line); margin: 3px 2px; flex: none; }
+.anchor-tile { display: flex; align-items: center; gap: 10px; height: 66px; padding: 0 10px; border-radius: 6px; background: var(--s2); }
+.anchor-tile .anchor-grid { grid-template-columns: repeat(3, 14px); gap: 4px; }
+.anchor-tile .anchor-grid button { width: 14px; height: 14px; border-radius: 3px; }
+.anchor-tile .txt { line-height: 1.25; min-width: 0; }
+.anchor-tile .txt .l { display: block; font-size: 11px; color: var(--ink-3); }
+.anchor-tile .txt .v { font-size: 12.5px; color: var(--ink); }
+.slider { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 0 0 9px; border-radius: 6px; background: var(--s2); }
+.slider .l { font-size: 11px; color: var(--ink-3); flex: none; }
 /* width: 0 让滑块按 min-width 参与最小宽度计算，否则它 129px 的固有宽度会把所在的网格列撑破面板 */
-.slider-row input[type='range'] { flex: 1 1 0; width: 0; min-width: 48px; height: 14px; accent-color: var(--accent); margin: 0; }
-.align-row { display: flex; gap: 2px; }
-.align-row .btn.gap { margin-left: 8px; }
+.slider input[type='range'] { flex: 1 1 0; width: 0; min-width: 40px; height: 14px; accent-color: var(--accent); margin: 0; }
+.slider .tile.compact { background: transparent; }
+.sec .sec-body.stack { gap: 6px; }
 
 /* ---- 音频（契约 §2 audio）：剪辑步骤的音轨面板 + 时间轴音轨行 + 音频素材卡 ---- */
 .tl-audio { height: 26px; }

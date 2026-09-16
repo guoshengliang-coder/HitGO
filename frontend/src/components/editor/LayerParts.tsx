@@ -22,7 +22,8 @@ import { ColorPicker } from '../ui/ColorPicker';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
-import { Num, Slider } from '../ui/Num';
+import { Field, Num, Slider } from '../ui/Num';
+import { Seg, type SegOption } from '../ui/Seg';
 
 const REF = { W: 1080, H: 1920 };
 
@@ -183,17 +184,14 @@ function VariantFitRow({ layer }: { layer: Layer }) {
   const tuned = overrideDetaches(variant.layer_overrides?.[layer.id]);
   const follows = layerFollows(spec, layer, variant, video.width, video.height);
   return (
-    <>
-      <span>{label}</span>
-      <div className="inline">
-        <span className="small">{tuned ? '已在画布上单独微调' : follows ? '跟随视频画面' : '相对画布'}</span>
+    <Field label={label}>
+      <span className="small">{tuned ? '已在画布上单独微调' : follows ? '跟随视频画面' : '相对画布'}</span>
         {tuned && (
           <button className="btn ghost sm" onClick={() => setLayerOverride(previewKey, layer.id, null)} title={`清掉 ${label} 上的微调，重新跟随视频画面`}>
             恢复跟随
           </button>
         )}
-      </div>
-    </>
+    </Field>
   );
 }
 
@@ -219,60 +217,61 @@ function PlacementSection({ layer }: { layer: Layer }) {
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
   return (
-    <Section title="位置" hint="九宫锚点 · 边距按画布比例">
+    <Section title="位置" hint="拖动数值块微调 · 边距按画布比例" bodyClass="stack">
       <VariantFitRow layer={layer} />
-      <span>对齐</span>
-      <div className="align-row" role="group" aria-label="对齐">
+      {/* 对齐是动作不是状态：六个按钮都不带激活态 */}
+      <div className="segt" role="group" aria-label="对齐">
         {ALIGN_BUTTONS.map((b, i) => (
-          <button key={b.edge} className={`btn icon sm ${i === 3 ? 'gap' : ''}`} title={b.label} aria-label={b.label} disabled={layer.locked} onClick={() => align(b.edge)}>
-            {b.icon}
-          </button>
+          <span key={b.edge} style={{ display: 'contents' }}>
+            <button type="button" title={b.label} aria-label={b.label} disabled={layer.locked} onClick={() => align(b.edge)}>
+              {b.icon}
+            </button>
+            {i === 2 && <span className="sp" />}
+          </span>
         ))}
       </div>
-      {previewKey !== '9x16' && <div className="hint" style={{ gridColumn: '1 / -1' }}>对齐按钮和画布拖动只改 {variantDef(previewKey).label}；下面的锚点 / 边距 / 宽度是 9:16 基准，改了会带动所有跟随的画幅。</div>}
-      <span>锚点</span>
-      <div className="inline">
-        <div className="anchor-grid" role="radiogroup" aria-label="锚点">
-          {ANCHORS.map((a) => (
-            <button key={a} role="radio" aria-checked={layer.anchor === a} className={layer.anchor === a ? 'active' : ''} title={ANCHOR_TITLES[a]} onClick={() => setAnchor(a)} />
-          ))}
+      {previewKey !== '9x16' && <div className="hint">对齐按钮和画布拖动只改 {variantDef(previewKey).label}；下面的锚点 / 边距 / 宽度是 9:16 基准，改了会带动所有跟随的画幅。</div>}
+      <div className="g2">
+        <div className="anchor-tile">
+          <div className="anchor-grid" role="radiogroup" aria-label="锚点">
+            {ANCHORS.map((a) => (
+              <button key={a} type="button" role="radio" aria-checked={layer.anchor === a} className={layer.anchor === a ? 'active' : ''} title={ANCHOR_TITLES[a]} onClick={() => setAnchor(a)} />
+            ))}
+          </div>
+          <div className="txt">
+            <span className="l">锚点</span>
+            <span className="v">{ANCHOR_TITLES[layer.anchor]}</span>
+          </div>
         </div>
-        <span className="muted small">{ANCHOR_TITLES[layer.anchor]}</span>
+        <div className="stack-2">
+          <Num label="边距 X" value={layer.margin[0]} step={0.005} onChange={(v) => updateLayer(layer.id, { margin: [v, layer.margin[1]] })} />
+          <Num label="边距 Y" value={layer.margin[1]} step={0.005} onChange={(v) => updateLayer(layer.id, { margin: [layer.margin[0], v] })} />
+        </div>
       </div>
-      <span>边距 X</span>
-      <Num value={layer.margin[0]} step={0.005} onChange={(v) => updateLayer(layer.id, { margin: [v, layer.margin[1]] })} />
-      <span>边距 Y</span>
-      <Num value={layer.margin[1]} step={0.005} onChange={(v) => updateLayer(layer.id, { margin: [layer.margin[0], v] })} />
-      <span>宽度</span>
-      <div className="inline">
-        <Num value={layer.width} min={0.01} max={2} onChange={(v) => updateLayer(layer.id, (l) => { l.width = v; if (l.type === 'text') l.width_manual = true; })} />
-        {layer.type === 'text' && layer.width_manual && (
-          <button className="btn ghost sm" onClick={() => updateLayer(layer.id, (l) => { if (l.type === 'text') l.width_manual = false; })} title="宽度重新跟随文字渲染尺寸">
-            自动
-          </button>
+      <div className="g2">
+        <div className="tile-row">
+          <Num label="宽度" value={layer.width} min={0.01} max={2} onChange={(v) => updateLayer(layer.id, (l) => { l.width = v; if (l.type === 'text') l.width_manual = true; })} />
+          {layer.type === 'text' && layer.width_manual && (
+            <button className="btn ghost sm" onClick={() => updateLayer(layer.id, (l) => { if (l.type === 'text') l.width_manual = false; })} title="宽度重新跟随文字渲染尺寸">
+              自动
+            </button>
+          )}
+        </div>
+        {layer.type === 'mask' ? (
+          <Num label="高度" value={layer.height} min={0.01} max={1} onChange={(v) => updateLayer(layer.id, { height: v })} title="相对画布高" />
+        ) : (
+          <Num label="旋转" value={layer.rotate} scale={1} step={1} min={-360} max={360} suffix="°" onChange={(v) => updateLayer(layer.id, { rotate: v })} />
         )}
       </div>
-      {layer.type === 'mask' && (
-        <>
-          <span>高度</span>
-          <Num value={layer.height} min={0.01} max={1} onChange={(v) => updateLayer(layer.id, { height: v })} title="相对画布高" />
-        </>
-      )}
-      {layer.type !== 'mask' && (
-        <>
-          <span>旋转</span>
-          <Num value={layer.rotate} scale={1} step={1} min={-360} max={360} suffix="°" onChange={(v) => updateLayer(layer.id, { rotate: v })} />
-        </>
-      )}
     </Section>
   );
 }
 
-const MASK_MODES: [MaskMode, string][] = [
-  ['blur', '把这块画面糊掉，背景纹理还在'],
-  ['solid', '用一块纯色盖住，配合不透明度'],
+const MASK_MODES: SegOption<MaskMode>[] = [
+  { v: 'blur', label: MASK_MODE_LABEL.blur, title: '把这块画面糊掉，背景纹理还在' },
+  { v: 'solid', label: MASK_MODE_LABEL.solid, title: '用一块纯色盖住，配合不透明度' },
 ];
-const MASK_BLURS: MaskBlur[] = [1, 2, 3];
+const MASK_BLURS: SegOption<MaskBlur>[] = ([1, 2, 3] as MaskBlur[]).map((b) => ({ v: b, label: MASK_BLUR_LABEL[b] }));
 
 /** 遮盖层：方式（模糊 / 色块）、颜色、强度。与后端 filtergraph 的 boxblur 档位 / drawbox 一一对应。 */
 function MaskSection({ layer }: { layer: MaskLayer }) {
@@ -280,33 +279,16 @@ function MaskSection({ layer }: { layer: MaskLayer }) {
   const mode: MaskMode = layer.mode === 'solid' ? 'solid' : 'blur';
   const level = maskBlurLevel(layer);
   return (
-    <Section title="遮盖" onReset={() => updateLayer(layer.id, { mode: 'blur', blur: 2, color: DEFAULT_MASK_COLOR })}>
-      <span>方式</span>
-      <div className="inline" role="radiogroup" aria-label="遮盖方式">
-        {MASK_MODES.map(([m, title]) => (
-          <button key={m} role="radio" aria-checked={mode === m} className={`chip ${mode === m ? 'active' : ''}`} title={title} onClick={() => updateLayer(layer.id, { mode: m })}>
-            {MASK_MODE_LABEL[m]}
-          </button>
-        ))}
-      </div>
+    <Section title="遮盖" bodyClass="stack" onReset={() => updateLayer(layer.id, { mode: 'blur', blur: 2, color: DEFAULT_MASK_COLOR })}>
+      <Seg label="遮盖方式" options={MASK_MODES} value={mode} onChange={(m) => updateLayer(layer.id, { mode: m })} />
       {mode === 'blur' ? (
-        <>
-          <span>强度</span>
-          <div className="inline" role="radiogroup" aria-label="模糊强度">
-            {MASK_BLURS.map((b) => (
-              <button key={b} role="radio" aria-checked={level === b} className={`chip ${level === b ? 'active' : ''}`} onClick={() => updateLayer(layer.id, { blur: b })}>
-                {MASK_BLUR_LABEL[b]}
-              </button>
-            ))}
-          </div>
-        </>
+        <Field label="强度">
+          <Seg label="模糊强度" options={MASK_BLURS} value={level} onChange={(b) => updateLayer(layer.id, { blur: b })} className="inner" />
+        </Field>
       ) : (
-        <>
-          <span>颜色</span>
-          <div className="inline">
-            <ColorPicker label="遮盖颜色" value={layer.color ?? DEFAULT_MASK_COLOR} onChange={(c) => updateLayer(layer.id, { color: c })} />
-          </div>
-        </>
+        <Field label="颜色">
+          <ColorPicker label="遮盖颜色" value={layer.color ?? DEFAULT_MASK_COLOR} onChange={(c) => updateLayer(layer.id, { color: c })} />
+        </Field>
       )}
     </Section>
   );
@@ -315,47 +297,44 @@ function MaskSection({ layer }: { layer: MaskLayer }) {
 function BlendSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   return (
-    <Section title="混合" onReset={() => updateLayer(layer.id, { opacity: 1 })}>
-      <span>不透明度</span>
-      <Slider value={layer.opacity} onChange={(v) => updateLayer(layer.id, { opacity: v })} />
+    <Section title="混合" bodyClass="stack" onReset={() => updateLayer(layer.id, { opacity: 1 })}>
+      <Slider label="不透明度" value={layer.opacity} onChange={(v) => updateLayer(layer.id, { opacity: v })} />
     </Section>
   );
 }
+
+const TIME_MODES: SegOption<'all' | 'range'>[] = [
+  { v: 'all', label: '全程' },
+  { v: 'range', label: '区间' },
+];
 
 function TimeSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const postDuration = usePostDuration();
   return (
-    <Section title="时段">
-      <span>显示</span>
-      <div className="inline">
-        <button className={`chip ${layer.t === 'all' ? 'active' : ''}`} onClick={() => updateLayer(layer.id, { t: 'all' })}>全程</button>
-        <button className={`chip ${layer.t !== 'all' ? 'active' : ''}`} onClick={() => layer.t === 'all' && updateLayer(layer.id, { t: [0, Math.min(3, postDuration)] })}>区间</button>
-      </div>
+    <Section title="时段" bodyClass="stack">
+      <Seg label="显示时段" options={TIME_MODES} value={layer.t === 'all' ? 'all' : 'range'} onChange={(m) => updateLayer(layer.id, { t: m === 'all' ? 'all' : [0, Math.min(3, postDuration)] })} />
       {layer.t !== 'all' && (
-        <>
-          <span>起 / 止</span>
-          <div className="inline">
-            <Num value={layer.t[0]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => updateLayer(layer.id, { t: [v, Math.max(v + 0.1, (layer.t as [number, number])[1])] })} />
-            <Num value={layer.t[1]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => updateLayer(layer.id, { t: [Math.min((layer.t as [number, number])[0], v - 0.1), v] })} />
-          </div>
-        </>
+        <div className="g2">
+          <Num label="开始" value={layer.t[0]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => updateLayer(layer.id, { t: [v, Math.max(v + 0.1, (layer.t as [number, number])[1])] })} />
+          <Num label="结束" value={layer.t[1]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => updateLayer(layer.id, { t: [Math.min((layer.t as [number, number])[0], v - 0.1), v] })} />
+        </div>
       )}
-      {layerOutsideDuration(layer, postDuration) && <div className="error-text span2">该图层的时段起点已超出剪后时长（{postDuration.toFixed(1)}s），成片里不会出现。</div>}
+      {layerOutsideDuration(layer, postDuration) && <div className="error-text">该图层的时段起点已超出剪后时长（{postDuration.toFixed(1)}s），成片里不会出现。</div>}
     </Section>
   );
 }
 
 /** 视频贴纸短于显示时段时的行为，与后端 filtergraph 的三种 eof_action 一一对应。 */
-const PLAYBACK_MODES: [Playback, string, string][] = [
-  ['loop', '循环', '素材比时段短时，从头循环播放'],
-  ['freeze', '定格', '播完停在最后一帧'],
-  ['once', '播完消失', '播完后该图层不再出现'],
+const PLAYBACK_MODES: SegOption<Playback>[] = [
+  { v: 'loop', label: '循环', title: '素材比时段短时，从头循环播放' },
+  { v: 'freeze', label: '定格', title: '播完停在最后一帧' },
+  { v: 'once', label: '播完消失', title: '播完后该图层不再出现' },
 ];
 
-const AUDIO_MODES: [boolean, string, string][] = [
-  [false, '不合成', '成片只保留源视频的声音'],
-  [true, '合成', '贴纸自带的声音叠加进成片（时段内，跟随播放方式）'],
+const AUDIO_MODES: SegOption<boolean>[] = [
+  { v: false, label: '不合成', title: '成片只保留源视频的声音' },
+  { v: true, label: '合成', title: '贴纸自带的声音叠加进成片（时段内，跟随播放方式）' },
 ];
 
 /** 视频贴纸：播放方式 / 音轨。 */
@@ -365,30 +344,26 @@ function StickerMediaSection({ layer }: { layer: StickerLayer }) {
   const asset = assets.find((a) => a.id === layer.asset_id);
   if (!isVideoAsset(asset)) return null;
   return (
-    <Section title="播放">
-      <span>播放</span>
-      <div className="inline" role="radiogroup" aria-label="播放">
-        {PLAYBACK_MODES.map(([mode, label, title]) => (
-          <button key={mode} role="radio" aria-checked={(layer.playback ?? 'loop') === mode} className={`chip ${(layer.playback ?? 'loop') === mode ? 'active' : ''}`} title={title} onClick={() => updateLayer(layer.id, { playback: mode })}>
-            {label}
-          </button>
-        ))}
-      </div>
+    <Section title="播放" bodyClass="stack">
+      <Seg label="播放" options={PLAYBACK_MODES} value={layer.playback ?? 'loop'} onChange={(mode) => updateLayer(layer.id, { playback: mode })} />
       {asset?.has_audio === true && (
-        <>
-          <span>音轨</span>
-          <div className="inline" role="radiogroup" aria-label="音轨">
-            {AUDIO_MODES.map(([mix, label, title]) => (
-              <button key={label} role="radio" aria-checked={!!layer.mix_audio === mix} className={`chip ${!!layer.mix_audio === mix ? 'active' : ''}`} title={title} onClick={() => updateLayer(layer.id, { mix_audio: mix })}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
+        <Field label="音轨">
+          <Seg label="音轨" options={AUDIO_MODES} value={!!layer.mix_audio} onChange={(mix) => updateLayer(layer.id, { mix_audio: mix })} className="inner" />
+        </Field>
       )}
     </Section>
   );
 }
+
+const TEXT_ALIGNS: SegOption<'left' | 'center' | 'right'>[] = [
+  { v: 'left', label: <IconAlignLeft />, title: '左对齐' },
+  { v: 'center', label: <IconCenterH />, title: '居中' },
+  { v: 'right', label: <IconAlignRight />, title: '右对齐' },
+];
+const BG_WIDTH_MODES: SegOption<'fit' | 'full'>[] = [
+  { v: 'fit', label: '贴合' },
+  { v: 'full', label: '通栏' },
+];
 
 function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] | null }) {
   const updateLayer = useEditor((s) => s.updateLayer);
@@ -409,153 +384,149 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
 
   return (
     <>
-      <Section title="字体" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
-        <span>字体</span>
-        <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })}>
-          {BUILTIN_WEB_FONTS.map((f) => (
-            <option key={f.family} value={f.family}>{f.family}（{f.label}）</option>
-          ))}
-          {/* 图层用的是别的字体（旧 spec / 已删的上传字体）：保留为一个选项，免得下拉显示成第一项而实际不是 */}
-          {st.font_family !== BUILTIN_FONT_FAMILY && !BUILTIN_WEB_FONTS.some((f) => f.family === st.font_family) && !fonts.some((f) => f.family === st.font_family) && (
-            <option value={st.font_family}>{st.font_family}</option>
-          )}
-          {fonts.map((f) => (
-            <option key={f.id} value={f.family}>{f.family}</option>
-          ))}
-        </select>
-        <span>字重</span>
-        <select className="select sm" value={st.font_weight} onChange={(e) => patchStyle({ font_weight: Number(e.target.value) })}>
-          {[400, 500, 700, 900].map((w) => (
-            <option key={w} value={w}>{w}</option>
-          ))}
-        </select>
-        <span>字号</span>
-        <Num value={st.font_size} min={0.01} max={0.3} step={0.005} onChange={(v) => patchStyle({ font_size: v })} suffix="% 高" />
-        <span>颜色</span>
-        <div className="inline">
-          <ColorPicker label="文字颜色" alpha value={st.color} onChange={(c) => patchStyle({ color: c })} />
-          {/^#[0-9a-f]{6}00$/i.test(st.color) && <span className="muted small">（透明 · 空心）</span>}
+      <Section title="字体" hint="选中一段文字可单独上色" bodyClass="stack" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
+        <Field label="字体">
+          <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })} aria-label="字体">
+            {BUILTIN_WEB_FONTS.map((f) => (
+              <option key={f.family} value={f.family}>{f.family}（{f.label}）</option>
+            ))}
+            {/* 图层用的是别的字体（旧 spec / 已删的上传字体）：保留为一个选项，免得下拉显示成第一项而实际不是 */}
+            {st.font_family !== BUILTIN_FONT_FAMILY && !BUILTIN_WEB_FONTS.some((f) => f.family === st.font_family) && !fonts.some((f) => f.family === st.font_family) && (
+              <option value={st.font_family}>{st.font_family}</option>
+            )}
+            {fonts.map((f) => (
+              <option key={f.id} value={f.family}>{f.family}</option>
+            ))}
+          </select>
+        </Field>
+        <div className="g2">
+          <Field label="字重">
+            <select className="select sm" value={st.font_weight} onChange={(e) => patchStyle({ font_weight: Number(e.target.value) })} aria-label="字重">
+              {[400, 500, 700, 900].map((w) => (
+                <option key={w} value={w}>{w}</option>
+              ))}
+            </select>
+          </Field>
+          <Num label="字号" value={st.font_size} min={0.01} max={0.3} step={0.005} onChange={(v) => patchStyle({ font_size: v })} suffix="% 高" />
         </div>
-        <span>选中上色</span>
-        <div className="inline">
+        <Field label="颜色" title={/^#[0-9a-f]{6}00$/i.test(st.color) ? '透明 · 空心' : undefined}>
+          <ColorPicker label="文字颜色" alpha value={st.color} onChange={(c) => patchStyle({ color: c })} />
+        </Field>
+        <Field label="选中上色">
           <ColorPicker label="选中上色" showHex={false} value={spanColor} onChange={setSpanColorState} />
-          <button className="btn sm" disabled={!sel} title="给文本框里选中的文字上色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
+          <button className="btn sm" disabled={!sel} title={sel ? '给文本框里选中的文字上色' : '先在文本框里选中文字'} onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
             上色
           </button>
           <button className="btn ghost sm" disabled={!sel} title="清除选中文字的颜色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], null, len))}>
             清除
           </button>
-          {!sel && <span className="muted small">先在文本框里选中文字</span>}
-        </div>
+        </Field>
         {spans.length > 0 && (
-          <>
-            <span>已上色</span>
-            <div className="span-chips">
-              {spans.map((sp) => (
-                <button key={`${sp.start}-${sp.end}`} className="span-chip" title="点击清除这一段的颜色" onClick={() => patchSpans((cur, len) => setSpanColor(cur, sp.start, sp.end, null, len))}>
-                  <i style={{ background: sp.color }} />
-                  <span className="stext">{layer.text.slice(sp.start, sp.end).replace(/\n/g, ' ')}</span>
-                </button>
-              ))}
-            </div>
-          </>
+          <div className="span-chips">
+            {spans.map((sp) => (
+              <button key={`${sp.start}-${sp.end}`} className="span-chip" title="点击清除这一段的颜色" onClick={() => patchSpans((cur, len) => setSpanColor(cur, sp.start, sp.end, null, len))}>
+                <i style={{ background: sp.color }} />
+                <span className="stext">{layer.text.slice(sp.start, sp.end).replace(/\n/g, ' ')}</span>
+              </button>
+            ))}
+          </div>
         )}
-        <span>文字对齐</span>
-        <div className="inline">
-          {(['left', 'center', 'right'] as const).map((a) => (
-            <button key={a} className={`chip ${st.align === a ? 'active' : ''}`} onClick={() => patchStyle({ align: a })}>
-              {{ left: '左', center: '中', right: '右' }[a]}
-            </button>
-          ))}
-        </div>
+        <Seg label="文字对齐" options={TEXT_ALIGNS} value={st.align} onChange={(a) => patchStyle({ align: a })} />
       </Section>
 
       <Section
         title="描边"
+        bodyClass="stack"
         enabled={st.stroke_width > 0}
         onToggle={(on) => patchStyle(on ? { stroke_width: DEFAULT_STROKE.stroke_width } : { stroke_width: 0 })}
         onReset={() => patchStyle({ ...DEFAULT_STROKE })}
       >
-        <span>颜色</span>
-        <ColorPicker label="描边颜色" alpha value={st.stroke_color} onChange={(c) => patchStyle({ stroke_color: c })} />
-        <span>粗细</span>
-        <Num value={st.stroke_width} min={0.001} max={0.05} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ stroke_width: v })} />
+        <div className="g2">
+          <Field label="颜色">
+            <ColorPicker label="描边颜色" alpha showHex={false} value={st.stroke_color} onChange={(c) => patchStyle({ stroke_color: c })} />
+          </Field>
+          <Num label="粗细" value={st.stroke_width} min={0.001} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ stroke_width: v })} />
+        </div>
       </Section>
 
       <Section
         title="发光"
+        bodyClass="stack"
         enabled={!!st.glow}
         onToggle={(on) => patchStyle({ glow: on ? { ...DEFAULT_GLOW } : null })}
         onReset={() => patchStyle({ glow: { ...DEFAULT_GLOW } })}
       >
         {st.glow && (
-          <>
-            <span>颜色</span>
-            <ColorPicker label="发光颜色" alpha value={st.glow.color} onChange={(c) => patchStyle({ glow: { ...st.glow!, color: c } })} />
-            <span>强度</span>
-            <Num value={st.glow.blur} min={0.002} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ glow: { ...st.glow!, blur: v } })} />
-          </>
+          <div className="g2">
+            <Field label="颜色">
+              <ColorPicker label="发光颜色" alpha showHex={false} value={st.glow.color} onChange={(c) => patchStyle({ glow: { ...st.glow!, color: c } })} />
+            </Field>
+            <Num label="强度" value={st.glow.blur} min={0.002} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ glow: { ...st.glow!, blur: v } })} />
+          </div>
         )}
       </Section>
 
       <Section
         title="阴影"
+        bodyClass="stack"
         enabled={!!st.shadow}
         onToggle={(on) => patchStyle({ shadow: on ? { ...DEFAULT_SHADOW } : null })}
         onReset={() => patchStyle({ shadow: { ...DEFAULT_SHADOW } })}
       >
         {st.shadow && (
           <>
-            <span>颜色</span>
-            <ColorPicker label="阴影颜色" alpha value={st.shadow.color} onChange={(c) => patchStyle({ shadow: { ...st.shadow!, color: c } })} />
-            <span>模糊</span>
-            <Num value={st.shadow.blur} min={0} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, blur: v } })} />
-            <span>偏移 X</span>
-            <Num value={st.shadow.offset[0]} min={-0.05} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, offset: [v, st.shadow!.offset[1]] } })} />
-            <span>偏移 Y</span>
-            <Num value={st.shadow.offset[1]} min={-0.05} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, offset: [st.shadow!.offset[0], v] } })} />
+            <Field label="颜色">
+              <ColorPicker label="阴影颜色" alpha value={st.shadow.color} onChange={(c) => patchStyle({ shadow: { ...st.shadow!, color: c } })} />
+            </Field>
+            <div className="g3">
+              <Num label="模糊" value={st.shadow.blur} min={0} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, blur: v } })} />
+              <Num label="X" value={st.shadow.offset[0]} min={-0.05} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, offset: [v, st.shadow!.offset[1]] } })} />
+              <Num label="Y" value={st.shadow.offset[1]} min={-0.05} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, offset: [st.shadow!.offset[0], v] } })} />
+            </div>
           </>
         )}
       </Section>
 
       <Section
         title="背景"
+        bodyClass="stack"
         enabled={!!st.background}
         onToggle={(on) => patchStyle({ background: on ? DEFAULT_BACKGROUND : null })}
         onReset={() => patchStyle({ background: DEFAULT_BACKGROUND, padding: d.padding, background_width: null, background_radius: null })}
       >
         {st.background && (
           <>
-            <span>颜色</span>
-            <ColorPicker label="背景颜色" alpha value={st.background} onChange={(c) => patchStyle({ background: c })} />
-            <span>内边距</span>
-            <Num value={st.padding} min={0} max={0.1} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ padding: v })} />
-            <span>宽度</span>
-            <div className="inline">
-              <button className={`chip ${st.background_width == null ? 'active' : ''}`} onClick={() => patchStyle({ background_width: null })}>贴合</button>
-              <button className={`chip ${st.background_width != null ? 'active' : ''}`} onClick={() => st.background_width == null && patchStyle({ background_width: 1 })}>通栏</button>
-              {st.background_width != null && (
-                <Num value={st.background_width} min={0.3} max={1} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ background_width: Math.max(0.3, Math.min(1, v)) })} />
-              )}
+            <Field label="颜色">
+              <ColorPicker label="背景颜色" alpha value={st.background} onChange={(c) => patchStyle({ background: c })} />
+            </Field>
+            <div className="g2">
+              <Num label="内边距" value={st.padding} min={0} max={0.1} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ padding: v })} />
+              <div className="tile-row">
+                <Num label="圆角" value={st.background_radius ?? Math.min(st.padding, st.font_size * 0.2)} min={0} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ background_radius: Math.max(0, v) })} />
+                {st.background_radius != null && (
+                  <button className="btn ghost sm" onClick={() => patchStyle({ background_radius: null })} title="圆角重新跟随内边距 / 字号">
+                    自动
+                  </button>
+                )}
+              </div>
             </div>
-            <span>圆角</span>
-            <div className="inline">
-              <Num value={st.background_radius ?? Math.min(st.padding, st.font_size * 0.2)} min={0} max={0.05} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ background_radius: Math.max(0, v) })} />
-              {st.background_radius != null && (
-                <button className="btn ghost sm" onClick={() => patchStyle({ background_radius: null })} title="圆角重新跟随内边距 / 字号">
-                  自动
-                </button>
+            <div className="g2">
+              <Seg label="背景宽度" options={BG_WIDTH_MODES} value={st.background_width == null ? 'fit' : 'full'} onChange={(m) => patchStyle({ background_width: m === 'fit' ? null : 1 })} />
+              {st.background_width != null ? (
+                <Num label="宽度" value={st.background_width} min={0.3} max={1} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ background_width: Math.max(0.3, Math.min(1, v)) })} />
+              ) : (
+                <span />
               )}
             </div>
           </>
         )}
       </Section>
 
-      <Section title="排版" defaultOpen={false} onReset={() => patchStyle({ letter_spacing: 0, line_height: d.line_height })}>
-        <span>字距</span>
-        <Num value={st.letter_spacing ?? 0} min={-0.5} max={2} step={0.01} scale={1} suffix="em" onChange={(v) => patchStyle({ letter_spacing: v })} />
-        <span>行高</span>
-        <Num value={st.line_height} min={0.6} max={3} step={0.05} scale={1} suffix="×" onChange={(v) => patchStyle({ line_height: v })} />
+      <Section title="排版" bodyClass="stack" defaultOpen={false} onReset={() => patchStyle({ letter_spacing: 0, line_height: d.line_height })}>
+        <div className="g2">
+          <Num label="字距" value={st.letter_spacing ?? 0} min={-0.5} max={2} step={0.01} scale={1} suffix="em" onChange={(v) => patchStyle({ letter_spacing: v })} />
+          <Num label="行高" value={st.line_height} min={0.6} max={3} step={0.05} scale={1} suffix="×" onChange={(v) => patchStyle({ line_height: v })} />
+        </div>
       </Section>
     </>
   );
