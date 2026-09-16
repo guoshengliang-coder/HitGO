@@ -45,6 +45,7 @@ def main() -> int:
     ap.add_argument("--target", default="ko", choices=sorted(localize.LANGS), help="翻译 / 合成的目标语言")
     ap.add_argument("--voice", default=None, help="目标语言的音色 id（缺省取该语言默认音色；没有默认音色的语言必须给）")
     ap.add_argument("--tts-model", default=None, help="该音色所属的 TTS 模型（缺省按音色表 / LOCALIZE_TTS_MODEL）")
+    ap.add_argument("--keep", default=None, metavar="DIR", help="把合成出来的 wav 留在这个目录里，方便用耳朵听")
     ap.add_argument("--asr", default=os.environ.get("LOCALIZE_ASR_MODEL", "paraformer-realtime-v2"))
     ap.add_argument("--mt", default=os.environ.get("LOCALIZE_MT_MODEL", "qwen-mt-plus"))
     ap.add_argument("--tts", default=os.environ.get("LOCALIZE_TTS_MODEL", "cosyvoice-v3-flash"))
@@ -68,7 +69,9 @@ def main() -> int:
     target_model = args.tts_model or localize.voice_model(args.target, target_voice, table)
     failed = False
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = args.keep or tmpdir
+        Path(tmp).mkdir(parents=True, exist_ok=True)
         wav = Path(tmp) / "en.wav"
         try:
             t0 = step(f"TTS {args.tts} · 音色 {en_voice}（英文）")
@@ -114,6 +117,8 @@ def main() -> int:
                 print(f"   失败：{exc}")
                 failed = True
 
+    if args.keep:
+        print(f"\nwav 已留在 {Path(args.keep).resolve()}：en.wav / {args.target}.wav")
     print("\n" + ("有步骤失败，按上面的原因处理（key / 模型开通 / 余额）。" if failed else "三个接口全部打通，可以把 key 写进服务器 .env。"))
     return 1 if failed else 0
 
