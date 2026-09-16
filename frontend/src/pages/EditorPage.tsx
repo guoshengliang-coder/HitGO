@@ -264,7 +264,9 @@ export function EditorPage() {
       </div>
     );
   }
-  if (loading || !batch) return <div className="empty">加载中…</div>;
+  // batch.id !== id：切批次时 load 的 effect 在首次 commit 之后才跑，不比对就会拿上一个
+  // 批次的数据先画一帧（旧轨道、旧画面、旧批次名）——HIG-18
+  if (loading || !batch || batch.id !== id) return <div className="empty">加载中…</div>;
 
   return (
     <div className="editor" style={layoutStyle}>

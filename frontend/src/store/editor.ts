@@ -238,6 +238,48 @@ export interface EditorState {
   flushSave: () => Promise<void>;
 }
 
+/**
+ * 每个批次都该归零的状态。初始 store 和切换批次时的重置共用这一份，
+ * 免得以后新增字段只在其中一处同步（HIG-18）。
+ *
+ * 跨批次的东西不在这里，清掉它们是倒退：safeZones / safeZoneKey（服务端常量，
+ * load 里本来就有复用逻辑）、safeZoneView / safeZoneMode / theme（本机偏好）、
+ * textPresets（全局预设）、assets（素材库是全局的，不按批次隔离）。
+ */
+const PER_BATCH_INITIAL = {
+  batch: null,
+  videos: [],
+  loading: false,
+  error: null,
+  currentVideoId: null,
+  selectedIds: [],
+  step: 'trim',
+  specs: {},
+  history: {},
+  selectedLayerId: null,
+  selectedRangeIndex: null,
+  selectedTrackId: null,
+  inPoint: null,
+  time: 0,
+  playing: false,
+  saveState: 'idle',
+  saveError: null,
+  cropEditing: false,
+  jobs: [],
+  trackedJobIds: [],
+  progressOpen: false,
+  rendering: false,
+  toast: null,
+  toastAction: null,
+  shortcutsOpen: false,
+  timelinePps: null,
+  layerClipboard: null,
+  layerClipboardVideoId: null,
+  styleClipboard: null,
+  lastApply: null,
+  outputCalibration: {},
+} satisfies Partial<EditorState>;
+
 const saveTimers: Record<string, number> = {};
 let pollTimer: number | null = null;
 let assetPollTimer: number | null = null;
@@ -355,46 +397,43 @@ export const useEditor = create<EditorState>((set, get) => {
     pollTimer = window.setTimeout(tick, 300);
   };
 
+  /**
+   * 换批次前把上一个工程清干净。store 是模块级单例，光靠 load 的 set 覆盖不了
+   * 全部字段，模块级定时器和 player 更不会自己复位（HIG-18）。
+   */
+  const resetForNewBatch = () => {
+    for (const id of Object.keys(saveTimers)) {
+      window.clearTimeout(saveTimers[id]);
+      delete saveTimers[id];
+    }
+    if (pollTimer !== null) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (assetPollTimer !== null) {
+      window.clearTimeout(assetPollTimer);
+      assetPollTimer = null;
+    }
+    player.pause();
+    player.setPreroll(0); // 封面时长是 player 的跨视频状态，不清会带进新任务的播放头计算
+    set({ ...PER_BATCH_INITIAL });
+  };
+
   return {
-    batch: null,
-    videos: [],
-    loading: false,
-    error: null,
-    currentVideoId: null,
-    selectedIds: [],
-    step: 'trim',
+    ...PER_BATCH_INITIAL,
     safeZones: [],
     safeZoneKey: 'generic-vertical',
     assets: [],
-    specs: {},
-    history: {},
-    selectedLayerId: null,
-    time: 0,
-    playing: false,
-    saveState: 'idle',
-    saveError: null,
-    cropEditing: false,
-    jobs: [],
-    trackedJobIds: [],
-    progressOpen: false,
-    rendering: false,
-    toast: null,
-    toastAction: null,
-    shortcutsOpen: false,
     safeZoneView: loadSafeZoneView(),
     safeZoneMode: loadSafeZoneMode(loadSafeZoneView()),
     theme: loadTheme(),
-    timelinePps: null,
-    layerClipboard: null,
-    layerClipboardVideoId: null,
-    styleClipboard: null,
     textPresets: BUILTIN_TEXT_PRESETS,
-    lastApply: null,
-    outputCalibration: {},
-    selectedRangeIndex: null,
-    inPoint: null,
 
     load: async (batchId) => {
+      // 切批次时 /batches/:id 的 element 不变，EditorPage 不卸载，它的 cleanup 不跑：
+      // 上一个批次的草稿只能在这里写回（否则最后 1 秒的编辑会被静默丢掉），再整份归零
+      await get().flushSave();
+      resetForNewBatch();
       set({ loading: true, error: null });
       try {
         const [batch, zones] = await Promise.all([api.getBatch(batchId), get().safeZones.length ? Promise.resolve(get().safeZones) : api.safeZones()]);
@@ -721,7 +760,6 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedRangeIndex: null });
     },
 
-    selectedTrackId: null,
     setSelectedTrack: (id) => set({ selectedTrackId: id }),
     setSourceVolume: (v) => {
       get().updateSpec((spec) => {
