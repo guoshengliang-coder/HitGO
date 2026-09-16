@@ -11,7 +11,7 @@ import { COVER_MAX_DURATION, COVER_MIN_DURATION, clampCoverDuration } from '../.
 import { formatSeconds } from '../../lib/time';
 import { AssetCard, STICKER_ACCEPT } from '../../pages/AssetsPage';
 import { Modal } from '../ui/Modal';
-import { Num } from '../ui/Num';
+import { Field, Num } from '../ui/Num';
 import { Section } from '../ui/Section';
 import { coverSummary } from '../../lib/trimSummary';
 import { isAssetReady, isVideoAsset } from '../../types';
@@ -126,12 +126,13 @@ export function CoverSection() {
               {status && <div className="small" style={{ color: 'var(--st-failed-fg)' }}>{status}</div>}
             </div>
           </div>
-          <div className="prop-grid">
-            <span>时长</span>
-            {isVideo ? (
-              <span className="mono small">{asset?.duration ? formatSeconds(asset.duration, 1) : '—'}（取视频自身时长）</span>
-            ) : (
-              <Num
+          {isVideo ? (
+            <Field label="时长" title="取视频自身时长">
+              <span className="mono small">{asset?.duration ? formatSeconds(asset.duration, 1) : '—'}</span>
+            </Field>
+          ) : (
+            <Num
+              label="停留"
                 value={clampCoverDuration(cover.duration)}
                 onChange={(v) => setCoverDuration(v)}
                 step={0.1}
@@ -141,8 +142,7 @@ export function CoverSection() {
                 suffix="秒"
                 title="图片封面停留时长（0.1–10 秒）"
               />
-            )}
-          </div>
+          )}
           <div className="inline">
             <button className="btn sm" onClick={() => setPicking(true)}>更换</button>
             <button

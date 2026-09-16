@@ -5,12 +5,13 @@
 import { useEffect } from 'react';
 import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
-import { hintFor } from '../../lib/shortcuts';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
 import { countSafeZoneOverlaps, outputFor } from '../../lib/spec';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
-import { IconClose, IconCutLeft, IconCutRight } from '../ui/Icons';
+import { IconClose } from '../ui/Icons';
+import { Field } from '../ui/Num';
+import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
@@ -72,7 +73,7 @@ function FrameSection() {
 
   return (
     <Section id="trim.frame" title="成片画面" defaultOpen={false} bodyClass="stack" summary={summary} help={FRAME_HELP}>
-      <div className="chips variant-tabs" role="tablist" aria-label="画幅">
+      <div className="chips variant-tabs" role="tablist" aria-label="画幅" style={{ display: 'flex' }}>
         {VARIANT_DEFS.map((d) => (
           <button key={d.key} role="tab" aria-selected={previewKey === d.key} className={`chip ${previewKey === d.key ? 'active' : ''}`} title={`${d.width}×${d.height} · ${d.note}`} onClick={() => setPreviewVariant(d.key)}>
             {d.label}
@@ -86,68 +87,46 @@ function FrameSection() {
       {sameAspect ? (
         <div className="hint">源画面已是 {def.label}，直接铺满成片，不需要填充或裁切。</div>
       ) : (
-        <div className="prop-grid">
-          <span>填充</span>
-          <div className="inline" role="radiogroup" aria-label="填充方式">
-            {(Object.keys(FILL_LABEL) as FillMode[]).map((f) => (
-              <button key={f} role="radio" aria-checked={out.fill === f} className={`chip ${out.fill === f ? 'active' : ''}`} title={FILL_TIP[f]} onClick={() => setFill(f)}>
-                {FILL_LABEL[f]}
-              </button>
-            ))}
-          </div>
+        <>
+          <Seg label="填充方式" options={(Object.keys(FILL_LABEL) as FillMode[]).map((f) => ({ v: f, label: FILL_LABEL[f], title: FILL_TIP[f] }))} value={out.fill} onChange={setFill} />
           {out.fill === 'color' && (
-            <>
-              <span>颜色</span>
-              <div className="inline">
-                <ColorPicker label="纯色边颜色" value={out.color ?? '#000000'} onChange={(c) => patchOutput({ color: c })} />
-              </div>
-            </>
+            <Field label="颜色">
+              <ColorPicker label="纯色边颜色" value={out.color ?? '#000000'} onChange={(c) => patchOutput({ color: c })} />
+            </Field>
           )}
           {out.fill === 'crop' && (
-            <>
-              <span>裁切</span>
-              <div className="inline">
-                <button className={`btn sm ${cropEditing ? 'on' : ''}`} onClick={() => setCropEditing(!cropEditing)}>
-                  {cropEditing ? '完成裁切' : '调整裁切范围'}
+            <Field label="裁切" title="裁切窗口在源画面上的像素尺寸 @ 左上角">
+              <span className="mono muted small">{customCrop && out.crop ? describeCrop(out.crop, video.width, video.height) : '居中（默认）'}</span>
+              {customCrop && (
+                <button className="btn ghost sm" onClick={() => setCrop(defaultCropRect(video.width, video.height, aspect))}>
+                  居中
                 </button>
-                <span className="mono muted small" title="裁切窗口在源画面上的像素尺寸 @ 左上角">
-                  {customCrop && out.crop ? describeCrop(out.crop, video.width, video.height) : '居中（默认）'}
-                </span>
-                {customCrop && (
-                  <button className="btn ghost sm" onClick={() => setCrop(defaultCropRect(video.width, video.height, aspect))}>
-                    居中
-                  </button>
-                )}
-              </div>
-            </>
+              )}
+              <button className={`btn sm ${cropEditing ? 'on' : ''}`} onClick={() => setCropEditing(!cropEditing)}>
+                {cropEditing ? '完成' : '调整'}
+              </button>
+            </Field>
           )}
-        </div>
+        </>
       )}
       {!sameAspect && landscape && out.fill !== 'crop' && <div className="hint">横屏源：若内容只在画面中间（两侧是模糊 / 装饰），把填充改为「裁切」并调整裁切范围，只取中间那一条。</div>}
-      <div className="prop-grid">
-        <span>清晰度</span>
-        <div className="inline">
-          <span className="chips" title={QUALITY_TIP} role="radiogroup" aria-label="清晰度">
-            {(['standard', 'high'] as OutputQuality[]).map((qk) => (
-              <button key={qk} role="radio" aria-checked={qualityOf(out) === qk} className={`chip ${qualityOf(out) === qk ? 'active' : ''}`} onClick={() => patchOutput({ quality: qk })}>
-                {QUALITY_LABEL[qk]}
-              </button>
-            ))}
-          </span>
-          <span className="spacer" />
-          <span className="mono muted small" title={calibrated ? '按本批次已完成任务的实际码率校准' : '按编码档位的典型码率估算'}>
-            约 {formatBytes(estimateOutputBytes(out, postDuration + preroll, calibration))}（估算）
-          </span>
-        </div>
-        <span>安全区</span>
+      <div className="g2">
+        <Field label="清晰度" title={QUALITY_TIP}>
+          <Seg className="inner" label="清晰度" options={(['standard', 'high'] as OutputQuality[]).map((qk) => ({ v: qk, label: QUALITY_LABEL[qk] }))} value={qualityOf(out)} onChange={(quality) => patchOutput({ quality })} />
+        </Field>
+        <Field label="大小" title={calibrated ? '按本批次已完成任务的实际码率校准' : '按编码档位的典型码率估算'}>
+          <span className="mono small">约 {formatBytes(estimateOutputBytes(out, postDuration + preroll, calibration))}</span>
+        </Field>
+      </div>
+      <Field label="安全区">
         {isRef ? (
           <span className="small" style={{ color: overlaps ? 'var(--st-failed-fg)' : 'var(--st-done-fg)' }}>
-            {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层与遮挡区重叠'}
+            {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层越界'}
           </span>
         ) : (
-          <span className="muted small">安全区按竖版平台定义，只在 9:16 检查</span>
+          <span className="muted small">只在 9:16 检查</span>
         )}
-      </div>
+      </Field>
     </Section>
   );
 }
@@ -169,7 +148,7 @@ function RangesSection() {
       help={RANGES_HELP}
     >
       {remove.length === 0 ? (
-        <div className="hint">暂无。播放到要删除的起点按 I，再到终点按 O；Q / W 一键删掉播放头左侧 / 右侧；也可以直接在时间轴上拖动区间边缘调整。</div>
+        <div className="hint">暂无。工具条里设入点 I、设出点 O，或 Q / W 删掉播放头左 / 右侧。</div>
       ) : (
         <div className="range-list">
           {remove.map((r, i) => (
@@ -196,8 +175,8 @@ function DurationSection() {
   const preroll = useCoverDuration();
 
   return (
-    <Section id="trim.duration" title="时长" summary={<span className="mono">{durationSummary(postDuration, preroll)}</span>} help={DURATION_HELP}>
-      <dl className="kv span2">
+    <Section id="trim.duration" title="时长" bodyClass="stack" summary={<span className="mono">{durationSummary(postDuration, preroll)}</span>} help={DURATION_HELP}>
+      <dl className="kv">
         <dt>原始时长</dt>
         <dd>{formatSeconds(video?.duration ?? 0, 2)}</dd>
         <dt>剪后时长</dt>
@@ -217,40 +196,15 @@ function DurationSection() {
   );
 }
 
+/** 剪辑面板只放"看"的东西：区间列表、封面、成片画面、时长。剪的动作（入出点 / 删左右 / 删除）都在画布下方的工具条里（§8.1 A2）。 */
 export function TrimPanel() {
-  const time = useEditor((s) => s.time);
   const inPoint = useEditor((s) => s.inPoint);
   const setInPoint = useEditor((s) => s.setInPoint);
-  const setOutPoint = useEditor((s) => s.setOutPoint);
-  const selected = useEditor((s) => s.selectedRangeIndex);
-  const deleteRange = useEditor((s) => s.deleteRemoveRange);
-  const removeBefore = useEditor((s) => s.removeBefore);
-  const removeAfter = useEditor((s) => s.removeAfter);
-  const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
-  const canRemoveAfter = useEditor((s) => s.canRemoveAfter());
 
   return (
     <div className="panel">
       <div className="panel-head">剪辑</div>
-      <div className="panel-body">
-        {/* 高频操作常驻，不参与折叠 */}
-        <div className="inline">
-          <button className="btn" onClick={() => setInPoint(time)} title={hintFor('in')}>
-            设入点 <span className="mono muted">I</span>
-          </button>
-          <button className="btn" onClick={() => setOutPoint(time)} title={hintFor('out')} disabled={inPoint === null}>
-            设出点 <span className="mono muted">O</span>
-          </button>
-          <button className="btn" onClick={removeBefore} disabled={!canRemoveBefore} title={hintFor('remove-before')}>
-            <IconCutLeft /> 删左 <span className="mono muted">Q</span>
-          </button>
-          <button className="btn" onClick={removeAfter} disabled={!canRemoveAfter} title={hintFor('remove-after')}>
-            <IconCutRight /> 删右 <span className="mono muted">W</span>
-          </button>
-          <button className="btn danger" onClick={() => selected !== null && deleteRange(selected)} disabled={selected === null} title={hintFor('delete-range')}>
-            删除选中区间
-          </button>
-        </div>
+      <div className="panel-body inspector">
         {inPoint !== null && (
           <div className="hint">
             入点已设在 <span className="mono">{formatTime(inPoint)}</span>（源时间），移动播放头后按 O 设出点。
