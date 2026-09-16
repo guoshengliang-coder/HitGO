@@ -42,6 +42,9 @@ Fill = Literal["blur", "color", "crop"]
 Playback = Literal["loop", "freeze", "once"]
 Quality = Literal["standard", "high"]
 LayerMode = Literal["replace", "style_only"]
+# How layers sit on a non-reference output (HIG-29): "canvas" = relative to that canvas (the
+# original behaviour); "video" = follow where the video frame lands, see services/layout.fit_map.
+LayerFit = Literal["canvas", "video"]
 
 CANVAS_SIZES: dict[str, tuple[int, int]] = {
     "9:16": (1080, 1920),
@@ -230,6 +233,11 @@ class LayerOverride(BaseModel):
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
+    @property
+    def detaches(self) -> bool:
+        """Any geometry key set → the layer no longer follows the video on this output."""
+        return any(v is not None for v in (self.anchor, self.margin, self.width, self.height))
+
 
 class CropRect(BaseModel):
     """Source-frame crop window for fill="crop" (contract §2): x/y/w/h relative to the source width/height."""
@@ -259,6 +267,7 @@ class OutputVariant(BaseModel):
     color: str = "#000000"
     quality: Quality = "standard"
     crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
+    layer_fit: LayerFit = "canvas"
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
 
     @field_validator("variant_key")
@@ -479,6 +488,8 @@ RENDER_NAME_MAX = 120
 class RenderIn(BaseModel):
     video_ids: list[str] = Field(min_length=1)
     name: str | None = None
+    # Only render these outputs (HIG-29); None = every output in each video's spec.
+    variant_keys: list[str] | None = Field(default=None, min_length=1)
 
     @field_validator("name")
     @classmethod

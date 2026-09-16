@@ -2,15 +2,16 @@
 // - 每条视频一份草稿 spec（specs）+ 历史栈（history，上限 50）
 // - 任何 spec 修改后 1 秒防抖自动保存（PUT /api/videos/{id}/spec）
 // - "导出"：先把文字图层烘焙成 PNG，再 PUT spec，再 POST /api/render，并轮询任务
-// - 编辑器只产出一个 9:16 输出（HIG-8）：载入 / 批量应用 / 导出时用 toSingleOutput 收掉旧 spec 里的其他画幅
+// - 多画幅（HIG-29）：outputs 存「已配置的画幅」，载入 / 批量应用时用 normalizeOutputs 规范化；导出时勾选出哪些画幅，
+//   缺的用 ensureVariants 补上缺省设置。画面分组 / 画布预览看的是 previewVariantKey 这个画幅
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, VariantKey, Video } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
-import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
+import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, toContractSpec } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { nudgePlacement, round4 } from '../lib/layout';
@@ -101,6 +102,8 @@ export interface EditorState {
   saveError: string | null;
   /** 剪辑模块里正在调整 9:16 输出的裁切窗口（中栏换成 CropEditor） */
   cropEditing: boolean;
+  /** 画面分组页签与画布预览当前看的画幅（HIG-29）；只在本地，不写进 spec。 */
+  previewVariantKey: VariantKey;
   // 渲染
   jobs: Job[];
   trackedJobIds: string[];
@@ -154,6 +157,7 @@ export interface EditorState {
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   setCropEditing: (on: boolean) => void;
+  setPreviewVariant: (key: VariantKey) => void;
   setToast: (m: string | null, action?: ToastAction | null) => void;
   setShortcutsOpen: (on: boolean) => void;
   toggleSnap: () => void;
@@ -267,16 +271,18 @@ export interface EditorState {
   clearCover: () => void;
 
   // 画面（唯一的 9:16 输出）
-  patchOutput: (patch: Partial<OutputVariant>) => void;
+  /** 改某个画幅的输出设置（缺省 = previewVariantKey）；spec 里还没有这个画幅时先按缺省补上。 */
+  patchOutput: (patch: Partial<OutputVariant>, key?: VariantKey) => void;
   /** 写 9:16 输出的裁切窗口；null = 删掉（回到 cover 居中）。 */
-  setCrop: (rect: CropRect | null, history?: boolean) => void;
+  setCrop: (rect: CropRect | null, history?: boolean, key?: VariantKey) => void;
 
   // 批量 / 渲染
   applyToTargets: (targetIds: string[], modules: ApplyModule[], opts?: { layerMode?: ApplyLayerMode }) => Promise<void>;
   /** 撤销最近一次批量应用：把每个目标恢复到应用前的 spec。 */
   undoLastApply: () => void;
   /** opts.name：导出名称，写到本次建出的每个任务上（HIG-27）。 */
-  saveAndRender: (targetIds: string[], opts?: { name?: string }) => Promise<void>;
+  /** variantKeys：这次导出哪些画幅（缺省只出 9x16）。 */
+  saveAndRender: (targetIds: string[], opts?: { name?: string; variantKeys?: VariantKey[] }) => Promise<void>;
   retryJob: (id: string) => Promise<void>;
   closeProgress: () => void;
   openProgressFor: (jobs: Job[]) => void;
@@ -311,6 +317,7 @@ const PER_BATCH_INITIAL = {
   saveState: 'idle',
   saveError: null,
   cropEditing: false,
+  previewVariantKey: '9x16',
   jobs: [],
   trackedJobIds: [],
   progressOpen: false,
@@ -576,7 +583,7 @@ export const useEditor = create<EditorState>((set, get) => {
       try {
         const [batch, zones] = await Promise.all([api.getBatch(batchId), get().safeZones.length ? Promise.resolve(get().safeZones) : api.safeZones()]);
         const specs: Record<string, EditSpec> = {};
-        // 旧 spec 里的其他画幅在载入时就收掉；就绪的视频随后自动保存写回（未就绪的后端不收 spec）
+        // 旧 spec 的 outputs 在载入时就规范化（补 9x16、旧多画幅改为跟随视频）；就绪的视频随后自动保存写回（未就绪的后端不收 spec）
         const collapsed: string[] = [];
         for (const v of batch.videos) {
           if (!v.edit_spec) {
@@ -584,7 +591,7 @@ export const useEditor = create<EditorState>((set, get) => {
             continue;
           }
           const draft = cloneSpec(v.edit_spec);
-          specs[v.id] = toSingleOutput(draft);
+          specs[v.id] = normalizeOutputs(draft);
           if (specs[v.id] !== draft && v.status === 'ready') collapsed.push(v.id);
         }
         const currentVideoId = batch.videos[0]?.id ?? null;
@@ -605,6 +612,7 @@ export const useEditor = create<EditorState>((set, get) => {
           outputCalibration: {},
           step: 'trim',
           cropEditing: false,
+          previewVariantKey: '9x16',
         });
         for (const id of collapsed) scheduleSave(id);
         pollPreparingVideos();
@@ -640,7 +648,7 @@ export const useEditor = create<EditorState>((set, get) => {
         set((s) => ({
           batch: fresh,
           videos: fresh.videos,
-          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? toSingleOutput(cloneSpec(v.edit_spec)) : emptySpec())])),
+          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? normalizeOutputs(cloneSpec(v.edit_spec)) : emptySpec())])),
           selectedIds: s.selectedIds.filter((id) => fresh.videos.some((v) => v.id === id)),
           currentVideoId: nextCurrentAfterDelete(s.videos, s.currentVideoId, s.videos.filter((v) => !fresh.videos.some((f) => f.id === v.id)).map((v) => v.id)) ?? fresh.videos[0]?.id ?? null,
         }));
@@ -819,6 +827,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
     setCropEditing: (cropEditing) => set({ cropEditing }),
+    setPreviewVariant: (previewVariantKey) => set({ previewVariantKey }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
     setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
     toggleSnap: () => set((st) => ({ snapEnabled: !st.snapEnabled, toast: st.snapEnabled ? '吸附已关闭' : '吸附已开启', toastAction: null })),
@@ -1372,22 +1381,27 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateLayer(id, { margin: [round4(m[0]), round4(m[1])] }, history);
     },
 
-    patchOutput: (patch) => {
+    patchOutput: (patch, key = get().previewVariantKey) => {
       get().updateSpec((spec) => {
-        const next = toSingleOutput(spec);
-        const o = { ...next.outputs[0], ...patch };
-        if (o.fill !== 'color') delete o.color;
-        if (o.fill !== 'crop') delete o.crop;
-        spec.outputs = [o];
+        spec.outputs = ensureVariants(spec, [key]).outputs.map((cur) => {
+          if (cur.variant_key !== key) return cur;
+          const o = { ...cur, ...patch };
+          if (o.fill !== 'color') delete o.color;
+          if (o.fill !== 'crop') delete o.crop;
+          return o;
+        });
       });
     },
-    setCrop: (rect, history = true) => {
+    setCrop: (rect, history = true, key = get().previewVariantKey) => {
       get().updateSpec(
         (spec) => {
-          const o = toSingleOutput(spec).outputs[0];
-          if (rect === null) delete o.crop;
-          else o.crop = { ...rect };
-          spec.outputs = [o];
+          spec.outputs = ensureVariants(spec, [key]).outputs.map((cur) => {
+            if (cur.variant_key !== key) return cur;
+            const o = { ...cur };
+            if (rect === null) delete o.crop;
+            else o.crop = { ...rect };
+            return o;
+          });
         },
         { history },
       );
@@ -1426,7 +1440,7 @@ export const useEditor = create<EditorState>((set, get) => {
           const lastApply: LastApply = { targetIds: updated.map((u) => u.id), prevSpecs };
           return {
             videos: st.videos.map((v) => updated.find((u) => u.id === v.id) ?? v),
-            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? toSingleOutput(cloneSpec(u.edit_spec)) : emptySpec()])) },
+            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? normalizeOutputs(cloneSpec(u.edit_spec)) : emptySpec()])) },
             history,
             lastApply,
             toast: `已应用到 ${updated.length} 条视频`,
@@ -1459,12 +1473,13 @@ export const useEditor = create<EditorState>((set, get) => {
     saveAndRender: async (targetIds, opts) => {
       const s = get();
       if (!targetIds.length || s.rendering) return;
+      const variantKeys: VariantKey[] = opts?.variantKeys?.length ? opts.variantKeys : ['9x16'];
       set({ rendering: true, toast: null });
       try {
         for (const id of targetIds) {
           const video = s.videos.find((v) => v.id === id);
           if (!video) continue;
-          const spec = toSingleOutput(cloneSpec(get().specs[id] ?? (video.edit_spec ? video.edit_spec : emptySpec())));
+          const spec = ensureVariants(cloneSpec(get().specs[id] ?? (video.edit_spec ? video.edit_spec : emptySpec())), variantKeys);
           // 文字图层 → PNG（每次回传都重新生成，保证与当前文字 / 样式一致）
           for (let i = 0; i < spec.layers.length; i++) {
             const l = spec.layers[i];
@@ -1480,12 +1495,12 @@ export const useEditor = create<EditorState>((set, get) => {
         }
         let jobs: Job[];
         try {
-          jobs = await api.render(targetIds, opts?.name);
+          jobs = await api.render(targetIds, opts?.name, variantKeys);
         } catch (e) {
           if (e instanceof ApiError && e.status === 409) {
             set({ toast: `有任务仍在进行：${e.message}` });
             const existing = await api.batchJobs(s.batch!.id);
-            jobs = existing.filter((j) => targetIds.includes(j.video_id) && (j.status === 'queued' || j.status === 'running'));
+            jobs = existing.filter((j) => targetIds.includes(j.video_id) && variantKeys.includes(j.variant_key as VariantKey) && (j.status === 'queued' || j.status === 'running'));
           } else throw e;
         }
         set((st) => ({ jobs, trackedJobIds: Array.from(new Set([...st.trackedJobIds.filter((id) => st.jobs.find((j) => j.id === id && (j.status === 'queued' || j.status === 'running'))), ...jobs.map((j) => j.id)])), progressOpen: true, rendering: false }));

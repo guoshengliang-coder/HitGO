@@ -1,9 +1,11 @@
-// 右上角「导出」弹窗（HIG-8）：选范围后保存并提交渲染。默认导出这一批；每条视频出一个 9:16 文件。
+// 右上角「导出」弹窗（HIG-8）：选范围后保存并提交渲染。默认导出这一批。
+// 勾选画幅（HIG-29）：每条视频按勾选的画幅各出一个文件，勾选存本机；各画幅的填充 / 裁切在剪辑模块「成片画面」里按页签设置。
 // 可选填一个导出名称（HIG-27），写到这次的每个任务上：产物页能按它搜，下载的文件名也用它。
 
 import { useMemo, useState } from 'react';
 import { useEditor } from '../../store/editor';
-import { resolveExportTargets, type ExportScope } from '../../lib/exportScope';
+import { loadExportVariants, resolveExportTargets, saveExportVariants, toggleExportVariant, type ExportScope } from '../../lib/exportScope';
+import { VARIANT_DEFS, type VariantKey } from '../../types';
 import { Modal } from '../ui/Modal';
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
@@ -15,6 +17,13 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [scope, setScope] = useState<ExportScope>('batch');
   const batchName = useEditor((s) => s.batch?.name ?? '');
   const [name, setName] = useState('');
+  const [variantKeys, setVariantKeys] = useState<VariantKey[]>(() => loadExportVariants());
+  const toggleVariant = (key: VariantKey) =>
+    setVariantKeys((cur) => {
+      const next = toggleExportVariant(cur, key);
+      saveExportVariants(next);
+      return next;
+    });
 
   const current = videos.find((v) => v.id === currentId);
   const selectedCount = videos.filter((v) => selectedIds.includes(v.id)).length;
@@ -40,11 +49,11 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             className="btn primary"
             disabled={rendering || targets.ids.length === 0}
             onClick={() => {
-              void saveAndRender(targets.ids, { name });
+              void saveAndRender(targets.ids, { name, variantKeys });
               onClose();
             }}
           >
-            {targets.ids.length ? `导出 ${targets.ids.length} 条` : '没有可导出的视频'}
+            {targets.ids.length ? `导出 ${targets.ids.length} 条${variantKeys.length > 1 ? ` × ${variantKeys.length} 个画幅` : ''}` : '没有可导出的视频'}
           </button>
         </>
       }
@@ -58,8 +67,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
           placeholder={`例如：${batchName ? `${batchName} ` : ''}${exportDateLabel()} 版`}
           onChange={(e) => setName(e.target.value)}
         />
-        <span className="hint">产物页可按名称搜索；下载的文件名为「名称_视频名_9x16.mp4」，不填时用批次名。</span>
+        <span className="hint">产物页可按名称搜索；下载的文件名为「名称_视频名_画幅.mp4」，不填时用批次名。</span>
       </label>
+      <div className="field" style={{ marginBottom: 12 }}>
+        画幅
+        <div className="chips" role="group" aria-label="导出画幅">
+          {VARIANT_DEFS.map((d) => {
+            const on = variantKeys.includes(d.key);
+            return (
+              <button key={d.key} type="button" role="checkbox" aria-checked={on} className={`chip ${on ? 'active' : ''}`} title={`${d.width}×${d.height} · ${d.note}`} onClick={() => toggleVariant(d.key)}>
+                {d.label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="hint">每条视频按勾选的画幅各出一个文件（共 {targets.ids.length * variantKeys.length} 个）。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走。</span>
+      </div>
       <div className="scope-list" role="radiogroup" aria-label="导出范围">
         {options.map((o) => (
           <label key={o.key} className={`scope-option ${scope === o.key ? 'active' : ''} ${o.disabled ? 'disabled' : ''}`}>
@@ -73,7 +96,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       </div>
       {targets.skipped.length > 0 && <div className="hint" style={{ marginTop: 8 }}>其中 {targets.skipped.length} 条还没预处理完或预处理失败，会跳过。</div>}
       <div className="hint" style={{ marginTop: 8 }}>
-        每条视频按各自保存的配置出一个 9:16 文件；本页只编辑当前这条，其他视频要同步配置可先用左侧「批量应用」。导出后在「产物」里查看成片。
+        每条视频按各自保存的配置出片（各画幅的填充 / 裁切在剪辑模块「成片画面」里设置）；本页只编辑当前这条，其他视频要同步配置可先用左侧「批量应用」。导出后在「产物」里查看成片。
       </div>
     </Modal>
   );

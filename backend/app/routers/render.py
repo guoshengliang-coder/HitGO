@@ -1,4 +1,7 @@
-"""POST /api/render — one Job per (video, output variant); 409 on active duplicates."""
+"""POST /api/render — one Job per (video, output variant); 409 on active duplicates.
+
+``variant_keys`` narrows the outputs rendered (HIG-29); conflicts are only checked for those.
+"""
 
 from __future__ import annotations
 
@@ -41,7 +44,14 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
             raise HTTPException(
                 400, f"视频 {video.name} 的编辑参数无效：{first.get('msg', '')}"
             ) from None
-        plan.append((video, [o.variant_key for o in spec.outputs]))
+        keys = [o.variant_key for o in spec.outputs]
+        if body.variant_keys is not None:
+            unknown = [k for k in dict.fromkeys(body.variant_keys) if k not in keys]
+            if unknown:
+                raise HTTPException(400, f"视频 {video.name} 的编辑参数里没有输出 {', '.join(unknown)}")
+            wanted = set(body.variant_keys)
+            keys = [k for k in keys if k in wanted]
+        plan.append((video, keys))
 
     active = db.scalars(
         select(Job).where(Job.video_id.in_(video_ids), Job.status.in_(JOB_ACTIVE))

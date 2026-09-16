@@ -8,23 +8,25 @@ import { formatSeconds, formatTime } from '../../lib/time';
 import { hintFor } from '../../lib/shortcuts';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
-import { countSafeZoneOverlaps } from '../../lib/spec';
+import { countSafeZoneOverlaps, outputFor } from '../../lib/spec';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose, IconCutLeft, IconCutRight } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
-import { variantDef, type FillMode, type OutputQuality } from '../../types';
+import { VARIANT_DEFS, variantDef, type FillMode, type OutputQuality } from '../../types';
 
 const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
-const FRAME_HELP = '成片只出一个 9:16 文件。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。';
+const FRAME_HELP = '每个画幅单独设置（导出时在「导出」里勾选出哪些画幅）。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
 const DURATION_HELP = '文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。';
 
-/** 成片画面（唯一的 9:16 输出）：填充方式、裁切范围、清晰度。原「输出」步骤里的设置搬到这里（HIG-8）。 */
+/** 成片画面：按画幅页签设置填充方式、裁切范围、清晰度（HIG-8 搬到这里，HIG-29 恢复多画幅）。页签与画布预览联动。 */
 function FrameSection() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const patchOutput = useEditor((s) => s.patchOutput);
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const setPreviewVariant = useEditor((s) => s.setPreviewVariant);
   const setCrop = useEditor((s) => s.setCrop);
   const cropEditing = useEditor((s) => s.cropEditing);
   const setCropEditing = useEditor((s) => s.setCropEditing);
@@ -41,14 +43,16 @@ function FrameSection() {
     void loadOutputCalibration();
   }, [batchId, loadOutputCalibration]);
 
-  const def = variantDef('9x16');
+  const def = variantDef(previewKey);
   const aspect = def.width / def.height;
-  const out = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
+  const out = spec ? outputFor(spec, previewKey) : null;
+  const isRef = previewKey === '9x16';
   if (!video || !out) return null;
   const sameAspect = Math.abs(video.width / video.height - aspect) < 0.01;
   const landscape = video.width > video.height;
   const customCrop = !!out.crop && !isDefaultCrop(out.crop, video.width, video.height, aspect);
-  const overlaps = spec ? countSafeZoneOverlaps(spec, zone, assets) : 0;
+  // 安全区按竖版平台定义，只对 9:16 检查
+  const overlaps = spec && isRef ? countSafeZoneOverlaps(spec, zone, assets) : 0;
   const calibrated = Object.keys(calibration).length > 0;
 
   const setFill = (fill: FillMode) => {
@@ -61,21 +65,26 @@ function FrameSection() {
   // 收起来之后摘要就是这块设置唯一的可见信息，所以安全区有重叠时也要在这一行看得见
   const summary = (
     <span className="mono">
-      {frameSummary(out, postDuration + preroll, calibration, sameAspect)}
+      {def.label} · {frameSummary(out, postDuration + preroll, calibration, sameAspect)}
       {overlaps > 0 && <span style={{ color: 'var(--st-failed-fg)' }}> · {overlaps} 个图层越界</span>}
     </span>
   );
 
   return (
     <Section id="trim.frame" title="成片画面" defaultOpen={false} bodyClass="stack" summary={summary} help={FRAME_HELP}>
-      <div className="prop-grid">
-        <span>画幅</span>
-        <span className="mono muted small">
+      <div className="chips variant-tabs" role="tablist" aria-label="画幅">
+        {VARIANT_DEFS.map((d) => (
+          <button key={d.key} role="tab" aria-selected={previewKey === d.key} className={`chip ${previewKey === d.key ? 'active' : ''}`} title={`${d.width}×${d.height} · ${d.note}`} onClick={() => setPreviewVariant(d.key)}>
+            {d.label}
+          </button>
+        ))}
+        <span className="mono muted small" style={{ marginLeft: 'auto' }}>
           {def.width}×{def.height}
         </span>
       </div>
+      {!isRef && <div className="hint">画布正在预览 {def.label}：图层默认跟着视频画面走，在画布上拖动会只改这个画幅。导出时在「导出」里勾选 {def.label} 才会出这个文件。</div>}
       {sameAspect ? (
-        <div className="hint">源画面已是 9:16，直接铺满成片，不需要填充或裁切。</div>
+        <div className="hint">源画面已是 {def.label}，直接铺满成片，不需要填充或裁切。</div>
       ) : (
         <div className="prop-grid">
           <span>填充</span>
@@ -131,9 +140,13 @@ function FrameSection() {
           </span>
         </div>
         <span>安全区</span>
-        <span className="small" style={{ color: overlaps ? 'var(--st-failed-fg)' : 'var(--st-done-fg)' }}>
-          {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层与遮挡区重叠'}
-        </span>
+        {isRef ? (
+          <span className="small" style={{ color: overlaps ? 'var(--st-failed-fg)' : 'var(--st-done-fg)' }}>
+            {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层与遮挡区重叠'}
+          </span>
+        ) : (
+          <span className="muted small">安全区按竖版平台定义，只在 9:16 检查</span>
+        )}
       </div>
     </Section>
   );

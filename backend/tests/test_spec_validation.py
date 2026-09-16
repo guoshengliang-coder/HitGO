@@ -359,3 +359,13 @@ def test_layer_override_height():
     spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 1.2}
     assert "height" in errors_of(spec)
     assert LayerOverride(height=0.3).as_dict() == {"height": 0.3}
+
+
+def test_layer_fit_is_optional_and_enumerated():
+    spec = valid_spec()
+    assert EditSpec.model_validate(spec).outputs[1].layer_fit == "canvas"
+    spec["outputs"][1]["layer_fit"] = "video"
+    assert EditSpec.model_validate(spec).outputs[1].layer_fit == "video"
+    spec["outputs"][1]["layer_fit"] = "frame"
+    with pytest.raises(ValidationError):
+        EditSpec.model_validate(spec)

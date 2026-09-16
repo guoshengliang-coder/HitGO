@@ -440,6 +440,21 @@ def test_render_creates_jobs_and_conflicts(client, ready_video, enqueued):
     assert len(listed) == 2 and client.get(f"/api/batches/{BATCH}/outputs").json() == []
 
 
+def test_render_variant_keys_narrow_outputs_and_conflicts(client, ready_video, enqueued):
+    put_spec(client, VIDEO, valid_spec())
+    r = client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": ["1x1"]})
+    assert r.status_code == 201, r.text
+    assert [j["variant_key"] for j in r.json()] == ["1x1"]
+    # 1x1 is busy now, 9x16 is not: asking only for 9x16 does not conflict
+    r = client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": ["9x16"]})
+    assert r.status_code == 201 and [j["variant_key"] for j in r.json()] == ["9x16"]
+    r = client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": ["1x1", "9x16"]})
+    assert r.status_code == 409 and {c["variant_key"] for c in r.json()["conflicts"]} == {"1x1", "9x16"}
+    r = client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": ["16x9"]})
+    assert r.status_code == 400 and "16x9" in r.json()["detail"]
+    assert client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": []}).status_code == 400
+
+
 def test_render_name_is_stored_on_every_job(client, ready_video, enqueued):
     spec = valid_spec()
     put_spec(client, VIDEO, spec)

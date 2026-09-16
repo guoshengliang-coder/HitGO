@@ -223,7 +223,13 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         raise RenderError(f"编辑参数中没有输出变体 {job.variant_key}")
     return build_render_command(
         spec,
-        {"duration": video.duration, "has_audio": video.has_audio, "fps": video.fps},
+        {
+            "duration": video.duration,
+            "has_audio": video.has_audio,
+            "fps": video.fps,
+            "width": video.width,
+            "height": video.height,
+        },
         collect_assets(db, spec),
         variant,
         source_path=str(storage.source_path(video.batch_id, video.id, video.source_ext)),

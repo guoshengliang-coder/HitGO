@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveExportTargets } from './exportScope';
+import { cleanExportVariants, loadExportVariants, resolveExportTargets, saveExportVariants, toggleExportVariant } from './exportScope';
 import type { Video } from '../types';
 
 const VIDEOS: Pick<Video, 'id' | 'status'>[] = [
@@ -21,5 +21,27 @@ describe('resolveExportTargets', () => {
     expect(resolveExportTargets(VIDEOS, 'current', [], 'v3')).toEqual({ ids: ['v3'], skipped: [] });
     expect(resolveExportTargets(VIDEOS, 'current', [], 'v2')).toEqual({ ids: [], skipped: ['v2'] });
     expect(resolveExportTargets(VIDEOS, 'current', [], null)).toEqual({ ids: [], skipped: [] });
+  });
+});
+
+describe('导出画幅勾选（HIG-29）', () => {
+  it('清洗：按画幅顺序、去掉不认识的、空时回到 9x16', () => {
+    expect(cleanExportVariants(['16x9', 'x', '9x16', '1x1'])).toEqual(['9x16', '1x1', '16x9']);
+    expect(cleanExportVariants([])).toEqual(['9x16']);
+    expect(cleanExportVariants('bad')).toEqual(['9x16']);
+  });
+  it('切换：不能取消最后一个', () => {
+    expect(toggleExportVariant(['9x16'], '4x5')).toEqual(['9x16', '4x5']);
+    expect(toggleExportVariant(['9x16', '4x5'], '9x16')).toEqual(['4x5']);
+    expect(toggleExportVariant(['4x5'], '4x5')).toEqual(['4x5']);
+  });
+  it('读写 storage；坏 JSON 回退 9x16', () => {
+    const m = new Map<string, string>();
+    const s = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+    saveExportVariants(['1x1', '9x16'], s);
+    expect(loadExportVariants(s)).toEqual(['9x16', '1x1']);
+    m.set('hitgo.exportVariants', '{bad');
+    expect(loadExportVariants(s)).toEqual(['9x16']);
+    expect(loadExportVariants(null)).toEqual(['9x16']);
   });
 });

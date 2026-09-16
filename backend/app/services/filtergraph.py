@@ -27,8 +27,26 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.schemas import CANVAS_SIZES, CropRect, EditSpec, MaskLayer, OutputVariant, StickerLayer, TextLayer
-from app.services.layout import layer_box, mask_box, rotated_overlay_position
+from app.schemas import (
+    CANVAS_SIZES,
+    DEFAULT_VARIANT_KEY,
+    CropRect,
+    EditSpec,
+    MaskLayer,
+    OutputVariant,
+    StickerLayer,
+    TextLayer,
+)
+from app.services.layout import (
+    Box,
+    FitMap,
+    fit_map,
+    follow_layer_box,
+    follow_mask_box,
+    layer_box,
+    mask_box,
+    rotated_overlay_position,
+)
 
 _AUDIO_ARGS: list[str] = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
 
@@ -190,7 +208,7 @@ def fill_chains(
     return chains
 
 
-def apply_overrides(layer: StickerLayer | TextLayer | MaskLayer, variant: OutputVariant) -> dict[str, Any]:
+def apply_overrides(layer: StickerLayer | TextLayer | MaskLayer, variant: OutputVariant | None) -> dict[str, Any]:
     """Effective geometry for a layer inside a variant (layer_overrides applied).
 
     ``height`` is only present for mask layers (the other kinds take theirs from the media).
@@ -204,13 +222,70 @@ def apply_overrides(layer: StickerLayer | TextLayer | MaskLayer, variant: Output
     }
     if isinstance(layer, MaskLayer):
         geo["height"] = layer.height
-    override = variant.layer_overrides.get(layer.id)
+    override = variant.layer_overrides.get(layer.id) if variant is not None else None
     if override is not None:
         for key, value in override.as_dict().items():
             if key == "height" and not isinstance(layer, MaskLayer):
                 continue
             geo[key] = tuple(value) if key == "margin" else value
     return geo
+
+
+def variant_fit_map(spec: EditSpec, variant: OutputVariant, src_w: float, src_h: float) -> FitMap | None:
+    """Reference (9x16) → ``variant`` map when layers follow the video there, else None.
+
+    The reference is the spec's ``9x16`` output, or a 9:16 blur canvas when there is none.
+    Needs the source size; without it (legacy rows) we fall back to canvas-relative layout.
+    """
+    if variant.layer_fit != "video" or not (src_w and src_h and src_w > 0 and src_h > 0):
+        return None
+    ref = next((o for o in spec.outputs if o.variant_key == DEFAULT_VARIANT_KEY), None)
+    if ref is variant:
+        return None
+    ref_tuple = (ref.fill, ref.crop, *ref.canvas) if ref is not None else ("blur", None, *CANVAS_SIZES["9:16"])
+    return fit_map(ref_tuple, (variant.fill, variant.crop, *variant.canvas), src_w, src_h)
+
+
+def _reference_geometry(spec: EditSpec, layer: StickerLayer | TextLayer | MaskLayer) -> dict[str, Any]:
+    ref = next((o for o in spec.outputs if o.variant_key == DEFAULT_VARIANT_KEY), None)
+    return apply_overrides(layer, ref) if ref is not None else apply_overrides(layer, None)
+
+
+def _follows(layer: StickerLayer | TextLayer | MaskLayer, variant: OutputVariant, fmap: FitMap | None) -> bool:
+    if fmap is None:
+        return False
+    override = variant.layer_overrides.get(layer.id)
+    return override is None or not override.detaches
+
+
+def mask_layer_box(
+    spec: EditSpec, layer: MaskLayer, variant: OutputVariant, fmap: FitMap | None
+) -> Box:
+    """Mask rectangle on ``variant``'s canvas (follow the video or canvas-relative)."""
+    if _follows(layer, variant, fmap):
+        ref = _reference_geometry(spec, layer)
+        rw, rh = fmap.ref_w, fmap.ref_h  # type: ignore[union-attr]
+        return follow_mask_box(mask_box(ref["anchor"], ref["margin"], ref["width"], ref["height"], rw, rh), fmap)  # type: ignore[arg-type]
+    geo = apply_overrides(layer, variant)
+    W, H = variant.canvas
+    return mask_box(geo["anchor"], geo["margin"], geo["width"], geo["height"], W, H)
+
+
+def image_layer_box(
+    spec: EditSpec,
+    layer: StickerLayer | TextLayer,
+    variant: OutputVariant,
+    fmap: FitMap | None,
+    image_w: int,
+    image_h: int,
+) -> Box:
+    """Sticker / text rectangle on ``variant``'s canvas (follow the video or canvas-relative)."""
+    if _follows(layer, variant, fmap):
+        ref = _reference_geometry(spec, layer)
+        return follow_layer_box(ref["anchor"], ref["margin"], ref["width"], image_w, image_h, fmap)  # type: ignore[arg-type]
+    geo = apply_overrides(layer, variant)
+    W, H = variant.canvas
+    return layer_box(geo["anchor"], geo["margin"], geo["width"], W, H, image_w, image_h)
 
 
 def _layer_window(t: Any, expected_duration: float) -> tuple[float, float]:
@@ -223,12 +298,14 @@ def _layer_window(t: Any, expected_duration: float) -> tuple[float, float]:
 def _mask_chains(
     layer: MaskLayer,
     geo: Mapping[str, Any],
+    box: Box,
     W: int,
     H: int,
     current: str,
     n: int,
     window: tuple[float, float] | None,
     warnings: list[str],
+    quiet_offcanvas: bool = False,
 ) -> list[str] | None:
     """Filter chains that lay mask layer ``n`` over ``current`` and end in ``[c{n}]``.
 
@@ -236,14 +313,15 @@ def _mask_chains(
     consuming the ``[c{n}]`` label — when the region falls off the canvas or is too small to
     blur; the reason goes to ``warnings``.
     """
-    box = mask_box(geo["anchor"], geo["margin"], geo["width"], geo["height"], W, H)
     x, y, w, h = box.rounded()
     # Clamp to the canvas: crop / drawbox reject regions that stick out.
     x0, y0 = max(0, x), max(0, y)
     x1, y1 = min(W, x + w), min(H, y + h)
     w, h = x1 - x0, y1 - y0
     if w < MASK_MIN_SIZE or h < MASK_MIN_SIZE:
-        warnings.append(f"图层 {layer.id}：遮盖区域不在画布内，已跳过")
+        # A mask following the video can be cropped out of a cover output on purpose: no warning.
+        if not quiet_offcanvas:
+            warnings.append(f"图层 {layer.id}：遮盖区域不在画布内，已跳过")
         return None
     x, y = x0, y0
 
@@ -295,8 +373,8 @@ def build_render_command(
     """Return the ffmpeg argv, expected output duration and any layer warnings.
 
     video_meta needs: duration (s), has_audio (bool); fps is optional and only used to
-    pace a cover. width/height are not required because ffmpeg scales relative to the
-    actual decoded frame. ``audio_assets`` maps the ``audio.tracks[].asset_id`` values
+    pace a cover. width/height are optional: ffmpeg scales relative to the actual decoded
+    frame, and they are only read to lay out layers on a ``layer_fit = "video"`` output. ``audio_assets`` maps the ``audio.tracks[].asset_id`` values
     the caller could resolve; unresolved tracks are skipped with a warning. ``cover`` is
     the resolved ``spec.cover`` asset; when the spec has a cover the caller could not
     resolve, the render goes on without it and says so in the warnings.
@@ -352,6 +430,7 @@ def build_render_command(
     current = "[c0]"
 
     # ---- 3. layers ----------------------------------------------------------
+    fmap = variant_fit_map(spec, variant, float(video_meta.get("width") or 0), float(video_meta.get("height") or 0))
     layer_index = 0
     has_video_layer = False
     sticker_audio: list[str] = []  # labels of sticker audio chains to mix in
@@ -360,7 +439,16 @@ def build_render_command(
             # No media input: the mask works on the running canvas itself.
             window = None if layer.t == "all" else _layer_window(layer.t, expected_duration)
             mask = _mask_chains(
-                layer, apply_overrides(layer, variant), W, H, current, layer_index + 1, window, warnings
+                layer,
+                apply_overrides(layer, variant),
+                mask_layer_box(spec, layer, variant, fmap),
+                W,
+                H,
+                current,
+                layer_index + 1,
+                window,
+                warnings,
+                quiet_offcanvas=_follows(layer, variant, fmap),
             )
             if mask is None:
                 continue
@@ -379,9 +467,7 @@ def build_render_command(
             continue
 
         geo = apply_overrides(layer, variant)
-        box = layer_box(
-            geo["anchor"], geo["margin"], geo["width"], W, H, image.width, image.height
-        )
+        box = image_layer_box(spec, layer, variant, fmap, image.width, image.height)
         x, y, w, h = box.rounded()
         w, h = max(1, w), max(1, h)
 

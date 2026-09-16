@@ -463,6 +463,8 @@ export interface OutputVariant {
   color?: string;
   quality?: OutputQuality;
   crop?: CropRect;
+  /** 非 9x16 输出上图层怎么摆（HIG-29）：canvas = 相对该画布（缺省）；video = 跟着视频画面走（lib/variantLayout）。 */
+  layer_fit?: 'canvas' | 'video';
   layer_overrides?: Record<string, LayerOverride>;
 }
 

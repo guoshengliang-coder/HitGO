@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countSafeZoneOverlaps, layerAspect, layerName, toContractSpec, toSingleOutput } from './spec';
+import { countSafeZoneOverlaps, ensureVariants, layerAspect, layerName, normalizeOutputs, outputFor, toContractSpec } from './spec';
 import { emptySpec, type EditSpec, type MaskLayer, type SafeZone } from '../types';
 
 describe('toContractSpec · audio', () => {
@@ -25,51 +25,50 @@ describe('toContractSpec · audio', () => {
 });
 
 describe('toContractSpec · cover（HIG-9）', () => {
-  it('没有封面时不带此字段，有封面时带上并规范化时长；toSingleOutput 保留封面', () => {
+  it('没有封面时不带此字段，有封面时带上并规范化时长；normalizeOutputs 保留封面', () => {
     expect('cover' in toContractSpec(emptySpec())).toBe(false);
     expect('cover' in toContractSpec({ ...emptySpec(), cover: null })).toBe(false);
     const spec: EditSpec = { ...emptySpec(), cover: { asset_id: 'a_img', duration: 1.26 } };
     expect(toContractSpec(spec).cover).toEqual({ asset_id: 'a_img', duration: 1.3 });
     const multi: EditSpec = { ...spec, outputs: [...spec.outputs, { variant_key: '1x1', aspect: '1:1', fill: 'blur' }] };
-    expect(toSingleOutput(multi).cover).toEqual(spec.cover);
+    expect(normalizeOutputs(multi).cover).toEqual(spec.cover);
   });
 });
 
-describe('toSingleOutput', () => {
-  it('已经是单一 9x16 时原样返回同一个对象', () => {
+describe('normalizeOutputs / ensureVariants（HIG-29）', () => {
+  it('已规范时原样返回同一个对象', () => {
     const spec = emptySpec();
-    expect(toSingleOutput(spec)).toBe(spec);
+    expect(normalizeOutputs(spec)).toBe(spec);
+    const multi: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '9x16', aspect: '9:16', fill: 'blur' }, { variant_key: '1x1', aspect: '1:1', fill: 'crop', layer_fit: 'video' }] };
+    expect(normalizeOutputs(multi)).toBe(multi);
   });
-  it('多画幅：只留 9x16，保留它的填充、裁切与清晰度', () => {
-    const spec: EditSpec = {
+  it('补 9x16 并排第一、按画幅顺序排、去重、丢掉不认识的 key', () => {
+    const spec = {
       ...emptySpec(),
       outputs: [
-        { variant_key: '9x16', aspect: '9:16', fill: 'crop', crop: { x: 0.2, y: 0, w: 0.3, h: 1 }, quality: 'high' },
-        { variant_key: '1x1', aspect: '1:1', fill: 'blur', layer_overrides: { l1: { width: 0.4 } } },
+        { variant_key: '16x9', aspect: '16:9', fill: 'color', color: '#112233', quality: 'high', layer_fit: 'video' },
+        { variant_key: 'custom', aspect: '1:1', fill: 'blur' },
+        { variant_key: '16x9', aspect: '16:9', fill: 'blur', layer_fit: 'video' },
       ],
-    };
-    const out = toSingleOutput(spec);
-    expect(out).not.toBe(spec);
-    expect(out.outputs).toEqual([{ variant_key: '9x16', aspect: '9:16', fill: 'crop', crop: { x: 0.2, y: 0, w: 0.3, h: 1 }, quality: 'high' }]);
-    expect(spec.outputs).toHaveLength(2); // 不改入参
+    } as unknown as EditSpec;
+    const out = normalizeOutputs(spec);
+    expect(out.outputs.map((o) => o.variant_key)).toEqual(['9x16', '16x9']);
+    expect(out.outputs[0]).toEqual({ variant_key: '9x16', aspect: '9:16', fill: 'color', color: '#112233', quality: 'high' });
+    expect(out.outputs[1].color).toBe('#112233');
+    expect(spec.outputs).toHaveLength(3); // 不改入参
   });
-  it('没有 9x16：沿用第一个变体的填充 / 颜色 / 清晰度，裁切窗口丢掉', () => {
-    const color: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '16x9', aspect: '16:9', fill: 'color', color: '#112233', quality: 'high' }] };
-    expect(toSingleOutput(color).outputs).toEqual([{ variant_key: '9x16', aspect: '9:16', fill: 'color', color: '#112233', quality: 'high' }]);
-    const crop: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '1x1', aspect: '1:1', fill: 'crop', crop: { x: 0.1, y: 0, w: 0.5, h: 1 } }] };
-    expect(toSingleOutput(crop).outputs).toEqual([{ variant_key: '9x16', aspect: '9:16', fill: 'crop', quality: 'standard' }]);
+  it('HIG-8 之前的旧多画幅：改为跟随视频并清掉画布相对的覆盖', () => {
+    const spec: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '9x16', aspect: '9:16', fill: 'blur' }, { variant_key: '1x1', aspect: '1:1', fill: 'blur', layer_overrides: { l1: { width: 0.4 } } }] };
+    expect(normalizeOutputs(spec).outputs[1]).toEqual({ variant_key: '1x1', aspect: '1:1', fill: 'blur', layer_fit: 'video' });
   });
-  it('单一 9x16 但带 layer_overrides：清掉覆盖', () => {
-    const spec: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '9x16', aspect: '9:16', fill: 'blur', layer_overrides: { l1: { opacity: 0.5 } } }] };
-    expect(toSingleOutput(spec).outputs[0]).not.toHaveProperty('layer_overrides');
-  });
-  it('outputs 为空时补一个默认 9x16', () => {
-    const spec: EditSpec = { ...emptySpec(), outputs: [] };
-    expect(toSingleOutput(spec).outputs).toEqual([{ variant_key: '9x16', aspect: '9:16', fill: 'blur', quality: 'standard' }]);
-  });
-  it('其他字段不动', () => {
-    const spec: EditSpec = { ...emptySpec(), trim: { remove: [[1, 2]] }, outputs: [{ variant_key: '4x5', aspect: '4:5', fill: 'blur' }] };
-    expect(toSingleOutput(spec).trim).toBe(spec.trim);
+  it('ensureVariants 只补缺的画幅（缺省模糊铺底、清晰度随 9x16），已有设置不动', () => {
+    const spec: EditSpec = { ...emptySpec(), outputs: [{ variant_key: '9x16', aspect: '9:16', fill: 'blur', quality: 'high' }, { variant_key: '4x5', aspect: '4:5', fill: 'crop', layer_fit: 'video', layer_overrides: { l1: { rotate: 3 } } }] };
+    expect(ensureVariants(spec, ['9x16', '4x5'])).toBe(spec);
+    const out = ensureVariants(spec, ['16x9', '4x5']);
+    expect(out.outputs.map((o) => o.variant_key)).toEqual(['9x16', '4x5', '16x9']);
+    expect(out.outputs[1]).toEqual(spec.outputs[1]);
+    expect(out.outputs[2]).toEqual({ variant_key: '16x9', aspect: '16:9', fill: 'blur', quality: 'high', layer_fit: 'video' });
+    expect(outputFor(spec, '1x1')).toEqual({ variant_key: '1x1', aspect: '1:1', fill: 'blur', quality: 'high', layer_fit: 'video' });
   });
 });
 
