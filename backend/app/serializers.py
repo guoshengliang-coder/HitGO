@@ -168,7 +168,7 @@ def asset_out(asset: Asset) -> AssetOut:
     )
 
 
-def job_out(job: Job) -> JobOut:
+def job_out(job: Job, batch_name: str | None = None, video_name: str | None = None) -> JobOut:
     done = job.status == JOB_DONE
     return JobOut(
         id=job.id,
@@ -184,4 +184,6 @@ def job_out(job: Job) -> JobOut:
         created_at=iso(job.created_at) or "",
         started_at=iso(job.started_at),
         finished_at=iso(job.finished_at),
+        batch_name=batch_name,
+        video_name=video_name,
     )

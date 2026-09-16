@@ -4,16 +4,11 @@ import { api } from '../api';
 import type { Batch } from '../types';
 import { Pill } from '../components/ui/Pill';
 import { IconPlus, IconTrash } from '../components/ui/Icons';
+import { fmtDate } from '../lib/datetime';
 
 const STATUS_ORDER: (keyof Batch['status_counts'])[] = ['preparing', 'ready', 'edited', 'rendering', 'done', 'failed'];
 const STATUS_LABEL: Record<string, string> = { preparing: '准备中', ready: '未编辑', edited: '已编辑', rendering: '渲染中', done: '已完成', failed: '失败' };
 
-function fmtDate(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 export function BatchesPage() {
   const [batches, setBatches] = useState<Batch[] | null>(null);

@@ -139,9 +139,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "output_url": null,             // done 时为 /media/outputs/j_r1s2t3.mp4
   "output": null,                 // done 时：{ "width", "height", "duration", "size", "codec": "h264/aac" }
   "callback": null,               // done 时：第 4 节的回传 JSON（原型只展示，不真正发送）
-  "created_at": "...", "started_at": null, "finished_at": null
+  "created_at": "...", "started_at": null, "finished_at": null,
+  "batch_name": null,             // 只有跨批次的 GET /api/outputs 会填；其余端点为 null
+  "video_name": null              // 同上
 }
 ```
+
+`batch_name` / `video_name` 是给跨批次列表用的冗余字段：`GET /api/outputs` 一次返回来自不同批次的
+任务，调用方没法像单批次页面那样再拉一次 `GET /api/batches/{id}` 去查名字。其余返回 `Job` 的端点
+一律为 `null`，调用方仍从批次详情里取名。
 
 ## 2. edit_spec v1
 
@@ -294,6 +300,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | spans | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
+- `GET /api/outputs?limit=100&offset=0` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
+  每项额外带上 `batch_name` 与 `video_name`。`limit` 默认 100、上限 500，`offset` 默认 0；越界返回空数组。
 
 ### 视频
 - `GET /api/videos/{id}` → `Video`

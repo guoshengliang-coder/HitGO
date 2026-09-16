@@ -562,6 +562,10 @@ class JobOut(BaseModel):
     created_at: str
     started_at: str | None
     finished_at: str | None
+    # Only the cross-batch list fills these; every other endpoint leaves them None
+    # because its caller already knows which batch (and video) it asked about.
+    batch_name: str | None = None
+    video_name: str | None = None
 
 
 class UploadTicketOut(BaseModel):

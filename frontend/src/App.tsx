@@ -6,6 +6,7 @@ import { BatchesPage } from './pages/BatchesPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { EditorPage } from './pages/EditorPage';
 import { OutputsPage } from './pages/OutputsPage';
+import { AllOutputsPage } from './pages/AllOutputsPage';
 import { useEditor } from './store/editor';
 import { ThemeToggle } from './components/ui/ThemeToggle';
 import { AppVersion } from './components/ui/AppVersion';
@@ -27,6 +28,9 @@ function Shell() {
         </NavLink>
         <NavLink to="/assets" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
           素材库
+        </NavLink>
+        <NavLink to="/outputs" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
+          产物
         </NavLink>
         <span className="spacer" />
         <ThemeToggle />
@@ -86,6 +90,7 @@ export default function App() {
       <Route element={<Shell />}>
         <Route path="/" element={<BatchesPage />} />
         <Route path="/assets" element={<AssetsPage />} />
+        <Route path="/outputs" element={<AllOutputsPage />} />
         <Route path="/batches/:id/outputs" element={<OutputsPage />} />
       </Route>
       <Route path="/batches/:id" element={<EditorPage />} />

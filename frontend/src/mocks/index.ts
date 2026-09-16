@@ -528,6 +528,19 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     });
     return clone(done);
   }
+  if (path === '/api/outputs') {
+    const limit = Number(q.get('limit') ?? 100);
+    const offset = Number(q.get('offset') ?? 0);
+    const done = jobs
+      .filter((j) => j.status === 'done')
+      .map((j) => ({
+        ...j,
+        batch_name: batches.find((b) => b.id === j.batch_id)?.name ?? null,
+        video_name: videos.find((v) => v.id === j.video_id)?.name ?? null,
+      }));
+    done.sort((a, b) => (b.finished_at ?? b.created_at).localeCompare(a.finished_at ?? a.created_at) || b.id.localeCompare(a.id));
+    return clone(done.slice(offset, offset + limit));
+  }
   if ((mm = m(/^\/api\/videos\/([^/]+)\/spec$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');

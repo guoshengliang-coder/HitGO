@@ -112,6 +112,8 @@ export const api = {
     request<Video[]>('POST', `/api/batches/${batchId}/apply`, body),
   batchJobs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/jobs`),
   batchOutputs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/outputs`),
+  /** 跨批次的已完成产物，按完成时间倒序。 */
+  allOutputs: (limit = 100, offset = 0) => request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}`),
 
   // 视频
   getVideo: (id: string) => request<Video>('GET', `/api/videos/${id}`),
