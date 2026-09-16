@@ -17,6 +17,7 @@ import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
+import { ColorPicker } from '../ui/ColorPicker';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
@@ -43,7 +44,6 @@ export function presetThumb(preset: TextStylePreset): string {
 }
 
 /** 颜色输入只接受 #RRGGBB；8 位（含透明度）的取前 7 位显示。 */
-const hex6 = (c: string) => (c && /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : '#000000');
 
 const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.002, 0.004] };
 const DEFAULT_GLOW: TextGlow = { color: '#FFD84DCC', blur: 0.012 };
@@ -266,8 +266,7 @@ function MaskSection({ layer }: { layer: MaskLayer }) {
         <>
           <span>颜色</span>
           <div className="inline">
-            <input type="color" className="color" value={hex6(layer.color ?? DEFAULT_MASK_COLOR)} onChange={(e) => updateLayer(layer.id, { color: e.target.value.toUpperCase() })} />
-            <span className="mono small">{(layer.color ?? DEFAULT_MASK_COLOR).toUpperCase()}</span>
+            <ColorPicker label="遮盖颜色" value={layer.color ?? DEFAULT_MASK_COLOR} onChange={(c) => updateLayer(layer.id, { color: c })} />
           </div>
         </>
       )}
@@ -396,13 +395,12 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         <Num value={st.font_size} min={0.01} max={0.3} step={0.005} onChange={(v) => patchStyle({ font_size: v })} suffix="% 高" />
         <span>颜色</span>
         <div className="inline">
-          <input type="color" className="color" value={hex6(st.color)} onChange={(e) => patchStyle({ color: e.target.value.toUpperCase() })} />
-          <span className="mono small">{st.color}</span>
+          <ColorPicker label="文字颜色" alpha value={st.color} onChange={(c) => patchStyle({ color: c })} />
           {/^#[0-9a-f]{6}00$/i.test(st.color) && <span className="muted small">（透明 · 空心）</span>}
         </div>
         <span>选中上色</span>
         <div className="inline">
-          <input type="color" className="color" value={spanColor} onChange={(e) => setSpanColorState(e.target.value.toUpperCase())} />
+          <ColorPicker label="选中上色" showHex={false} value={spanColor} onChange={setSpanColorState} />
           <button className="btn sm" disabled={!sel} title="给文本框里选中的文字上色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
             上色
           </button>
@@ -441,7 +439,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         onReset={() => patchStyle({ ...DEFAULT_STROKE })}
       >
         <span>颜色</span>
-        <input type="color" className="color" value={hex6(st.stroke_color)} onChange={(e) => patchStyle({ stroke_color: e.target.value.toUpperCase() })} />
+        <ColorPicker label="描边颜色" alpha value={st.stroke_color} onChange={(c) => patchStyle({ stroke_color: c })} />
         <span>粗细</span>
         <Num value={st.stroke_width} min={0.001} max={0.05} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ stroke_width: v })} />
       </Section>
@@ -455,7 +453,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.glow && (
           <>
             <span>颜色</span>
-            <input type="color" className="color" value={hex6(st.glow.color)} onChange={(e) => patchStyle({ glow: { ...st.glow!, color: e.target.value.toUpperCase() + (st.glow?.color.slice(7) || 'CC') } })} />
+            <ColorPicker label="发光颜色" alpha value={st.glow.color} onChange={(c) => patchStyle({ glow: { ...st.glow!, color: c } })} />
             <span>强度</span>
             <Num value={st.glow.blur} min={0.002} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ glow: { ...st.glow!, blur: v } })} />
           </>
@@ -471,7 +469,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.shadow && (
           <>
             <span>颜色</span>
-            <input type="color" className="color" value={hex6(st.shadow.color)} onChange={(e) => patchStyle({ shadow: { ...st.shadow!, color: e.target.value.toUpperCase() + (st.shadow?.color.slice(7) || '99') } })} />
+            <ColorPicker label="阴影颜色" alpha value={st.shadow.color} onChange={(c) => patchStyle({ shadow: { ...st.shadow!, color: c } })} />
             <span>模糊</span>
             <Num value={st.shadow.blur} min={0} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, blur: v } })} />
             <span>偏移 X</span>
@@ -491,10 +489,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.background && (
           <>
             <span>颜色</span>
-            <div className="inline">
-              <input type="color" className="color" value={st.background.slice(0, 7)} onChange={(e) => patchStyle({ background: e.target.value.toUpperCase() + (st.background?.slice(7) || '99') })} />
-              <span className="mono small">{st.background}</span>
-            </div>
+            <ColorPicker label="背景颜色" alpha value={st.background} onChange={(c) => patchStyle({ background: c })} />
             <span>内边距</span>
             <Num value={st.padding} min={0} max={0.1} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ padding: v })} />
             <span>宽度</span>

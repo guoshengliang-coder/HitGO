@@ -12,6 +12,7 @@ import { countSafeZoneOverlaps } from '../../lib/spec';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose, IconCutLeft, IconCutRight } from '../ui/Icons';
 import { Section } from '../ui/Section';
+import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
 import { variantDef, type FillMode, type OutputQuality } from '../../types';
 
@@ -89,8 +90,7 @@ function FrameSection() {
             <>
               <span>颜色</span>
               <div className="inline">
-                <input type="color" className="color" value={out.color ?? '#000000'} onChange={(e) => patchOutput({ color: e.target.value })} />
-                <span className="mono small">{out.color ?? '#000000'}</span>
+                <ColorPicker label="纯色边颜色" value={out.color ?? '#000000'} onChange={(c) => patchOutput({ color: c })} />
               </div>
             </>
           )}
