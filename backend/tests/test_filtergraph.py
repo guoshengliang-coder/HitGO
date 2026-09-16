@@ -775,6 +775,183 @@ def test_real_ffmpeg_replaces_the_source_audio_with_a_windowed_bgm(tmp_path):
     assert _mean_volume(out, 3.1, 0.3) < -60  # after the window: silence again
 
 
+# --- source_mute / split tracks (HIG-25) and the audio mix record (HIG-26) -------------
+
+
+def test_source_mute_silences_spans_of_the_trimmed_source_track():
+    spec = audio_spec(source_volume=0.5)
+    spec["audio"]["source_mute"] = [[2, 3.5], [19, 40]]  # the second is clamped to 20.6
+    graph = fc(audio_build(spec))
+    assert (
+        f"[at]{AFMT},volume=0.5,asetpts=PTS-STARTPTS,"
+        "volume=0:enable='between(t,2,3.5)',volume=0:enable='between(t,19,20.6)'[abase]"
+    ) in graph
+    argv = audio_build(spec).argv
+    assert argv[argv.index("[vout]") + 1 : argv.index("[vout]") + 3] == ["-map", "[abase]"]
+
+
+def test_source_mute_alone_is_enough_to_route_the_untrimmed_source_through_the_graph():
+    spec = audio_spec(trim={"remove": []})
+    spec["audio"]["source_mute"] = [[1, 2]]
+    plan = audio_build(spec)
+    assert f"[0:a:0]{AFMT},asetpts=PTS-STARTPTS,volume=0:enable='between(t,1,2)'[abase]" in fc(plan)
+    assert plan.audio == {"source_volume": 1.0, "source_mute": 1, "tracks": [], "skipped": []}
+
+
+def test_source_mute_is_ignored_when_the_source_is_not_heard():
+    spec = audio_spec(source_volume=0)
+    spec["audio"]["source_mute"] = [[1, 2]]
+    plan = audio_build(spec)
+    assert "volume=0:enable" not in fc(plan) and "-an" in plan.argv
+    spec = audio_spec()
+    spec["audio"]["source_mute"] = [[30, 40]]  # entirely after the 20.6 s output
+    assert audio_build(spec).argv == build().argv
+
+
+def test_looping_track_with_an_offset_starts_mid_file():
+    track = {"id": "au_1", "asset_id": "a_bgm00001", "t": [4, 10], "loop": True, "offset": 12.5}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track]))
+    i = plan.argv.index(BGM.path)
+    assert plan.argv[i - 3 : i + 1] == ["-stream_loop", "-1", "-i", BGM.path]
+    assert f"[3:a]atrim=start=12.5,asetpts=PTS-STARTPTS,atrim=end=6,adelay=4000:all=1,{AFMT}[tk1]" in fc(plan)
+
+
+def test_plan_records_which_tracks_were_mixed_and_which_were_skipped():
+    bgm = AudioSource(BGM.path, BGM.duration, name="TikTok Original.m4a")
+    tracks = [
+        {"id": "au_b", "asset_id": "a_bgm00001", "t": "all", "loop": True},
+        {"id": "au_gone", "asset_id": "a_deleted", "role": "voice"},
+        {"id": "au_v", "asset_id": "a_voice0001", "role": "voice", "t": [1, 3]},
+    ]
+    plan = audio_build(audio_spec(source_volume=0, tracks=tracks), audio_assets={"a_bgm00001": bgm, "a_voice0001": VOICE})
+    assert plan.audio == {
+        "source_volume": 0.0,
+        "source_mute": 0,
+        "tracks": [
+            {"id": "au_b", "asset_id": "a_bgm00001", "name": "TikTok Original.m4a", "role": "bgm"},
+            {"id": "au_v", "asset_id": "a_voice0001", "name": "", "role": "voice"},
+        ],
+        "skipped": ["au_gone"],
+    }
+    assert any("au_gone" in w for w in plan.warnings)
+    assert audio_build(valid_spec()).audio is None
+    # A source without audio is reported as silent, whatever source_volume says.
+    no_audio = audio_build(audio_spec(tracks=tracks[:1]), meta={**META, "has_audio": False})
+    assert no_audio.audio["source_volume"] == 0.0
+
+
+def _tone(path, freq, duration):
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000:duration={duration}", str(path)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+
+def _band_volume(path, freq, start, duration) -> float:
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-ss", str(start), "-t", str(duration), "-i", str(path),
+         "-af", f"bandpass=f={freq}:w=60,volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    match = re.search(r"mean_volume: (-?[\d.]+|-inf) dB", proc.stderr)
+    assert match, proc.stderr[-500:]
+    return float("-inf") if match.group(1) == "-inf" else float(match.group(1))
+
+
+def _src_with_tone(tmp_path, duration=6):
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", f"testsrc=size=540x960:rate=30:duration={duration}",
+         "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=44100:duration={duration}",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    return src
+
+
+def _render(tmp_path, src, spec_dict, audio_assets, meta):
+    out = tmp_path / "out.mp4"
+    spec = EditSpec.model_validate(spec_dict)
+    plan = build_render_command(
+        spec, meta, {}, spec.outputs[0], source_path=str(src), output_path=str(out), audio_assets=audio_assets,
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+    return out, plan
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_source_mute_silences_only_its_span(tmp_path):
+    src = _src_with_tone(tmp_path, 5)
+    spec = valid_spec(trim={"remove": [[0, 1]]}, layers=[])  # post-trim: 4 s
+    spec["audio"] = {"source_volume": 1, "source_mute": [[1, 2]], "tracks": []}
+    out, _ = _render(tmp_path, src, spec, {}, {"duration": 5.0, "has_audio": True})
+    assert abs(_probe_duration(out, "v:0") - 4.0) < 0.15  # picture untouched
+    assert _mean_volume(out, 0.2, 0.6) > -30
+    assert _mean_volume(out, 1.15, 0.7) < -60  # the muted span
+    assert _mean_volume(out, 2.2, 1.0) > -30  # sound resumes in place, not shifted
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_split_track_halves_play_like_the_whole_track(tmp_path):
+    """A 1.5 s looping chirp over [0, 4] split at 1.7 s: the halves must reproduce the unsplit mix."""
+    src = _src_with_tone(tmp_path, 4)
+    chirp = tmp_path / "chirp.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "aevalsrc='sin(2*PI*(300+400*t)*t)':s=48000:d=1.5", str(chirp)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    assets = {"a_chirp": AudioSource(str(chirp), 1.5)}
+    meta = {"duration": 4.0, "has_audio": True}
+    whole = valid_spec(trim={"remove": []}, layers=[])
+    whole["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_chirp", "t": [0, 4], "loop": True}]}
+    split = valid_spec(trim={"remove": []}, layers=[])
+    split["audio"] = {"source_volume": 0, "tracks": [
+        {"id": "au_1", "asset_id": "a_chirp", "t": [0, 1.7], "loop": True},
+        {"id": "au_2", "asset_id": "a_chirp", "t": [1.7, 4], "loop": True, "offset": 0.2},  # 1.7 mod 1.5
+    ]}  # fmt: skip
+    (tmp_path / "w").mkdir()
+    (tmp_path / "s").mkdir()
+    out_whole, _ = _render(tmp_path / "w", src, whole, assets, meta)
+    out_split, _ = _render(tmp_path / "s", src, split, assets, meta)
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(out_whole), "-i", str(out_split), "-filter_complex",
+         "[1:a]volume=-1[neg];[0:a][neg]amix=inputs=2:normalize=0,atrim=start=0.1:end=3.8,volumedetect",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    residual = float(re.search(r"mean_volume: (-?[\d.]+|-inf) dB", proc.stderr).group(1))
+    assert _mean_volume(out_whole, 0.1, 3.7) > -30
+    assert residual < -40
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_stem_plus_new_bgm_and_voice_are_all_in_the_output(tmp_path):
+    """HIG-26 scenario: muted source, separated stem kept, a new BGM and a new voice-over added."""
+    src = _src_with_tone(tmp_path, 6)
+    stem = tmp_path / "stem.m4a"
+    subprocess.run(["ffmpeg", "-y", "-i", str(src), "-vn", "-c:a", "aac", str(stem)], check=True, capture_output=True)
+    bgm, voice = tmp_path / "bgm.wav", tmp_path / "voice.wav"
+    _tone(bgm, 880, 2)
+    _tone(voice, 1500, 1)
+    assets = {
+        "a_stem": AudioSource(str(stem), 6.0, name="stem"),
+        "a_bgm": AudioSource(str(bgm), 2.0, name="bgm.wav"),
+        "a_voice": AudioSource(str(voice), 1.0, name="voice.wav"),
+    }
+    spec = valid_spec(trim={"remove": [[1, 1.5]]}, layers=[])
+    spec["audio"] = {"source_volume": 0, "tracks": [
+        {"id": "au_s", "asset_id": "a_stem", "role": "voice", "align": "source", "t": "all"},
+        {"id": "au_b", "asset_id": "a_bgm", "t": "all", "loop": True, "volume": 0.6, "fade_out": 1},
+        {"id": "au_v", "asset_id": "a_voice", "role": "voice", "t": [3, 4]},
+    ]}  # fmt: skip
+    out, plan = _render(tmp_path, src, spec, assets, {"duration": 6.0, "has_audio": True})
+    assert plan.warnings == [] and [t["id"] for t in plan.audio["tracks"]] == ["au_s", "au_b", "au_v"]
+    assert _band_volume(out, 440, 3.2, 0.5) > -40  # stem
+    assert _band_volume(out, 880, 3.2, 0.5) > -40  # new BGM (looped past its 2 s)
+    assert _band_volume(out, 1500, 3.2, 0.5) > -40  # new voice inside its window
+    assert _band_volume(out, 1500, 1.0, 0.5) < -55  # …and not outside it
+
+
 # --- cover (contract §2 cover, HIG-9) ----------------------------------------------
 
 COVER_IMAGE = ImageSource("/data/assets/a_cover0001.jpg", 1080, 1920)

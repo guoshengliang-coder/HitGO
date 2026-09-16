@@ -207,7 +207,7 @@ def collect_audio(db: Session, spec: EditSpec) -> dict[str, AudioSource]:
         path = storage.asset_path(asset.id, asset.ext)
         if not path.is_file():
             continue
-        result[asset.id] = AudioSource(str(path), float(asset.duration))
+        result[asset.id] = AudioSource(str(path), float(asset.duration), name=asset.name)
     return result
 
 
@@ -299,6 +299,8 @@ def render_job(db: Session, job_id: str) -> None:
             "size": storage.file_size(final),
             "codec": codec,
         }
+        if plan.audio is not None:
+            output["audio"] = plan.audio
         job.output = output
         job.callback = build_callback(job, video, batch, output)
         job.progress = 100

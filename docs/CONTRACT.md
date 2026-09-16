@@ -175,7 +175,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "progress": 62,                 // 0–100
   "error": null,
   "output_url": null,             // done 时为 /media/outputs/j_r1s2t3.mp4
-  "output": null,                 // done 时：{ "width", "height", "duration", "size", "codec": "h264/aac" }
+  "output": null,                 // done 时：{ "width", "height", "duration", "size", "codec": "h264/aac", "audio"? }（audio 见下）
   "callback": null,               // done 时：第 4 节的回传 JSON（原型只展示，不真正发送）
   "created_at": "...", "started_at": null, "finished_at": null,
   "name": null,                   // 导出时填的名称（POST /api/render 的 name），没填为 null
@@ -190,6 +190,20 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 `batch_name` / `video_name` 是给跨批次列表用的冗余字段：`GET /api/outputs` 一次返回来自不同批次的
 任务，调用方没法像单批次页面那样再拉一次 `GET /api/batches/{id}` 去查名字。其余返回 `Job` 的端点
 一律为 `null`，调用方仍从批次详情里取名。
+
+`output.audio`（可选，HIG-26）：spec 带 `audio` 块时，worker 记下这次成片**实际**混进了什么，产物页据此显示
+「音轨：…」，一眼能对上成片里该有的声音。旧任务、以及 spec 没有 `audio` 块的任务没有这个字段。
+
+```jsonc
+"audio": {
+  "source_volume": 0,                        // 同 spec；源视频没有音轨时为 0
+  "source_mute": 1,                          // source_mute 时段个数
+  "tracks": [                                // 真正进了混音的 track，顺序同 spec
+    { "id": "au_1", "asset_id": "a_bgm001", "name": "口播.mp3", "role": "voice" }
+  ],
+  "skipped": ["au_2"]                        // 被跳过的 track id（原因同时写在 job.error 的警告里）
+}
+```
 
 ## 2. edit_spec v1
 
@@ -260,6 +274,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   ],
   "audio": {                                 // 可选；缺省 = 源音轨原样保留（即此前的行为）
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
+    "source_mute": [[3.0, 4.5]],             // 可选，缺省 []：源音轨在这些时段静音（剪后时间轴，秒），画面不动（HIG-25）
     "tracks": [
       {
         "id": "au_1",
@@ -267,7 +282,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "role": "bgm",                       // 可选，缺省 "bgm"：bgm | voice，只给界面分类，worker 不区分
         "t": "all",                          // 出声时段，秒，基于剪后时间轴；同 layers[].t
         "align": "post",                     // 可选，缺省 "post"：post = 素材从时段起点开始播 | source = 素材对齐源时间轴（分离出的人声 / 伴奏用），见下方规则
-        "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时必须为 0
+        "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时是第一遍的起点
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
@@ -317,8 +332,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **音轨 `audio`**（可选，缺省 null）：成片音轨 = 源音轨（剪辑后）× `source_volume` + 各贴纸 `mix_audio`
   音轨 + 各 `tracks`，按原音量直接叠加（`amix normalize=0`），不做闪避（ducking）。规则：
   - `source_volume = 0` 或源视频没有音轨时，用静音垫底；此时若也没有任何叠加音轨，成片就没有音轨。
-  - 每条 track 只在 `t` 时段内出声，从素材的第 `offset` 秒起；`loop = true` 时素材播完从头循环（所以要求
-    `offset = 0`），`false` 时播完即静音，时段结束处截断。素材比时段长时一律在时段结束处截断。
+  - 每条 track 只在 `t` 时段内出声，从素材的第 `offset` 秒起；`loop = true` 时第一遍从 `offset` 播到素材末尾，
+    之后从头循环（HIG-25 起允许 `offset > 0`，拆分循环轨时后半段靠它接着放），`false` 时播完即静音，时段结束处截断。
+    素材比时段长时一律在时段结束处截断。
   - `fade_in` 从时段起点起淡入；`fade_out` 以**实际出声结束点**为准结束——不循环且素材短于时段时，淡出落在
     素材播完处而不是时段末尾。
   - **`align = "source"`**：素材本身就是按源视频时间轴录的（典型是分离出来的人声 / 伴奏，或对着原片重配的口播），
@@ -327,7 +343,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 音量上限是 1（不能放大）：浏览器 `HTMLMediaElement.volume` 只到 1，这样编辑器预览能原样复现成片。
   - `asset_id` 对应的素材不存在、不是音频、还没 `ready`，或 `offset` 不小于素材时长时，worker 跳过该 track
     并在 job.error 里记警告（不失败）。track `id` 在同一 spec 内唯一。
-  - 批量套用 `audio` 模块时整块深拷贝；`t` 基于剪后时间轴，不做裁剪（同图层）。
+  - **`source_mute`**（可选，缺省 `[]`，HIG-25）：源音轨（× `source_volume` 之后）在这些时段内静音，时段基于剪后
+    时间轴，升序、不重叠、起点 ≥ 0、终点 > 起点；超出剪后时长的部分忽略。只影响源音轨：画面、贴纸音轨、各 track
+    不受影响，后面的声音也不前移（音画保持同步）。编辑器里「剪掉一段原声」就是往这里加一个时段。
+  - **拆分音轨**（HIG-25）是纯前端操作：一条 track 在剪后时刻 `p` 拆成两条 `t` 相接的 track，后一条换新 `id`；
+    `align = "post"` 的后一条 `offset` 顺延 `p − a`（循环轨对素材时长取模），`align = "source"` 的只拆 `t`。
+    不引入新字段，worker 照常逐条混音。
+  - 批量套用 `audio` 模块时整块深拷贝；`t` 与 `source_mute` 基于剪后时间轴，不做裁剪（同图层）。
 - **封面 `cover`**（可选，缺省 null，HIG-9）：在成片最前面插入一段封面，之后接剪辑后的正片。
   - 素材是 `type = "sticker"` 的图片或视频（含多帧 gif / webp）。图片封面停留 `duration` 秒（0.1–10，缺省 1.0）；
     视频封面整段播放一遍，时长取素材自身 `duration`，忽略 `duration` 字段。
@@ -563,7 +585,8 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      `[i:a]atrim=start=offset,asetpts=PTS-STARTPTS,atrim=end=b−a,volume=v,afade=t=in:st=0:d=fade_in,`
      `afade=t=out:st=E−fade_out:d=fade_out,adelay=a·1000:all=1,aformat=48000/stereo`（各段按需省略；`E` = 实际出声长度：
      loop 时为 `b−a`，否则 `min(b−a, 素材时长−offset)`）。主音轨 `[abase]` = 剪辑后的源音轨接
-     `aformat,volume=source_volume`；`source_volume = 0` 或源无音轨时改用 `anullsrc` 截到剪后时长。`[abase]`、
+     `aformat,volume=source_volume`（有 `source_mute` 时先 `asetpts=PTS-STARTPTS`，再每段追加
+     `volume=0:enable='between(t,a,b)'`）；`source_volume = 0` 或源无音轨时改用 `anullsrc` 截到剪后时长。`[abase]`、
      贴纸音轨、各 track 多于一路时 `amix`（同上）成 `[aout]`；只有 `[abase]` 一路（只调了源音量）时直接映射它；
      `source_volume = 0` 且没有任何叠加音轨时 `-an`。存在 track 时输出端同样补 `-t <剪后时长>`。spec 没有 `audio`
      块时命令与此前完全一致。
@@ -583,7 +606,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    - `standard`（默认）：`-c:v libx264 -preset veryfast -crf 20 -maxrate 8M -bufsize 16M -c:a aac -b:a 128k -movflags +faststart`
    - `high`：`-c:v libx264 -preset medium -crf 19 -maxrate 10M -bufsize 20M -c:a aac -b:a 128k -movflags +faststart`
 4. 进度：`-progress pipe:1 -nostats`，解析 `out_time_us` / 成片总时长（剪后时长 + 封面时长）→ `progress`，每秒最多写库一次。
-5. 完成：ffprobe 成片得到 duration / 宽高 / size，写 `output`、`callback`，状态 done；失败写 `error`（截取 ffmpeg stderr 最后 40 行）。
+5. 完成：ffprobe 成片得到 duration / 宽高 / size，写 `output`（spec 带 `audio` 时附 `output.audio`，见第 1 节 Job）、`callback`，状态 done；失败写 `error`（截取 ffmpeg stderr 最后 40 行）。
 
 ## 7. 运行方式
 
