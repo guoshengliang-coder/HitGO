@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import timedelta
 
 import pytest
 from celery.exceptions import Retry
@@ -12,7 +13,7 @@ from app import worker
 from app.config import settings
 from app.db import SessionLocal, utcnow
 from app.main import app
-from app.models import Asset, Job, Video
+from app.models import Asset, Batch, Job, Video
 from app.services import storage
 from tests.conftest import make_png, valid_spec
 
@@ -428,6 +429,70 @@ def test_outputs_sorted_and_done_shape(client, ready_video, db):
     r = client.get(f"/api/batches/{BATCH}/outputs").json()
     assert [(j["video_id"], j["variant_key"]) for j in r] == [(VIDEO, "1x1"), (VIDEO, "9x16"), ("v_test000002", "9x16")]
     assert r[0]["output_url"] == "/media/outputs/j_v1a.mp4" and r[0]["output"] == out and r[0]["callback"] == {"k": 3}
+    # the per-batch list never carries the redundant names -- its caller already knows the batch
+    assert all(j["batch_name"] is None and j["video_name"] is None for j in r)
+
+
+# --- cross-batch outputs -----------------------------------------------------------
+
+
+def _two_batches(db):
+    """Second batch + video, so cross-batch ordering has something to cross."""
+    b2 = Batch(id="b_test000002", name="第二批")
+    v2 = Video(id="v_test000002", batch_id=b2.id, name="V02.mp4", order_index=0, status="ready", duration=5, has_audio=False)
+    db.add_all([b2, v2])
+    db.commit()
+    return b2, v2
+
+
+def test_all_outputs_is_cross_batch_newest_first(client, ready_video, db):
+    b2, v2 = _two_batches(db)
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    base = utcnow()
+    add_job(db, VIDEO, "9x16", "done", id="j_old", output=out, finished_at=base - timedelta(minutes=10))
+    add_job(db, v2.id, "9x16", "done", id="j_new", batch_id=b2.id, output=out, finished_at=base - timedelta(minutes=1))
+    r = client.get("/api/outputs")
+    assert r.status_code == 200
+    got = r.json()
+    assert [j["id"] for j in got] == ["j_new", "j_old"]
+    assert [(j["batch_name"], j["video_name"]) for j in got] == [("第二批", "V02.mp4"), ("测试批次", "V01.mp4")]
+
+
+def test_all_outputs_only_done(client, ready_video, db):
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    add_job(db, VIDEO, "9x16", "done", id="j_done", output=out, finished_at=utcnow())
+    add_job(db, VIDEO, "1x1", "failed", id="j_failed")
+    add_job(db, VIDEO, "4x5", "queued", id="j_queued")
+    assert [j["id"] for j in client.get("/api/outputs").json()] == ["j_done"]
+
+
+def test_all_outputs_falls_back_to_created_at(client, ready_video, db):
+    """A done row without finished_at still sorts by its own clock, not to one end."""
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    base = utcnow()
+    add_job(db, VIDEO, "9x16", "done", id="j_a", output=out, finished_at=base - timedelta(minutes=5))
+    add_job(db, VIDEO, "1x1", "done", id="j_b", output=out, created_at=base - timedelta(minutes=1))
+    add_job(db, VIDEO, "4x5", "done", id="j_c", output=out, finished_at=base - timedelta(minutes=30))
+    assert [j["id"] for j in client.get("/api/outputs").json()] == ["j_b", "j_a", "j_c"]
+
+
+def test_all_outputs_paging(client, ready_video, db):
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    base = utcnow()
+    for i in range(5):
+        add_job(db, VIDEO, f"v{i}", "done", id=f"j_{i}", output=out, finished_at=base - timedelta(minutes=i))
+    assert [j["id"] for j in client.get("/api/outputs?limit=2").json()] == ["j_0", "j_1"]
+    assert [j["id"] for j in client.get("/api/outputs?limit=2&offset=2").json()] == ["j_2", "j_3"]
+    assert [j["id"] for j in client.get("/api/outputs?limit=2&offset=4").json()] == ["j_4"]
+    assert client.get("/api/outputs?limit=2&offset=99").json() == []
+    # app-wide handler turns FastAPI's 422 into the project's 400 + errors[] shape
+    assert client.get("/api/outputs?limit=0").status_code == 400
+    assert client.get("/api/outputs?limit=501").status_code == 400
+    assert client.get("/api/outputs?offset=-1").status_code == 400
+
+
+def test_all_outputs_empty(client):
+    assert client.get("/api/outputs").json() == []
 
 
 # --- assets / uploads --------------------------------------------------------------
