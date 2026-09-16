@@ -9,13 +9,19 @@ sticker with its own audio track is available, that layer mixes its audio in
 (mix_audio) and the output must carry an audio stream. When an audio asset is
 available, the source track is muted and that asset is looped as BGM over the
 whole clip (edit_spec.audio), which must again yield an audio stream of the
-post-trim length. When an image sticker is available it is also used as a 1.5 s
+post-trim length. When the first video has audio, it is also sent through the
+vocals / instrumental separation (separator worker, Demucs on the CPU); the
+vocals stem is then laid over the clip aligned to the source timeline. A
+separation that does not finish within SMOKE_SEPARATE_TIMEOUT seconds (default
+300; 0 skips the step) fails the smoke test — that usually means the separator
+container is not running. When an image sticker is available it is also used as a 1.5 s
 cover (edit_spec.cover), so the output must be 1.5 s longer than the trimmed clip.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
 """
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -89,6 +95,35 @@ if not use_cover:
     print("no image sticker available — skipping the cover part of the smoke test")
 
 video = videos[0]
+
+# Vocals / instrumental separation: a real Demucs run on the separator worker.
+separate_timeout = int(os.environ.get("SMOKE_SEPARATE_TIMEOUT", "300"))
+stem_asset_id = None
+if separate_timeout > 0 and video["has_audio"]:
+    status, resp = call("POST", f"/api/videos/{video['id']}/separate", {"model": "htdemucs"})
+    if status == 409:
+        print("separation already in progress — following it")
+    elif status != 202:
+        print("separate", status, resp)
+        sys.exit(1)
+    t0 = time.time()
+    while time.time() - t0 < separate_timeout:
+        sep = call("GET", f"/api/videos/{video['id']}")[1].get("separation") or {}
+        if sep.get("status") in ("done", "failed"):
+            break
+        time.sleep(3)
+    print(f"separation {sep.get('status')} after {time.time() - t0:.0f}s", (sep.get("error") or "")[:300])
+    if sep.get("status") != "done":
+        print("separation did not finish — is the separator container up? (docker compose logs separator)")
+        sys.exit(1)
+    stems = [a for a in call("GET", "/api/assets?source=derived")[1]
+             if a["id"] in (sep["vocals_asset_id"], sep["instrumental_asset_id"])]
+    print("stems", [(a["name"], a.get("duration"), a.get("status")) for a in stems])
+    assert len(stems) == 2 and all(a.get("status") == "ready" for a in stems), stems
+    stem_asset_id = sep["vocals_asset_id"]
+elif separate_timeout > 0:
+    print("first video has no audio — skipping the separation part of the smoke test")
+
 layers = [
     {"id": "l_1", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "top-left",
      "margin": [0.08, 0.12], "width": 0.35, "rotate": -8, "opacity": 0.9, "t": [0, 5]},
@@ -125,6 +160,13 @@ if use_bgm:
         "tracks": [{"id": "au_bgm", "asset_id": audio_assets[0]["id"], "role": "bgm", "t": "all",
                     "volume": 0.6, "loop": True, "fade_out": 1}],
     }
+if stem_asset_id:
+    # The separated vocals ride on the source timeline and get the same trim as the video.
+    spec.setdefault("audio", {"source_volume": 0, "tracks": []})
+    spec["audio"]["source_volume"] = 0
+    spec["audio"]["tracks"].append(
+        {"id": "au_vocals", "asset_id": stem_asset_id, "role": "voice", "align": "source", "t": "all"}
+    )
 if use_cover:
     # Cover first, then the trimmed clip; layers and BGM keep their main-part timing.
     spec["cover"] = {"asset_id": image_stickers[0]["id"], "duration": COVER_SECONDS}
@@ -162,7 +204,7 @@ for j in jobs:
               f"{j['output']['duration']} (expected ~{post_duration})")
         sys.exit(1)
 
-if mix_audio or use_bgm:
+if mix_audio or use_bgm or stem_asset_id:
     for j in jobs:
         if j["status"] == "done" and j["output"]["codec"] != "h264/aac":
             print("mixed audio missing from", j["variant_key"], j["output"])

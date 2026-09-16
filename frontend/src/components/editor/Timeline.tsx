@@ -460,7 +460,7 @@ export function Timeline() {
                     >
                       {all ? '全程' : '区间'}
                     </button>
-                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}</span>
+                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }} title={r.align === 'source' ? '对齐源时间轴：随剪辑一起裁' : undefined}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
                     <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
                   </div>
                   <div className="body" {...scrub.handlers}>

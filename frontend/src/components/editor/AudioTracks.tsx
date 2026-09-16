@@ -36,8 +36,9 @@ function TrackAudio({ track }: { track: AudioTrack }) {
     if (!el) return;
     const r = resolveTrack(track);
     const tolerance = r.role === 'voice' ? 0.1 : 0.25;
-    const sync = (postTime: number, playing: boolean) => {
-      const at = trackMediaTime(postTime, r, postDuration, mediaDuration);
+    const sync = (postTime: number, playing: boolean, sourceTime: number) => {
+      // align = source 的音轨（分离出的人声 / 伴奏）按源时间定位，剪辑跳过的段它也跳过
+      const at = trackMediaTime(postTime, r, postDuration, mediaDuration, sourceTime);
       el.volume = Math.max(0, Math.min(1, trackGain(postTime, r, postDuration, mediaDuration)));
       if (at === null || !playing) {
         if (!el.paused) el.pause();
@@ -48,8 +49,8 @@ function TrackAudio({ track }: { track: AudioTrack }) {
       if (el.paused) void el.play().catch(() => undefined);
     };
     // 封面段（t < 0）不放 BGM / 口播：按暂停对齐（契约 §2 cover）
-    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0);
-    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0));
+    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0, player.currentTime);
+    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0, t));
     return () => {
       unsub();
       el.pause();

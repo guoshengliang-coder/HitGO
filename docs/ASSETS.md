@@ -88,7 +88,8 @@
 | 单文件上限 | 图片贴纸 10 MiB、视频贴纸（mp4 / mov / webm）1 GiB、字体 20 MiB；视频贴纸不限时长 | 同上 `MAX_BYTES` / `MAX_VIDEO_STICKER_BYTES`；前端 `frontend/src/lib/assets.ts` `UPLOAD_LIMITS` 先挡一次 |
 | 动态 gif / webp | 与视频文件一样走视频贴纸（异步预处理），但大小仍按图片的 10 MiB | 同上 `create_assets` |
 | 贴纸音轨 | 预处理记 `has_audio`；图层 `mix_audio = true` 时合成进成片，默认不合成 | 契约 §2、`filtergraph.py` |
-| 音频素材 | `type = audio`：mp3 / wav / m4a，单个 50 MiB；上传后异步 `ffprobe` 时长，没有派生文件；在剪辑步骤加为 BGM / 口播（`edit_spec.audio.tracks`） | 同上 `AUDIO_EXTS`；契约 §1 / §2 |
+| 音频素材 | `type = audio`：mp3 / wav / m4a，单个 50 MiB；上传后异步 `ffprobe` 时长，没有派生文件；在音频模块加为 BGM / 口播（`edit_spec.audio.tracks`） | 同上 `AUDIO_EXTS`；契约 §1 / §2 |
+| 分离结果 | `source = derived`：`POST /api/videos/{id}/separate` 用 Demucs 把源音轨拆成人声 / 伴奏两条 `type = audio` 素材（`{id}.m4a`，aac 192k），`derived_from` 记来源；可删，可用到任何视频；再次分离替换上一对 | `backend/app/services/separate.py`；契约 §1 / §3 / §6 |
 | 请求体上限 | 主域名 2 GiB，但 **Cloudflare 免费版在 100 MB 处先拦下（413）**；上传子域名 1100 MiB | `deploy/nginx/hitgo.conf` |
 
 **大文件为什么走上传子域名**：`hitgo.mrlgs.net` 走 Cloudflare 代理，免费版单个请求超过 100 MB 会被

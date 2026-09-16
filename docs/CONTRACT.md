@@ -48,7 +48,22 @@
   "edit_spec": null,              // 见第 2 节；null 表示未编辑
   "edited": false,                // edit_spec 非空
   "render_status": "idle",        // idle | queued | running | done | failed（该视频最新一轮渲染任务的汇总）
+  "separation": null,             // 可选；人声 / 伴奏分离状态，见下；null = 从未分离
   "updated_at": "2026-09-14T10:05:00Z"
+}
+```
+
+**人声 / 伴奏分离 `separation`**（可选，缺省 null）：对源视频的音轨跑一次 AI 音源分离（Demucs），产出两个
+`type = "audio"`、`source = "derived"` 的素材，直接用在第 2 节 `audio.tracks[]` 里（配合 `align = "source"`）：
+
+```jsonc
+{
+  "status": "done",               // queued | running | done | failed
+  "model": "htdemucs",            // htdemucs（默认）| htdemucs_ft（四模型集成，慢约 4 倍）
+  "error": null,                  // failed 时的中文原因
+  "vocals_asset_id": "a_v0c4l5",  // done 才有：人声轨素材
+  "instrumental_asset_id": "a_1n5tr",   // done 才有：伴奏（去人声）轨素材
+  "updated_at": "..."
 }
 ```
 
@@ -71,7 +86,8 @@
   "poster_url": "/media/assets/a_s1t2u3.poster.jpg",    // 可选；kind = video 且 ready 才有：首帧
   "preview_url": "/media/assets/a_s1t2u3.preview.webm?v=1757923200", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
-  "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）
+  "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）| derived（系统从某条视频分离出来的）
+  "derived_from": null,           // 可选；source = derived 才有：{ "video_id", "video_name", "stem": "vocals" | "instrumental" }
   "created_at": "..."
 }
 ```
@@ -88,6 +104,11 @@
 时长（`preparing` → `ready`），没有 poster / preview 派生文件，`url` 就是原文件（浏览器能直接播）。
 `width / height / fps / has_alpha / has_audio / poster_url / preview_url` 一律为 null。用在第 2 节 `audio.tracks[]`
 里作 BGM / 口播；`preparing` 期间可以列出但不能用于渲染（worker 跳过并记警告）。
+
+**分离出来的音轨**（`source = "derived"`）：由 `POST /api/videos/{id}/separate` 产生，`type = audio`、`kind = audio`、
+`status = ready`，时长等于源视频；`derived_from` 记录来自哪条视频的哪个声部。它和上传的音频一样可以用在任何
+视频的 `audio.tracks[]` 里，也可以删除；再次分离同一条视频会替换掉上一次的两个素材（引用旧素材的音轨渲染时会
+跳过并记警告）。
 
 **透明通道**：`mp4`（H.264）没有 alpha 通道，只能作为不透明矩形叠加；`mov`（ProRes 4444 /
 QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明。前端按 `has_alpha` 给出提示。
@@ -186,6 +207,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "asset_id": "a_bgm001",              // Asset.type = "audio"
         "role": "bgm",                       // 可选，缺省 "bgm"：bgm | voice，只给界面分类，worker 不区分
         "t": "all",                          // 出声时段，秒，基于剪后时间轴；同 layers[].t
+        "align": "post",                     // 可选，缺省 "post"：post = 素材从时段起点开始播 | source = 素材对齐源时间轴（分离出的人声 / 伴奏用），见下方规则
         "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时必须为 0
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
@@ -232,6 +254,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     `offset = 0`），`false` 时播完即静音，时段结束处截断。素材比时段长时一律在时段结束处截断。
   - `fade_in` 从时段起点起淡入；`fade_out` 以**实际出声结束点**为准结束——不循环且素材短于时段时，淡出落在
     素材播完处而不是时段末尾。
+  - **`align = "source"`**：素材本身就是按源视频时间轴录的（典型是分离出来的人声 / 伴奏，或对着原片重配的口播），
+    worker 先对它套用与源音轨完全相同的 `trim.remove`（atrim + concat），再按 `t` 时段截取、调音量、淡入淡出。
+    此时 `offset` 必须为 0、`loop` 必须为 false；素材比源视频短时后段静音。编辑器预览同样按源时间定位。
   - 音量上限是 1（不能放大）：浏览器 `HTMLMediaElement.volume` 只到 1，这样编辑器预览能原样复现成片。
   - `asset_id` 对应的素材不存在、不是音频、还没 `ready`，或 `offset` 不小于素材时长时，worker 跳过该 track
     并在 job.error 里记警告（不失败）。track `id` 在同一 spec 内唯一。
@@ -273,10 +298,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 ### 视频
 - `GET /api/videos/{id}` → `Video`
 - `PUT /api/videos/{id}/spec` `{ edit_spec }` → `Video`（服务端做 schema 校验，400 返回具体字段）
-- `DELETE /api/videos/{id}` → 204
+- `POST /api/videos/{id}/separate` `{ model?: "htdemucs" | "htdemucs_ft" }` → 202 `Video`（`separation.status = queued`）。
+  视频未 `ready` 或没有音轨 400；已有 queued / running 的分离 409；队列不可用 503。完成后 `separation` 变 `done`
+  并带两个素材 id；前端轮询 `GET /api/videos/{id}`。分离由独立的 `separator` worker（带 torch + Demucs 的镜像）
+  执行；没有起这个 worker 时任务会一直停在 queued。
+- `DELETE /api/videos/{id}` → 204（分离出来的素材不随视频删除，仍可在别的视频里用）
 
 ### 素材
-- `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
+- `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library|derived` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
 - `GET /api/assets/{id}` → `Asset` / 404（前端轮询视频贴纸 / 音频素材的 `preparing → ready`）
 - `POST /api/assets` multipart：`type`，`files` → `Asset[]`。只产出 `source = "upload"` 的素材。
   - `sticker`：`png / jpg / jpeg / webp / gif` 与 `mp4 / mov / webm`（jpg 没有透明通道，主要给封面用）。**多帧的 gif / webp 与视频文件一样按视频贴纸处理**，
@@ -292,8 +321,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   **为什么**：主域名走 Cloudflare 代理，免费版单个请求超过 100 MB 会被 Cloudflare 回 413，根本到不了源站；
   上传子域名不经 Cloudflare 代理（DNS only），只放行这一个接口。服务端对 `PUBLIC_BASE_URL` 这个 origin
   开 CORS（`POST` / `OPTIONS`，允许 `X-Upload-Ticket`）。
-- `DELETE /api/assets/{id}` → 204（一并删除 poster / preview 派生文件）。`source != "upload"` 的素材不可删
-  （400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
+- `DELETE /api/assets/{id}` → 204（一并删除 poster / preview 派生文件）。只有 `upload` 和 `derived` 的素材可删；
+  `builtin` / `library` 不可删（400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。
 - 素材的来源迁移规划（怎么把 `upload` / `builtin` 换成正式物料库的 `library`，要改哪几处）见 `docs/ASSETS.md`。
 
 ### 文字图层 PNG
@@ -362,6 +391,7 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 /data/assets/{asset_id}.{ext}
 /data/assets/{asset_id}.poster.jpg            视频贴纸：首帧
 /data/assets/{asset_id}.preview.{webm|mp4}    视频贴纸：浏览器可播的预览代理
+/data/assets/{asset_id}.m4a                   分离出来的人声 / 伴奏（aac 192k，source = derived）
 /data/uploads/{upload_id}.png
 /data/outputs/{job_id}.mp4
 /data/tmp/                                    worker 临时文件
@@ -380,6 +410,14 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 4. 服务启动时，`kind = video`、`status = ready` 但 `has_audio` 还是 null 的旧素材会重新入队预处理一次，补上
    `has_audio` 与带音轨的预览代理（素材保持 `ready`，不影响正在用它的 spec）。
 5. 音频素材（`type = audio`）只做第 1 步的 `ffprobe`：取 `format.duration`，没有音频流则 `failed`；不生成任何派生文件。
+
+### 人声 / 伴奏分离（`POST /api/videos/{id}/separate` 之后，独立的 separator worker）
+1. `ffmpeg -i source -vn -ac 2 -ar 44100 -c:a pcm_s16le` 抽成 `/data/tmp/{video_id}.sep.wav`（超过 `SEPARATE_MAX_SECONDS`，缺省 600 秒，直接 failed）。
+2. Demucs（CPU，`torch` 线程数 `SEPARATE_THREADS`，缺省 4）按 `model` 分成 drums / bass / other / vocals；
+   人声轨 = vocals，伴奏轨 = 其余三路之和。
+3. 两路各编码成 `{asset_id}.m4a`（`aac 192k`，44.1 kHz 立体声），建两条 `type = audio`、`source = derived`、
+   `status = ready` 的素材（`duration` 取源视频时长），写回 `Video.separation`；上一次分离的两条素材连文件一起删掉。
+4. 任何一步失败：`separation.status = failed` 并写 `error`，不产生素材。
 
 ### 预处理（每条视频入库后）
 1. `ffprobe -v error -print_format json -show_format -show_streams`
@@ -410,6 +448,9 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
      贴纸音轨、各 track 多于一路时 `amix`（同上）成 `[aout]`；只有 `[abase]` 一路（只调了源音量）时直接映射它；
      `source_volume = 0` 且没有任何叠加音轨时 `-an`。存在 track 时输出端同样补 `-t <剪后时长>`。spec 没有 `audio`
      块时命令与此前完全一致。
+   - `align = "source"` 的 track：输入侧不加 `-stream_loop`；先对 `[i:a]` 套用与源音轨相同的
+     `atrim=start:end,asetpts` × 保留段 + `concat=n=N:v=0:a=1`（无剪辑时跳过），再 `atrim=start=a:end=b,asetpts=PTS-STARTPTS`
+     截出时段，之后的 `volume / afade / adelay / aformat` 与普通 track 相同（`E` = `b−a`）。
    - 输出 `format=yuv420p`；本次渲染存在视频图层时，输出端补 `-t <剪后时长>` 兜底成片时长
    - 封面 `cover`（第 2 节）：以上正片画面接 `setsar=1,trim=end=剪后时长`，正片声音统一成一路带标签的
      `aformat=48000/stereo,apad,atrim=end=剪后时长`（原本直接映射 `0:a:0` 的也走这里；原本 `-an` 的改用

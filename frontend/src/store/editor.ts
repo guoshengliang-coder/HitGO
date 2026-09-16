@@ -6,7 +6,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
@@ -189,6 +189,13 @@ export interface EditorState {
   addAudioTrack: (assetId: string, role: AudioRole) => string | null;
   updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
   removeAudioTrack: (id: string) => void;
+  /** 人声 / 伴奏分离（契约 §3）：发起后轮询 GET /api/videos/{id} 直到 done / failed。 */
+  separateVideo: (model: SeparationModel) => Promise<void>;
+  /**
+   * 用分离结果替换源音轨：静音源音轨，并加一条对齐源时间轴的音轨（人声 → 口播角色，伴奏 → BGM 角色）。
+   * 返回新音轨 id；分离结果不可用时返回 null。
+   */
+  useStem: (stem: 'vocals' | 'instrumental') => string | null;
 
   // 图层
   addLayer: (layer: Layer) => void;
@@ -257,6 +264,33 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
     }
   };
   assetPollTimer = window.setTimeout(tick, 2000);
+}
+
+let separationTimers: Record<string, number> = {};
+
+/** 分离是后台任务：每 2 秒拉一次视频，直到 done / failed；完成后重新拉素材列表让新音轨出现。 */
+function pollSeparation(videoId: string, set: (fn: (s: EditorState) => Partial<EditorState>) => void, get: () => EditorState) {
+  if (separationTimers[videoId]) return;
+  const tick = async () => {
+    delete separationTimers[videoId];
+    let fresh: Video | null = null;
+    try {
+      fresh = await api.getVideo(videoId);
+    } catch {
+      /* 断网 / 视频被删：下一轮再试；被删时 videos 里也不会再有它 */
+    }
+    if (fresh) set((s) => ({ videos: s.videos.map((v) => (v.id === fresh!.id ? { ...v, separation: fresh!.separation } : v)) }));
+    const status = fresh?.separation?.status;
+    if (status === 'done' || status === 'failed') {
+      await get().loadAssets();
+      if (status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
+      else get().setToast(`分离失败：${fresh?.separation?.error ?? '未知原因'}`);
+      return;
+    }
+    if (!get().videos.some((v) => v.id === videoId)) return;
+    separationTimers[videoId] = window.setTimeout(tick, 2000);
+  };
+  separationTimers[videoId] = window.setTimeout(tick, 2000);
 }
 
 function ensureAudio(spec: EditSpec): AudioSpec {
@@ -721,6 +755,34 @@ export const useEditor = create<EditorState>((set, get) => {
         if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
       });
       if (get().selectedTrackId === id) set({ selectedTrackId: null });
+    },
+
+    separateVideo: async (model) => {
+      const video = get().currentVideo();
+      if (!video) return;
+      try {
+        const updated = await api.separateVideo(video.id, model);
+        set((s) => ({ videos: s.videos.map((v) => (v.id === updated.id ? { ...v, separation: updated.separation } : v)) }));
+        pollSeparation(video.id, set, get);
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '分离请求失败');
+      }
+    },
+    useStem: (stem) => {
+      const video = get().currentVideo();
+      const sep = video?.separation;
+      const assetId = stem === 'vocals' ? sep?.vocals_asset_id : sep?.instrumental_asset_id;
+      if (!video || sep?.status !== 'done' || !assetId) return null;
+      const asset = get().assets.find((a) => a.id === assetId);
+      if (!isAssetReady(asset)) return null;
+      const id = newTrackId();
+      get().updateSpec((spec) => {
+        const audio = ensureAudio(spec);
+        audio.source_volume = 0; // 分离结果替代源音轨：源音轨静音，否则叠加后等于没分
+        audio.tracks.push({ id, asset_id: assetId, role: stem === 'vocals' ? 'voice' : 'bgm', align: 'source', t: 'all', volume: 1, loop: false });
+      });
+      set({ selectedTrackId: id });
+      return id;
     },
 
     setCover: (assetId) => {

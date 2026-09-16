@@ -27,7 +27,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.schemas import AssetOut, BatchDetailOut, BatchOut, JobOut, StatusCounts, VideoOut
+from app.schemas import AssetOut, BatchDetailOut, BatchOut, JobOut, SeparationOut, StatusCounts, VideoOut
 from app.services import storage
 
 RENDER_IDLE = "idle"
@@ -81,6 +81,7 @@ def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
         edit_spec=video.edit_spec,
         edited=video.edit_spec is not None,
         render_status=render_status(jobs),
+        separation=SeparationOut(**video.separation) if video.separation else None,
         updated_at=iso(video.updated_at) or "",
     )
 
@@ -162,6 +163,7 @@ def asset_out(asset: Asset) -> AssetOut:
         ),
         family=asset.family,
         source=asset.source,
+        derived_from=asset.derived_from,
         created_at=iso(asset.created_at) or "",
     )
 

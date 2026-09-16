@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+# HitGO separator worker: the one container with torch + Demucs (vocals / instrumental
+# separation, contract §6). Same backend code as hitgo:latest, plus the `separate` extra,
+# consuming only the `separate` Celery queue. Kept apart so the api / render images stay
+# ~1 GB and never import torch.
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PROJECT_ENVIRONMENT=/app/backend/.venv \
+    DATA_DIR=/data \
+    SAMPLES_DIR=- \
+    # Demucs downloads weights through torch.hub; prefetched below so the first job
+    # does not wait on dl.fbaipublicfiles.com. htdemucs_ft (4 × 80 MB) is fetched on
+    # first use and lives in the container layer until the next rebuild.
+    TORCH_HOME=/app/models \
+    OMP_NUM_THREADS=4
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+RUN groupadd --system hitgo && useradd --system --gid hitgo --create-home hitgo \
+    && mkdir -p /app /data /app/models && chown -R hitgo:hitgo /app /data
+
+WORKDIR /app/backend
+
+COPY --chown=hitgo:hitgo backend/pyproject.toml backend/uv.lock backend/.python-version ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project --extra separate
+
+COPY --chown=hitgo:hitgo backend/app ./app
+RUN chown -R hitgo:hitgo /app
+
+USER hitgo
+# Prefetch the default model's weights (~80 MB) into TORCH_HOME.
+RUN uv run --no-sync python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
+
+VOLUME ["/data"]
+
+CMD ["uv", "run", "--no-sync", "celery", "-A", "app.worker", "worker", \
+     "-Q", "separate", "--concurrency=1", "--loglevel=info"]

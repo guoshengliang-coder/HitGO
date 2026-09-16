@@ -7,7 +7,7 @@ import { windowRange } from './stickerMedia';
 
 const EPS = 1e-6;
 
-export const TRACK_DEFAULTS = { role: 'bgm', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 } as const satisfies Omit<AudioTrack, 'id' | 'asset_id' | 't'>;
+export const TRACK_DEFAULTS = { role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 } as const satisfies Omit<AudioTrack, 'id' | 'asset_id' | 't'>;
 
 export type ResolvedTrack = Required<AudioTrack>;
 
@@ -62,7 +62,7 @@ export function audibleSpan(track: AudioTrack, postDuration: number, mediaDurati
   const r = resolveTrack(track);
   const [start, end] = windowRange(r.t, postDuration);
   const window = Math.max(0, end - start);
-  if (r.loop) return window;
+  if (r.loop || r.align === 'source') return window; // 对齐源时间轴：素材覆盖整条源片，按时段长算
   if (!(mediaDuration > 0)) return 0;
   return Math.max(0, Math.min(window, mediaDuration - r.offset));
 }
@@ -70,12 +70,18 @@ export function audibleSpan(track: AudioTrack, postDuration: number, mediaDurati
 /**
  * 剪后时刻 postTime 这条音轨应该定位到素材的第几秒；null = 此刻不出声（时段外、素材已播完、时长未知）。
  * 循环时对素材时长取模（-stream_loop 从文件头重复，所以循环要求 offset = 0）。
+ * align = 'source' 的音轨（分离出的人声 / 伴奏）按源时间定位：传入 sourceTime（播放头的源时间），
+ * 成片端对它套用同样的剪辑，所以素材位置 = 源时间。
  */
-export function trackMediaTime(postTime: number, track: AudioTrack, postDuration: number, mediaDuration: number): number | null {
+export function trackMediaTime(postTime: number, track: AudioTrack, postDuration: number, mediaDuration: number, sourceTime?: number): number | null {
   const r = resolveTrack(track);
   const [start, end] = windowRange(r.t, postDuration);
   if (postTime < start - EPS || postTime > end + EPS) return null;
   if (!(mediaDuration > 0)) return null;
+  if (r.align === 'source') {
+    if (sourceTime === undefined || sourceTime < 0 || sourceTime >= mediaDuration - EPS) return null;
+    return sourceTime;
+  }
   const elapsed = Math.max(0, postTime - start);
   if (r.loop) return elapsed % mediaDuration;
   const available = mediaDuration - r.offset;

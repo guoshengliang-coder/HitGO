@@ -49,7 +49,22 @@ export interface Video {
   edit_spec: EditSpec | null;
   edited: boolean;
   render_status: RenderStatus;
+  /** 可选；人声 / 伴奏分离状态（契约 §1），null / 缺省 = 从未分离。 */
+  separation?: Separation | null;
   updated_at: string;
+}
+
+export type SeparationStatus = 'queued' | 'running' | 'done' | 'failed';
+/** htdemucs（默认）| htdemucs_ft（四模型集成，慢约 4 倍，更干净）。 */
+export type SeparationModel = 'htdemucs' | 'htdemucs_ft';
+
+export interface Separation {
+  status: SeparationStatus;
+  model: SeparationModel;
+  error?: string | null;
+  vocals_asset_id?: string | null;
+  instrumental_asset_id?: string | null;
+  updated_at?: string | null;
 }
 
 export type BatchDetail = Batch & { videos: Video[] };
@@ -61,7 +76,14 @@ export type AssetKind = 'image' | 'video' | 'audio';
 export type AssetStatus = 'preparing' | 'ready' | 'failed';
 
 /** 素材来源（契约 §1）。`library` 预留给正式物料库，原型阶段不会出现，见 docs/ASSETS.md。 */
-export type AssetSource = 'upload' | 'builtin' | 'library';
+export type AssetSource = 'upload' | 'builtin' | 'library' | 'derived';
+
+/** source = derived 才有：从哪条视频分离出的哪个声部。 */
+export interface DerivedFrom {
+  video_id: string;
+  video_name: string;
+  stem: 'vocals' | 'instrumental';
+}
 
 export interface Asset {
   id: string;
@@ -85,6 +107,8 @@ export interface Asset {
   preview_url?: string | null;
   family?: string;
   source: AssetSource;
+  /** 可选；source = derived 才有。 */
+  derived_from?: DerivedFrom | null;
   created_at: string;
 }
 
@@ -315,10 +339,15 @@ export interface OutputVariant {
 export type AudioRole = 'bgm' | 'voice';
 
 /** 一条叠加进成片的音轨（契约 §2 audio.tracks[]）。除 id / asset_id / t 外都可选，缺省见 lib/audioTracks.TRACK_DEFAULTS。 */
+/** post = 素材从时段起点开始播；source = 素材对齐源时间轴，随剪辑一起裁（分离出的人声 / 伴奏）。 */
+export type AudioAlign = 'post' | 'source';
+
 export interface AudioTrack {
   id: string;
   asset_id: string;
   role?: AudioRole;
+  /** 可选，缺省 'post'。 */
+  align?: AudioAlign;
   /** 出声时段，剪后时间轴。 */
   t: TimeWindow;
   /** 从素材第几秒开始播；loop 时必须为 0。 */

@@ -291,3 +291,12 @@ def test_cover_is_optional_and_duration_defaults_to_one_second():
 )
 def test_cover_rules(cover, fragment):
     assert fragment in errors_of(valid_spec(cover=cover))
+
+
+def test_audio_track_align_source_forbids_loop_and_offset():
+    spec = validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "t": [1, 4], "fade_out": 1}]))
+    assert spec.audio.tracks[0].align == "source"
+    assert validate(audio_spec(tracks=[{"id": "a", "asset_id": "x"}])).audio.tracks[0].align == "post"
+    assert "对齐源时间轴" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "loop": True}]))
+    assert "对齐源时间轴" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "offset": 2}]))
+    assert "align" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "sideways"}]))

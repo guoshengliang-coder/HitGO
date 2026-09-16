@@ -36,11 +36,15 @@ curl -s http://127.0.0.1:8790/api/health
 ```
 
 - 镜像多阶段构建：`node:22-alpine` 构建 `frontend/dist` → `python:3.12-slim` + apt `ffmpeg` + `uv`，API 与 worker 共用同一镜像。
+- `separator` 服务用另一个镜像 `Dockerfile.separator`（同一份后端代码 + `uv sync --extra separate`：CPU 版 torch、Demucs，
+  构建时预取 htdemucs 权重约 80 MB），只消费 Celery 的 `separate` 队列，`mem_limit: 5g`。首次构建要从 PyPI / PyTorch 源
+  下载约 300 MB 的 wheel，镜像约 2.5 GB；`htdemucs_ft` 权重（4 × 80 MB）在第一次用高质量模式时下载，存在容器层里，
+  重建镜像后要重新下。没起这个服务时分离任务一直停在 queued，其余功能不受影响。
 - 界面上 HitGO 旁的版本号是构建期写死的最近 git tag（如 `v0.8.0`）：取值顺序 `HITGO_VERSION` 环境变量 → `frontend/.hitgo-version` → `git describe --tags --abbrev=0`，都没有显示 `dev`。镜像里没有 `.git`，`scripts/deploy.sh` 会在服务器构建前写入 `frontend/.hitgo-version`；手动 `git clone` 部署时在构建前自己写一份。在 `make release` 打 tag 之前部署，显示的是上一个 tag。
 - `api` 只监听 `127.0.0.1:8790`，由 nginx 反代；`redis` 不对外暴露端口。
 - 所有数据（SQLite、源片、成片）都在 `./data`，备份/迁移只需拷贝这个目录。
 - 更新：`git pull && docker compose build && docker compose up -d`。
-- 日志：`docker compose logs -f api worker`。
+- 日志：`docker compose logs -f api worker separator`。
 - 渲染并发：`.env` 里的 `WORKER_CONCURRENCY`（默认 1，每路 ffmpeg 会吃满若干核，按机器调）。
 
 ## 3. nginx server block（模板）
@@ -142,6 +146,8 @@ ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | 回传 JSON 里成片的绝对地址前缀 |
 | `UPLOAD_BASE_URL` | 空 | 上传子域名（如 `https://hitgo-upload.mrlgs.net`），非空时贴纸上传直传过去并对 `PUBLIC_BASE_URL` 开 CORS，见 3.1 |
 | `WORKER_CONCURRENCY` | `1` | worker 并行渲染数 |
+| `SEPARATE_THREADS` | `4` | separator 里 torch 的线程数（4 核机器上 4；和渲染并行时可减到 2） |
+| `SEPARATE_MAX_SECONDS` | `600` | 分离接受的最长源音轨（秒），更长直接 failed |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 
