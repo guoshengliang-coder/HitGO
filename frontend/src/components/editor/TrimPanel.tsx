@@ -1,3 +1,7 @@
+// 剪辑模块右侧面板。HIG-17 做了功能分层：高频的剪辑操作常驻在最上面，
+// 已删除区间 / 封面 / 成片画面 / 时长各自成一个可折叠分组，收起时标题行留一句摘要；
+// 原先常驻在面板底部的那大段说明按语义拆进各分组标题旁的「?」里。
+
 import { useEffect } from 'react';
 import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
@@ -5,18 +9,15 @@ import { hintFor } from '../../lib/shortcuts';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
 import { countSafeZoneOverlaps } from '../../lib/spec';
+import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose, IconCutLeft, IconCutRight } from '../ui/Icons';
+import { Section } from '../ui/Section';
 import { CoverSection } from './CoverSection';
 import { variantDef, type FillMode, type OutputQuality } from '../../types';
 
-const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
-const FILL_TIP: Record<FillMode, string> = {
-  blur: '源画面完整缩放放进 9:16，空出的部分用放大模糊的画面填满',
-  color: '源画面完整缩放放进 9:16，空出的部分填纯色',
-  crop: '只取源画面里的一个 9:16 窗口铺满成片',
-};
-const QUALITY_LABEL: Record<OutputQuality, string> = { standard: '标准', high: '高清' };
-const QUALITY_TIP = '标准 = 更快更小（veryfast / crf 20）；高清 = 更慢更清晰（medium / crf 19）';
+const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
+const FRAME_HELP = '成片只出一个 9:16 文件。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。';
+const DURATION_HELP = '文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。';
 
 /** 成片画面（唯一的 9:16 输出）：填充方式、裁切范围、清晰度。原「输出」步骤里的设置搬到这里（HIG-8）。 */
 function FrameSection() {
@@ -56,11 +57,19 @@ function FrameSection() {
     if (fill !== 'crop' && cropEditing) setCropEditing(false);
   };
 
+  // 收起来之后摘要就是这块设置唯一的可见信息，所以安全区有重叠时也要在这一行看得见
+  const summary = (
+    <span className="mono">
+      {frameSummary(out, postDuration + preroll, calibration, sameAspect)}
+      {overlaps > 0 && <span style={{ color: 'var(--st-failed-fg)' }}> · {overlaps} 个图层越界</span>}
+    </span>
+  );
+
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>画面</span>
-        <span className="mono muted">
+    <Section id="trim.frame" title="成片画面" defaultOpen={false} bodyClass="stack" summary={summary} help={FRAME_HELP}>
+      <div className="prop-grid">
+        <span>画幅</span>
+        <span className="mono muted small">
           {def.width}×{def.height}
         </span>
       </div>
@@ -126,32 +135,92 @@ function FrameSection() {
           {overlaps ? `${overlaps} 个图层与遮挡区重叠` : '无图层与遮挡区重叠'}
         </span>
       </div>
-    </div>
+    </Section>
+  );
+}
+
+/** 已删除区间列表（源时间轴）。 */
+function RangesSection() {
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const selected = useEditor((s) => s.selectedRangeIndex);
+  const setSelected = useEditor((s) => s.setSelectedRange);
+  const deleteRange = useEditor((s) => s.deleteRemoveRange);
+  const remove = spec?.trim.remove ?? [];
+
+  return (
+    <Section
+      id="trim.ranges"
+      title="已删除区间"
+      bodyClass="stack"
+      summary={<span className="mono">{rangesSummary(remove) || '无'}</span>}
+      help={RANGES_HELP}
+    >
+      {remove.length === 0 ? (
+        <div className="hint">暂无。播放到要删除的起点按 I，再到终点按 O；Q / W 一键删掉播放头左侧 / 右侧；也可以直接在时间轴上拖动区间边缘调整。</div>
+      ) : (
+        <div className="range-list">
+          {remove.map((r, i) => (
+            <div key={i} className={`range-item ${selected === i ? 'selected' : ''}`} onClick={() => setSelected(i)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setSelected(i)}>
+              <span>
+                {formatTime(r[0])} → {formatTime(r[1])}
+              </span>
+              <span className="muted">−{formatSeconds(r[1] - r[0])}</span>
+              <button className="btn ghost icon sm" aria-label="删除区间" onClick={(e) => { e.stopPropagation(); deleteRange(i); }}>
+                <IconClose />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** 原始 / 剪后 / 删除合计，有封面时再加封面与成片时长。 */
+function DurationSection() {
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
+  const postDuration = usePostDuration();
+  const preroll = useCoverDuration();
+
+  return (
+    <Section id="trim.duration" title="时长" summary={<span className="mono">{durationSummary(postDuration, preroll)}</span>} help={DURATION_HELP}>
+      <dl className="kv span2">
+        <dt>原始时长</dt>
+        <dd>{formatSeconds(video?.duration ?? 0, 2)}</dd>
+        <dt>剪后时长</dt>
+        <dd>{formatSeconds(postDuration, 2)}</dd>
+        <dt>删除合计</dt>
+        <dd>−{formatSeconds((video?.duration ?? 0) - postDuration, 2)}</dd>
+        {preroll > 0 && (
+          <>
+            <dt>封面</dt>
+            <dd>+{formatSeconds(preroll, 2)}</dd>
+            <dt>成片时长</dt>
+            <dd>{formatSeconds(postDuration + preroll, 2)}</dd>
+          </>
+        )}
+      </dl>
+    </Section>
   );
 }
 
 export function TrimPanel() {
-  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
-  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const time = useEditor((s) => s.time);
   const inPoint = useEditor((s) => s.inPoint);
   const setInPoint = useEditor((s) => s.setInPoint);
   const setOutPoint = useEditor((s) => s.setOutPoint);
   const selected = useEditor((s) => s.selectedRangeIndex);
-  const setSelected = useEditor((s) => s.setSelectedRange);
   const deleteRange = useEditor((s) => s.deleteRemoveRange);
   const removeBefore = useEditor((s) => s.removeBefore);
   const removeAfter = useEditor((s) => s.removeAfter);
   const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
   const canRemoveAfter = useEditor((s) => s.canRemoveAfter());
-  const postDuration = usePostDuration();
-  const preroll = useCoverDuration();
-  const remove = spec?.trim.remove ?? [];
 
   return (
     <div className="panel">
       <div className="panel-head">剪辑</div>
       <div className="panel-body">
+        {/* 高频操作常驻，不参与折叠 */}
         <div className="inline">
           <button className="btn" onClick={() => setInPoint(time)} title={hintFor('in')}>
             设入点 <span className="mono muted">I</span>
@@ -178,54 +247,10 @@ export function TrimPanel() {
           </div>
         )}
 
-        <div className="section">
-          <div className="section-title">
-            <span>已删除区间（源时间轴）</span>
-            <span className="mono muted">{remove.length}</span>
-          </div>
-          {remove.length === 0 ? (
-            <div className="hint">暂无。播放到要删除的起点按 I，再到终点按 O；Q / W 一键删掉播放头左侧 / 右侧；也可以直接在时间轴上拖动区间边缘调整。</div>
-          ) : (
-            <div className="range-list">
-              {remove.map((r, i) => (
-                <div key={i} className={`range-item ${selected === i ? 'selected' : ''}`} onClick={() => setSelected(i)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setSelected(i)}>
-                  <span>
-                    {formatTime(r[0])} → {formatTime(r[1])}
-                  </span>
-                  <span className="muted">−{formatSeconds(r[1] - r[0])}</span>
-                  <button className="btn ghost icon sm" aria-label="删除区间" onClick={(e) => { e.stopPropagation(); deleteRange(i); }}>
-                    <IconClose />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
+        <RangesSection />
         <CoverSection />
-
         <FrameSection />
-
-        <dl className="kv">
-          <dt>原始时长</dt>
-          <dd>{formatSeconds(video?.duration ?? 0, 2)}</dd>
-          <dt>剪后时长</dt>
-          <dd>{formatSeconds(postDuration, 2)}</dd>
-          <dt>删除合计</dt>
-          <dd>−{formatSeconds((video?.duration ?? 0) - postDuration, 2)}</dd>
-          {preroll > 0 && (
-            <>
-              <dt>封面</dt>
-              <dd>+{formatSeconds(preroll, 2)}</dd>
-              <dt>成片时长</dt>
-              <dd>{formatSeconds(postDuration + preroll, 2)}</dd>
-            </>
-          )}
-        </dl>
-
-        <div className="hint">
-          删除区间基于源视频时间轴；文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。
-        </div>
+        <DurationSection />
       </div>
     </div>
   );
