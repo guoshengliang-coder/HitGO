@@ -194,6 +194,7 @@ def job_out(job: Job, batch_name: str | None = None, video_name: str | None = No
         created_at=iso(job.created_at) or "",
         started_at=iso(job.started_at),
         finished_at=iso(job.finished_at),
+        name=job.name,
         batch_name=batch_name,
         video_name=video_name,
     )

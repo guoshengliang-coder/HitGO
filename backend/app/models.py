@@ -146,6 +146,8 @@ class Job(Base):
         String(32), ForeignKey("videos.id", ondelete="CASCADE"), index=True, nullable=False
     )
     variant_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Optional label typed in the export dialog; shared by every job of one render call.
+    name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, nullable=False, index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -239,6 +239,8 @@ export interface Job {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  /** 导出时填的名称（同一次导出的任务共用）；没填为 null。旧后端不带这个字段。 */
+  name?: string | null;
   /** 只有跨批次的 GET /api/outputs 会填；单批次端点不带，名字从批次详情里取。 */
   batch_name?: string | null;
   video_name?: string | null;

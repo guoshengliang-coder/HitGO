@@ -17,7 +17,7 @@ export class ApiError extends Error {
   }
 }
 
-type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 let mockHandler: ((method: Method, url: string, body?: unknown) => Promise<unknown>) | null = null;
 export function installMock(handler: typeof mockHandler) {
@@ -102,6 +102,7 @@ export const api = {
   listBatches: () => request<Batch[]>('GET', '/api/batches'),
   createBatch: (name: string) => request<Batch>('POST', '/api/batches', { name }),
   getBatch: (id: string) => request<BatchDetail>('GET', `/api/batches/${id}`),
+  renameBatch: (id: string, name: string) => request<Batch>('PATCH', `/api/batches/${id}`, { name }),
   deleteBatch: (id: string) => request<void>('DELETE', `/api/batches/${id}`),
   uploadVideos: (batchId: string, files: File[], onProgress?: (f: number) => void) => {
     const form = new FormData();
@@ -112,11 +113,13 @@ export const api = {
     request<Video[]>('POST', `/api/batches/${batchId}/apply`, body),
   batchJobs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/jobs`),
   batchOutputs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/outputs`),
-  /** 跨批次的已完成产物，按完成时间倒序。 */
-  allOutputs: (limit = 100, offset = 0) => request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}`),
+  /** 跨批次的已完成产物，按完成时间倒序；q 按导出名称 / 批次名 / 视频名搜索（HIG-27）。 */
+  allOutputs: (limit = 100, offset = 0, q = '') =>
+    request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}`),
 
   // 视频
   getVideo: (id: string) => request<Video>('GET', `/api/videos/${id}`),
+  renameVideo: (id: string, name: string) => request<Video>('PATCH', `/api/videos/${id}`, { name }),
   putSpec: (id: string, edit_spec: EditSpec) => request<Video>('PUT', `/api/videos/${id}/spec`, { edit_spec }),
   separateVideo: (id: string, model: SeparationModel) => request<Video>('POST', `/api/videos/${id}/separate`, { model }),
   deleteVideo: (id: string) => request<void>('DELETE', `/api/videos/${id}`),
@@ -157,7 +160,8 @@ export const api = {
   },
 
   // 渲染
-  render: (video_ids: string[]) => request<Job[]>('POST', '/api/render', { video_ids }),
+  /** name：本次导出的名称，写到每个任务上（可选，HIG-27）。 */
+  render: (video_ids: string[], name?: string) => request<Job[]>('POST', '/api/render', name?.trim() ? { video_ids, name: name.trim() } : { video_ids }),
   getJob: (id: string) => request<Job>('GET', `/api/jobs/${id}`),
   retryJob: (id: string) => request<Job>('POST', `/api/jobs/${id}/retry`),
   getJobs: (ids: string[]) => request<Job[]>('GET', `/api/jobs?ids=${ids.join(',')}`),
