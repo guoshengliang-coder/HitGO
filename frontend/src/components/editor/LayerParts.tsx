@@ -1,13 +1,14 @@
-// 文本 / 贴纸两个模块右侧面板共用的部件（HIG-8 从原「图层」面板拆出）：
-// 同类图层列表、属性检查器（文字图层带「套用样式」预设分组）、批量应用底栏。
+// 文本 / 贴纸 / 字幕三个模块右侧面板共用的部件（HIG-8 从原「图层」面板拆出）：
+// 同类图层列表、属性检查器（文字图层带「套用样式」预设分组，遮盖层带「遮盖」分组）、批量应用底栏。
 // 属性检查器参考剪映的组织方式：文字内容在最上、位置区带六向对齐、
 // 描边 / 阴影 / 背景等做成「勾选启用 + 折叠 + 重置」的分组。
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isVideoAsset, type Anchor, type EditSpec, type Layer, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { ANCHORS, defaultTextStyle, isVideoAsset, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { cloneSpec, layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
 import { layersOfType, type LayerType } from '../../lib/layerKind';
+import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
 import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY } from '../../lib/fonts';
@@ -17,7 +18,7 @@ import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
 import {
-  IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconSticker, IconText, IconTrash, IconUp,
+  IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
 import { Num, Slider } from '../ui/Num';
 
@@ -168,7 +169,7 @@ const ALIGN_BUTTONS: { edge: AlignEdge; label: string; icon: ReactNode }[] = [
   { edge: 'bottom', label: '贴下', icon: <IconAlignBottom /> },
 ];
 
-/** 位置 / 对齐 / 宽度 / 旋转（文字与贴纸共用）。 */
+/** 位置 / 对齐 / 宽度 / 旋转（三类图层共用；遮盖多一个「高度」、没有旋转）。 */
 function PlacementSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
@@ -213,8 +214,63 @@ function PlacementSection({ layer }: { layer: Layer }) {
           </button>
         )}
       </div>
-      <span>旋转</span>
-      <Num value={layer.rotate} scale={1} step={1} min={-360} max={360} suffix="°" onChange={(v) => updateLayer(layer.id, { rotate: v })} />
+      {layer.type === 'mask' && (
+        <>
+          <span>高度</span>
+          <Num value={layer.height} min={0.01} max={1} onChange={(v) => updateLayer(layer.id, { height: v })} title="相对画布高" />
+        </>
+      )}
+      {layer.type !== 'mask' && (
+        <>
+          <span>旋转</span>
+          <Num value={layer.rotate} scale={1} step={1} min={-360} max={360} suffix="°" onChange={(v) => updateLayer(layer.id, { rotate: v })} />
+        </>
+      )}
+    </Section>
+  );
+}
+
+const MASK_MODES: [MaskMode, string][] = [
+  ['blur', '把这块画面糊掉，背景纹理还在'],
+  ['solid', '用一块纯色盖住，配合不透明度'],
+];
+const MASK_BLURS: MaskBlur[] = [1, 2, 3];
+
+/** 遮盖层：方式（模糊 / 色块）、颜色、强度。与后端 filtergraph 的 boxblur 档位 / drawbox 一一对应。 */
+function MaskSection({ layer }: { layer: MaskLayer }) {
+  const updateLayer = useEditor((s) => s.updateLayer);
+  const mode: MaskMode = layer.mode === 'solid' ? 'solid' : 'blur';
+  const level = maskBlurLevel(layer);
+  return (
+    <Section title="遮盖" onReset={() => updateLayer(layer.id, { mode: 'blur', blur: 2, color: DEFAULT_MASK_COLOR })}>
+      <span>方式</span>
+      <div className="inline" role="radiogroup" aria-label="遮盖方式">
+        {MASK_MODES.map(([m, title]) => (
+          <button key={m} role="radio" aria-checked={mode === m} className={`chip ${mode === m ? 'active' : ''}`} title={title} onClick={() => updateLayer(layer.id, { mode: m })}>
+            {MASK_MODE_LABEL[m]}
+          </button>
+        ))}
+      </div>
+      {mode === 'blur' ? (
+        <>
+          <span>强度</span>
+          <div className="inline" role="radiogroup" aria-label="模糊强度">
+            {MASK_BLURS.map((b) => (
+              <button key={b} role="radio" aria-checked={level === b} className={`chip ${level === b ? 'active' : ''}`} onClick={() => updateLayer(layer.id, { blur: b })}>
+                {MASK_BLUR_LABEL[b]}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <span>颜色</span>
+          <div className="inline">
+            <input type="color" className="color" value={hex6(layer.color ?? DEFAULT_MASK_COLOR)} onChange={(e) => updateLayer(layer.id, { color: e.target.value.toUpperCase() })} />
+            <span className="mono small">{(layer.color ?? DEFAULT_MASK_COLOR).toUpperCase()}</span>
+          </div>
+        </>
+      )}
     </Section>
   );
 }
@@ -517,10 +573,12 @@ export function LayerProps({ layer }: { layer: Layer }) {
         </>
       )}
       {layer.type === 'sticker' && <StickerMediaSection layer={layer} />}
+      {layer.type === 'mask' && <MaskSection layer={layer} />}
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />
       <TimeSection layer={layer} />
       {layer.type === 'text' && <div className="hint">文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
+      {layer.type === 'mask' && <div className="hint">遮盖只是把这块区域模糊或盖色，不是无痕擦除；画布上的模糊是近似预览，成片以导出为准。遮盖总在字幕之下。</div>}
     </div>
   );
 }
@@ -568,7 +626,10 @@ function LayerNameCell({ layer, editing, onEdit, onDone }: { layer: Layer; editi
 
 // ---------------------------------------------------------------- 同类图层列表
 
-/** 某一类（文字 / 贴纸）图层的列表：上层在前，拖动 / 上下移只在这一类里换序（lib/layerKind）。 */
+const LIST_TITLES: Record<LayerType, string> = { text: '文字图层', sticker: '贴纸图层', mask: '遮盖图层' };
+const layerIcon = (type: LayerType) => (type === 'text' ? <IconText /> : type === 'mask' ? <IconMask /> : <IconSticker />);
+
+/** 某一类（文字 / 贴纸 / 遮盖）图层的列表：上层在前，拖动 / 上下移只在这一类里换序（lib/layerKind）。 */
 export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: ReactNode }) {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const selectedId = useEditor((s) => s.selectedLayerId);
@@ -608,7 +669,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
 
   return (
     <div className="section">
-      <div className="section-title"><span>{type === 'text' ? '文字图层' : '贴纸图层'}（上层在前）</span><span className="mono muted">{layers.length}</span></div>
+      <div className="section-title"><span>{LIST_TITLES[type]}（上层在前）</span><span className="mono muted">{layers.length}</span></div>
       {layers.length === 0 ? (
         <div className="hint">{emptyHint}</div>
       ) : (
@@ -631,7 +692,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
               onDrop={(e) => onRowDrop(e, l.id)}
               onDragEnd={clearDrag}
             >
-              <span className="muted">{l.type === 'text' ? <IconText /> : <IconSticker />}</span>
+              <span className="muted">{layerIcon(l.type)}</span>
               <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
               <span className="acts" onClick={(e) => e.stopPropagation()}>
                 <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
@@ -649,12 +710,12 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
   );
 }
 
-/** 面板底栏：把当前视频的图层（文字 + 贴纸一起）批量应用到左侧勾选的视频。 */
+/** 面板底栏：把当前视频的图层（文字 + 贴纸 + 遮盖一起）批量应用到左侧勾选的视频。 */
 export function ApplyLayersFoot({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
   return (
     <div className="panel-foot">
-      <button className="btn" disabled={targetCount === 0} onClick={onApply} title="文字和贴纸图层会一起套用到目标视频">
-        把图层（文字 + 贴纸）应用到选中 {targetCount} 条
+      <button className="btn" disabled={targetCount === 0} onClick={onApply} title="文字、贴纸和遮盖图层会一起套用到目标视频">
+        把图层（文字 + 贴纸 + 遮盖）应用到选中 {targetCount} 条
       </button>
     </div>
   );

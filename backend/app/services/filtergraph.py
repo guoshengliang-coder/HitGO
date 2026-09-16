@@ -7,7 +7,9 @@ resolved are skipped and reported in ``RenderPlan.warnings``.
 Filter graph order:
     source → trim/atrim + concat (skipped when nothing is removed)
            → canvas fill (blur | color | crop; crop honours an optional source window first)
-           → one overlay per layer (enable='between(t,a,b)' for timed layers)
+           → one overlay per layer (enable='between(t,a,b)' for timed layers); mask layers
+             (contract §2 type "mask") take no input: a split + crop + boxblur + overlay, or a
+             drawbox, over the running canvas
            → format=yuv420p
            → (cover only) [cover v][cover a][main v][main a]concat=n=2 — the cover is laid on the
              canvas with the same fill, the main part is exactly the chain above
@@ -25,8 +27,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.schemas import CANVAS_SIZES, CropRect, EditSpec, OutputVariant, StickerLayer, TextLayer
-from app.services.layout import layer_box, rotated_overlay_position
+from app.schemas import CANVAS_SIZES, CropRect, EditSpec, MaskLayer, OutputVariant, StickerLayer, TextLayer
+from app.services.layout import layer_box, mask_box, rotated_overlay_position
 
 _AUDIO_ARGS: list[str] = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
 
@@ -52,6 +54,9 @@ def encode_args(quality: str = "standard") -> list[str]:
     return list(ENCODE_PRESETS.get(quality, ENCODE_PRESETS["standard"]))
 
 BLUR_RADIUS = "20:2"
+# Mask layer blur strength (contract §2 mask.blur 1 | 2 | 3) → boxblur luma radius : power.
+MASK_BLUR_LEVELS: dict[int, tuple[int, int]] = {1: (10, 1), 2: (20, 2), 3: (40, 3)}
+MASK_MIN_SIZE = 2  # px; a mask region smaller than this after clamping is skipped
 MIN_SEGMENT = 0.01  # seconds; shorter keep-segments are dropped
 # Every amix input is brought to one format so sources with odd layouts or rates mix cleanly.
 AUDIO_FORMAT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
@@ -181,8 +186,11 @@ def fill_chains(
     return chains
 
 
-def apply_overrides(layer: StickerLayer | TextLayer, variant: OutputVariant) -> dict[str, Any]:
-    """Effective geometry for a layer inside a variant (layer_overrides applied)."""
+def apply_overrides(layer: StickerLayer | TextLayer | MaskLayer, variant: OutputVariant) -> dict[str, Any]:
+    """Effective geometry for a layer inside a variant (layer_overrides applied).
+
+    ``height`` is only present for mask layers (the other kinds take theirs from the media).
+    """
     geo = {
         "anchor": layer.anchor,
         "margin": tuple(layer.margin),
@@ -190,11 +198,76 @@ def apply_overrides(layer: StickerLayer | TextLayer, variant: OutputVariant) -> 
         "rotate": layer.rotate,
         "opacity": layer.opacity,
     }
+    if isinstance(layer, MaskLayer):
+        geo["height"] = layer.height
     override = variant.layer_overrides.get(layer.id)
     if override is not None:
         for key, value in override.as_dict().items():
+            if key == "height" and not isinstance(layer, MaskLayer):
+                continue
             geo[key] = tuple(value) if key == "margin" else value
     return geo
+
+
+def _layer_window(t: Any, expected_duration: float) -> tuple[float, float]:
+    """Visible window on the post-trim timeline; "all" spans the whole output."""
+    if t == "all":
+        return 0.0, expected_duration
+    return float(t[0]), min(float(t[1]), expected_duration)
+
+
+def _mask_chains(
+    layer: MaskLayer,
+    geo: Mapping[str, Any],
+    W: int,
+    H: int,
+    current: str,
+    n: int,
+    window: tuple[float, float] | None,
+    warnings: list[str],
+) -> list[str] | None:
+    """Filter chains that lay mask layer ``n`` over ``current`` and end in ``[c{n}]``.
+
+    ``window`` is the (start, end) of a timed layer, None for "all". Returns None — without
+    consuming the ``[c{n}]`` label — when the region falls off the canvas or is too small to
+    blur; the reason goes to ``warnings``.
+    """
+    box = mask_box(geo["anchor"], geo["margin"], geo["width"], geo["height"], W, H)
+    x, y, w, h = box.rounded()
+    # Clamp to the canvas: crop / drawbox reject regions that stick out.
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(W, x + w), min(H, y + h)
+    w, h = x1 - x0, y1 - y0
+    if w < MASK_MIN_SIZE or h < MASK_MIN_SIZE:
+        warnings.append(f"图层 {layer.id}：遮盖区域不在画布内，已跳过")
+        return None
+    x, y = x0, y0
+
+    enable = f":enable='between(t,{_fmt(window[0])},{_fmt(window[1])})'" if window else ""
+    opacity = float(geo["opacity"])
+    out = f"[c{n}]"
+    if layer.mode == "solid":
+        color = ffmpeg_color(layer.color)
+        if opacity < 1:
+            color += f"@{_fmt(opacity)}"
+        return [f"{current}drawbox=x={x}:y={y}:w={w}:h={h}:color={color}:t=fill{enable}{out}"]
+
+    radius, power = MASK_BLUR_LEVELS[layer.blur]
+    # boxblur refuses a radius that is not < min(w, h) / 2; shrink it to fit the region.
+    radius = min(radius, min(w, h) // 2 - 1)
+    if radius < 1:
+        warnings.append(f"图层 {layer.id}：遮盖区域太小，无法模糊，已跳过")
+        return None
+    src, blurred, mixed = f"[m{n}s]", f"[m{n}b]", f"[m{n}x]"
+    # format=rgba before crop: on yuv420p an odd x / y would be silently rounded to even.
+    steps = [f"{blurred}format=rgba", f"crop={w}:{h}:{x}:{y}", f"boxblur=lr={radius}:lp={power}{enable}"]
+    if opacity < 1:
+        steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
+    return [
+        f"{current}split=2{src}{blurred}",
+        ",".join(steps) + mixed,
+        f"{src}{mixed}overlay={x}:{y}{enable}{out}",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -279,15 +352,24 @@ def build_render_command(
     has_video_layer = False
     sticker_audio: list[str] = []  # labels of sticker audio chains to mix in
     for layer in spec.layers:
+        if isinstance(layer, MaskLayer):
+            # No media input: the mask works on the running canvas itself.
+            window = None if layer.t == "all" else _layer_window(layer.t, expected_duration)
+            mask = _mask_chains(
+                layer, apply_overrides(layer, variant), W, H, current, layer_index + 1, window, warnings
+            )
+            if mask is None:
+                continue
+            chains += mask
+            layer_index += 1
+            current = f"[c{layer_index}]"
+            continue
+
         image = _resolve_layer_image(layer, assets, resolve_image_url, warnings)
         if image is None:
             continue
 
-        # Visible window on the post-trim timeline; "all" spans the whole output.
-        if layer.t == "all":
-            t_start, t_end = 0.0, expected_duration
-        else:
-            t_start, t_end = float(layer.t[0]), min(float(layer.t[1]), expected_duration)
+        t_start, t_end = _layer_window(layer.t, expected_duration)
         if image.is_video and t_start >= expected_duration:
             warnings.append(f"图层 {layer.id}：出现时段起点超出剪后时长，已跳过")
             continue

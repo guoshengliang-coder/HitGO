@@ -60,6 +60,10 @@ export const IconSticker = () => (
   <svg {...base}><path d="M3 3h10v6l-4 4H3z" /><path d="M9 13V9h4" /></svg>
 );
 export const IconPlus = () => <svg {...base}><path d="M8 3v10M3 8h10" /></svg>;
+/** 遮盖层：贴底的一条带子 + 斜纹。 */
+export const IconMask = () => (
+  <svg {...base}><rect x="2" y="9" width="12" height="4.5" rx="1" /><path d="M5 9l-2.5 4.5M9 9l-3 4.5M13 9l-3 4.5" /></svg>
+);
 export const IconRetry = () => (
   <svg {...base}><path d="M13 8a5 5 0 1 1-1.5-3.5" /><path d="M13 2.5v3h-3" /></svg>
 );

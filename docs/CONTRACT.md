@@ -196,6 +196,16 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "anchor": "top-center", "margin": [0, 0.06],
       "width": 0.5,                          // 相对画布宽；PNG 按此缩放
       "rotate": 0, "opacity": 1, "t": "all"
+    },
+    {
+      "id": "l_3",
+      "type": "mask",                        // 遮盖层：把画面上的一块区域模糊或盖上色块（遮原字幕），不需要素材
+      "mode": "blur",                        // 可选，缺省 blur：blur 区域模糊 | solid 色块
+      "blur": 2,                             // 可选，缺省 2：强度档 1 | 2 | 3，只对 blur 生效
+      "color": "#000000",                    // 可选，缺省 #000000：#RRGGBB，只对 solid 生效；透明度用 opacity
+      "anchor": "bottom-center", "margin": [0, 0.10],
+      "width": 1.0, "height": 0.12,          // height 相对画布高（遮盖没有素材宽高比）
+      "rotate": 0, "opacity": 1, "t": [0, 6]
     }
   ],
   "outputs": [
@@ -231,7 +241,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 规则：
 
 - **锚点**：`top-left | top-center | top-right | center-left | center | center-right | bottom-left | bottom-center | bottom-right`。
-- **图层位置换算**（画布 W×H 像素，图层宽 w = width·W，高 h 由素材宽高比推出）：
+- **图层位置换算**（画布 W×H 像素，图层宽 w = width·W，高 h 由素材宽高比推出；遮盖层 h = height·H）：
   - x：left → `margin.x·W`；center → `(W−w)/2 + margin.x·W`；right → `W − w − margin.x·W`
   - y：top → `margin.y·H`；center → `(H−h)/2 + margin.y·H`；bottom → `H − h − margin.y·H`
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
@@ -241,7 +251,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
 - **编辑器只产出一个 `9x16` 输出**（HIG-8）：前端载入、批量应用回填和导出前都会把 spec 收成只含一个 `9x16` 的 `outputs`（保留它的 `fill` / `color` / `crop` / `quality`，去掉其他变体与 `layer_overrides`；没有 `9x16` 时沿用第一个变体的 `fill` / `color` / `quality` 新建，`crop` 丢弃），并自动保存写回。多画幅字段、后端校验与 worker 行为不变，上面的示例仍是合法 spec，只是编辑器不再产生这种形状。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
-- `layer_overrides` 只允许覆盖 `anchor | margin | width | rotate | opacity`。
+- `layer_overrides` 只允许覆盖 `anchor | margin | width | height | rotate | opacity`（`height` 只对遮盖层有意义，其它类型忽略）。
+- **遮盖层 `type = "mask"`**：把画布上的一块矩形区域模糊或盖上色块，典型用途是遮住烧进画面的原字幕再叠新字幕；不需要任何素材。
+  - 位置换算同其它图层，`h = height·H`（`height` 缺省 0.12，(0, 1]）；`rotate` 忽略。超出画布的部分裁掉，剩余不足 2×2 px 时 worker 跳过该图层并在 job.error 里记警告（不失败）。
+  - `mode = "blur"`（缺省）：区域模糊，`blur` 档位 1 / 2 / 3 = `boxblur=10:1 / 20:2 / 40:3`，半径自动收到 `min(w, h) / 2 − 1`（收到 0 时跳过并记警告）；`opacity` 是模糊层按透明度叠回原画面的比例。
+  - `mode = "solid"`：用 `color`（`#RRGGBB`）盖住区域，`opacity` 是色块的 alpha。
+  - 层级按 `layers` 数组顺序：编辑器新建 / 粘贴遮盖层时插到第一个文字图层之前，所以遮盖永远压在字幕之下；用户仍可在同类里调层级。
+  - 批量套用 `style_only` 时复制 `mode | color | blur | height`（+ 公共的 `width | rotate | opacity`），未匹配的遮盖层插到目标第一个文字图层之前而不是追加到末尾。
+  - 编辑器预览用 `backdrop-filter` 模糊 / 色块 div 实时叠在画面上，只是近似；成片效果以 worker 为准。遮盖只是模糊 / 色块，不是无痕擦除。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
 - **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
@@ -297,7 +314,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
-    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id`；文字：`text | spans | style | image_url | image_size`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾。目标没有图层时等价于 `replace`。
+    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
 - `GET /api/outputs?limit=100&offset=0` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
@@ -439,6 +456,12 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
    - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
+   - 遮盖层（`type = "mask"`）不加 `-i` 输入，直接作用在当前画布 `[c{n−1}]` 上，区域先裁到画布内（x, y, w, h 为整数像素）：
+     - blur：`[c{n−1}]split=2[m{n}s][m{n}b]`；`[m{n}b]format=rgba,crop=w:h:x:y,boxblur=lr=R:lp=P[:enable='between(t,a,b)'][,colorchannelmixer=aa=opacity][m{n}x]`；
+       `[m{n}s][m{n}x]overlay=x:y[:enable='between(t,a,b)'][c{n}]`。档位 1 / 2 / 3 → `R:P` = `10:1 / 20:2 / 40:3`，`R` 再收到 `min(w, h) // 2 − 1`
+       （`boxblur` 要求半径小于短边的一半，收到 0 时跳过）。`format=rgba` 放在 `crop` 之前，避免 yuv420p 下奇数坐标被取偶。
+     - solid：`[c{n−1}]drawbox=x=X:y=Y:w=W:h=H:color=0xRRGGBB[@opacity]:t=fill[:enable='between(t,a,b)'][c{n}]`。
+     - 区域裁后不足 2×2 px 的遮盖跳过并记警告，不占用 `[c{n}]` 编号；成片里存在遮盖层不影响输出端的 `-t` 判断（它不是视频输入）。
    - 视频贴纸图层额外：输入侧 `playback = "loop"` 时加 `-stream_loop -1`，带透明的 WebM 还要强制解码器
      （VP9 → `-c:v libvpx-vp9`，VP8 → `-c:v libvpx`，否则 alpha 会被静默丢弃）；滤镜侧在链尾加
      `setpts=PTS-STARTPTS+a/TB`（贴纸从自己第 0 帧开始播）与 `trim=end=b`（既挡住无限循环，也挡住

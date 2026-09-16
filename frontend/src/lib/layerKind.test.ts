@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { indexWithinType, layersOfType, moveWithinType } from './layerKind';
+import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType } from './layerKind';
 import type { Layer } from '../types';
 
 const base = { anchor: 'center', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: 'all' } as const;
@@ -44,5 +44,16 @@ describe('indexWithinType', () => {
     expect(indexWithinType(MIXED, 't2')).toBe(1);
     expect(indexWithinType(MIXED, 's2')).toBe(1);
     expect(indexWithinType(MIXED, 'nope')).toBe(-1);
+  });
+});
+
+describe('insertIndexBelow', () => {
+  it('返回第一个该类图层的下标（插到它之前 = 压在这一类之下）', () => {
+    expect(insertIndexBelow(MIXED, 'text')).toBe(1);
+    expect(insertIndexBelow(MIXED, 'sticker')).toBe(0);
+  });
+  it('没有这一类时插到末尾', () => {
+    expect(insertIndexBelow(MIXED, 'mask')).toBe(MIXED.length);
+    expect(insertIndexBelow([], 'text')).toBe(0);
   });
 });

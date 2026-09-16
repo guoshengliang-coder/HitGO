@@ -310,7 +310,28 @@ export interface TextLayer extends LayerBase {
   width_manual?: boolean;
 }
 
-export type Layer = StickerLayer | TextLayer;
+/** 遮盖方式：blur 区域模糊 | solid 色块。 */
+export type MaskMode = 'blur' | 'solid';
+/** 模糊强度档（契约 §2 mask.blur）：1 弱 | 2 中 | 3 强。 */
+export type MaskBlur = 1 | 2 | 3;
+
+/**
+ * 遮盖层（契约 §2 type = "mask"）：把画布上一块矩形区域模糊或盖上色块，典型用途是遮住烧进画面的原字幕。
+ * 不需要素材：高度直接相对画布高，rotate 被 worker 忽略。
+ */
+export interface MaskLayer extends LayerBase {
+  type: 'mask';
+  /** 相对画布高 (0, 1]，缺省 0.12。 */
+  height: number;
+  /** 缺省 'blur'。 */
+  mode: MaskMode;
+  /** 可选，缺省 2：只对 blur 生效。 */
+  blur?: MaskBlur;
+  /** 可选，缺省 '#000000'：#RRGGBB，只对 solid 生效；透明度用 opacity。 */
+  color?: string;
+}
+
+export type Layer = StickerLayer | TextLayer | MaskLayer;
 
 export type AspectKey = '9:16' | '1:1' | '4:5' | '16:9';
 export type VariantKey = '9x16' | '1x1' | '4x5' | '16x9';
@@ -318,7 +339,8 @@ export type FillMode = 'blur' | 'color' | 'crop';
 /** 输出编码档位：standard（默认，省略即 standard）| high。 */
 export type OutputQuality = 'standard' | 'high';
 
-export type LayerOverride = Partial<Pick<LayerBase, 'anchor' | 'margin' | 'width' | 'rotate' | 'opacity'>>;
+/** 按输出变体覆盖的几何字段；height 只对遮盖层有意义。 */
+export type LayerOverride = Partial<Pick<LayerBase, 'anchor' | 'margin' | 'width' | 'rotate' | 'opacity'>> & { height?: number };
 
 /** 源画面上的裁切窗口（相对源宽 / 高的 0–1 比例）；只在 fill = 'crop' 时生效，缺省 = cover 居中。 */
 export interface CropRect {

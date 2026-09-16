@@ -260,7 +260,10 @@ function savePresets() {
 }
 const presets: Preset[] = loadPresets();
 
-/** style_only：按 id → 相同文字 匹配，只覆盖类型相关字段与 width / rotate / opacity。 */
+/**
+ * style_only：按 id → 相同文字 匹配，只覆盖类型相关字段与 width / rotate / opacity。
+ * 没匹配上的追加到末尾；遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下），与后端 apply.py 一致。
+ */
 function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
   if (!target.length) return clone(source);
   const out = clone(target);
@@ -269,7 +272,8 @@ function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
     let hit = out.find((l) => !used.has(l.id) && l.id === src.id);
     if (!hit && src.type === 'text') hit = out.find((l) => !used.has(l.id) && l.type === 'text' && l.text === src.text);
     if (!hit) {
-      out.push(clone(src));
+      const firstText = src.type === 'mask' ? out.findIndex((l) => l.type === 'text') : -1;
+      out.splice(firstText < 0 ? out.length : firstText, 0, clone(src));
       continue;
     }
     used.add(hit.id);
@@ -285,6 +289,13 @@ function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
       hit.style = s.style;
       hit.image_url = s.image_url;
       hit.image_size = s.image_size;
+    } else if (s.type === 'mask' && hit.type === 'mask') {
+      hit.mode = s.mode;
+      hit.height = s.height;
+      if (s.blur !== undefined) hit.blur = s.blur;
+      else delete hit.blur;
+      if (s.color !== undefined) hit.color = s.color;
+      else delete hit.color;
     } else {
       // 类型不同：整个换成源图层，但保留目标的位置 / 时段
       const { anchor, margin, t } = hit;

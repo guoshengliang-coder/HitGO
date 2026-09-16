@@ -1235,3 +1235,27 @@ def test_batch_apply_cover_module(client, ready_video, db):
     r = client.post(f"/api/batches/{BATCH}/apply", json={"source_video_id": VIDEO, "target_video_ids": ["v_test000002"], "modules": ["cover"]})
     assert r.status_code == 200, r.text
     assert r.json()[0]["edit_spec"]["cover"] == {"asset_id": "a_cover", "duration": 1.5}
+
+
+def test_mask_layer_round_trips_through_the_spec_api(client, ready_video):
+    spec = valid_spec()
+    mask = {"id": "l_m", "type": "mask", "mode": "solid", "color": "#112233", "blur": 1, "height": 0.2,
+            "anchor": "bottom-center", "margin": [0, 0.1], "width": 1.0, "rotate": 0, "opacity": 0.8, "t": [0, 6],
+            "name": "遮盖"}
+    spec["layers"].insert(1, mask)
+    spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 0.15}
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    stored = client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]
+    assert stored["layers"][1] == mask  # raw spec, frontend-only name included
+    assert stored["outputs"][1]["layer_overrides"]["l_m"] == {"height": 0.15}
+
+    # defaults are the worker's business: a minimal mask is accepted as-is
+    spec["layers"][1] = {"id": "l_m", "type": "mask"}
+    del spec["outputs"][1]["layer_overrides"]["l_m"]
+    assert put_spec(client, VIDEO, spec).status_code == 200
+    assert client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]["layers"][1] == {"id": "l_m", "type": "mask"}
+
+    spec["layers"][1] = {"id": "l_m", "type": "mask", "color": "#00000080"}
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 400 and "color" in r.json()["errors"][0]["field"]

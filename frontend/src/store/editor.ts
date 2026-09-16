@@ -13,8 +13,8 @@ import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } fr
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { nudgePlacement, round4 } from '../lib/layout';
-import { indexWithinType, layersOfType, moveWithinType } from '../lib/layerKind';
-import { layerTypeForStep, type Step } from '../lib/steps';
+import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
+import { layerTypesForStep, type Step } from '../lib/steps';
 import { bakeTextLayer } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
@@ -198,7 +198,8 @@ export interface EditorState {
   useStem: (stem: 'vocals' | 'instrumental') => string | null;
 
   // 图层
-  addLayer: (layer: Layer) => void;
+  /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省放最上层。 */
+  addLayer: (layer: Layer, opts?: { belowType?: LayerType }) => void;
   /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
   addLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
@@ -344,6 +345,13 @@ function ensureHistory(h: Record<string, History>, id: string): History {
   if (!h[id]) h[id] = { past: [], future: [] };
   return h[id];
 }
+
+/** 每类图层归哪个模块管（粘贴提示用）。 */
+const LAYER_HOME: Record<Layer['type'], { kind: string; step: string }> = {
+  text: { kind: '文字', step: '文本' },
+  sticker: { kind: '贴纸', step: '贴纸' },
+  mask: { kind: '遮盖', step: '字幕' },
+};
 
 export const useEditor = create<EditorState>((set, get) => {
   const scheduleSave = (videoId: string) => {
@@ -846,9 +854,10 @@ export const useEditor = create<EditorState>((set, get) => {
       });
     },
 
-    addLayer: (layer) => {
+    addLayer: (layer, opts) => {
       get().updateSpec((spec) => {
-        spec.layers.push(layer);
+        const at = opts?.belowType ? insertIndexBelow(spec.layers, opts.belowType) : spec.layers.length;
+        spec.layers.splice(at, 0, layer);
       });
       set({ selectedLayerId: layer.id });
     },
@@ -919,10 +928,12 @@ export const useEditor = create<EditorState>((set, get) => {
       const clip = get().layerClipboard;
       const spec = get().currentSpec();
       if (!clip?.length || !spec) return;
-      // 文本 / 贴纸各管各的（字幕沿用文本）：粘进来的图层要能在当前模块里选中和编辑
-      const want = layerTypeForStep(get().step);
-      if (want && clip.some((l) => l.type !== want)) {
-        set({ toast: `剪贴板里是${clip[0].type === 'text' ? '文字' : '贴纸'}图层，切到「${clip[0].type === 'text' ? '文本' : '贴纸'}」再粘贴`, toastAction: null });
+      // 文本 / 贴纸各管各的（字幕管文字 + 遮盖）：粘进来的图层要能在当前模块里选中和编辑
+      const want = layerTypesForStep(get().step);
+      const stray = clip.find((l) => !want.includes(l.type));
+      if (want.length && stray) {
+        const home = LAYER_HOME[stray.type];
+        set({ toast: `剪贴板里是${home.kind}图层，切到「${home.step}」再粘贴`, toastAction: null });
         return;
       }
       const sameVideo = get().layerClipboardVideoId === get().currentVideoId;
@@ -934,7 +945,11 @@ export const useEditor = create<EditorState>((set, get) => {
         return copy;
       });
       get().updateSpec((s) => {
-        s.layers.push(...pasted);
+        for (const l of pasted) {
+          // 遮盖永远压在字幕之下：插到第一个文字图层之前，其它类型照旧放最上层
+          if (l.type === 'mask') s.layers.splice(insertIndexBelow(s.layers, 'text'), 0, l);
+          else s.layers.push(l);
+        }
       });
       // 同一视频里连续粘贴时继续错开：剪贴板里的坐标随之更新
       if (sameVideo) set({ layerClipboard: cloneSpec({ ...emptySpec(), layers: pasted }).layers });

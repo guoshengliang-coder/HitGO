@@ -53,6 +53,7 @@ CANVAS_SIZES: dict[str, tuple[int, int]] = {
 DEFAULT_VARIANT_KEY = "9x16"
 
 _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$")
+_HEX_COLOR_6 = re.compile(r"^#[0-9a-fA-F]{6}$")
 _VARIANT_KEY = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 Margin = tuple[float, float]
@@ -188,17 +189,41 @@ class TextLayer(LayerBase):
         return v
 
 
-Layer = Annotated[StickerLayer | TextLayer, Field(discriminator="type")]
+MaskMode = Literal["blur", "solid"]
+
+
+class MaskLayer(LayerBase):
+    """A region of the frame blurred or covered by a solid box (contract §2), e.g. over burnt-in
+    subtitles. No media behind it: ``height`` is relative to the canvas height and ``rotate`` is
+    ignored by the worker."""
+
+    type: Literal["mask"]
+    height: float = Field(default=0.12, gt=0, le=1.0)
+    mode: MaskMode = "blur"
+    blur: int = Field(default=2, ge=1, le=3)  # strength level, blur mode only
+    color: str = "#000000"  # solid mode only; the alpha comes from ``opacity``
+
+    @field_validator("color")
+    @classmethod
+    def _validate_color(cls, v: str) -> str:
+        if not _HEX_COLOR_6.match(v):
+            raise ValueError("color 必须是 #RRGGBB 形式")
+        return v
+
+
+Layer = Annotated[StickerLayer | TextLayer | MaskLayer, Field(discriminator="type")]
 
 
 class LayerOverride(BaseModel):
-    """Per-variant override; only these five keys are allowed (contract §2)."""
+    """Per-variant override; only these six keys are allowed (contract §2). ``height`` only
+    means something for mask layers."""
 
     model_config = ConfigDict(extra="forbid")
 
     anchor: Anchor | None = None
     margin: Margin | None = None
     width: float | None = Field(default=None, gt=0, le=1.0)
+    height: float | None = Field(default=None, gt=0, le=1.0)
     rotate: float | None = Field(default=None, ge=-360, le=360)
     opacity: float | None = Field(default=None, ge=0, le=1)
 
@@ -376,7 +401,7 @@ class EditSpec(BaseModel):
             raise ValueError(f"图层 id 重复：{', '.join(dupes)}")
         return self
 
-    def layer_by_id(self, layer_id: str) -> StickerLayer | TextLayer | None:
+    def layer_by_id(self, layer_id: str) -> StickerLayer | TextLayer | MaskLayer | None:
         for layer in self.layers:
             if layer.id == layer_id:
                 return layer

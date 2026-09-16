@@ -35,6 +35,15 @@ export function moveWithinType<T extends Layer>(layers: T[], id: string, index: 
   return next;
 }
 
+/**
+ * 新图层要压在某一类之下时的插入下标：第一个该类图层的位置；没有这一类时等于末尾（= 最上层）。
+ * 遮盖层用它插到第一个文字图层之前，保证遮盖永远在字幕之下（契约 §2）。
+ */
+export function insertIndexBelow(layers: Layer[], type: LayerType): number {
+  const i = layers.findIndex((l) => l.type === type);
+  return i < 0 ? layers.length : i;
+}
+
 /** 图层在自己这一类里的位置（0 = 最下层）；找不到返回 -1。 */
 export function indexWithinType(layers: Layer[], id: string): number {
   const layer = layers.find((l) => l.id === id);
