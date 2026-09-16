@@ -512,7 +512,8 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 2. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
    - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
      回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。
-   - tts：每句用版本的 `voice` 调 `cosyvoice-v3-flash` 出 wav（每句一个新实例）。
+   - tts：每句用版本的 `voice` 调 `cosyvoice-v3-flash` 出 wav（每句一个新实例）。译文常比原句长（韩语约为英文 2 倍），
+     一句配音超过它到下一句起点的间隔时，按比例用 `speech_rate`（上限 2.0）加速重合成一次，剩余再交给下一步的 `atempo`。
    - mix：每句放在模板里该句的源起点；配音比到下一句起点的间隔长时 `atempo` 加速，上限 `LOCALIZE_MAX_TEMPO`（缺省 1.3），
      仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`
      → `{asset_id}.m4a`（aac 192k，44.1 kHz 立体声），建一条 `type = audio`、`source = derived`、`stem = dubbed` 的素材，

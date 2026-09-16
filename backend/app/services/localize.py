@@ -56,6 +56,12 @@ STAGE_TTS = "tts"
 STAGE_MIX = "mix"
 STEM_DUBBED = "dubbed"
 AUTO = "auto"
+# CosyVoice speech_rate range; a clip longer than its slot is re-synthesized faster before atempo.
+MAX_SPEECH_RATE = 2.0
+MT_DOMAINS = (
+    "Voice-over script for a short marketing video. Translate naturally and concisely so that "
+    "each numbered line, when spoken aloud, takes about as long as the source line."
+)
 
 
 class LocalizeError(RuntimeError):
@@ -313,10 +319,10 @@ def plan_placements(cues: list[dict[str, Any]], clip_durations: list[float], tot
     """
     placements: list[dict[str, Any]] = []
     warnings: list[str] = []
+    slots = cue_slots(cues, total)
     for k, cue in enumerate(cues):
         start = float(cue["start"])
-        limit = float(cues[k + 1]["start"]) if k + 1 < len(cues) else float(total)
-        available = max(limit - start, 0.0)
+        available = slots[k]
         clip = float(clip_durations[k])
         tempo = 1.0
         if clip > available > 0:
@@ -365,6 +371,23 @@ def mix_args(clips: list[tuple[Path, float, float]], total: float, dst: Path, ff
         str(dst),
     ]  # fmt: skip
     return argv
+
+
+def cue_slots(cues: list[dict[str, Any]], total: float) -> list[float]:
+    """Seconds each cue may occupy: from its start to the next cue's start (the last one: to the end)."""
+    slots: list[float] = []
+    for k, cue in enumerate(cues):
+        start = float(cue["start"])
+        limit = float(cues[k + 1]["start"]) if k + 1 < len(cues) else float(total)
+        slots.append(max(limit - start, 0.0))
+    return slots
+
+
+def speech_rate_for(clip_seconds: float, slot_seconds: float, max_rate: float = MAX_SPEECH_RATE) -> float:
+    """Faster synthesis rate that would fit ``clip_seconds`` into ``slot_seconds``; 1.0 = already fits."""
+    if slot_seconds <= 0 or clip_seconds <= slot_seconds:
+        return 1.0
+    return round(min(max_rate, clip_seconds / slot_seconds), 2)
 
 
 def voice_name(video_name: str, lang: str) -> str:
@@ -419,7 +442,7 @@ class TranslateProvider(Protocol):
 
 
 class TtsProvider(Protocol):
-    def synthesize(self, text: str, voice: str) -> bytes: ...
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes: ...
 
 
 @dataclass
@@ -472,11 +495,11 @@ class FakeTts:
     fail_voices: set[str] = field(default_factory=set)
     calls: list[tuple[str, str]] = field(default_factory=list)
 
-    def synthesize(self, text: str, voice: str) -> bytes:
-        self.calls.append((text, voice))
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes:
+        self.calls.append((text, voice) if speech_rate == 1.0 else (text, voice, speech_rate))
         if voice in self.fail_voices:
             raise LocalizeError(f"音色 {voice} 合成失败")
-        return silent_wav(self.seconds)
+        return silent_wav(self.seconds / speech_rate)
 
 
 def fake_providers() -> Providers:
@@ -609,21 +632,29 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     clip_paths: list[Path] = []
     clip_durations: list[float] = []
     tmp.mkdir(parents=True, exist_ok=True)
+    total = float(video.duration or max(float(c["end"]) for c in cues))
+    slots = dict(zip((int(c["i"]) for c in cues), cue_slots(cues, total), strict=True))
     for cue in cues:
         text = translated_by_i.get(int(cue["i"]), "")
         if not text:
             continue
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
         clip.write_bytes(providers.tts.synthesize(text, voice))
+        seconds = wav_duration(clip)
+        # Translations often run longer than the source (Korean ≈ 2× English): ask the model to
+        # speak faster before falling back to atempo, which only sounds fine up to ~1.3×.
+        rate = speech_rate_for(seconds, slots[int(cue["i"])])
+        if rate > 1.0:
+            clip.write_bytes(providers.tts.synthesize(text, voice, rate))
+            seconds = wav_duration(clip)
         spoken.append(cue)
         clip_paths.append(clip)
-        clip_durations.append(wav_duration(clip))
+        clip_durations.append(seconds)
     if not spoken:
         raise LocalizeError("没有可合成的译文")
 
     _stamp(version, stage=STAGE_MIX)
     _save(db, video, loc, langs=[lang])
-    total = float(video.duration or max(float(c["end"]) for c in cues))
     placements, warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
     asset_id = ids.asset_id()
     dst = storage.asset_path(asset_id, VOICE_EXT)

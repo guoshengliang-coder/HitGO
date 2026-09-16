@@ -56,6 +56,29 @@ def test_wav_duration_ignores_a_streaming_placeholder_header(tmp_path):
     assert localize.wav_duration(streamed) == pytest.approx(1.5, abs=1e-3)
 
 
+def test_cue_slots_and_speech_rate_for():
+    cues = [{"i": 0, "start": 0.4}, {"i": 1, "start": 3.0}, {"i": 2, "start": 9.0}]
+    assert localize.cue_slots(cues, 12.0) == [2.6, 6.0, 3.0]
+    assert localize.speech_rate_for(2.0, 2.6) == 1.0  # fits
+    assert localize.speech_rate_for(3.9, 2.6) == 1.5  # 1.5× faster would fit exactly
+    assert localize.speech_rate_for(9.0, 2.6) == 2.0  # capped at the vendor's max
+    assert localize.speech_rate_for(1.0, 0.0) == 1.0  # no slot at all: leave it to atempo / warnings
+
+
+def test_build_version_resynthesizes_faster_when_a_clip_overflows_its_slot(ready_video, db, no_ffmpeg):
+    """Korean runs ~2× longer than English: the second synthesis asks for speech_rate before atempo."""
+    queue(db, ["ko"], transcript=DONE_TRANSCRIPT, source_lang="en")
+    tts = localize.FakeTts(seconds=5.0)  # cue 0 has a 2.58 s slot, cue 1 has 21.6 s
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=tts)
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    ko = db.get(Video, VIDEO).localization["versions"]["ko"]
+    assert ko["status"] == "done"
+    rates = [c[2] for c in tts.calls if len(c) == 3]
+    assert rates == [1.94]  # only cue 0 was re-synthesized, at 5.0 / 2.58
+    assert ko["warnings"] == []  # at 1.94× the clip is 2.58 s and fits without atempo
+
+
 def test_cues_from_sentences_drops_empty_clamps_and_renumbers():
     sentences = [
         {"begin_time": 3000, "end_time": 5500, "text": " second "},
@@ -415,7 +438,7 @@ def test_run_localization_without_dashscope_fails_cleanly(ready_video, db, no_ff
 
 def test_soft_time_limit_fails_whatever_is_left_with_a_readable_reason(ready_video, db, no_ffmpeg):
     class SlowTts(localize.FakeTts):
-        def synthesize(self, text, voice):
+        def synthesize(self, text, voice, speech_rate=1.0):
             raise SoftTimeLimitExceeded()
 
     queue(db, ["ko", "ja"], transcript=DONE_TRANSCRIPT, source_lang="en")

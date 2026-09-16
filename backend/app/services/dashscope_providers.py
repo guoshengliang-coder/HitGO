@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.services.localize import AsrResult, LocalizeError, Providers
+from app.services.localize import MT_DOMAINS, AsrResult, LocalizeError, Providers
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ class DashScopeTranslate:
         from dashscope import Generation  # noqa: PLC0415
 
         dashscope.api_key = self.api_key
-        options: dict[str, Any] = {"source_lang": source, "target_lang": target}
+        options: dict[str, Any] = {"source_lang": source, "target_lang": target, "domains": MT_DOMAINS}
         clean_terms = [
             {"source": str(t.get("source", "")).strip(), "target": str(t.get("target", "")).strip()}
             for t in terms
@@ -141,15 +141,18 @@ class DashScopeTts:
     api_key: str
     model: str
 
-    def synthesize(self, text: str, voice: str) -> bytes:
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0) -> bytes:
         dashscope = _import_dashscope()
         from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer  # noqa: PLC0415
 
         dashscope.api_key = self.api_key
+        rate = max(0.5, min(2.0, float(speech_rate)))  # the vendor's documented range
 
         def call() -> Any:
             # A synthesizer instance is single-use: new one per call.
-            synthesizer = SpeechSynthesizer(model=self.model, voice=voice, format=AudioFormat.WAV_22050HZ_MONO_16BIT)
+            synthesizer = SpeechSynthesizer(
+                model=self.model, voice=voice, format=AudioFormat.WAV_22050HZ_MONO_16BIT, speech_rate=rate
+            )
             audio = synthesizer.call(text)
             if not audio:
                 response = synthesizer.get_response() if hasattr(synthesizer, "get_response") else None

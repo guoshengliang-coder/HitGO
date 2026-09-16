@@ -91,7 +91,13 @@ def main() -> int:
                 t0 = step(f"TTS {args.tts} · 音色 {target_voice}（{localize.LANGS[args.target]['label']}）")
                 out = Path(tmp) / f"{args.target}.wav"
                 out.write_bytes(tts.synthesize(translated.strip(), target_voice))
-                done(t0, f"{out.stat().st_size} 字节，{localize.wav_duration(out):.1f} 秒")
+                seconds = localize.wav_duration(out)
+                done(t0, f"{out.stat().st_size} 字节，{seconds:.1f} 秒（英文原句 {localize.wav_duration(wav):.1f} 秒）")
+                rate = localize.speech_rate_for(seconds, localize.wav_duration(wav))
+                if rate > 1.0:
+                    t0 = step(f"TTS 加速重合成 speech_rate={rate}（塞进英文原句的时长）")
+                    out.write_bytes(tts.synthesize(translated.strip(), target_voice, rate))
+                    done(t0, f"{localize.wav_duration(out):.1f} 秒")
             except Exception as exc:  # noqa: BLE001
                 print(f"   失败：{exc}")
                 failed = True
