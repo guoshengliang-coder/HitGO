@@ -1,6 +1,6 @@
-// edit_spec 辅助：清洗本地字段、图层命名、安全区检查、收成单一 9:16 输出。
+// edit_spec 辅助：清洗本地字段、图层命名、安全区检查、多画幅 outputs 规范化（HIG-29）。
 
-import type { Asset, EditSpec, Layer, OutputVariant, SafeZone, TextLayer } from '../types';
+import { VARIANT_DEFS, variantDef, type Asset, type EditSpec, type Layer, type OutputVariant, type SafeZone, type TextLayer, type VariantKey } from '../types';
 import { boxOverlapsRect, placeLayer } from './layout';
 import { normalizeRanges } from './time';
 import { getCachedText } from './textImage';
@@ -24,6 +24,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       for (const f of LOCAL_LAYER_FIELDS) delete copy[f];
       // 没有局部上色时不发 spans，保持旧 spec 形状
       if (l.type === 'text' && !l.spans?.length) delete copy.spans;
+      if (l.type === 'text' && !(l.variant_images && Object.keys(l.variant_images).length)) delete copy.variant_images;
       return copy as unknown as Layer;
     }),
     outputs: spec.outputs.map((o) => {
@@ -73,21 +74,53 @@ export function layerAspect(layer: Layer, assets: Asset[]): number {
 }
 
 /**
- * 编辑器只产出一个 9:16 输出（HIG-8）：把旧 spec 里的其他画幅变体和 layer_overrides 清掉。
- * - 有 9x16 变体：保留它的填充 / 颜色 / 裁切 / 清晰度；
- * - 没有：沿用第一个变体的填充 / 颜色 / 清晰度新建 9x16，裁切窗口是按别的画幅比算的，丢掉（回到居中）。
- * 已经是单一 9x16 且没有覆盖时原样返回同一个对象，调用方可以用 === 判断要不要写回。
+ * 编辑器里 outputs 的形状（HIG-29）：保存的是「已配置的画幅」，导出时再勾选出哪些。
+ * - 始终有 9x16（图层设计用的参考画布），排第一，其余按 VARIANT_DEFS 顺序；
+ * - 同一画幅只留第一个，不认识的 variant_key 丢掉，aspect 与 key 对齐；
+ * - 非 9x16 画幅没写 layer_fit 的（HIG-8 之前的旧 spec）改成跟随视频，旧的 layer_overrides 是按画布相对写的，一并清掉。
+ * 没有变化时原样返回同一个对象，调用方可以用 === 判断要不要写回。
  */
-export function toSingleOutput(spec: EditSpec): EditSpec {
+export function normalizeOutputs(spec: EditSpec): EditSpec {
   const outs = spec.outputs ?? [];
-  const only = outs.length === 1 ? outs[0] : null;
-  if (only && only.variant_key === '9x16' && !(only.layer_overrides && Object.keys(only.layer_overrides).length)) return spec;
-  const base = outs.find((o) => o.variant_key === '9x16');
-  const src = base ?? outs[0];
-  const next: OutputVariant = { variant_key: '9x16', aspect: '9:16', fill: src?.fill ?? 'blur', quality: src?.quality === 'high' ? 'high' : 'standard' };
-  if (next.fill === 'color') next.color = src?.color ?? '#000000';
-  if (base && next.fill === 'crop' && base.crop) next.crop = { ...base.crop };
-  return { ...spec, outputs: [next] };
+  const byKey = new Map<VariantKey, OutputVariant>();
+  for (const o of outs) {
+    if (!VARIANT_DEFS.some((d) => d.key === o.variant_key) || byKey.has(o.variant_key)) continue;
+    const next: OutputVariant = { ...o, aspect: variantDef(o.variant_key).aspect };
+    if (o.variant_key !== '9x16' && !o.layer_fit) {
+      next.layer_fit = 'video';
+      delete next.layer_overrides;
+    }
+    byKey.set(o.variant_key, next);
+  }
+  if (!byKey.has('9x16')) {
+    const src = outs[0];
+    const base: OutputVariant = { variant_key: '9x16', aspect: '9:16', fill: src?.fill ?? 'blur', quality: src?.quality === 'high' ? 'high' : 'standard' };
+    if (base.fill === 'color') base.color = src?.color ?? '#000000';
+    byKey.set('9x16', base);
+  }
+  const next = VARIANT_DEFS.flatMap((d) => (byKey.has(d.key) ? [byKey.get(d.key)!] : []));
+  return JSON.stringify(next) === JSON.stringify(outs) ? spec : { ...spec, outputs: next };
+}
+
+/** 新画幅的缺省设置：模糊铺底、跟随视频、清晰度随 9x16。 */
+export function defaultVariant(key: VariantKey, spec: EditSpec): OutputVariant {
+  const ref = spec.outputs.find((o) => o.variant_key === '9x16');
+  const o: OutputVariant = { variant_key: key, aspect: variantDef(key).aspect, fill: 'blur', quality: ref?.quality === 'high' ? 'high' : 'standard' };
+  if (key !== '9x16') o.layer_fit = 'video';
+  return o;
+}
+
+/** 该画幅的配置；spec 里还没有时给出缺省（不写回）。 */
+export function outputFor(spec: EditSpec, key: VariantKey): OutputVariant {
+  return spec.outputs.find((o) => o.variant_key === key) ?? defaultVariant(key, spec);
+}
+
+/** 确保 keys 里的画幅都在 outputs 里（缺的按缺省补上），已有的原样保留。没补任何东西时返回同一个对象。 */
+export function ensureVariants(spec: EditSpec, keys: VariantKey[]): EditSpec {
+  const base = normalizeOutputs(spec);
+  const missing = keys.filter((k) => !base.outputs.some((o) => o.variant_key === k));
+  if (!missing.length) return base;
+  return normalizeOutputs({ ...base, outputs: [...base.outputs, ...missing.map((k) => defaultVariant(k, base))] });
 }
 
 /** 与所选安全区重叠的图层数量（按 9:16 默认画布计算）。 */

@@ -161,7 +161,8 @@ export const api = {
 
   // 渲染
   /** name：本次导出的名称，写到每个任务上（可选，HIG-27）。 */
-  render: (video_ids: string[], name?: string) => request<Job[]>('POST', '/api/render', name?.trim() ? { video_ids, name: name.trim() } : { video_ids }),
+  render: (video_ids: string[], name?: string, variant_keys?: string[]) =>
+    request<Job[]>('POST', '/api/render', { video_ids, ...(name?.trim() ? { name: name.trim() } : {}), ...(variant_keys?.length ? { variant_keys } : {}) }),
   getJob: (id: string) => request<Job>('GET', `/api/jobs/${id}`),
   retryJob: (id: string) => request<Job>('POST', `/api/jobs/${id}/retry`),
   getJobs: (ids: string[]) => request<Job[]>('GET', `/api/jobs?ids=${ids.join(',')}`),

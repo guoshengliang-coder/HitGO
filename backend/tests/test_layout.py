@@ -113,3 +113,60 @@ def test_mask_box_and_layer_box_share_the_anchor_arithmetic():
     img = layer_box("center-right", (0.03, -0.02), 0.5, W, H, *IMG)
     mask = mask_box("center-right", (0.03, -0.02), 0.5, 216 / H, W, H)
     assert (mask.x, mask.y, mask.w, mask.h) == pytest.approx((img.x, img.y, img.w, img.h))
+
+
+# --- layer_fit = "video"（HIG-29）---------------------------------------------
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+from app.schemas import CANVAS_SIZES
+from app.services.layout import fit_map, follow_layer_box, follow_mask_box
+
+CASES_PATH = Path(__file__).resolve().parents[2] / "frontend/src/lib/fixtures/variantLayoutCases.json"
+
+
+def _case_box(c):
+    crop = lambda o: SimpleNamespace(**o["crop"]) if o.get("crop") else None  # noqa: E731
+    rw, rh = CANVAS_SIZES[c["ref"]["aspect"]]
+    W, H = CANVAS_SIZES[c["target"]["aspect"]]
+    m = fit_map((c["ref"]["fill"], crop(c["ref"]), rw, rh), (c["target"]["fill"], crop(c["target"]), W, H), *c["src"])
+    layer = c["layer"]
+    if layer["kind"] == "mask":
+        b = follow_mask_box(mask_box(layer["anchor"], tuple(layer["margin"]), layer["width"], layer["height"], rw, rh), m)
+    else:
+        b = follow_layer_box(layer["anchor"], tuple(layer["margin"]), layer["width"], *layer["image"], m)
+    return m, b
+
+
+@pytest.mark.skipif(not CASES_PATH.is_file(), reason="golden cases live in the frontend tree")
+def test_follow_video_golden_cases_shared_with_frontend():
+    cases = json.loads(CASES_PATH.read_text())["cases"]
+    assert len(cases) >= 20
+    for c in cases:
+        m, b = _case_box(c)
+        e = c["expected"]
+        assert (m.k, b.x, b.y, b.w, b.h) == pytest.approx((e["k"], e["x"], e["y"], e["w"], e["h"]), abs=2e-3), c["name"]
+
+
+def test_fit_map_is_identity_for_the_reference_itself():
+    m = fit_map(("blur", None, 1080, 1920), ("blur", None, 1080, 1920), 720, 1280)
+    assert (m.k, m.ox, m.oy) == pytest.approx((1, 0, 0))
+
+
+def test_blur_follow_equals_mapping_the_reference_box():
+    # blur / color: anchoring inside the mapped canvas is the same as mapping the 9:16 box
+    m = fit_map(("blur", None, 1080, 1920), ("blur", None, 1080, 1080), 1080, 1920)
+    ref = layer_box("bottom-right", (0.05, 0.1), 0.3, 1080, 1920, 600, 240)
+    got = follow_layer_box("bottom-right", (0.05, 0.1), 0.3, 600, 240, m)
+    mapped = follow_mask_box(ref, m)
+    assert (got.x, got.y, got.w, got.h) == pytest.approx((mapped.x, mapped.y, mapped.w, mapped.h))
+
+
+def test_cover_crop_never_scales_layers_up_and_keeps_them_on_canvas():
+    m = fit_map(("blur", None, 1080, 1920), ("crop", None, 1920, 1080), 1080, 1920)
+    assert m.k == pytest.approx(1920 / 1080)
+    b = follow_layer_box("bottom-center", (0, 0.05), 0.5, 540, 130, m)
+    assert b.w == pytest.approx(540)
+    assert 0 <= b.y and b.y + b.h <= 1080

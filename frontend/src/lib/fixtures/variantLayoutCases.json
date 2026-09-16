@@ -1,0 +1,824 @@
+{
+ "_note": "HIG-29 layer_fit=video 的 golden 用例：backend tests/test_layout.py 与 frontend lib/variantLayout.test.ts 共用；由后端实现生成，改规则时两端一起改并重新生成。",
+ "cases": [
+  {
+   "name": "9:16 源 → 1:1 blur · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 266.625,
+    "y": 885.6,
+    "w": 546.75,
+    "h": 86.4
+   }
+  },
+  {
+   "name": "9:16 源 → 1:1 blur · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 388.125,
+    "y": 64.8,
+    "w": 303.75,
+    "h": 73.125
+   }
+  },
+  {
+   "name": "9:16 源 → 1:1 color · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 266.625,
+    "y": 885.6,
+    "w": 546.75,
+    "h": 86.4
+   }
+  },
+  {
+   "name": "9:16 源 → 1:1 color · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 388.125,
+    "y": 64.8,
+    "w": 303.75,
+    "h": 73.125
+   }
+  },
+  {
+   "name": "9:16 源 → 1:1 crop · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 1.0,
+    "x": 54.0,
+    "y": 1154.4,
+    "w": 972.0,
+    "h": 153.6
+   }
+  },
+  {
+   "name": "9:16 源 → 1:1 crop · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 1.0,
+    "x": 270.0,
+    "y": 64.8,
+    "w": 540.0,
+    "h": 130.0
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 blur · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.7031,
+    "x": 198.281,
+    "y": 1107.0,
+    "w": 683.438,
+    "h": 108.0
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 blur · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.7031,
+    "x": 350.156,
+    "y": 81.0,
+    "w": 379.688,
+    "h": 91.406
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 color · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.7031,
+    "x": 198.281,
+    "y": 1107.0,
+    "w": 683.438,
+    "h": 108.0
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 color · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.7031,
+    "x": 350.156,
+    "y": 81.0,
+    "w": 379.688,
+    "h": 91.406
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 crop · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 1.0,
+    "x": 54.0,
+    "y": 1289.4,
+    "w": 972.0,
+    "h": 153.6
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 crop · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 1.0,
+    "x": 270.0,
+    "y": 81.0,
+    "w": 540.0,
+    "h": 130.0
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 blur · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 686.625,
+    "y": 885.6,
+    "w": 546.75,
+    "h": 86.4
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 blur · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 808.125,
+    "y": 64.8,
+    "w": 303.75,
+    "h": 73.125
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 color · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 686.625,
+    "y": 885.6,
+    "w": 546.75,
+    "h": 86.4
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 color · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "color"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 808.125,
+    "y": 64.8,
+    "w": 303.75,
+    "h": 73.125
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 crop · 遮盖",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 1.7778,
+    "x": 96.0,
+    "y": 1632.267,
+    "w": 1728.0,
+    "h": 273.067
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 crop · 标题",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 1.7778,
+    "x": 690.0,
+    "y": 64.8,
+    "w": 540.0,
+    "h": 130.0
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 crop · 右下角标",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "bottom-right",
+    "margin": [
+     0.04,
+     0.03
+    ],
+    "width": 0.25,
+    "image": [
+     400,
+     400
+    ]
+   },
+   "expected": {
+    "k": 1.7778,
+    "x": 1573.2,
+    "y": 777.6,
+    "w": 270.0,
+    "h": 270.0
+   }
+  },
+  {
+   "name": "720×1280 源 → 1:1 blur · 右下角标",
+   "src": [
+    720,
+    1280
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "bottom-right",
+    "margin": [
+     0.04,
+     0.03
+    ],
+    "width": 0.25,
+    "image": [
+     400,
+     400
+    ]
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 667.575,
+    "y": 895.725,
+    "w": 151.875,
+    "h": 151.875
+   }
+  },
+  {
+   "name": "9:16 源 → 4:5 crop 窗口偏上 · 遮盖出画",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "4:5",
+    "fill": "crop",
+    "crop": {
+     "x": 0,
+     "y": 0,
+     "w": 1,
+     "h": 0.5
+    }
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.9,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 1.4062,
+    "x": -143.438,
+    "y": 2214.0,
+    "w": 1366.875,
+    "h": 216.0
+   }
+  },
+  {
+   "name": "16:9 源 · 参考为 crop 窗口 → 16:9 blur · 遮盖",
+   "src": [
+    1920,
+    1080
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "crop",
+    "crop": {
+     "x": 0.3418,
+     "y": 0,
+     "w": 0.3164,
+     "h": 1
+    }
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "blur"
+   },
+   "layer": {
+    "kind": "mask",
+    "anchor": "bottom-center",
+    "margin": [
+     0,
+     0.1
+    ],
+    "width": 0.8,
+    "height": 0.08
+   },
+   "expected": {
+    "k": 0.5625,
+    "x": 717.005,
+    "y": 885.593,
+    "w": 485.99,
+    "h": 86.398
+   }
+  },
+  {
+   "name": "16:9 源 · 参考为 blur → 1:1 crop · 标题",
+   "src": [
+    1920,
+    1080
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "1:1",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-center",
+    "margin": [
+     0,
+     0.06
+    ],
+    "width": 0.5,
+    "image": [
+     540,
+     130
+    ]
+   },
+   "expected": {
+    "k": 1.7778,
+    "x": 270.0,
+    "y": 64.8,
+    "w": 540.0,
+    "h": 130.0
+   }
+  },
+  {
+   "name": "9:16 源 → 16:9 crop · 大图平移回画布",
+   "src": [
+    1080,
+    1920
+   ],
+   "ref": {
+    "aspect": "9:16",
+    "fill": "blur"
+   },
+   "target": {
+    "aspect": "16:9",
+    "fill": "crop"
+   },
+   "layer": {
+    "kind": "image",
+    "anchor": "top-left",
+    "margin": [
+     0,
+     0
+    ],
+    "width": 1.0,
+    "image": [
+     1080,
+     1500
+    ]
+   },
+   "expected": {
+    "k": 1.7778,
+    "x": 0.0,
+    "y": 0.0,
+    "w": 1080.0,
+    "h": 1500.0
+   }
+  }
+ ]
+}

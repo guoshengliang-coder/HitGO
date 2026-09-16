@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -110,3 +111,110 @@ def rotated_overlay_position(box: Box, degrees: float) -> tuple[float, float]:
     """Top-left of the rotated image's bounding box so the rotation stays centered on `box`."""
     rw, rh = rotated_size(box.w, box.h, degrees)
     return box.cx - rw / 2, box.cy - rh / 2
+
+
+# ---------------------------------------------------------------------------
+# layer_fit = "video": layers follow the video frame across aspect ratios (HIG-29)
+# ---------------------------------------------------------------------------
+#
+# Layers are designed on the 9x16 reference canvas. For another output the source frame lands
+# somewhere else (contain for blur / color, cover of the crop window for crop), so we map
+# reference-canvas pixels → source pixels → target-canvas pixels. That map is a uniform scale
+# ``k`` plus an offset: p_v = offset + p_ref · k.
+
+
+def frame_region(
+    fill: str, crop: Any, src_w: float, src_h: float, W: float, H: float
+) -> tuple[Box, Box]:
+    """(source rect S, canvas rect D) of the video frame on a W×H canvas — same geometry as
+    ``filtergraph.fill_chains`` (contain for blur / color; crop window then cover for crop).
+    ``crop`` is anything with x / y / w / h in 0–1 of the source, or None."""
+    if fill == "crop":
+        if crop is not None:
+            sx, sy = crop.x * src_w, crop.y * src_h
+            sw, sh = max(1.0, crop.w * src_w), max(1.0, crop.h * src_h)
+        else:
+            sx, sy, sw, sh = 0.0, 0.0, float(src_w), float(src_h)
+        scale = max(W / sw, H / sh)
+    else:
+        sx, sy, sw, sh = 0.0, 0.0, float(src_w), float(src_h)
+        scale = min(W / sw, H / sh)
+    w, h = sw * scale, sh * scale
+    return Box(sx, sy, sw, sh), Box((W - w) / 2, (H - h) / 2, w, h)
+
+
+@dataclass(frozen=True)
+class FitMap:
+    """Reference canvas → target canvas: p_target = (ox, oy) + p_ref · k."""
+
+    k: float
+    ox: float
+    oy: float
+    ref_w: float
+    ref_h: float
+    W: float
+    H: float
+
+    def point(self, x: float, y: float) -> tuple[float, float]:
+        return self.ox + x * self.k, self.oy + y * self.k
+
+    @property
+    def visible(self) -> Box:
+        """The reference canvas mapped onto the target, clipped to the target canvas."""
+        x0, y0 = self.point(0, 0)
+        x1, y1 = self.point(self.ref_w, self.ref_h)
+        cx0, cy0 = max(0.0, x0), max(0.0, y0)
+        cx1, cy1 = min(self.W, x1), min(self.H, y1)
+        if cx1 - cx0 <= 0 or cy1 - cy0 <= 0:
+            return Box(0.0, 0.0, self.W, self.H)
+        return Box(cx0, cy0, cx1 - cx0, cy1 - cy0)
+
+
+def fit_map(
+    ref: tuple[str, Any, int, int],
+    target: tuple[str, Any, int, int],
+    src_w: float,
+    src_h: float,
+) -> FitMap:
+    """Build the map between two outputs given as (fill, crop, W, H)."""
+    s9, d9 = frame_region(ref[0], ref[1], src_w, src_h, ref[2], ref[3])
+    sv, dv = frame_region(target[0], target[1], src_w, src_h, target[2], target[3])
+    sc9, scv = d9.w / s9.w, dv.w / sv.w
+    k = scv / sc9
+    ox = dv.x + (s9.x - sv.x) * scv - d9.x * k
+    oy = dv.y + (s9.y - sv.y) * scv - d9.y * k
+    return FitMap(k, ox, oy, float(ref[2]), float(ref[3]), float(target[2]), float(target[3]))
+
+
+def follow_mask_box(ref_box: Box, m: FitMap) -> Box:
+    """Masks track the burnt-in pixels exactly: map the reference box as a whole."""
+    x, y = m.point(ref_box.x, ref_box.y)
+    return Box(x, y, ref_box.w * m.k, ref_box.h * m.k)
+
+
+def follow_layer_box(
+    anchor: str,
+    margin: tuple[float, float],
+    width: float,
+    image_w: int,
+    image_h: int,
+    m: FitMap,
+) -> Box:
+    """Text / sticker: keep the anchor inside the visible video area, scale by min(k, 1) so a
+    cover crop never blows text up, then shift the box back inside the canvas. For blur / color
+    (visible area = mapped reference canvas, k ≤ 1) this equals mapping the reference box."""
+    if image_w <= 0 or image_h <= 0:
+        raise ValueError("image size must be positive")
+    s = min(m.k, 1.0)
+    w = width * m.ref_w * s
+    h = w * image_h / image_w
+    v = m.visible
+    # margins are relative to the reference canvas; express them on the visible area
+    placed = _place(anchor, margin, w, h, v.w, v.h)
+    return _clamp_into(Box(v.x + placed.x, v.y + placed.y, w, h), m.W, m.H)
+
+
+def _clamp_into(b: Box, W: float, H: float) -> Box:
+    x = min(max(b.x, 0.0), W - b.w) if b.w <= W else 0.0
+    y = min(max(b.y, 0.0), H - b.h) if b.h <= H else 0.0
+    return Box(x, y, b.w, b.h)

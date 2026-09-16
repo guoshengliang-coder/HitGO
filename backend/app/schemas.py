@@ -42,6 +42,9 @@ Fill = Literal["blur", "color", "crop"]
 Playback = Literal["loop", "freeze", "once"]
 Quality = Literal["standard", "high"]
 LayerMode = Literal["replace", "style_only"]
+# How layers sit on a non-reference output (HIG-29): "canvas" = relative to that canvas (the
+# original behaviour); "video" = follow where the video frame lands, see services/layout.fit_map.
+LayerFit = Literal["canvas", "video"]
 
 CANVAS_SIZES: dict[str, tuple[int, int]] = {
     "9:16": (1080, 1920),
@@ -154,6 +157,33 @@ class TextSpan(BaseModel):
         return self
 
 
+def _media_url(v: str) -> str:
+    if not v.startswith("/media/"):
+        raise ValueError("image_url 必须是 /media/ 开头的站内路径")
+    return v
+
+
+class VariantImage(BaseModel):
+    """The text PNG re-rendered for one output (HIG-29): same text, drawn at that output's pixel size."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    url: str
+    size: tuple[int, int]
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        return _media_url(v)
+
+    @field_validator("size")
+    @classmethod
+    def _validate_size(cls, v: tuple[int, int]) -> tuple[int, int]:
+        if v[0] <= 0 or v[1] <= 0:
+            raise ValueError("size 必须为正整数")
+        return v
+
+
 class TextLayer(LayerBase):
     type: Literal["text"]
     text: str = ""
@@ -161,6 +191,16 @@ class TextLayer(LayerBase):
     spans: list[TextSpan] | None = None
     image_url: str | None = None
     image_size: tuple[int, int] | None = None
+    # Per-output PNGs keyed by variant_key; missing / unresolvable entries fall back to image_url.
+    variant_images: dict[str, VariantImage] | None = None
+
+    @field_validator("variant_images")
+    @classmethod
+    def _validate_variant_images(cls, v: dict[str, VariantImage] | None) -> dict[str, VariantImage] | None:
+        for key in v or {}:
+            if not _VARIANT_KEY.match(key):
+                raise ValueError("variant_images 的键必须是合法的 variant_key")
+        return v or None
 
     @field_validator("spans")
     @classmethod
@@ -177,9 +217,7 @@ class TextLayer(LayerBase):
     def _validate_image_url(cls, v: str | None) -> str | None:
         if v is None or v == "":
             return None
-        if not v.startswith("/media/"):
-            raise ValueError("image_url 必须是 /media/ 开头的站内路径")
-        return v
+        return _media_url(v)
 
     @field_validator("image_size")
     @classmethod
@@ -230,6 +268,11 @@ class LayerOverride(BaseModel):
     def as_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.model_dump().items() if v is not None}
 
+    @property
+    def detaches(self) -> bool:
+        """Any geometry key set → the layer no longer follows the video on this output."""
+        return any(v is not None for v in (self.anchor, self.margin, self.width, self.height))
+
 
 class CropRect(BaseModel):
     """Source-frame crop window for fill="crop" (contract §2): x/y/w/h relative to the source width/height."""
@@ -259,6 +302,7 @@ class OutputVariant(BaseModel):
     color: str = "#000000"
     quality: Quality = "standard"
     crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
+    layer_fit: LayerFit = "canvas"
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
 
     @field_validator("variant_key")
@@ -479,6 +523,8 @@ RENDER_NAME_MAX = 120
 class RenderIn(BaseModel):
     video_ids: list[str] = Field(min_length=1)
     name: str | None = None
+    # Only render these outputs (HIG-29); None = every output in each video's spec.
+    variant_keys: list[str] | None = Field(default=None, min_length=1)
 
     @field_validator("name")
     @classmethod

@@ -45,12 +45,14 @@ function TrackAudio({ track }: { track: AudioTrack }) {
         if (at !== null && Math.abs(el.currentTime - at) > 0.01) el.currentTime = at;
         return;
       }
-      if (Math.abs(el.currentTime - at) > tolerance) el.currentTime = at;
+      if (el.playbackRate !== player.mediaRate) el.playbackRate = player.mediaRate;
+      if (Math.abs(el.currentTime - at) > tolerance * player.mediaRate) el.currentTime = at;
       if (el.paused) void el.play().catch(() => undefined);
     };
     // 封面段（t < 0）不放 BGM / 口播：按暂停对齐（契约 §2 cover）
-    sync(sourceToPost(player.currentTime, player.remove), player.isPlaying && player.currentTime >= 0, player.currentTime);
-    const unsub = player.subscribe((t, playing) => sync(sourceToPost(t, player.remove), playing && t >= 0, t));
+    // 倒放（mediaRate = 0）按暂停对齐（HIG-30）
+    sync(sourceToPost(player.currentTime, player.remove), player.mediaRate > 0 && player.currentTime >= 0, player.currentTime);
+    const unsub = player.subscribe((t) => sync(sourceToPost(t, player.remove), player.mediaRate > 0 && t >= 0, t));
     return () => {
       unsub();
       el.pause();

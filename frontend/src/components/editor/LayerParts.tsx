@@ -5,11 +5,12 @@
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isVideoAsset, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
-import { cloneSpec, layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
+import { ANCHORS, defaultTextStyle, isVideoAsset, variantDef, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { cloneSpec, layerName, layerOutsideDuration, newLayerId, outputFor } from '../../lib/spec';
 import { layersOfType, type LayerType } from '../../lib/layerKind';
 import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
-import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
+import { alignPlacement, placeLayer, reanchor, round4, type AlignEdge } from '../../lib/layout';
+import { layerFollows, overrideDetaches, placementOfBox } from '../../lib/variantLayout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
@@ -17,6 +18,7 @@ import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
+import { ColorPicker } from '../ui/ColorPicker';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
@@ -43,7 +45,6 @@ export function presetThumb(preset: TextStylePreset): string {
 }
 
 /** 颜色输入只接受 #RRGGBB；8 位（含透明度）的取前 7 位显示。 */
-const hex6 = (c: string) => (c && /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : '#000000');
 
 const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.002, 0.004] };
 const DEFAULT_GLOW: TextGlow = { color: '#FFD84DCC', blur: 0.012 };
@@ -170,20 +171,56 @@ const ALIGN_BUTTONS: { edge: AlignEdge; label: string; icon: ReactNode }[] = [
 ];
 
 /** 位置 / 对齐 / 宽度 / 旋转（三类图层共用；遮盖多一个「高度」、没有旋转）。 */
+/** 预览非 9:16 画幅时：这个图层在该画幅上是跟随视频还是已微调，可一键恢复跟随（HIG-29）。 */
+function VariantFitRow({ layer }: { layer: Layer }) {
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId));
+  const setLayerOverride = useEditor((s) => s.setLayerOverride);
+  if (previewKey === '9x16' || !spec || !video) return null;
+  const variant = outputFor(spec, previewKey);
+  const label = variantDef(previewKey).label;
+  const tuned = overrideDetaches(variant.layer_overrides?.[layer.id]);
+  const follows = layerFollows(spec, layer, variant, video.width, video.height);
+  return (
+    <>
+      <span>{label}</span>
+      <div className="inline">
+        <span className="small">{tuned ? '已在画布上单独微调' : follows ? '跟随视频画面' : '相对画布'}</span>
+        {tuned && (
+          <button className="btn ghost sm" onClick={() => setLayerOverride(previewKey, layer.id, null)} title={`清掉 ${label} 上的微调，重新跟随视频画面`}>
+            恢复跟随
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 function PlacementSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
   const aspect = layerAspect(layer, assets);
   const setAnchor = (a: Anchor) => {
     const p = reanchor(layer, aspect, REF, a);
     updateLayer(layer.id, { anchor: a, margin: [round4(p.margin[0]), round4(p.margin[1])] });
   };
   const align = (edge: AlignEdge) => {
+    // 预览非 9:16：对齐只改该画幅（写覆盖）
+    const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
+      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey);
+      const q = alignPlacement(placement, a, canvas, edge);
+      return { box: placeLayer(q, a, canvas), anchor: q.anchor };
+    });
+    if (onVariant) return;
     const p = alignPlacement(layer, aspect, REF, edge);
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
   return (
     <Section title="位置">
+      <VariantFitRow layer={layer} />
       <span>对齐</span>
       <div className="align-row" role="group" aria-label="对齐">
         {ALIGN_BUTTONS.map((b, i) => (
@@ -192,6 +229,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
           </button>
         ))}
       </div>
+      {previewKey !== '9x16' && <div className="hint" style={{ gridColumn: '1 / -1' }}>对齐按钮和画布拖动只改 {variantDef(previewKey).label}；下面的锚点 / 边距 / 宽度是 9:16 基准，改了会带动所有跟随的画幅。</div>}
       <span>锚点</span>
       <div className="inline">
         <div className="anchor-grid" role="radiogroup" aria-label="锚点">
@@ -266,8 +304,7 @@ function MaskSection({ layer }: { layer: MaskLayer }) {
         <>
           <span>颜色</span>
           <div className="inline">
-            <input type="color" className="color" value={hex6(layer.color ?? DEFAULT_MASK_COLOR)} onChange={(e) => updateLayer(layer.id, { color: e.target.value.toUpperCase() })} />
-            <span className="mono small">{(layer.color ?? DEFAULT_MASK_COLOR).toUpperCase()}</span>
+            <ColorPicker label="遮盖颜色" value={layer.color ?? DEFAULT_MASK_COLOR} onChange={(c) => updateLayer(layer.id, { color: c })} />
           </div>
         </>
       )}
@@ -396,13 +433,12 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         <Num value={st.font_size} min={0.01} max={0.3} step={0.005} onChange={(v) => patchStyle({ font_size: v })} suffix="% 高" />
         <span>颜色</span>
         <div className="inline">
-          <input type="color" className="color" value={hex6(st.color)} onChange={(e) => patchStyle({ color: e.target.value.toUpperCase() })} />
-          <span className="mono small">{st.color}</span>
+          <ColorPicker label="文字颜色" alpha value={st.color} onChange={(c) => patchStyle({ color: c })} />
           {/^#[0-9a-f]{6}00$/i.test(st.color) && <span className="muted small">（透明 · 空心）</span>}
         </div>
         <span>选中上色</span>
         <div className="inline">
-          <input type="color" className="color" value={spanColor} onChange={(e) => setSpanColorState(e.target.value.toUpperCase())} />
+          <ColorPicker label="选中上色" showHex={false} value={spanColor} onChange={setSpanColorState} />
           <button className="btn sm" disabled={!sel} title="给文本框里选中的文字上色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
             上色
           </button>
@@ -441,7 +477,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         onReset={() => patchStyle({ ...DEFAULT_STROKE })}
       >
         <span>颜色</span>
-        <input type="color" className="color" value={hex6(st.stroke_color)} onChange={(e) => patchStyle({ stroke_color: e.target.value.toUpperCase() })} />
+        <ColorPicker label="描边颜色" alpha value={st.stroke_color} onChange={(c) => patchStyle({ stroke_color: c })} />
         <span>粗细</span>
         <Num value={st.stroke_width} min={0.001} max={0.05} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ stroke_width: v })} />
       </Section>
@@ -455,7 +491,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.glow && (
           <>
             <span>颜色</span>
-            <input type="color" className="color" value={hex6(st.glow.color)} onChange={(e) => patchStyle({ glow: { ...st.glow!, color: e.target.value.toUpperCase() + (st.glow?.color.slice(7) || 'CC') } })} />
+            <ColorPicker label="发光颜色" alpha value={st.glow.color} onChange={(c) => patchStyle({ glow: { ...st.glow!, color: c } })} />
             <span>强度</span>
             <Num value={st.glow.blur} min={0.002} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ glow: { ...st.glow!, blur: v } })} />
           </>
@@ -471,7 +507,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.shadow && (
           <>
             <span>颜色</span>
-            <input type="color" className="color" value={hex6(st.shadow.color)} onChange={(e) => patchStyle({ shadow: { ...st.shadow!, color: e.target.value.toUpperCase() + (st.shadow?.color.slice(7) || '99') } })} />
+            <ColorPicker label="阴影颜色" alpha value={st.shadow.color} onChange={(c) => patchStyle({ shadow: { ...st.shadow!, color: c } })} />
             <span>模糊</span>
             <Num value={st.shadow.blur} min={0} max={0.05} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ shadow: { ...st.shadow!, blur: v } })} />
             <span>偏移 X</span>
@@ -491,10 +527,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         {st.background && (
           <>
             <span>颜色</span>
-            <div className="inline">
-              <input type="color" className="color" value={st.background.slice(0, 7)} onChange={(e) => patchStyle({ background: e.target.value.toUpperCase() + (st.background?.slice(7) || '99') })} />
-              <span className="mono small">{st.background}</span>
-            </div>
+            <ColorPicker label="背景颜色" alpha value={st.background} onChange={(c) => patchStyle({ background: c })} />
             <span>内边距</span>
             <Num value={st.padding} min={0} max={0.1} step={0.001} scale={1000} suffix="‰ 高" onChange={(v) => patchStyle({ padding: v })} />
             <span>宽度</span>

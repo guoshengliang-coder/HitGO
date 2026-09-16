@@ -359,3 +359,30 @@ def test_layer_override_height():
     spec["outputs"][1]["layer_overrides"]["l_m"] = {"height": 1.2}
     assert "height" in errors_of(spec)
     assert LayerOverride(height=0.3).as_dict() == {"height": 0.3}
+
+
+def test_layer_fit_is_optional_and_enumerated():
+    spec = valid_spec()
+    assert EditSpec.model_validate(spec).outputs[1].layer_fit == "canvas"
+    spec["outputs"][1]["layer_fit"] = "video"
+    assert EditSpec.model_validate(spec).outputs[1].layer_fit == "video"
+    spec["outputs"][1]["layer_fit"] = "frame"
+    with pytest.raises(ValidationError):
+        EditSpec.model_validate(spec)
+
+
+def test_text_variant_images_validated():
+    spec = valid_spec()
+    spec["layers"][1]["variant_images"] = {"16x9": {"url": "/media/uploads/u_v.png", "size": [300, 72]}}
+    layer = EditSpec.model_validate(spec).layers[1]
+    assert layer.variant_images["16x9"].size == (300, 72)
+    spec["layers"][1]["variant_images"] = {}
+    assert EditSpec.model_validate(spec).layers[1].variant_images is None
+    for bad in (
+        {"16x9": {"url": "http://evil/x.png", "size": [1, 1]}},
+        {"16x9": {"url": "/media/uploads/u.png", "size": [0, 1]}},
+        {"bad key": {"url": "/media/uploads/u.png", "size": [1, 1]}},
+    ):
+        spec["layers"][1]["variant_images"] = bad
+        with pytest.raises(ValidationError):
+            EditSpec.model_validate(spec)

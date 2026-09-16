@@ -904,12 +904,14 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return { url, width: dims[0], height: dims[1] };
   }
   if (path === '/api/render') {
-    const { video_ids, name } = body as { video_ids: string[]; name?: string };
+    const { video_ids, name, variant_keys } = body as { video_ids: string[]; name?: string; variant_keys?: string[] };
     const created: Job[] = [];
     for (const vid of video_ids) {
       const v = videos.find((x) => x.id === vid);
       if (!v?.edit_spec) continue;
-      for (const o of v.edit_spec.outputs) {
+      const missing = (variant_keys ?? []).filter((k) => !v.edit_spec!.outputs.some((o) => o.variant_key === k));
+      if (missing.length) throw new ApiError(400, `视频 ${v.name} 的编辑参数里没有输出 ${missing.join(', ')}`);
+      for (const o of v.edit_spec.outputs.filter((x) => !variant_keys || variant_keys.includes(x.variant_key))) {
         const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, name: name?.trim() || null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
         jobs.push(j);
         created.push(j);

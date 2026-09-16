@@ -9,8 +9,8 @@ import { IconPause, IconPlay, IconStepBack, IconStepFwd } from '../ui/Icons';
 const STEP_HINT: Record<Step, string> = {
   trim: 'I / O 设入出点 · Q / W 删左右',
   audio: '拖动音轨条调整时段 · Delete 删除音轨',
-  text: '双击画布上的文字直接编辑 · 方向键微移',
-  sticker: '拖动移动 · 角点缩放 · 方向键微移',
+  text: '双击画布上的文字直接编辑 · ⌥ + 方向键微移',
+  sticker: '拖动移动 · 角点缩放 · ⌥ + 方向键微移',
   subtitle: '导入字幕后可在时间线调时段 · 双击画布编辑',
   localize: '点句子时间跳播放头 · 套用后译文字幕可在时间线调时段',
 };

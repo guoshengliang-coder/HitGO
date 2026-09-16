@@ -1,4 +1,4 @@
-// 剪辑模块的裁切编辑：按源视频比例显示当前帧，拖动 / 拉角一个锁定 9:16 的窗口，写入 outputs[0].crop。
+// 剪辑模块的裁切编辑：按源视频比例显示当前帧，拖动 / 拉角一个锁定当前画幅比例的窗口，写入该画幅 outputs[].crop（HIG-29）。
 // 窗口的像素比 = 输出画幅比，所以 worker 端"裁窗口 → cover 居中"那一步不会再裁掉任何东西，所见即所得。
 
 import { useEffect, useRef, useState } from 'react';
@@ -10,6 +10,7 @@ import { isDue, previewIntervalMs } from '../../lib/previewClock';
 import { loadImage } from '../../lib/useImage';
 import { clampCropRect, cropRectFromPixels, cropRectToPixels, defaultCropRect, describeCrop, type PixelBox } from '../../lib/crop';
 import { variantDef } from '../../types';
+import { outputFor } from '../../lib/spec';
 import { useFitSize } from './Stage';
 
 const ACCENT = '#d9481f';
@@ -27,13 +28,14 @@ export function CropEditor() {
   const setCrop = useEditor((s) => s.setCrop);
   const setCropEditing = useEditor((s) => s.setCropEditing);
 
-  const def = variantDef('9x16');
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const def = variantDef(previewKey);
   const aspect = def.width / def.height;
   const srcW = video?.width || 16;
   const srcH = video?.height || 9;
   const { W, H } = useFitSize(wrapRef, srcW / srcH);
 
-  const variant = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
+  const variant = spec ? outputFor(spec, previewKey) : undefined;
   const rect = variant?.crop ?? defaultCropRect(srcW, srcH, aspect);
   const px = cropRectToPixels(rect, W, H);
   // 拖动 / 缩放过程中的实时框（遮罩跟着走），松手后以 store 为准

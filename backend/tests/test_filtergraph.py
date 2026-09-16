@@ -1380,3 +1380,110 @@ def test_real_ffmpeg_renders_blur_and_solid_masks(tmp_path):
     )  # fmt: skip
     if probe.returncode == 0:
         assert probe.stdout.strip() == "1080,1920"
+
+
+# --- layer_fit = "video"（HIG-29）---------------------------------------------
+
+
+def follow_spec(layers, target, **extra):
+    spec = valid_spec(trim={"remove": []}, layers=layers)
+    spec["outputs"] = [{"variant_key": "9x16", "aspect": "9:16", "fill": "blur"}, {"variant_key": "out", "layer_fit": "video", **target}]
+    spec.update(extra)
+    return spec
+
+
+def test_layer_fit_defaults_to_canvas_and_keeps_existing_argv():
+    parsed = EditSpec.model_validate(valid_spec())
+    assert [o.layer_fit for o in parsed.outputs] == ["canvas", "canvas"]
+    with pytest.raises(Exception):
+        EditSpec.model_validate(follow_spec([], {"aspect": "1:1", "layer_fit": "nope"}))
+
+
+def test_follow_video_maps_mask_and_text_onto_1x1_blur():
+    layers = [mask_layer(t="all", mode="solid", width=0.9, height=0.08), valid_spec()["layers"][1]]
+    plan = build(follow_spec(layers, {"aspect": "1:1", "fill": "blur"}), variant_key="out")
+    graph = fc(plan)
+    # 9:16 box (54, 1574.4, 972, 153.6) × 0.5625 + x offset 236.25 → (266.6, 885.6, 546.75, 86.4)
+    assert "drawbox=x=267:y=886:w=547:h=86" in graph
+    # text 540·0.5 = 540 wide on 9:16 → 303.75 → 304; top-center y = 0.06·1920·0.5625 = 64.8
+    assert "scale=304:73[l2]" in graph
+    assert "overlay=388:65" in graph
+    assert plan.warnings == []
+
+
+def test_follow_video_mask_cropped_out_of_16x9_is_skipped_quietly():
+    plan = build(follow_spec([mask_layer(t="all")], {"aspect": "16:9", "fill": "crop"}), variant_key="out")
+    assert "drawbox" not in fc(plan) and "[m1s]" not in fc(plan)
+    assert plan.warnings == []
+
+
+def test_geometry_override_detaches_a_layer_but_rotate_does_not():
+    layers = [mask_layer(t="all", mode="solid", width=0.9, height=0.08)]
+    spec = follow_spec(layers, {"aspect": "1:1", "fill": "blur", "layer_overrides": {"l_m": {"opacity": 0.5}}})
+    assert "drawbox=x=267:y=886:w=547:h=86" in fc(build(spec, variant_key="out"))
+    spec["outputs"][1]["layer_overrides"]["l_m"]["margin"] = [0, 0]
+    # detached: canvas-relative on 1080×1080 → w 972, h 86.4, bottom edge
+    assert "drawbox=x=54:y=994:w=972:h=86" in fc(build(spec, variant_key="out"))
+
+
+def test_follow_video_needs_the_source_size():
+    layers = [mask_layer(t="all", mode="solid", width=0.9, height=0.08)]
+    spec = follow_spec(layers, {"aspect": "1:1", "fill": "blur"})
+    graph = fc(build(spec, meta={"duration": 24.6, "has_audio": True}, variant_key="out"))
+    assert "drawbox=x=54:y=886:w=972:h=86" in graph  # canvas-relative fallback
+
+
+def test_follow_video_ignored_on_the_reference_output():
+    layers = [mask_layer(t="all", mode="solid", width=0.9, height=0.08)]
+    spec = follow_spec(layers, {"aspect": "1:1", "fill": "blur"})
+    spec["outputs"][0]["layer_fit"] = "video"
+    assert "drawbox=x=54:y=1574:w=972:h=154" in fc(build(spec, variant_key="9x16"))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_follow_video_puts_the_mask_on_the_mapped_pixels(tmp_path):
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:size=540x960:rate=30:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    layers = [mask_layer(t="all", mode="solid", color="#FF0000", anchor="center", margin=[0.2, 0.02], width=0.3, height=0.1)]
+    for target, canvas in (({"aspect": "1:1", "fill": "blur"}, (1080, 1080)), ({"aspect": "16:9", "fill": "crop"}, (1920, 1080))):
+        spec = EditSpec.model_validate(follow_spec(layers, target))
+        variant = spec.outputs[1]
+        out = tmp_path / f"out_{variant.aspect.replace(':', 'x')}.mp4"
+        plan = build_render_command(
+            spec, {"duration": 1.0, "has_audio": False, "width": 540, "height": 960}, {}, variant,
+            source_path=str(src), output_path=str(out),
+        )  # fmt: skip
+        subprocess.run(plan.argv, check=True, capture_output=True)
+        from app.services.filtergraph import mask_layer_box, variant_fit_map
+
+        box = mask_layer_box(spec, spec.layers[0], variant, variant_fit_map(spec, variant, 540, 960))
+        cx, cy = round(box.cx), round(box.cy)
+        assert 0 < cx < canvas[0] and 0 < cy < canvas[1]
+        pixel = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1", "-vf", f"format=rgb24,crop=1:1:{cx}:{cy}",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            check=True, capture_output=True,
+        ).stdout  # fmt: skip
+        r, g, b = pixel[0], pixel[1], pixel[2]
+        assert r > 180 and g < 70 and b < 70, (variant.aspect, r, g, b)
+
+
+def test_text_variant_image_is_preferred_and_falls_back_quietly():
+    big = ImageSource("/data/uploads/u_text16x9.png", 960, 231)
+
+    def resolve(url):
+        return {"/media/uploads/u_text00001.png": TEXT_PNG, "/media/uploads/u_text16x9.png": big}.get(url)
+
+    spec = valid_spec(trim={"remove": []}, layers=[valid_spec()["layers"][1]])
+    spec["layers"][0]["variant_images"] = {
+        "1x1": {"url": "/media/uploads/u_text16x9.png", "size": [960, 231]},
+        "9x16": {"url": "/media/uploads/u_missing.png", "size": [10, 10]},
+    }
+    plan = build(spec, variant_key="1x1", resolve=resolve)
+    assert "/data/uploads/u_text16x9.png" in plan.argv and TEXT_PNG.path not in plan.argv
+    plan = build(spec, variant_key="9x16", resolve=resolve)
+    assert TEXT_PNG.path in plan.argv and plan.warnings == []

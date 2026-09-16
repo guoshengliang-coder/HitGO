@@ -412,6 +412,8 @@ export interface TextLayer extends LayerBase {
   spans?: TextSpan[];
   image_url?: string | null;
   image_size?: [number, number] | null;
+  /** 可选（HIG-29）：按输出画幅重新渲染的 PNG，键为 variant_key；worker 优先用它，找不到时回落 image_url。导出时重新生成。 */
+  variant_images?: Record<string, { url: string; size: [number, number] }> | null;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */
   width_manual?: boolean;
 }
@@ -463,6 +465,8 @@ export interface OutputVariant {
   color?: string;
   quality?: OutputQuality;
   crop?: CropRect;
+  /** 非 9x16 输出上图层怎么摆（HIG-29）：canvas = 相对该画布（缺省）；video = 跟着视频画面走（lib/variantLayout）。 */
+  layer_fit?: 'canvas' | 'video';
   layer_overrides?: Record<string, LayerOverride>;
 }
 

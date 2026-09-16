@@ -8,9 +8,9 @@ import type { CoverSpec, FillMode, OutputQuality, OutputVariant } from '../types
 
 export const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
 export const FILL_TIP: Record<FillMode, string> = {
-  blur: '源画面完整缩放放进 9:16，空出的部分用放大模糊的画面填满',
-  color: '源画面完整缩放放进 9:16，空出的部分填纯色',
-  crop: '只取源画面里的一个 9:16 窗口铺满成片',
+  blur: '源画面完整缩放放进画幅，空出的部分用放大模糊的画面填满',
+  color: '源画面完整缩放放进画幅，空出的部分填纯色',
+  crop: '只取源画面里与画幅同比例的一个窗口铺满成片',
 };
 export const QUALITY_LABEL: Record<OutputQuality, string> = { standard: '标准', high: '高清' };
 export const QUALITY_TIP = '标准 = 更快更小（veryfast / crf 20）；高清 = 更慢更清晰（medium / crf 19）';
@@ -27,7 +27,7 @@ export function coverSummary(cover: CoverSpec | null | undefined, preroll: numbe
   return cover ? formatSeconds(preroll, 1) : '无';
 }
 
-/** 成片画面：填充方式 · 清晰度 · 估算大小。源已是 9:16 时不显示填充（那时面板里也没有这个选项）。 */
+/** 成片画面：填充方式 · 清晰度 · 估算大小。源已是该画幅比例时不显示填充（那时面板里也没有这个选项）。 */
 export function frameSummary(
   out: Pick<OutputVariant, 'variant_key' | 'fill' | 'quality'>,
   duration: number,

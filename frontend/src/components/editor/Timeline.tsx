@@ -16,15 +16,14 @@ import { layerTypesForStep } from '../../lib/steps';
 import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
-import { snapValue } from '../../lib/snap';
+import { snapActive, snapValue } from '../../lib/snap';
+import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { hintFor } from '../../lib/shortcuts';
 import { IconEye, IconFit, IconLock } from '../ui/Icons';
 import { TimelineTools } from './TimelineTools';
 import type { Asset, Layer } from '../../types';
 
 const LABEL_W = 112;
-const MIN_PPS = 20;
-const MAX_PPS = 400;
 const SNAP_PX = 6;
 
 /** 封面段在非视频行里的占位斜纹（封面期间不叠图层、不放音轨）。 */
@@ -214,6 +213,22 @@ export function Timeline() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setTimelinePps]);
 
+  // ---- 键盘缩放（⌘= / ⌘-，HIG-30）：围绕播放头缩放 ----
+  useEffect(() => {
+    const onZoom = (e: Event) => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const dir = (e as CustomEvent<1 | -1>).detail;
+      const cur = ppsRef.current;
+      const t = player.currentTime;
+      const offsetX = Math.min(Math.max(0, timelineX(t, prerollRef.current, cur) - el.scrollLeft), el.clientWidth - LABEL_W);
+      zoomTo(stepZoom(cur, dir), { time: t, offsetX });
+    };
+    window.addEventListener(TIMELINE_ZOOM_EVENT, onZoom);
+    return () => window.removeEventListener(TIMELINE_ZOOM_EVENT, onZoom);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setTimelinePps]);
+
   // ---- 播放时翻页式跟随 ----
   useEffect(() => {
     const el = scrollRef.current;
@@ -266,7 +281,7 @@ export function Timeline() {
       const dt = (ev.clientX - d.startX) / pps;
       let [a, b] = d.orig;
       let hit: number | null = null;
-      const snap = !ev.altKey;
+      const snap = snapActive(useEditor.getState().snapEnabled, ev.altKey);
       if (d.kind.endsWith('-l')) {
         a = a + dt;
         if (snap) ({ value: a, hit } = snapValue(a, candidates, threshold));

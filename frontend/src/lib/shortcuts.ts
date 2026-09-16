@@ -1,6 +1,6 @@
 // 快捷键清单（单一数据源）：ShortcutsModal、按钮 title / data-tip 都从这里取文案。
 // keys 用 mac 展示形式书写（⌘ / ⌥ / ⇧），Windows 下由 formatKeys 转成 Ctrl / Alt / Shift。
-// 注意：真正的按键匹配在 EditorPage 里按 e.code 做，这里只管展示。
+// 注意：真正的按键匹配在 EditorPage 里按 e.code 做，这里只管展示。键位对齐剪映专业版（HIG-30）。
 
 import type { Step } from './steps';
 
@@ -27,9 +27,16 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'frame-next', keys: ['→'], label: '下一帧', group: '全局' },
   { id: 'seek-back', keys: ['⇧', '←'], label: '后退 1 秒', group: '全局' },
   { id: 'seek-fwd', keys: ['⇧', '→'], label: '前进 1 秒', group: '全局' },
+  { id: 'cut-prev', keys: ['↑'], label: '跳到上一个剪辑点', group: '全局' },
+  { id: 'cut-next', keys: ['↓'], label: '跳到下一个剪辑点', group: '全局' },
+  { id: 'shuttle-back', keys: ['J'], label: '倒放（再按加速）', group: '全局' },
+  { id: 'shuttle-stop', keys: ['K'], label: '停止', group: '全局' },
+  { id: 'shuttle-fwd', keys: ['L'], label: '正放（再按 2× / 4×）', group: '全局' },
   { id: 'undo', keys: ['⌘', 'Z'], label: '撤销', group: '全局' },
   { id: 'redo', keys: ['⇧', '⌘', 'Z'], label: '重做', group: '全局' },
   { id: 'save', keys: ['⌘', 'S'], label: '保存', group: '全局' },
+  { id: 'export', keys: ['⌘', 'E'], label: '导出', group: '全局' },
+  { id: 'fullscreen', keys: ['⇧', '⌘', 'F'], label: '全屏预览', group: '全局' },
   { id: 'shortcuts', keys: ['?'], label: '快捷键列表', group: '全局' },
   { id: 'escape', keys: ['Esc'], label: '取消选择 / 关闭弹窗', group: '全局' },
   // 剪辑
@@ -41,6 +48,7 @@ export const SHORTCUTS: Shortcut[] = [
   // 音频
   { id: 'track-drag', keys: ['拖动'], label: '拖动音轨条移动时段 / 拖两端调整', group: '音频', steps: AUDIO },
   { id: 'split-track', keys: ['S'], label: '在播放头处拆分选中音轨', group: '音频', steps: AUDIO },
+  { id: 'split-track-cmd', keys: ['⌘', 'B'], label: '拆分选中音轨（剪映键位）', group: '音频', steps: AUDIO },
   { id: 'cut-track-before', keys: ['Q'], label: '删左（音轨删掉播放头左侧；原声静音左侧）', group: '音频', steps: AUDIO },
   { id: 'cut-track-after', keys: ['W'], label: '删右（音轨删掉播放头右侧；原声静音右侧）', group: '音频', steps: AUDIO },
   { id: 'mute-in', keys: ['I'], label: '原声静音入点', group: '音频', steps: AUDIO },
@@ -49,6 +57,7 @@ export const SHORTCUTS: Shortcut[] = [
   // 图层
   { id: 'copy-layer', keys: ['⌘', 'C'], label: '复制图层', group: '图层', steps: LAYER_STEPS },
   { id: 'paste-layer', keys: ['⌘', 'V'], label: '粘贴图层', group: '图层', steps: LAYER_STEPS },
+  { id: 'cut-layer', keys: ['⌘', 'X'], label: '剪切图层', group: '图层', steps: LAYER_STEPS },
   { id: 'duplicate', keys: ['⌘', 'D'], label: '创建副本', group: '图层', steps: LAYER_STEPS },
   { id: 'copy-style', keys: ['⌥', '⌘', 'C'], label: '复制文字样式', group: '图层', steps: TEXT },
   { id: 'paste-style', keys: ['⌥', '⌘', 'V'], label: '粘贴文字样式', group: '图层', steps: TEXT },
@@ -58,9 +67,8 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'layer-bottom', keys: ['⇧', '['], label: '置底', group: '图层', steps: LAYER_STEPS },
   { id: 'layer-drag', keys: ['拖动'], label: '拖动图层调整层级', group: '图层', steps: LAYER_STEPS },
   { id: 'layer-rename', keys: ['双击'], label: '重命名图层', group: '图层', steps: LAYER_STEPS },
-  { id: 'nudge', keys: ['↑↓←→'], label: '微移 1 px（参考 1080×1920）', group: '图层', steps: LAYER_STEPS },
-  { id: 'nudge-10', keys: ['⇧', '↑↓←→'], label: '微移 10 px', group: '图层', steps: LAYER_STEPS },
-  { id: 'frame-step-alt', keys: ['⌥', '←→'], label: '选中图层时仍逐帧', group: '图层', steps: LAYER_STEPS },
+  { id: 'nudge', keys: ['⌥', '↑↓←→'], label: '微移 1 px（参考 1080×1920）', group: '图层', steps: LAYER_STEPS },
+  { id: 'nudge-10', keys: ['⇧', '⌥', '↑↓←→'], label: '微移 10 px', group: '图层', steps: LAYER_STEPS },
   { id: 'delete-layer', keys: ['Delete'], label: '删除图层', group: '图层', steps: LAYER_STEPS },
   { id: 'edit-text', keys: ['双击'], label: '在画布上编辑文字', group: '图层', steps: TEXT },
   { id: 'edit-text-commit', keys: ['⌘', 'Enter'], label: '提交画布文字编辑（Esc 取消）', group: '图层', steps: TEXT },
@@ -69,10 +77,13 @@ export const SHORTCUTS: Shortcut[] = [
   { id: 'center', keys: [], label: '居中', group: '图层', steps: LAYER_STEPS },
   // 时间轴
   { id: 'tl-zoom', keys: ['⌘', '滚轮'], label: '缩放时间轴', group: '时间轴' },
+  { id: 'tl-zoom-in', keys: ['⌘', '+'], label: '放大时间轴', group: '时间轴' },
+  { id: 'tl-zoom-out', keys: ['⌘', '-'], label: '缩小时间轴', group: '时间轴' },
   { id: 'tl-scroll', keys: ['滚轮'], label: '横向滚动', group: '时间轴' },
   { id: 'tl-fit', keys: ['⇧', 'Z'], label: '适应窗口', group: '时间轴' },
-  { id: 'tl-no-snap', keys: ['⌥', '拖动'], label: '拖动时不吸附', group: '时间轴' },
-  { id: 'canvas-no-snap', keys: ['⌘', '拖动'], label: '画布拖动时不吸附', group: '时间轴' },
+  { id: 'snap', keys: ['N'], label: '吸附开关', group: '时间轴' },
+  { id: 'tl-no-snap', keys: ['⌥', '拖动'], label: '拖动时临时切换吸附', group: '时间轴' },
+  { id: 'canvas-no-snap', keys: ['⌘', '拖动'], label: '画布拖动时临时切换吸附', group: '时间轴' },
   // 无键位的按钮项（只给 hintFor 用，不出现在速查表里）
   { id: 'safe-zone-view', keys: [], label: '安全区开关', group: '全局' },
 ];

@@ -3,8 +3,9 @@ import { useParams } from 'react-router-dom';
 import { useEditor } from '../store/editor';
 import { player } from '../lib/player';
 import { layerTypeForStep } from '../lib/steps';
-import { frameDuration, sourceToPost } from '../lib/time';
+import { frameDuration, postToSource, sourceToPost } from '../lib/time';
 import { SOURCE_TRACK_ID } from '../lib/audioTracks';
+import { adjacentCutPoint, cutPoints, nextShuttleRate, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
 import { TopBar } from '../components/editor/TopBar';
 import { ApplyDialog, VideoList } from '../components/editor/VideoList';
 import { Stage } from '../components/editor/Stage';
@@ -32,10 +33,41 @@ function isTyping(e: KeyboardEvent) {
 }
 
 /**
- * 快捷键统一入口。全部按 e.code 匹配（物理键位，不受输入法 / 大小写影响），优先级：
- * 输入框中 → 忽略；有弹窗 → 只留 Esc（各 Modal 自己处理）；修饰键组合；当前步骤单键；全局单键。
+ * ↑ / ↓ 跳剪辑点的目标（源时间）。剪辑模块的时间轴是源时间轴，删除区间两端都是可见的点；
+ * 其它模块按剪后时间轴算（删掉的区间两端在剪后是同一点，不去重会按一下没反应）。
+ * 剪辑点：删除区间两端、入点、非全程图层的时段两端，加上开头与片尾。
  */
-function handleKey(e: KeyboardEvent) {
+function cutPointTarget(dir: 1 | -1): number | null {
+  const s = useEditor.getState();
+  const spec = s.currentSpec();
+  const duration = player.duration || s.videos.find((v) => v.id === s.currentVideoId)?.duration || 0;
+  const remove = spec?.trim.remove ?? [];
+  const now = Math.max(0, player.currentTime);
+  const layerEdges = (spec?.layers ?? []).flatMap((l) => (l.t === 'all' ? [] : l.t));
+  if (s.step === 'trim') {
+    const pts = cutPoints(duration, remove, [...(s.inPoint !== null ? [s.inPoint] : []), ...layerEdges.map((x) => postToSource(x, remove))]);
+    return adjacentCutPoint(pts, now, dir);
+  }
+  const postDuration = sourceToPost(duration, remove);
+  const pts = cutPoints(postDuration, [], [...remove.flat().map((x) => sourceToPost(x, remove)), ...layerEdges]);
+  const t = adjacentCutPoint(pts, sourceToPost(now, remove), dir);
+  return t === null ? null : postToSource(t, remove);
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+  else void document.querySelector<HTMLElement>('.stage-wrap')?.requestFullscreen().catch(() => undefined);
+}
+
+interface KeyActions {
+  openExport: () => void;
+}
+
+/**
+ * 快捷键统一入口（键位对齐剪映专业版，HIG-30）。全部按 e.code 匹配（物理键位，不受输入法 / 大小写影响），优先级：
+ * 输入框中 → 忽略；有弹窗 → 只留 Esc（各 Modal 自己处理）；修饰键组合；⌥ + 方向键微移；当前步骤单键；全局单键。
+ */
+function handleKey(e: KeyboardEvent, actions: KeyActions) {
   if (isTyping(e)) return;
   const s = useEditor.getState();
   const mod = e.metaKey || e.ctrlKey;
@@ -51,6 +83,8 @@ function handleKey(e: KeyboardEvent) {
     return;
   }
 
+  const layerStep = !!layerTypeForStep(s.step);
+
   // ---- 修饰键组合 ----
   if (mod) {
     switch (e.code) {
@@ -63,21 +97,51 @@ function handleKey(e: KeyboardEvent) {
         e.preventDefault();
         void s.flushSave().then(() => useEditor.getState().setToast('已保存'));
         return;
+      case 'KeyE':
+        e.preventDefault();
+        actions.openExport();
+        return;
+      case 'KeyF':
+        if (!e.shiftKey) return; // ⌘F 留给浏览器查找
+        e.preventDefault();
+        toggleFullscreen();
+        return;
+      case 'Equal':
+      case 'NumpadAdd':
+      case 'Minus':
+      case 'NumpadSubtract':
+        e.preventDefault(); // 不让浏览器缩放页面
+        window.dispatchEvent(new CustomEvent(TIMELINE_ZOOM_EVENT, { detail: e.code === 'Equal' || e.code === 'NumpadAdd' ? 1 : -1 }));
+        return;
       case 'KeyC':
-      case 'KeyV': {
-        if (!layerTypeForStep(s.step)) return;
+      case 'KeyV':
+      case 'KeyX': {
+        if (!layerStep) return;
         // 页面上有选中文字时交给浏览器
-        if (e.code === 'KeyC' && (window.getSelection()?.toString() ?? '') !== '') return;
+        if (e.code !== 'KeyV' && (window.getSelection()?.toString() ?? '') !== '') return;
         e.preventDefault();
         if (e.altKey) {
           if (e.code === 'KeyC') s.copyStyle();
-          else s.pasteStyle();
+          else if (e.code === 'KeyV') s.pasteStyle();
         } else if (e.code === 'KeyC') s.copyLayer();
-        else s.pasteLayer();
+        else if (e.code === 'KeyV') s.pasteLayer();
+        else if (s.selectedLayerId) {
+          // 剪切 = 复制 + 删除
+          s.copyLayer();
+          s.removeLayer(s.selectedLayerId);
+          useEditor.getState().setToast('已剪切图层');
+        }
         return;
       }
+      case 'KeyB':
+        // 剪映的分割 ⌘B：目前只有音轨能拆分（音频模块选中的 BGM / 口播 / 分离轨，HIG-25）
+        if (s.step === 'audio' && s.selectedTrackId && s.selectedTrackId !== SOURCE_TRACK_ID) {
+          e.preventDefault();
+          s.splitAudioTrack(s.selectedTrackId);
+        }
+        return;
       case 'KeyD':
-        if (layerTypeForStep(s.step) && s.selectedLayerId) {
+        if (layerStep && s.selectedLayerId) {
           e.preventDefault();
           s.duplicateLayer(s.selectedLayerId);
         }
@@ -88,11 +152,16 @@ function handleKey(e: KeyboardEvent) {
   }
 
   if (e.altKey) {
-    // ⌥ + 方向键：强制逐帧（文本 / 贴纸 / 字幕模块下方向键默认是微移）
-    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
-      e.preventDefault();
-      player.seek(s.time + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : frame));
-    }
+    // ⌥ + 方向键：微移选中图层（⇧ 10 px）。剪映里方向键是逐帧 / 跳剪辑点，微移挪到 ⌥ 上。
+    if (!layerStep || !e.code.startsWith('Arrow')) return;
+    const layer = s.selectedLayerId ? s.currentSpec()?.layers.find((l) => l.id === s.selectedLayerId) ?? null : null;
+    if (!layer || layer.locked) return;
+    e.preventDefault();
+    const k = e.shiftKey ? 10 : 1;
+    const dx = e.code === 'ArrowLeft' ? -k : e.code === 'ArrowRight' ? k : 0;
+    const dy = e.code === 'ArrowUp' ? -k : e.code === 'ArrowDown' ? k : 0;
+    // 按住不放连续微移只记一次历史：首次按下记录，之后的 repeat 不记
+    s.nudgeLayer(layer.id, dx, dy, !e.repeat);
     return;
   }
 
@@ -170,7 +239,7 @@ function handleKey(e: KeyboardEvent) {
         s.setSelectedTrack(null);
         return;
     }
-  } else if (layerTypeForStep(s.step)) {
+  } else if (layerStep) {
     const layer = s.selectedLayerId ? s.currentSpec()?.layers.find((l) => l.id === s.selectedLayerId) ?? null : null;
     switch (e.code) {
       case 'Delete':
@@ -192,19 +261,6 @@ function handleKey(e: KeyboardEvent) {
         else s.moveLayer(layer.id, up ? 1 : -1);
         return;
       }
-      case 'ArrowLeft':
-      case 'ArrowRight':
-      case 'ArrowUp':
-      case 'ArrowDown': {
-        if (!layer || layer.locked) break; // 没有可动图层 → 落到全局的逐帧
-        e.preventDefault();
-        const k = e.shiftKey ? 10 : 1;
-        const dx = e.code === 'ArrowLeft' ? -k : e.code === 'ArrowRight' ? k : 0;
-        const dy = e.code === 'ArrowUp' ? -k : e.code === 'ArrowDown' ? k : 0;
-        // 按住不放连续微移只记一次历史：首次按下记录，之后的 repeat 不记
-        s.nudgeLayer(layer.id, dx, dy, !e.repeat);
-        return;
-      }
     }
   }
 
@@ -221,6 +277,25 @@ function handleKey(e: KeyboardEvent) {
     case 'ArrowRight':
       e.preventDefault();
       player.seek(s.time + (e.shiftKey ? 1 : frame));
+      return;
+    case 'ArrowUp':
+    case 'ArrowDown': {
+      e.preventDefault();
+      const t = cutPointTarget(e.code === 'ArrowUp' ? -1 : 1);
+      if (t !== null) player.seek(t);
+      return;
+    }
+    case 'KeyJ':
+    case 'KeyK':
+    case 'KeyL': {
+      e.preventDefault();
+      const cur = player.isPlaying ? player.rate : 0;
+      player.shuttle(nextShuttleRate(cur, e.code === 'KeyJ' ? 'J' : e.code === 'KeyK' ? 'K' : 'L'));
+      return;
+    }
+    case 'KeyN':
+      e.preventDefault();
+      s.toggleSnap();
       return;
     case 'Slash':
       if (e.shiftKey) {
@@ -287,8 +362,9 @@ export function EditorPage() {
 
   // 快捷键
   useEffect(() => {
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
+    const onKey = (e: KeyboardEvent) => handleKey(e, { openExport: () => setExportOpen(true) });
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const applyTargets = selectedIds.filter((x) => x !== currentVideoId);
