@@ -246,14 +246,92 @@ def silent_wav(seconds: float, rate: int = 22050) -> bytes:
     return buf.getvalue()
 
 
+MAX_CUE_CHARS = 60  # a subtitle line the viewer can actually read; longer ASR "sentences" get split
+MAX_CUE_SECONDS = 6.0
+_SENTENCE_END = ".!?。！？"
+_CLAUSE_END = ",;:，；："
+_ASCII_LETTER = re.compile(r"[A-Za-z]")
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?。！？])\s+")
+
+
+def _word_text(word: dict[str, Any]) -> str:
+    return (str(word.get("text") or "") + str(word.get("punctuation") or "")).strip()
+
+
+def _join_words(parts: list[str]) -> str:
+    if any(_ASCII_LETTER.search(p) for p in parts):
+        return re.sub(r"\s+([,.;:!?])", r"\1", " ".join(parts)).strip()
+    return "".join(parts).strip()
+
+
+def split_sentence(sent: dict[str, Any], max_chars: int = MAX_CUE_CHARS, max_seconds: float = MAX_CUE_SECONDS) -> list[dict[str, Any]]:
+    """Break one ASR sentence into subtitle-sized pieces (``begin_time`` / ``end_time`` ms, ``text``).
+
+    Paraformer often hands back a whole ad as one "sentence" when the speaker never pauses.
+    With word timestamps the cut goes at sentence-final punctuation, or at a clause break /
+    any word once the piece is over ``max_chars`` / ``max_seconds``; without them the text is
+    cut at sentence punctuation and the time shared out by character count.
+    """
+    text = str(sent.get("text") or "").strip()
+    begin = float(sent.get("begin_time") or 0)
+    end = float(sent.get("end_time") or begin)
+    if not text:
+        return []
+    words = [w for w in (sent.get("words") or []) if isinstance(w, dict) and _word_text(w)]
+    if words:
+        pieces: list[dict[str, Any]] = []
+        parts: list[str] = []
+        piece_begin: float | None = None
+        prev_end = begin
+        hard_limit = max_chars * 1.5
+
+        def flush(end_ms: float) -> None:
+            nonlocal parts, piece_begin
+            joined = _join_words(parts)
+            if joined and piece_begin is not None:
+                pieces.append({"begin_time": piece_begin, "end_time": end_ms, "text": joined})
+            parts, piece_begin = [], None
+
+        for k, word in enumerate(words):
+            wtext = _word_text(word)
+            wbegin = float(word.get("begin_time") or prev_end)
+            wend = float(word.get("end_time") or wbegin)
+            # A word that would push the piece past the hard limit starts a new piece instead.
+            if parts and len(_join_words([*parts, wtext])) > hard_limit:
+                flush(prev_end)
+            if piece_begin is None:
+                piece_begin = wbegin
+            parts.append(wtext)
+            prev_end = wend
+            joined = _join_words(parts)
+            last = k == len(words) - 1
+            long_enough = len(joined) >= max_chars or (wend - piece_begin) / 1000.0 >= max_seconds
+            if last or wtext[-1:] in _SENTENCE_END or (long_enough and wtext[-1:] in _CLAUSE_END):
+                flush(wend)
+        return [p for p in pieces if p["text"]]
+    chunks = [c.strip() for c in _SENTENCE_SPLIT.split(text) if c.strip()]
+    if len(chunks) <= 1:
+        return [{"begin_time": begin, "end_time": end, "text": text}]
+    total_chars = sum(len(c) for c in chunks) or 1
+    pieces = []
+    cursor = begin
+    for c in chunks:
+        span = (end - begin) * len(c) / total_chars
+        pieces.append({"begin_time": cursor, "end_time": cursor + span, "text": c})
+        cursor += span
+    return pieces
+
+
 def cues_from_sentences(sentences: list[dict[str, Any]], duration: float | None, max_cues: int = MAX_CUES) -> list[dict[str, Any]]:
     """ASR sentences (``begin_time`` / ``end_time`` ms, ``text``) → transcript cues in seconds.
 
-    Empty sentences are dropped, ends are clamped to the source duration, sentences starting
+    Long sentences are first cut into subtitle-sized pieces (``split_sentence``). Empty
+    sentences are dropped, ends are clamped to the source duration, sentences starting
     past the end vanish, and ``i`` is renumbered so it stays a dense index.
     """
     cues: list[dict[str, Any]] = []
-    for sent in sorted(sentences, key=lambda s: float(s.get("begin_time") or 0)):
+    pieces = [p for sent in sentences for p in split_sentence(sent)]
+    for sent in sorted(pieces, key=lambda s: float(s.get("begin_time") or 0)):
         text = str(sent.get("text") or "").strip()
         if not text:
             continue

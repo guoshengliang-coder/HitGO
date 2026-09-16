@@ -56,6 +56,57 @@ def test_wav_duration_ignores_a_streaming_placeholder_header(tmp_path):
     assert localize.wav_duration(streamed) == pytest.approx(1.5, abs=1e-3)
 
 
+def test_split_sentence_cuts_at_punctuation_using_word_timestamps():
+    words = []
+    t = 0
+    for w in ["Welcome", "to", "HitGO.", "Pick", "a", "language,", "then", "export.", "Try", "it", "today."]:
+        words.append({"begin_time": t, "end_time": t + 400, "text": w})
+        t += 500
+    sent = {"begin_time": 0, "end_time": t, "text": " ".join(w["text"] for w in words), "words": words}
+    pieces = localize.split_sentence(sent)
+    assert [p["text"] for p in pieces] == ["Welcome to HitGO.", "Pick a language, then export.", "Try it today."]
+    assert (pieces[0]["begin_time"], pieces[0]["end_time"]) == (0, 1400)
+    assert (pieces[1]["begin_time"], pieces[1]["end_time"]) == (1500, 3900)
+    assert pieces[2]["begin_time"] == 4000
+
+
+def test_split_sentence_uses_the_punctuation_field_and_joins_cjk_without_spaces():
+    words = [
+        {"begin_time": 0, "end_time": 300, "text": "欢迎", "punctuation": ""},
+        {"begin_time": 300, "end_time": 700, "text": "使用", "punctuation": "。"},
+        {"begin_time": 700, "end_time": 1200, "text": "立即", "punctuation": ""},
+        {"begin_time": 1200, "end_time": 1600, "text": "试用", "punctuation": "！"},
+    ]
+    pieces = localize.split_sentence({"begin_time": 0, "end_time": 1600, "text": "欢迎使用。立即试用！", "words": words})
+    assert [p["text"] for p in pieces] == ["欢迎使用。", "立即试用！"]
+    assert pieces[1]["begin_time"] == 700
+
+
+def test_split_sentence_cuts_a_long_clause_run_at_commas_and_by_length():
+    words = [{"begin_time": k * 300, "end_time": k * 300 + 250, "text": ("w%d," % k if k % 6 == 5 else "w%d" % k)} for k in range(40)]
+    sent = {"begin_time": 0, "end_time": 12000, "text": "x", "words": words}
+    pieces = localize.split_sentence(sent, max_chars=30, max_seconds=4.0)
+    assert len(pieces) > 1
+    assert all(len(p["text"]) <= 45 for p in pieces)  # never more than 1.5 × max_chars
+    assert all(p["end_time"] > p["begin_time"] for p in pieces)
+    assert pieces[-1]["end_time"] == words[-1]["end_time"]
+
+
+def test_split_sentence_without_words_shares_time_by_characters():
+    sent = {"begin_time": 0, "end_time": 4000, "text": "Hello there. How are you?"}
+    pieces = localize.split_sentence(sent)
+    assert [p["text"] for p in pieces] == ["Hello there.", "How are you?"]
+    assert pieces[0]["begin_time"] == 0 and pieces[1]["end_time"] == 4000
+    assert pieces[0]["end_time"] == pytest.approx(pieces[1]["begin_time"])
+    assert localize.split_sentence({"begin_time": 0, "end_time": 900, "text": "Just one sentence"}) == [{"begin_time": 0, "end_time": 900, "text": "Just one sentence"}]
+
+
+def test_cues_from_sentences_splits_a_run_on_sentence():
+    cues = localize.cues_from_sentences([{"begin_time": 0, "end_time": 3000, "text": "One. Two. Three."}], 10.0)
+    assert [c["text"] for c in cues] == ["One.", "Two.", "Three."]
+    assert [c["i"] for c in cues] == [0, 1, 2] and cues[-1]["end"] == 3.0
+
+
 def test_cue_slots_and_speech_rate_for():
     cues = [{"i": 0, "start": 0.4}, {"i": 1, "start": 3.0}, {"i": 2, "start": 9.0}]
     assert localize.cue_slots(cues, 12.0) == [2.6, 6.0, 3.0]

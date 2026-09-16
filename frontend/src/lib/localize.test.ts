@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  wrapCueText,
   appliedVersion,
   applyCrossVideoWarnings,
   applyLocalizationToSpec,
@@ -321,5 +322,27 @@ describe('applyCrossVideoWarnings', () => {
     expect(applyCrossVideoWarnings(spec)).toHaveLength(2);
     const onlySource: EditSpec = { ...emptySpec(), audio: { source_volume: 0, tracks: [{ id: 'x', asset_id: 'a_inst', align: 'source', t: 'all' }] } };
     expect(applyCrossVideoWarnings(onlySource)).toHaveLength(1);
+  });
+});
+
+describe('wrapCueText', () => {
+  it('短句不折行', () => {
+    expect(wrapCueText('Hi there', 'en', 0.05)).toBe('Hi there');
+  });
+  it('拉丁文按空格折，每行不超过估算字数', () => {
+    const s = wrapCueText('Welcome to HitGO the fastest way to localize your video ads in minutes and export', 'en', 0.05);
+    const lines = s.split('\n');
+    expect(lines.length).toBeGreaterThan(1);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(19);
+  });
+  it('韩文按字数折，优先在标点后断', () => {
+    const s = wrapCueText('히트 고에 오신 것을 환영합니다. 몇 분 만에 동영상 광고를 현지화하세요.', 'ko', 0.05);
+    const lines = s.split('\n');
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines[0].endsWith('.') || lines[0].endsWith('다.') || lines[0].length <= 10).toBe(true);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(10);
+  });
+  it('保留已有换行、去掉空行', () => {
+    expect(wrapCueText('a\n\nb', 'en', 0.05)).toBe('a\nb');
   });
 });

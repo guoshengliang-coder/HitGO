@@ -188,10 +188,61 @@ export interface LocalizedLayersOptions {
  * 译文 → 文字图层：复用 SRT 导入的 cuesToTextLayers，再打上 origin / lang 标记。
  * 译文为空的句子和整句落在删除区里的句子不生成图层。
  */
+/** 每种文字大致的字宽 / 字高比：CJK 与韩文接近 1，拉丁字母约 0.55，泰文约 0.7。 */
+function charWidthFactor(lang: string): number {
+  if (lang === 'th') return 0.7;
+  if (['zh', 'ja', 'ko', 'yue'].includes(lang)) return 1;
+  return 0.55;
+}
+
+/**
+ * 把一条译文按估算的每行字数折行（文字层不会自动换行，超宽只会被等比缩小到看不清）。
+ * 拉丁文在空格处断，CJK / 韩文按字断并尽量在标点后断；已有换行保留。
+ */
+export function wrapCueText(text: string, lang: string, fontSize: number, widthRel = 0.9, canvasW = 1080, canvasH = 1920): string {
+  const charPx = Math.max(1, fontSize * canvasH * charWidthFactor(lang));
+  const perLine = Math.max(4, Math.floor((widthRel * canvasW) / charPx));
+  const out: string[] = [];
+  for (const para of text.split('\n')) {
+    const p = para.trim();
+    if (!p) continue;
+    if (p.length <= perLine) {
+      out.push(p);
+      continue;
+    }
+    if (/\s/.test(p) && charWidthFactor(lang) < 1) {
+      let line = '';
+      for (const word of p.split(/\s+/)) {
+        if (line && (line + ' ' + word).length > perLine) {
+          out.push(line);
+          line = word;
+        } else line = line ? line + ' ' + word : word;
+      }
+      if (line) out.push(line);
+    } else {
+      let rest = p;
+      while (rest.length > perLine) {
+        let cut = perLine;
+        for (let k = perLine; k >= Math.floor(perLine * 0.6); k -= 1) {
+          if (/[，。！？、；：,.!?;: ]/.test(rest[k - 1])) {
+            cut = k;
+            break;
+          }
+        }
+        out.push(rest.slice(0, cut).trim());
+        rest = rest.slice(cut).trim();
+      }
+      if (rest) out.push(rest);
+    }
+  }
+  return out.join('\n');
+}
+
 export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOptions): TextLayer[] {
   const srtCues: SrtCue[] = [];
+  const fontSize = (opts.style ?? localizeTextStyle(opts.lang)).font_size;
   for (const c of cues) {
-    const text = c.translated.trim();
+    const text = wrapCueText(c.translated, opts.lang, fontSize);
     if (!text) continue;
     const r = sourceRangeToPost([c.start, c.end], opts.remove);
     if (!r) continue;
