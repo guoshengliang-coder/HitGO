@@ -166,3 +166,15 @@ ticket（`POST /api/assets/upload-ticket`），再把文件直接传过来（契
 - nginx：`deploy/nginx/hitgo.conf` → `/etc/nginx/conf.d/hitgo.conf`，`sudo nginx -t && sudo systemctl reload nginx`。DNS 为 Cloudflare 代理记录（橙色云）。
 - 演示素材：`scripts/make_demo_media.sh /srv/hitgo/demo` 生成占位视频与贴纸；`scripts/seed_demo.sh http://127.0.0.1:8790 <code> /srv/hitgo/demo` 建演示批次；`scripts/smoke_render.py` 走一遍剪辑 + 贴纸 + 双变体渲染。
 - 更新流程：本机改代码 → rsync → `sudo docker compose build && sudo docker compose up -d`（约 1–2 分钟，镜像层有缓存）。
+
+## 百炼（改语言）接入自检
+
+拿到 API-KEY 后先在本机跑一遍，不用部署：
+
+```bash
+cd backend && DASHSCOPE_API_KEY=sk-xxx uv run python ../scripts/check_dashscope.py --target ko
+```
+
+脚本按 TTS → ASR → 翻译 → 目标语言 TTS 走一圈，逐步打印耗时与百炼返回的原因（key 无效、模型未开通、余额不足会直接看到）。
+三步都通再把 key 写进服务器 `.env` 的 `DASHSCOPE_API_KEY`，`docker compose up -d` 重启 api / worker 即可。worker 需要能出网访问
+`dashscope.aliyuncs.com:443`（ASR / TTS 走 WebSocket）。

@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""自检百炼（DashScope）三个接口是否打通：TTS → ASR → 翻译，不需要任何素材。
+
+用法（本机或服务器都行，key 从环境变量或参数来）：
+
+    cd backend && DASHSCOPE_API_KEY=sk-xxx uv run python ../scripts/check_dashscope.py
+    cd backend && uv run python ../scripts/check_dashscope.py --key sk-xxx --target ko
+
+流程：用 cosyvoice 把一句英文合成 wav → 用 paraformer 把这段 wav 听写回来 → 用 qwen-mt 翻成目标语言。
+每步打印耗时和结果；哪一步失败就打印百炼返回的原因（通常是 key 无效、模型没开通、余额不足）。
+模型名默认与 .env.example 一致，可用 --asr / --mt / --tts 覆盖。
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+
+from app.services import localize  # noqa: E402
+from app.services.dashscope_providers import DashScopeAsr, DashScopeTranslate, DashScopeTts  # noqa: E402
+
+SENTENCE = "Welcome to HitGO, the fastest way to localize your ads."
+
+
+def step(name: str):
+    print(f"\n== {name}")
+    return time.perf_counter()
+
+
+def done(t0: float, detail: str) -> None:
+    print(f"   ok ({time.perf_counter() - t0:.1f}s): {detail}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--key", default=os.environ.get("DASHSCOPE_API_KEY", ""), help="百炼 API-KEY（缺省读 DASHSCOPE_API_KEY）")
+    ap.add_argument("--target", default="ko", choices=sorted(localize.DEFAULT_VOICES), help="翻译 / 合成的目标语言")
+    ap.add_argument("--asr", default=os.environ.get("LOCALIZE_ASR_MODEL", "paraformer-realtime-v2"))
+    ap.add_argument("--mt", default=os.environ.get("LOCALIZE_MT_MODEL", "qwen-mt-plus"))
+    ap.add_argument("--tts", default=os.environ.get("LOCALIZE_TTS_MODEL", "cosyvoice-v3-flash"))
+    args = ap.parse_args()
+    if not args.key:
+        print("没有 key：设置 DASHSCOPE_API_KEY 或传 --key", file=sys.stderr)
+        return 2
+
+    tts = DashScopeTts(api_key=args.key, model=args.tts)
+    asr = DashScopeAsr(api_key=args.key, model=args.asr)
+    mt = DashScopeTranslate(api_key=args.key, model=args.mt)
+    en_voice = localize.DEFAULT_VOICES["en"][0]["id"]
+    target_voice = localize.DEFAULT_VOICES[args.target][0]["id"]
+    failed = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "en.wav"
+        try:
+            t0 = step(f"TTS {args.tts} · 音色 {en_voice}（英文）")
+            wav.write_bytes(tts.synthesize(SENTENCE, en_voice))
+            done(t0, f"{wav.stat().st_size} 字节，{localize.wav_duration(wav):.1f} 秒")
+        except Exception as exc:  # noqa: BLE001
+            print(f"   失败：{exc}")
+            return 1
+
+        try:
+            t0 = step(f"ASR {args.asr}（language_hints=en）")
+            result = asr.transcribe(wav, "en")
+            text = " ".join(str(s.get("text", "")) for s in result.sentences).strip()
+            cues = localize.cues_from_sentences(result.sentences, None)
+            done(t0, f"{len(cues)} 句，识别语言={result.lang or '未报'}：{text!r}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"   失败：{exc}")
+            failed = True
+            text = SENTENCE
+
+        try:
+            t0 = step(f"翻译 {args.mt}（English → {localize.mt_name(args.target)}，术语 HitGO 不翻）")
+            translated = mt.translate(text, "English", localize.mt_name(args.target), [{"source": "HitGO", "target": "HitGO"}])
+            done(t0, translated.strip())
+        except Exception as exc:  # noqa: BLE001
+            print(f"   失败：{exc}")
+            failed = True
+            translated = ""
+
+        if translated:
+            try:
+                t0 = step(f"TTS {args.tts} · 音色 {target_voice}（{localize.LANGS[args.target]['label']}）")
+                out = Path(tmp) / f"{args.target}.wav"
+                out.write_bytes(tts.synthesize(translated.strip(), target_voice))
+                done(t0, f"{out.stat().st_size} 字节，{localize.wav_duration(out):.1f} 秒")
+            except Exception as exc:  # noqa: BLE001
+                print(f"   失败：{exc}")
+                failed = True
+
+    print("\n" + ("有步骤失败，按上面的原因处理（key / 模型开通 / 余额）。" if failed else "三个接口全部打通，可以把 key 写进服务器 .env。"))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
