@@ -4,7 +4,7 @@
 // 播放器会退回到"合成时钟"模式（见 lib/player.ts）。
 
 import { installMock, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, Batch, BatchDetail, EditSpec, Job, Layer, Preset, SafeZone, Video } from '../types';
+import type { Asset, Batch, BatchDetail, EditSpec, Job, Layer, Preset, SafeZone, SeparationModel, Video } from '../types';
 
 const now = () => new Date().toISOString();
 let seq = 100;
@@ -121,6 +121,28 @@ function probeVideo(asset: Asset, url: string) {
   el.onloadedmetadata = () => window.setTimeout(() => finish(true), 800);
   el.onerror = () => window.setTimeout(() => finish(false), 800);
   el.src = url;
+}
+
+/** 合成一段单音 WAV（data URL），给 mock 的分离结果当素材：mono 8 kHz，几秒也只有几十 KB。 */
+function toneWav(seconds: number, freq: number): string {
+  const rate = 8000;
+  const n = Math.max(1, Math.round(seconds * rate));
+  const buf = new ArrayBuffer(44 + n * 2);
+  const dv = new DataView(buf);
+  const str = (o: number, s: string) => [...s].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  str(36, 'data'); dv.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const env = t % 1 < 0.6 ? 1 : 0.15; // 每秒一下的节奏，听得出在动
+    dv.setInt16(44 + i * 2, Math.round(0.3 * env * 32767 * Math.sin(2 * Math.PI * freq * t)), true);
+  }
+  let bin = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:audio/wav;base64,${btoa(bin)}`;
 }
 
 /** mock 的音频"预处理"：拿到时长后置 ready。 */
@@ -517,6 +539,46 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     for (const b of batches) recount(b);
     return clone(v);
   }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/separate$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    if (v.status !== 'ready') throw new ApiError(400, '视频尚未预处理完成，暂时不能分离');
+    if (!v.has_audio) throw new ApiError(400, '源视频没有音轨，没有可分离的内容');
+    if (v.separation && (v.separation.status === 'queued' || v.separation.status === 'running')) throw new ApiError(409, '这条视频正在分离中，请等它完成');
+    const model = ((body as { model?: SeparationModel } | undefined)?.model ?? 'htdemucs') as SeparationModel;
+    v.separation = { ...(v.separation ?? {}), status: 'queued', model, error: null, updated_at: now() };
+    // 模拟 separator worker：2 秒后 running，再 3 秒 done，产出两条 derived 音频（合成的音，只为跑通链路）
+    window.setTimeout(() => {
+      if (!v.separation) return;
+      v.separation = { ...v.separation, status: 'running', updated_at: now() };
+      window.setTimeout(() => {
+        if (!v.separation) return;
+        for (const id of [v.separation.vocals_asset_id, v.separation.instrumental_asset_id]) {
+          const i = assets.findIndex((a) => a.id === id);
+          if (i >= 0) assets.splice(i, 1);
+        }
+        const base = v.name.replace(/\.[a-z0-9]+$/i, '');
+        const mk = (stem: 'vocals' | 'instrumental'): Asset => ({
+          id: nid('a'),
+          type: 'audio',
+          kind: 'audio',
+          status: 'ready',
+          name: `${base} · ${stem === 'vocals' ? '人声' : '伴奏'}.m4a`,
+          url: toneWav(v.duration, stem === 'vocals' ? 660 : 220),
+          duration: v.duration,
+          has_audio: true,
+          source: 'derived',
+          derived_from: { video_id: v.id, video_name: v.name, stem },
+          created_at: now(),
+        });
+        const vocals = mk('vocals');
+        const inst = mk('instrumental');
+        assets.push(vocals, inst);
+        v.separation = { status: 'done', model, error: null, vocals_asset_id: vocals.id, instrumental_asset_id: inst.id, updated_at: now() };
+      }, 3000);
+    }, 2000);
+    return clone(v);
+  }
   if ((mm = m(/^\/api\/videos\/([^/]+)$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');
@@ -576,7 +638,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     const i = assets.findIndex((a) => a.id === mm![1]);
     if (method === 'GET') return i >= 0 ? clone(assets[i]) : undefined;
     if (i >= 0) {
-      if (assets[i].source !== 'upload') throw new ApiError(400, '只能删除自己上传的素材');
+      if (assets[i].source !== 'upload' && assets[i].source !== 'derived') throw new ApiError(400, '只能删除自己上传或分离出来的素材');
       assets.splice(i, 1);
     }
     return undefined;

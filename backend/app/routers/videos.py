@@ -1,4 +1,4 @@
-"""Videos: GET /api/videos/{id}, PUT /api/videos/{id}/spec, DELETE /api/videos/{id}."""
+"""Videos: GET /api/videos/{id}, PUT /api/videos/{id}/spec, POST /api/videos/{id}/separate, DELETE /api/videos/{id}."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.db import get_db, utcnow
-from app.models import VIDEO_READY
-from app.routers._common import get_video_or_404, jobs_for_videos
-from app.schemas import EditSpec, SpecIn, VideoOut
+from app import worker
+from app.db import get_db, iso, utcnow
+from app.models import SEP_ACTIVE, SEP_QUEUED, VIDEO_READY
+from app.routers._common import enqueue_or_503, get_video_or_404, jobs_for_videos
+from app.schemas import EditSpec, SeparateIn, SpecIn, VideoOut
 from app.serializers import video_out
 from app.services import storage
 
@@ -56,6 +57,29 @@ def put_spec(video_id: str, body: SpecIn, db: Session = Depends(get_db)):
         video.edit_spec = body.edit_spec
     video.updated_at = utcnow()
     db.commit()
+    return video_out(video, jobs_for_videos(db, [video.id]))
+
+
+@router.post("/{video_id}/separate", response_model=VideoOut, status_code=202)
+def separate_video(video_id: str, body: SeparateIn | None = None, db: Session = Depends(get_db)):
+    """Queue a vocals / instrumental separation of the source audio (contract §3)."""
+    video = get_video_or_404(db, video_id)
+    if video.status != VIDEO_READY:
+        raise HTTPException(400, "视频尚未预处理完成，暂时不能分离")
+    if not video.has_audio:
+        raise HTTPException(400, "源视频没有音轨，没有可分离的内容")
+    previous = dict(video.separation or {})
+    if previous.get("status") in SEP_ACTIVE:
+        raise HTTPException(409, "这条视频正在分离中，请等它完成")
+    model = (body or SeparateIn()).model
+    video.separation = {**previous, "status": SEP_QUEUED, "model": model, "error": None, "updated_at": iso(utcnow())}
+    db.commit()
+    try:
+        enqueue_or_503(worker.separate_video, video.id)
+    except HTTPException:
+        video.separation = previous or None  # queue down: back to what it was
+        db.commit()
+        raise
     return video_out(video, jobs_for_videos(db, [video.id]))
 
 

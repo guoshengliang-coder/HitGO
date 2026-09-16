@@ -958,3 +958,72 @@ def test_real_ffmpeg_video_cover_keeps_its_sound_before_a_muted_untrimmed_source
     assert abs(_probe_duration(out, "a:0") - 3.5) < 0.15
     assert _mean_volume(out, 0.1, 1.2) > -30  # the cover's own beep
     assert _mean_volume(out, 1.8, 1.5) < -60  # muted source
+
+
+# --- align = source (separated stems, contract §2) -----------------------------------
+
+STEM = AudioSource("/data/assets/a_stem0001.m4a", 24.6)
+
+
+def test_source_aligned_track_is_cut_like_the_source_audio_then_windowed():
+    """valid_spec removes [3.2,5.8] and [17,18.4]: three kept segments, concat, then the [4, 9] window."""
+    track = {"id": "au_v", "asset_id": "a_stem0001", "role": "voice", "align": "source", "t": [4, 9], "volume": 0.8, "fade_out": 0.5}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track]), audio_assets={"a_stem0001": STEM})
+    graph, argv = fc(plan), plan.argv
+    assert "[3:a]atrim=start=0:end=3.2,asetpts=PTS-STARTPTS[tk1s0]" in graph
+    assert "[3:a]atrim=start=5.8:end=17,asetpts=PTS-STARTPTS[tk1s1]" in graph
+    assert "[3:a]atrim=start=18.4:end=24.6,asetpts=PTS-STARTPTS[tk1s2]" in graph
+    assert "[tk1s0][tk1s1][tk1s2]concat=n=3:v=0:a=1[tk1c]" in graph
+    # Window on the post-trim result; the fade-out sits at the window end (E = 5).
+    assert f"[tk1c]atrim=start=4:end=9,asetpts=PTS-STARTPTS,volume=0.8,afade=t=out:st=4.5:d=0.5,adelay=4000:all=1,{AFMT}[tk1]" in graph
+    assert "-stream_loop" not in argv and "[abase][tk1]amix=inputs=2" in graph
+    assert argv[argv.index("-t") + 1] == "20.6"
+
+
+def test_source_aligned_track_over_an_untrimmed_source_needs_no_concat():
+    track = {"id": "au_v", "asset_id": "a_stem0001", "align": "source", "t": "all"}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track], trim={"remove": []}), audio_assets={"a_stem0001": STEM})
+    graph = fc(plan)
+    assert "concat=n=" not in graph.split("[tk1]")[0].rsplit(";", 2)[-1] or "[tk1s" not in graph
+    assert f"[3:a]atrim=end=24.6,{AFMT}[tk1]" in graph
+
+
+def test_source_aligned_track_with_a_single_kept_segment_skips_concat():
+    track = {"id": "au_v", "asset_id": "a_stem0001", "align": "source", "t": "all"}
+    plan = audio_build(audio_spec(source_volume=0, tracks=[track], trim={"remove": [[0, 4]]}), audio_assets={"a_stem0001": STEM})
+    graph = fc(plan)
+    assert "[3:a]atrim=start=4:end=24.6,asetpts=PTS-STARTPTS[tk1s0]" in graph
+    assert "concat=n=1" not in graph
+    assert f"[tk1s0]atrim=end=20.6,{AFMT}[tk1]" in graph
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_source_aligned_stem_follows_the_cut(tmp_path):
+    """4 s source with a beep only in [2, 3]; the 'stem' is that same audio. Removing [0, 1.5]
+    must shift the beep to [0.5, 1.5] of the output — i.e. the stem is cut like the source."""
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=540x960:rate=30:duration=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=4",
+         "-af", "volume='if(between(t,2,3),1,0)':eval=frame",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    stem = tmp_path / "stem.m4a"
+    subprocess.run(["ffmpeg", "-y", "-i", str(src), "-vn", "-c:a", "aac", str(stem)], check=True, capture_output=True)
+
+    out = tmp_path / "out.mp4"
+    spec = valid_spec(trim={"remove": [[0, 1.5]]}, layers=[])
+    spec["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_stem", "align": "source", "t": "all"}]}
+    spec = EditSpec.model_validate(spec)
+    plan = build_render_command(
+        spec, {"duration": 4.0, "has_audio": True}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+        audio_assets={"a_stem": AudioSource(str(stem), 4.0)},
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+    assert abs(_probe_duration(out, "a:0") - 2.5) < 0.15
+    assert _mean_volume(out, 0.0, 0.4) < -60  # before the (shifted) beep
+    assert _mean_volume(out, 0.6, 0.8) > -30  # the beep now sits at [0.5, 1.5]
+    assert _mean_volume(out, 1.7, 0.7) < -60  # after it
+

@@ -23,6 +23,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import (
     ASSET_AUDIO,
+    ASSET_SOURCE_DERIVED,
     ASSET_FONT,
     ASSET_IMAGE,
     ASSET_PREPARING,
@@ -92,7 +93,7 @@ def _read_image_sticker(path: Path, name: str) -> tuple[tuple[int, int], int]:
 @router.get("", response_model=list[AssetOut])
 def list_assets(
     type: str | None = Query(default=None, pattern="^(sticker|font|audio)$"),
-    source: str | None = Query(default=None, pattern="^(upload|builtin|library)$"),
+    source: str | None = Query(default=None, pattern="^(upload|builtin|library|derived)$"),
     db: Session = Depends(get_db),
 ) -> list[AssetOut]:
     stmt = select(Asset).order_by(Asset.created_at.desc(), Asset.id)
@@ -212,9 +213,9 @@ def delete_asset(asset_id: str, db: Session = Depends(get_db)) -> None:
     asset = db.get(Asset, asset_id)
     if asset is None:
         raise HTTPException(404, "素材不存在")
-    if asset.source != ASSET_SOURCE_UPLOAD:
+    if asset.source not in (ASSET_SOURCE_UPLOAD, ASSET_SOURCE_DERIVED):
         # builtin comes back on the next startup, library belongs to the upstream system.
-        raise HTTPException(400, "只能删除自己上传的素材")
+        raise HTTPException(400, "只能删除自己上传或分离出来的素材")
     paths = _asset_files(asset)
     db.delete(asset)
     db.commit()

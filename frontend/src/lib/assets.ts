@@ -2,21 +2,26 @@
 // 接正式物料库后只需让 'library' 这一栏多出 source === 'library' 的素材，见 docs/ASSETS.md。
 import { isVideoAsset, type Asset, type AssetSource, type AssetType } from '../types';
 
-/** 界面上的两栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的。 */
-export type AssetBucket = 'library' | 'mine';
+/** 界面上的三栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的 / 分离结果（从视频分离出的人声、伴奏）。 */
+export type AssetBucket = 'library' | 'mine' | 'derived';
 
 const BUCKET_SOURCES: Record<AssetBucket, AssetSource[]> = {
   library: ['builtin', 'library'],
   mine: ['upload'],
+  derived: ['derived'],
 };
 
+export const BUCKET_LABEL: Record<AssetBucket, string> = { mine: '我上传的', library: '原料库', derived: '分离结果' };
+
 export function bucketOf(asset: Asset): AssetBucket {
-  return asset.source === 'upload' ? 'mine' : 'library';
+  if (asset.source === 'upload') return 'mine';
+  if (asset.source === 'derived') return 'derived';
+  return 'library';
 }
 
-/** 只有自己上传的素材能删；builtin 下次启动会被重新导入，library 归正式系统管。 */
+/** 自己上传的和分离出来的素材能删；builtin 下次启动会被重新导入，library 归正式系统管。 */
 export function canDelete(asset: Asset): boolean {
-  return asset.source === 'upload';
+  return asset.source === 'upload' || asset.source === 'derived';
 }
 
 // 契约 §3 的单文件上限。前端先挡一次，免得几百 MB 传完才被后端 400。

@@ -14,6 +14,16 @@ dependencies = [
     "pillow>=10.3",
 ]
 
+[project.optional-dependencies]
+# Only the separator worker image installs these (Dockerfile.separator): torch on the CPU
+# plus Demucs for vocals / instrumental separation (contract §6).
+separate = [
+    "demucs>=4.1",
+    "torch>=2.4",
+    "torchaudio>=2.4",
+    "numpy>=1.26",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.2",
@@ -26,3 +36,17 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.uv]
 package = false
+# Lock only for the platforms we run on (the Linux image, Apple-silicon dev Macs): demucs
+# pins an old torch on Intel Macs and would otherwise make the whole lock unsolvable.
+environments = ["sys_platform == 'linux'", "sys_platform == 'darwin' and platform_machine == 'arm64'"]
+
+# Linux (the Docker image) takes the CPU-only torch wheels: ~200 MB instead of the multi-GB
+# CUDA build. macOS falls through to PyPI, which is CPU-only there anyway.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]

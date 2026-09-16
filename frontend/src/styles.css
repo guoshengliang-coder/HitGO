@@ -526,3 +526,5 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .asset-card .thumb.audio { flex-direction: column; gap: 6px; padding: 0 8px; }
 .asset-card .thumb.audio audio { width: 100%; height: 32px; }
 .sticker-grid .asset-card .thumb.audio { height: 64px; }
+.track-item .track-head .role.source { background: #e6e3f7; color: #4a3f8f; }
+.track-item .track-head .role.sticker { background: #e8e8ea; color: #444; }

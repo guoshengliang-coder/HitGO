@@ -391,25 +391,53 @@ def build_render_command(
         if window <= MIN_SEGMENT:
             warnings.append(f"音轨 {track.id}：出声时段起点超出剪后时长，已跳过")
             continue
+        aligned = getattr(track, "align", "post") == "source"
         available = float(source.duration) - float(track.offset)
         if available <= MIN_SEGMENT:
             warnings.append(f"音轨 {track.id}：起始偏移不小于素材时长，已跳过")
             continue
 
-        # Bounded by atrim=end below, like looped video stickers (and by -t at the end).
-        options = ["-stream_loop", "-1"] if track.loop else []
-        input_index = len(inputs)
-        inputs.append([*options, "-i", source.path])
-
+        n_track = len(track_audio) + 1
         steps: list[str] = []
-        if track.offset > 0:
-            steps.append(f"atrim=start={_fmt(track.offset)}")
-        steps += ["asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+        if aligned:
+            # On the source timeline (a separated stem, a re-recorded voice-over): cut it
+            # exactly like the source audio, then take the window off the post-trim result.
+            input_index = len(inputs)
+            inputs.append(["-i", source.path])
+            head = f"[{input_index}:a]"
+            if trimmed:
+                seg_labels: list[str] = []
+                for k, (a, b) in enumerate(segments):
+                    seg = f"[tk{n_track}s{k}]"
+                    chains.append(
+                        f"{head}atrim=start={_fmt(a)}:end={_fmt(b)},asetpts=PTS-STARTPTS{seg}"
+                    )
+                    seg_labels.append(seg)
+                if len(seg_labels) > 1:
+                    head = f"[tk{n_track}c]"
+                    chains.append(f"{''.join(seg_labels)}concat=n={len(seg_labels)}:v=0:a=1{head}")
+                else:
+                    head = seg_labels[0]
+            if t_start > 0:
+                steps.append(f"atrim=start={_fmt(t_start)}:end={_fmt(t_end)}")
+                steps.append("asetpts=PTS-STARTPTS")
+            else:
+                steps.append(f"atrim=end={_fmt(window)}")
+            effective = window
+        else:
+            # Bounded by atrim=end below, like looped video stickers (and by -t at the end).
+            options = ["-stream_loop", "-1"] if track.loop else []
+            input_index = len(inputs)
+            inputs.append([*options, "-i", source.path])
+            head = f"[{input_index}:a]"
+            if track.offset > 0:
+                steps.append(f"atrim=start={_fmt(track.offset)}")
+            steps += ["asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+            # Fades run against the audible span: a non-looping file shorter than the
+            # window ends early, and the fade-out must land where the sound actually stops.
+            effective = window if track.loop else min(window, available)
         if track.volume != 1:
             steps.append(f"volume={_fmt(track.volume)}")
-        # Fades run against the audible span: a non-looping file shorter than the
-        # window ends early, and the fade-out must land where the sound actually stops.
-        effective = window if track.loop else min(window, available)
         fade_in = min(float(track.fade_in), effective)
         fade_out = min(float(track.fade_out), effective)
         if fade_in > 0:
@@ -420,8 +448,8 @@ def build_render_command(
         if delay_ms > 0:
             steps.append(f"adelay={delay_ms}:all=1")
         steps.append(AUDIO_FORMAT)
-        label = f"[tk{len(track_audio) + 1}]"
-        chains.append(f"[{input_index}:a]" + ",".join(steps) + label)
+        label = f"[tk{n_track}]"
+        chains.append(head + ",".join(steps) + label)
         track_audio.append(label)
 
     # ---- 6. audio mix -----------------------------------------------------------

@@ -29,6 +29,9 @@ class Settings:
     ffprobe_bin: str
     frontend_dist: Path
     samples_dir: Path | None
+    # Vocals / instrumental separation (separator worker, contract §6).
+    separate_threads: int
+    separate_max_seconds: int
 
     @property
     def is_dev(self) -> bool:
@@ -62,6 +65,8 @@ def load_settings() -> Settings:
         ffprobe_bin=_env("FFPROBE_BIN", "ffprobe"),
         frontend_dist=Path(_env("FRONTEND_DIST", str(REPO_DIR / "frontend" / "dist"))),
         samples_dir=samples_dir,
+        separate_threads=int(_env("SEPARATE_THREADS", "4")),
+        separate_max_seconds=int(_env("SEPARATE_MAX_SECONDS", "600")),
     )
 
 

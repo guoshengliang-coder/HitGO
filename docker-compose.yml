@@ -39,6 +39,29 @@ services:
       - redis
       - api
 
+  # Vocals / instrumental separation (torch + Demucs, CPU). Only consumes the `separate`
+  # queue; the first build downloads ~300 MB of wheels and the model weights.
+  separator:
+    build:
+      context: .
+      dockerfile: Dockerfile.separator
+    image: hitgo-separator:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      REDIS_URL: redis://redis:6379/0
+      SEPARATE_THREADS: ${SEPARATE_THREADS:-4}
+      SEPARATE_MAX_SECONDS: ${SEPARATE_MAX_SECONDS:-600}
+    # One 30 s clip peaks around 2–3 GiB on htdemucs; the cap keeps a runaway job from
+    # taking the shared host down (swap absorbs brief spikes).
+    mem_limit: 5g
+    volumes:
+      - ./data:/data
+    depends_on:
+      - redis
+      - api
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped

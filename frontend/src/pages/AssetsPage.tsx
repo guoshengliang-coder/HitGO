@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { isAudioAsset, isVideoAsset, type Asset, type AssetType } from '../types';
-import { canDelete, filterAssets, type AssetBucket } from '../lib/assets';
+import { BUCKET_LABEL, canDelete, filterAssets, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
 
@@ -31,6 +31,7 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
           {status === 'ready' && asset.duration ? (
             <div className="asset-badges">
               <span className="badge">{asset.duration.toFixed(1)}s</span>
+              {asset.derived_from && <span className="badge" title={`从「${asset.derived_from.video_name}」分离`}>{asset.derived_from.stem === 'vocals' ? '人声' : '伴奏'}</span>}
             </div>
           ) : null}
         </div>
@@ -149,7 +150,9 @@ export function AssetsPage() {
   const shown = filterAssets(assets, { bucket });
   const kind = tab === 'sticker' ? '贴纸' : tab === 'audio' ? '音频' : '字体';
   const emptyText =
-    bucket === 'library'
+    bucket === 'derived'
+      ? '还没有分离结果。在编辑器的「音频」模块里对某条视频点「分离人声 / 伴奏」，产出的人声轨和伴奏轨会出现在这里，可用于任何视频。'
+      : bucket === 'library'
       ? `原料库还没有${kind}。把文件放进仓库的 samples/${tab === 'sticker' ? 'stickers' : tab === 'audio' ? 'audio' : 'fonts'} 目录后重启后端即可导入；正式环境会换成公司物料库。`
       : tab === 'sticker'
         ? '还没有贴纸。支持 png / jpg / webp / gif 与 mp4 / mov / webm；图片单个不超过 10 MiB，视频贴纸不超过 50 MiB、60 秒。'
@@ -173,8 +176,9 @@ export function AssetsPage() {
       </div>
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
       <div className="chips" style={{ marginBottom: 12 }}>
-        <button className={`chip ${bucket === 'mine' ? 'active' : ''}`} onClick={() => setBucket('mine')}>我上传的</button>
-        <button className={`chip ${bucket === 'library' ? 'active' : ''}`} onClick={() => setBucket('library')}>原料库</button>
+        {(['mine', 'library', ...(tab === 'audio' ? (['derived'] as AssetBucket[]) : [])] as AssetBucket[]).map((b) => (
+          <button key={b} className={`chip ${bucket === b ? 'active' : ''}`} onClick={() => setBucket(b)}>{BUCKET_LABEL[b]}</button>
+        ))}
       </div>
       {shown.length === 0 ? (
         <div className="empty">{emptyText}</div>

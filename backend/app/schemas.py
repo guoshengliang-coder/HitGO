@@ -283,6 +283,10 @@ class Trim(BaseModel):
 
 
 AudioRole = Literal["bgm", "voice"]
+# post: the file starts at the window start; source: the file is on the source timeline and
+# gets the same trim.remove as the source audio (separated stems, re-recorded voice-overs).
+AudioAlign = Literal["post", "source"]
+SeparationModel = Literal["htdemucs", "htdemucs_ft"]
 
 
 class AudioTrack(BaseModel):
@@ -293,6 +297,7 @@ class AudioTrack(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     asset_id: str = Field(min_length=1)
     role: AudioRole = "bgm"  # UI grouping only; the worker treats every track alike
+    align: AudioAlign = "post"
     t: Literal["all"] | TimeWindow = "all"
     offset: float = Field(default=0.0, ge=0)  # seconds into the file
     volume: float = Field(default=1.0, ge=0, le=1)  # ≤ 1 so the browser preview can match it
@@ -310,6 +315,8 @@ class AudioTrack(BaseModel):
         if self.loop and self.offset > 0:
             # -stream_loop restarts at the file start, which would contradict the offset.
             raise ValueError(f"音轨 {self.id}：循环播放时起始偏移必须为 0")
+        if self.align == "source" and (self.loop or self.offset > 0):
+            raise ValueError(f"音轨 {self.id}：对齐源时间轴的音轨不能循环，起始偏移必须为 0")
         if self.t != "all" and self.fade_in + self.fade_out > (self.t[1] - self.t[0]) + 1e-6:
             raise ValueError(f"音轨 {self.id}：淡入加淡出不能超过时段长度")
         return self
@@ -462,6 +469,19 @@ class SpriteOut(BaseModel):
     count: int
 
 
+class SeparateIn(BaseModel):
+    model: SeparationModel = "htdemucs"
+
+
+class SeparationOut(BaseModel):
+    status: str
+    model: str
+    error: str | None = None
+    vocals_asset_id: str | None = None
+    instrumental_asset_id: str | None = None
+    updated_at: str | None = None
+
+
 class VideoOut(BaseModel):
     id: str
     batch_id: str
@@ -481,6 +501,7 @@ class VideoOut(BaseModel):
     edit_spec: dict[str, Any] | None
     edited: bool
     render_status: str
+    separation: SeparationOut | None = None
     updated_at: str
 
 
@@ -523,6 +544,7 @@ class AssetOut(BaseModel):
     preview_url: str | None = None
     family: str | None = None
     source: str
+    derived_from: dict[str, Any] | None = None
     created_at: str
 
 

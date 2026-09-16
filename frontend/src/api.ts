@@ -1,7 +1,7 @@
 // 类型化 API 客户端，路由与契约第 3 节一一对应。
 // VITE_MOCK=1 时由 src/mocks 提供内存实现（见 request()）。
 
-import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, Preset, PresetType, SafeZone, UploadTicket, Video } from './types';
+import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, Preset, PresetType, SafeZone, SeparationModel, UploadTicket, Video } from './types';
 import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
@@ -116,6 +116,7 @@ export const api = {
   // 视频
   getVideo: (id: string) => request<Video>('GET', `/api/videos/${id}`),
   putSpec: (id: string, edit_spec: EditSpec) => request<Video>('PUT', `/api/videos/${id}/spec`, { edit_spec }),
+  separateVideo: (id: string, model: SeparationModel) => request<Video>('POST', `/api/videos/${id}/separate`, { model }),
   deleteVideo: (id: string) => request<void>('DELETE', `/api/videos/${id}`),
 
   // 素材

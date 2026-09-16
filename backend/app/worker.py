@@ -1,4 +1,4 @@
-"""Celery app + tasks (preprocess_video, preprocess_asset, render_job) and the API-side ``enqueue`` helper.
+"""Celery app + tasks (preprocess_video, preprocess_asset, render_job, separate_video) and the API-side ``enqueue`` helper.
 
 The API never blocks on Redis for long: publishing uses a short connection
 timeout and a single retry, and failures are turned into ``QueueUnavailable``
@@ -24,7 +24,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.services import asset_preprocess, ffprobe, preprocess, render, storage
+from app.services import asset_preprocess, ffprobe, preprocess, render, separate, storage
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +47,9 @@ celery_app.conf.update(
     },
     task_track_started=False,
     timezone="UTC",
+    # Separation needs torch + Demucs, which only the ``separator`` container has
+    # (Dockerfile.separator, ``-Q separate``); the default worker never sees the task.
+    task_routes={"hitgo.separate_video": {"queue": "separate"}},
 )
 
 
@@ -173,6 +176,21 @@ def preprocess_asset(self, asset_id: str) -> None:  # noqa: ANN001
         asset.status = ASSET_READY
         asset.error = None
         db.commit()
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hitgo.separate_video", bind=True, max_retries=3)
+def separate_video(self, video_id: str) -> None:  # noqa: ANN001
+    """Vocals / instrumental separation (contract §6); runs on the ``separate`` queue."""
+    db = SessionLocal()
+    try:
+        if db.get(Video, video_id) is None:
+            if self.request.retries < self.max_retries:
+                raise self.retry(countdown=1)
+            log.info("separate: video %s vanished", video_id)
+            return
+        separate.run_separation(db, video_id)
     finally:
         db.close()
 

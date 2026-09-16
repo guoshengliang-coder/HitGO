@@ -6,7 +6,7 @@ const D = 20.6; // 剪后时长
 
 describe('resolveTrack / defaults', () => {
   it('补齐契约缺省值', () => {
-    expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' })).toEqual({ id: 'a', asset_id: 'x', t: 'all', role: 'bgm', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 });
+    expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' })).toEqual({ id: 'a', asset_id: 'x', t: 'all', role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 });
     expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all', volume: 0.5, loop: true })).toMatchObject({ volume: 0.5, loop: true, offset: 0 });
   });
   it('BGM 循环压低淡出，口播原音量播一遍', () => {
@@ -104,5 +104,25 @@ describe('音频模块（HIG-10）', () => {
     // 播放头在末尾：往前留出至少 0.1 秒，区间不会退化成一个点
     expect(toggleTrackWindow('all', D, D)).toEqual([20.5, D]);
     expect(toggleTrackWindow('all', -1, D)).toEqual([0, 3]);
+  });
+});
+
+describe('align = source（分离出的人声 / 伴奏）', () => {
+  const D = 20.6;
+  const stem: AudioTrack = { id: 's', asset_id: 'x', align: 'source', t: 'all' };
+  it('按源时间定位，不看时段起点', () => {
+    expect(trackMediaTime(4, stem, D, 24.6, 6.6)).toBeCloseTo(6.6);
+    expect(trackMediaTime(4, { ...stem, t: [2, 12] }, D, 24.6, 6.6)).toBeCloseTo(6.6);
+    expect(trackMediaTime(1, { ...stem, t: [2, 12] }, D, 24.6, 1)).toBeNull(); // 时段外
+    expect(trackMediaTime(4, stem, D, 24.6)).toBeNull(); // 没给源时间
+    expect(trackMediaTime(4, stem, D, 3, 6.6)).toBeNull(); // 素材比源片短，已播完
+  });
+  it('出声长度按时段长算，淡出贴着时段末尾', () => {
+    expect(audibleSpan({ ...stem, t: [2, 12] }, D, 24.6)).toBeCloseTo(10);
+    const faded: AudioTrack = { ...stem, t: [2, 12], fade_out: 1 };
+    expect(trackGain(11.5, faded, D, 24.6)).toBeCloseTo(0.5);
+  });
+  it('缺省 align 为 post', () => {
+    expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' }).align).toBe('post');
   });
 });
