@@ -1,4 +1,5 @@
-// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨、BGM / 口播可拖动拉伸、贴纸音轨只读）/
+// 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨可选中并画出静音区间（可拖边，HIG-25）、
+// BGM / 口播可拖动拉伸、贴纸音轨只读）/
 // 图层行（文本模块显示文字图层，字幕模块显示文字 + 遮盖图层，贴纸模块显示贴纸图层；可拖动、拉伸，轨道头可锁定 / 隐藏）。
 // 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
 // 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
@@ -12,7 +13,7 @@ import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
-import { resolveTrack, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackSnapCandidates } from '../../lib/audioTracks';
+import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
 import { snapValue } from '../../lib/snap';
@@ -31,16 +32,17 @@ function CoverGap({ width }: { width: number }) {
   return width > 0 ? <div className="tl-cover-gap" style={{ width }} title="封面期间不叠加图层、不放音轨" /> : null;
 }
 
-/** 音频模块的源音轨行：只是状态展示（静音 / 音量），没有可拖的东西。 */
-function SourceAudioRow({ hasAudio, volume, width, offset, scrub }: { hasAudio: boolean; volume: number; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers'] }) {
+/** 音频模块的源音轨行：状态（静音 / 音量）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
+function SourceAudioRow({ hasAudio, volume, width, offset, scrub, selected, onSelect, children }: { hasAudio: boolean; volume: number; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
   const muted = !hasAudio || volume === 0;
   const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
   return (
-    <div className={`tl-row tl-audio ${muted ? 'muted' : ''}`}>
-      <div className="lbl" title={label}>{label}</div>
+    <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
+      <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>{label}</div>
       <div className="body" {...scrub}>
         <CoverGap width={offset} />
-        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''}`} style={{ left: offset, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume }} />}
+        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''} ${selected ? 'selected' : ''}`} style={{ left: offset, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume, pointerEvents: 'none' }} />}
+        {hasAudio && volume > 0 && children}
       </div>
     </div>
   );
@@ -66,7 +68,7 @@ function useWidth(ref: React.RefObject<HTMLDivElement>) {
   return w;
 }
 
-type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move' | 'track-l' | 'track-r' | 'track-move'; index: number; startX: number; orig: [number, number] };
+type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move' | 'track-l' | 'track-r' | 'track-move' | 'mute-l' | 'mute-r' | 'mute-move'; index: number; startX: number; orig: [number, number] };
 
 /** 标尺 / 轨道上的 scrub：按下暂停并定位，拖动时用 rAF 节流连续定位。 */
 function useScrub(xToTime: (clientX: number) => number) {
@@ -140,6 +142,9 @@ export function Timeline() {
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
+  const selectedMute = useEditor((s) => s.selectedMuteIndex);
+  const setSelectedMute = useEditor((s) => s.setSelectedMute);
+  const updateSourceMute = useEditor((s) => s.updateSourceMute);
   const timelinePps = useEditor((s) => s.timelinePps);
   const setTimelinePps = useEditor((s) => s.setTimelinePps);
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -158,6 +163,7 @@ export function Timeline() {
   const trimStep = step === 'trim';
   const audioStep = step === 'audio';
   const tracks = spec?.audio?.tracks ?? [];
+  const mutes = spec?.audio?.source_mute ?? [];
   const stickerAudio = audioStep ? stickerAudioLayers(spec?.layers ?? [], assets) : [];
   const layerTypes = layerTypesForStep(step);
   const layerType = layerTypes[0] ?? null;
@@ -242,11 +248,14 @@ export function Timeline() {
     dragRef.current = d.orig;
     const isBar = d.kind.startsWith('bar');
     const isTrack = d.kind.startsWith('track');
-    const postAxis = isBar || isTrack;
+    const isMute = d.kind.startsWith('mute');
+    const postAxis = isBar || isTrack || isMute;
     const maxT = postAxis ? postDuration : duration;
     // 吸附候选：源时间（区间）或剪后时间（图层条、音轨条）
     const head = Math.max(0, time); // 封面段里的播放头按正片开头算
-    const candidates: number[] = isTrack
+    const candidates: number[] = isMute
+      ? [0, postDuration, sourceToPost(time, remove), ...tracks.flatMap((t) => (t.t === 'all' ? [] : t.t)), ...mutes.flatMap((r, i) => (i === d.index ? [] : r))]
+      : isTrack
       ? trackSnapCandidates({ tracks, layers: spec?.layers ?? [], excludeTrackId: tracks[d.index]?.id ?? '', postDuration, playhead: sourceToPost(time, remove) })
       : isBar
         ? [0, postDuration, sourceToPost(time, remove), ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
@@ -302,7 +311,9 @@ export function Timeline() {
       if (val) {
         const [a, b] = val;
         if (d.kind.startsWith('cut')) updateRemoveRange(d.index, a, b);
-        else if (isTrack) {
+        else if (isMute) {
+          if (a !== d.orig[0] || b !== d.orig[1]) updateSourceMute(d.index, Math.round(a * 100) / 100, Math.round(b * 100) / 100);
+        } else if (isTrack) {
           // 只点了一下没拖：不写 spec，免得多出一条空的撤销记录
           const track = tracks[d.index];
           if (track && (a !== d.orig[0] || b !== d.orig[1])) updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
@@ -437,7 +448,38 @@ export function Timeline() {
           </div>
 
           {audioStep && (
-            <SourceAudioRow hasAudio={!!video?.has_audio} volume={sourceVolume(spec?.audio)} width={trackW} offset={off} scrub={scrub.handlers} />
+            <SourceAudioRow
+              hasAudio={!!video?.has_audio}
+              volume={sourceVolume(spec?.audio)}
+              width={trackW}
+              offset={off}
+              scrub={scrub.handlers}
+              selected={selectedTrackId === SOURCE_TRACK_ID}
+              onSelect={() => setSelectedTrack(SOURCE_TRACK_ID)}
+            >
+              {mutes.map((m, i) => {
+                const [pa, pb] = drag && drag.kind.startsWith('mute') && drag.index === i && dragVal ? dragVal : m;
+                const left = off + postToSource(pa, remove) * pps;
+                const right = off + postToSource(pb, remove) * pps;
+                return (
+                  <div
+                    key={i}
+                    className={`tl-cut tl-mute ${selectedMute === i ? 'selected' : ''}`}
+                    style={{ left, width: Math.max(2, right - left) }}
+                    title={`原声静音 ${pa.toFixed(2)}s – ${pb.toFixed(2)}s（剪后时间；Delete 删除）`}
+                    onClick={(e) => e.stopPropagation()}
+                    onPointerDown={(e) => {
+                      setSelectedMute(i);
+                      startDrag(e, { kind: 'mute-move', index: i, startX: e.clientX, orig: m });
+                    }}
+                  >
+                    <div className="edge l" onPointerDown={(e) => { setSelectedMute(i); startDrag(e, { kind: 'mute-l', index: i, startX: e.clientX, orig: m }); }} />
+                    <div className="edge r" onPointerDown={(e) => { setSelectedMute(i); startDrag(e, { kind: 'mute-r', index: i, startX: e.clientX, orig: m }); }} />
+                  </div>
+                );
+              })}
+              {inPoint !== null && selectedTrackId === SOURCE_TRACK_ID && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="静音入点" />}
+            </SourceAudioRow>
           )}
           {audioStep &&
             tracks.map((t, i) => {
@@ -450,8 +492,9 @@ export function Timeline() {
               const sel = selectedTrackId === t.id;
               const asset = assets.find((a) => a.id === t.asset_id);
               const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
+              const problem = trackAssetProblem(t, assets);
               return (
-                <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''}`} onClick={() => setSelectedTrack(t.id)}>
+                <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
                   <div className="lbl" title={name}>
                     <button
                       className={`chip ${all ? 'active' : ''}`}
@@ -481,6 +524,7 @@ export function Timeline() {
                       {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                       {r.loop ? ' ↻' : ''}
                       {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
+                      {problem === 'missing' ? ' · 素材已失效，导出会跳过' : problem === 'not-ready' ? ' · 素材处理中' : ''}
                       {!all && (
                         <>
                           <div className="edge l" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} />

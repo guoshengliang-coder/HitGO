@@ -85,6 +85,7 @@ class AudioSource:
 
     path: str
     duration: float  # seconds
+    name: str = ""  # asset display name, only echoed into RenderPlan.audio
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,9 @@ class RenderPlan:
     canvas: tuple[int, int]
     warnings: list[str] = field(default_factory=list)
     filter_complex: str = ""
+    # What the output audio is actually made of (contract §1 Job output.audio); None
+    # when the spec has no audio block.
+    audio: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -460,10 +464,13 @@ def build_render_command(
 
     # ---- 5. audio tracks (contract §2 audio.tracks) ----------------------------
     track_audio: list[str] = []
+    mixed_tracks: list[dict[str, Any]] = []
+    skipped_tracks: list[str] = []
     for track in audio_spec.tracks if audio_spec is not None else []:
         source = (audio_assets or {}).get(track.asset_id)
         if source is None:
             warnings.append(f"音轨 {track.id}：音频素材 {track.asset_id} 不存在或未就绪，已跳过")
+            skipped_tracks.append(track.id)
             continue
         if track.t == "all":
             t_start, t_end = 0.0, expected_duration
@@ -472,11 +479,13 @@ def build_render_command(
         window = t_end - t_start
         if window <= MIN_SEGMENT:
             warnings.append(f"音轨 {track.id}：出声时段起点超出剪后时长，已跳过")
+            skipped_tracks.append(track.id)
             continue
         aligned = getattr(track, "align", "post") == "source"
         available = float(source.duration) - float(track.offset)
         if available <= MIN_SEGMENT:
             warnings.append(f"音轨 {track.id}：起始偏移不小于素材时长，已跳过")
+            skipped_tracks.append(track.id)
             continue
 
         n_track = len(track_audio) + 1
@@ -533,18 +542,33 @@ def build_render_command(
         label = f"[tk{n_track}]"
         chains.append(head + ",".join(steps) + label)
         track_audio.append(label)
+        mixed_tracks.append(
+            {"id": track.id, "asset_id": track.asset_id, "name": source.name, "role": track.role}
+        )
 
     # ---- 6. audio mix -----------------------------------------------------------
     # Only when the spec asks for something beyond the plain source track; otherwise
     # the argv stays exactly what it was before any audio feature existed.
     overlays = sticker_audio + track_audio
-    graph_audio = bool(overlays) or source_volume != 1
+    # source_mute spans (post-trim time) that actually fall inside the output.
+    mutes = [
+        (float(a), min(float(b), expected_duration))
+        for a, b in (audio_spec.source_mute if audio_spec is not None else [])
+        if a < expected_duration
+    ]
+    mutes = [(a, b) for a, b in mutes if b - a > MIN_SEGMENT] if source_heard else []
+    graph_audio = bool(overlays) or source_volume != 1 or bool(mutes)
     audio_map: list[str]
     if graph_audio:
         if source_heard:
             base = f"{audio_label or '[0:a:0]'}{AUDIO_FORMAT}"
             if source_volume != 1:
                 base += f",volume={_fmt(source_volume)}"
+            if mutes:
+                # between(t,…) reads the frame time, so the main track must start at 0.
+                base += ",asetpts=PTS-STARTPTS" + "".join(
+                    f",volume=0:enable='between(t,{_fmt(a)},{_fmt(b)})'" for a, b in mutes
+                )
             chains.append(base + "[abase]")
         elif overlays:
             # Silent bed so amix (duration=first) still spans the whole output.
@@ -558,7 +582,7 @@ def build_render_command(
             )
             audio_map = ["-map", "[aout]"]
         elif source_heard:
-            audio_map = ["-map", "[abase]"]  # only the source gain changed: no amix
+            audio_map = ["-map", "[abase]"]  # only the source gain / mutes changed: no amix
         else:
             audio_map = ["-an"]  # muted source, nothing mixed in
     elif has_audio:
@@ -627,6 +651,14 @@ def build_render_command(
         canvas=(W, H),
         warnings=warnings,
         filter_complex=filter_complex,
+        audio=None
+        if audio_spec is None
+        else {
+            "source_volume": source_volume if has_audio else 0.0,
+            "source_mute": len(mutes),
+            "tracks": mixed_tracks,
+            "skipped": skipped_tracks,
+        },
     )
 
 

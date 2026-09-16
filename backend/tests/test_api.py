@@ -817,6 +817,37 @@ def test_render_task_success_writes_output_and_callback(ready_video, monkeypatch
     assert api["output_url"] == "/media/outputs/j_run1.mp4" and api["callback"]["status"] == "done"
 
 
+def test_render_task_records_the_audio_it_actually_mixed(ready_video, monkeypatch, db, client):
+    """HIG-26: output.audio lists the tracks that went into the mix and the ones skipped."""
+    from app.services import ffprobe, render as render_service
+
+    storage.asset_path("a_voice_ok", "mp3").parent.mkdir(parents=True, exist_ok=True)
+    storage.asset_path("a_voice_ok", "mp3").write_bytes(b"id3")
+    db.add(Asset(id="a_voice_ok", type="audio", kind="audio", name="口播.mp3", ext="mp3", status="ready", source="upload", duration=24.0))
+    db.commit()
+    spec = valid_spec(layers=[])
+    spec["audio"] = {"source_volume": 0, "tracks": [
+        {"id": "au_v", "asset_id": "a_voice_ok", "role": "voice"},
+        {"id": "au_old", "asset_id": "a_stem_deleted", "align": "source"},
+    ]}  # fmt: skip
+    put_spec(client, VIDEO, spec)
+    job = add_job(db, VIDEO, "9x16", "queued", id="j_audio1")
+    monkeypatch.setattr(render_service, "run_ffmpeg", lambda argv, expected, on_progress, **kw: storage.tmp_output_path("j_audio1").write_bytes(b"mp4"))
+    monkeypatch.setattr(ffprobe, "probe", lambda p: {"width": 1080, "height": 1920, "duration": 20.6, "has_audio": True})
+    worker.render_job.run(job.id)
+    db.expire_all()
+    j = db.get(Job, job.id)
+    assert j.status == "done"
+    assert j.output["audio"] == {
+        "source_volume": 0.0,
+        "source_mute": 0,
+        "tracks": [{"id": "au_v", "asset_id": "a_voice_ok", "name": "口播.mp3", "role": "voice"}],
+        "skipped": ["au_old"],
+    }
+    assert "au_old" in j.error
+    assert client.get(f"/api/jobs/{job.id}").json()["output"]["audio"]["skipped"] == ["au_old"]
+
+
 def test_render_task_failure_records_stderr_tail(ready_video, monkeypatch, db, client):
     from app.services import render as render_service
 

@@ -186,7 +186,7 @@ def test_style_only_copies_mix_audio_with_the_asset():
 
 def test_apply_audio_copies_the_whole_block_or_clears_it():
     src = valid_spec()
-    src["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": "all", "loop": True}]}
+    src["audio"] = {"source_volume": 0, "source_mute": [[1, 2]], "tracks": [{"id": "au_1", "asset_id": "a_bgm", "t": "all", "loop": True}]}
     target = {"spec_version": 1, "trim": {"remove": [[1, 2]]}, "layers": [], "outputs": [], "audio": {"source_volume": 0.5, "tracks": []}}
     out = apply_modules(src, target, ["audio"], 10.0)
     assert out["audio"] == src["audio"] and out["audio"] is not src["audio"]

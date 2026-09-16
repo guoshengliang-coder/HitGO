@@ -254,7 +254,10 @@ def test_audio_block_is_optional_and_defaults_fill_in():
         ({"tracks": [{"id": "a", "asset_id": "x", "volume": 2}]}, "volume"),
         ({"tracks": [{"id": "a", "asset_id": "x", "offset": -1}]}, "offset"),
         ({"tracks": [{"id": "a", "asset_id": "x", "t": [5, 3]}]}, "终点必须大于起点"),
-        ({"tracks": [{"id": "a", "asset_id": "x", "loop": True, "offset": 2}]}, "循环播放时起始偏移必须为 0"),
+        ({"source_mute": [[-1, 2]]}, "起点不能小于 0"),
+        ({"source_mute": [[3, 3]]}, "终点必须大于起点"),
+        ({"source_mute": [[4, 6], [5, 7]]}, "重叠或未按升序排列"),
+        ({"source_mute": [[4, 6], [1, 2]]}, "重叠或未按升序排列"),
         ({"tracks": [{"id": "a", "asset_id": "x", "t": [0, 3], "fade_in": 2, "fade_out": 2}]}, "淡入加淡出不能超过时段长度"),
         ({"tracks": [{"id": "a", "asset_id": "x"}, {"id": "a", "asset_id": "y"}]}, "音轨 id 重复"),
         ({"tracks": [{"id": "a", "asset_id": ""}]}, "asset_id"),
@@ -263,6 +266,18 @@ def test_audio_block_is_optional_and_defaults_fill_in():
 )
 def test_audio_rules(audio, fragment):
     assert fragment in errors_of(audio_spec(**audio))
+
+
+def test_source_mute_defaults_empty_and_keeps_sorted_spans():
+    assert validate(audio_spec()).audio.source_mute == []
+    spec = validate(audio_spec(source_mute=[[1, 2.5], [2.5, 4], [10, 99]]))  # touching is fine; no upper bound
+    assert spec.audio.source_mute == [(1.0, 2.5), (2.5, 4.0), (10.0, 99.0)]
+
+
+def test_looping_track_may_start_mid_file():
+    """HIG-25: the second half of a split looping BGM continues from where the first half stopped."""
+    track = validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "loop": True, "offset": 2.5}])).audio.tracks[0]
+    assert track.loop and track.offset == 2.5
 
 
 def test_audio_fades_may_fill_the_window_exactly_and_all_windows_skip_the_sum_check():

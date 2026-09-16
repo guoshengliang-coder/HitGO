@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { latestJobIds, outputFileName, sortByFinishedDesc } from './outputs';
+import { audioMixSummary, jobWarning, latestJobIds, outputFileName, sortByFinishedDesc, versionTags } from './outputs';
 import type { Job } from '../types';
 
 function job(
@@ -118,5 +118,41 @@ describe('outputFileName', () => {
 
   it('falls back to the job id when there is nothing to name it by', () => {
     expect(outputFileName(job('j_9', 'v_1', '', null))).toBe('j_9.mp4');
+  });
+});
+
+describe('HIG-26：产物页看清成片混了什么', () => {
+  it('versionTags：同组多条时标最新 / 旧版本，单条不打标', () => {
+    const jobs = [
+      job('j1', 'v1', '9x16', '2026-09-16T08:38:58Z'),
+      job('j2', 'v1', '9x16', '2026-09-16T08:45:51Z'),
+      job('j3', 'v1', '9x16', '2026-09-16T08:47:43Z'),
+      job('j4', 'v2', '9x16', '2026-09-16T08:47:43Z'),
+    ];
+    const tags = versionTags(jobs);
+    expect([tags.get('j1'), tags.get('j2'), tags.get('j3'), tags.get('j4')]).toEqual(['older', 'older', 'latest', null]);
+  });
+
+  it('jobWarning：只取完成任务的警告，去掉前缀', () => {
+    expect(jobWarning({ status: 'done', error: '警告：音轨 au_1：音频素材 a_x 不存在或未就绪，已跳过' })).toBe('音轨 au_1：音频素材 a_x 不存在或未就绪，已跳过');
+    expect(jobWarning({ status: 'failed', error: 'ffmpeg 退出码 1' })).toBeNull();
+    expect(jobWarning({ status: 'done', error: null })).toBeNull();
+  });
+
+  it('audioMixSummary：音轨名 + 原声状态 + 静音段 + 跳过数；没有记录时为 null', () => {
+    expect(audioMixSummary(undefined)).toBeNull();
+    expect(
+      audioMixSummary({
+        source_volume: 0,
+        source_mute: 0,
+        tracks: [
+          { id: 'a', asset_id: 'a_1', name: '口播.mp3', role: 'bgm' },
+          { id: 'b', asset_id: 'a_2', name: 'TikTok Original.m4a', role: 'bgm' },
+        ],
+        skipped: [],
+      }),
+    ).toBe('音轨：口播.mp3、TikTok Original.m4a · 原声静音');
+    expect(audioMixSummary({ source_volume: 0.6, source_mute: 2, tracks: [], skipped: ['x'] })).toBe('没有叠加音轨 · 原声 60% · 原声静音 2 段 · 跳过 1 条（素材失效）');
+    expect(audioMixSummary({ source_volume: 1, source_mute: 0, tracks: [{ id: 'a', asset_id: 'a_1', name: '', role: 'voice' }], skipped: [] })).toBe('音轨：a_1 · 原声保留');
   });
 });

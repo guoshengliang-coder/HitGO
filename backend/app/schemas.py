@@ -324,7 +324,8 @@ class AudioTrack(BaseModel):
     role: AudioRole = "bgm"  # UI grouping only; the worker treats every track alike
     align: AudioAlign = "post"
     t: Literal["all"] | TimeWindow = "all"
-    offset: float = Field(default=0.0, ge=0)  # seconds into the file
+    # seconds into the file; with loop the first pass starts here, later passes at 0 (HIG-25)
+    offset: float = Field(default=0.0, ge=0)
     volume: float = Field(default=1.0, ge=0, le=1)  # ≤ 1 so the browser preview can match it
     loop: bool = False
     fade_in: float = Field(default=0.0, ge=0)
@@ -337,9 +338,6 @@ class AudioTrack(BaseModel):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> AudioTrack:
-        if self.loop and self.offset > 0:
-            # -stream_loop restarts at the file start, which would contradict the offset.
-            raise ValueError(f"音轨 {self.id}：循环播放时起始偏移必须为 0")
         if self.align == "source" and (self.loop or self.offset > 0):
             raise ValueError(f"音轨 {self.id}：对齐源时间轴的音轨不能循环，起始偏移必须为 0")
         if self.t != "all" and self.fade_in + self.fade_out > (self.t[1] - self.t[0]) + 1e-6:
@@ -353,7 +351,23 @@ class AudioSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     source_volume: float = Field(default=1.0, ge=0, le=1)
+    # Post-trim spans where the source audio is silenced, picture untouched (HIG-25).
+    source_mute: list[TimeWindow] = Field(default_factory=list)
     tracks: list[AudioTrack] = Field(default_factory=list)
+
+    @field_validator("source_mute")
+    @classmethod
+    def _validate_source_mute(cls, ranges: list[TimeWindow]) -> list[TimeWindow]:
+        prev_end = -1.0
+        for i, (a, b) in enumerate(ranges):
+            if a < 0:
+                raise ValueError(f"原声静音区间 #{i + 1} 起点不能小于 0")
+            if b <= a:
+                raise ValueError(f"原声静音区间 #{i + 1} 终点必须大于起点")
+            if a < prev_end:
+                raise ValueError(f"原声静音区间 #{i + 1} 与前一个区间重叠或未按升序排列")
+            prev_end = b
+        return [(float(a), float(b)) for a, b in ranges]
 
     @field_validator("tracks")
     @classmethod

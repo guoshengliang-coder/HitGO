@@ -4,6 +4,7 @@ import { Modal } from '../ui/Modal';
 import { JOB_LABELS, Pill } from '../ui/Pill';
 import { IconRetry } from '../ui/Icons';
 import { VARIANT_DEFS } from '../../types';
+import { jobWarning } from '../../lib/outputs';
 
 export function ProgressModal() {
   const jobs = useEditor((s) => s.jobs);
@@ -54,8 +55,8 @@ export function ProgressModal() {
               <td>
                 <Pill kind={j.status} label={JOB_LABELS[j.status]} />
               </td>
-              <td className="err" title={j.error ?? undefined}>
-                {j.status === 'failed' ? j.error : ''}
+              <td className={j.status === 'failed' ? 'err' : 'err warn-text'} title={j.error ?? undefined}>
+                {j.status === 'failed' ? j.error : jobWarning(j) ? `警告：${jobWarning(j)}` : ''}
               </td>
               <td>
                 {j.status === 'failed' && (

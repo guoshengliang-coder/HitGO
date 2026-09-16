@@ -8,7 +8,7 @@ import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
 import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, Video } from '../types';
 import { emptySpec, isAssetReady } from '../types';
-import { newTrackId, trackDefaultsFor } from '../lib/audioTracks';
+import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
 import { cloneSpec, layerAspect, newLayerId, toContractSpec, toSingleOutput } from '../lib/spec';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
@@ -200,6 +200,17 @@ export interface EditorState {
   addAudioTrack: (assetId: string, role: AudioRole) => string | null;
   updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
   removeAudioTrack: (id: string) => void;
+  /** 在播放头处把音轨拆成两条（HIG-25），选中后一条；播放头不在时段内部时提示。 */
+  splitAudioTrack: (id: string) => void;
+  /** 删掉音轨在播放头左 / 右的部分（拆分后删一侧）。选中的是源音轨行（SOURCE_TRACK_ID）时改为加原声静音区间。 */
+  cutTrackBefore: (id: string) => void;
+  cutTrackAfter: (id: string) => void;
+  /** 源音轨静音区间（契约 §2 audio.source_mute，剪后时间）。 */
+  selectedMuteIndex: number | null;
+  setSelectedMute: (i: number | null) => void;
+  addSourceMute: (a: number, b: number) => void;
+  updateSourceMute: (index: number, a: number, b: number) => void;
+  deleteSourceMute: (index: number) => void;
   /** 人声 / 伴奏分离（契约 §3）：发起后轮询 GET /api/videos/{id} 直到 done / failed。 */
   separateVideo: (model: SeparationModel) => Promise<void>;
   /**
@@ -290,6 +301,7 @@ const PER_BATCH_INITIAL = {
   selectedLayerId: null,
   selectedRangeIndex: null,
   selectedTrackId: null,
+  selectedMuteIndex: null,
   inPoint: null,
   time: 0,
   playing: false,
@@ -412,6 +424,42 @@ const LAYER_HOME: Record<Layer['type'], { kind: string; step: string }> = {
 };
 
 export const useEditor = create<EditorState>((set, get) => {
+  /** 播放头的剪后时刻、剪后时长，以及把音轨 id 在这里拆开的两条（拆不了时提示并返回 null）。HIG-25。 */
+  const playheadPost = () => {
+    const v = get().currentVideo();
+    const spec = get().currentSpec();
+    if (!v || !spec) return null;
+    const remove = spec.trim.remove;
+    return { spec, p: sourceToPost(Math.max(0, get().time), remove), postDuration: postTrimDuration(v.duration, remove) };
+  };
+  const splitAt = (id: string) => {
+    const ctx = playheadPost();
+    const track = ctx?.spec.audio?.tracks.find((t) => t.id === id);
+    if (!ctx || !track) return null;
+    const media = get().assets.find((a) => a.id === track.asset_id)?.duration ?? 0;
+    const parts = splitTrackAt(track, ctx.p, ctx.postDuration, media, newTrackId());
+    if (!parts) set({ toast: '播放头不在这条音轨的时段内（离两端至少 0.1 秒），移到要剪的位置再拆分', toastAction: null });
+    return parts;
+  };
+  const cutTrack = (id: string, side: 'before' | 'after') => {
+    if (id === SOURCE_TRACK_ID) {
+      const ctx = playheadPost();
+      if (!ctx) return;
+      if (side === 'before') get().addSourceMute(0, ctx.p);
+      else get().addSourceMute(ctx.p, ctx.postDuration);
+      set({ toast: side === 'before' ? '已静音播放头左侧的原声' : '已静音播放头右侧的原声', toastAction: { label: '撤销', run: () => get().undo() } });
+      return;
+    }
+    const parts = splitAt(id);
+    if (!parts) return;
+    const keep = side === 'before' ? parts[1] : parts[0];
+    get().updateSpec((spec) => {
+      const tracks = spec.audio?.tracks;
+      const i = tracks?.findIndex((t) => t.id === id) ?? -1;
+      if (tracks && i >= 0) tracks.splice(i, 1, keep);
+    });
+    set({ selectedTrackId: keep.id, toast: side === 'before' ? '已删除音轨在播放头左侧的部分' : '已删除音轨在播放头右侧的部分', toastAction: { label: '撤销', run: () => get().undo() } });
+  };
   const scheduleSave = (videoId: string) => {
     set({ saveState: 'dirty' });
     if (saveTimers[videoId]) window.clearTimeout(saveTimers[videoId]);
@@ -752,7 +800,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -760,7 +808,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setStep: (step) => {
       player.pause();
       // 选中的图层 / 区间 / 音轨只属于原模块：切模块时不保留上个模块的选择
-      set({ step, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, cropEditing: false });
+      set({ step, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
@@ -953,7 +1001,7 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedRangeIndex: null });
     },
 
-    setSelectedTrack: (id) => set({ selectedTrackId: id }),
+    setSelectedTrack: (id) => set(id === SOURCE_TRACK_ID ? { selectedTrackId: id } : { selectedTrackId: id, selectedMuteIndex: null }),
     setSourceVolume: (v) => {
       get().updateSpec((spec) => {
         const audio = ensureAudio(spec);
@@ -976,7 +1024,6 @@ export const useEditor = create<EditorState>((set, get) => {
           const t = spec.audio?.tracks.find((x) => x.id === id);
           if (!t) return;
           Object.assign(t, patch);
-          if (t.loop) t.offset = 0; // 契约：循环时起始偏移必须为 0
         },
         { history },
       );
@@ -986,6 +1033,53 @@ export const useEditor = create<EditorState>((set, get) => {
         if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
       });
       if (get().selectedTrackId === id) set({ selectedTrackId: null });
+    },
+    splitAudioTrack: (id) => {
+      const parts = splitAt(id);
+      if (!parts) return;
+      const [, right] = parts;
+      get().updateSpec((spec) => {
+        const tracks = spec.audio?.tracks;
+        const i = tracks?.findIndex((t) => t.id === id) ?? -1;
+        if (tracks && i >= 0) tracks.splice(i, 1, ...parts);
+      });
+      set({ selectedTrackId: right.id, toast: '已在播放头处拆分音轨', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    cutTrackBefore: (id) => cutTrack(id, 'before'),
+    cutTrackAfter: (id) => cutTrack(id, 'after'),
+
+    setSelectedMute: (selectedMuteIndex) => set(selectedMuteIndex === null ? { selectedMuteIndex } : { selectedMuteIndex, selectedTrackId: SOURCE_TRACK_ID }),
+    addSourceMute: (a, b) => {
+      const v = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!v || !spec) return;
+      const postDuration = postTrimDuration(v.duration, spec.trim.remove);
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      if (hi - lo < 0.05) return;
+      get().updateSpec((sp) => {
+        const audio = ensureAudio(sp);
+        audio.source_mute = addMuteRange(audio.source_mute, lo, hi, postDuration);
+      });
+      const idx = get().currentSpec()?.audio?.source_mute?.findIndex(([x, y]) => x <= lo + 1e-3 && y >= Math.min(hi, postDuration) - 1e-3) ?? -1;
+      set({ selectedTrackId: SOURCE_TRACK_ID, selectedMuteIndex: idx >= 0 ? idx : null });
+    },
+    updateSourceMute: (index, a, b) => {
+      const v = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!v || !spec) return;
+      const postDuration = postTrimDuration(v.duration, spec.trim.remove);
+      get().updateSpec((sp) => {
+        const audio = ensureAudio(sp);
+        const rest = (audio.source_mute ?? []).filter((_, i) => i !== index);
+        audio.source_mute = addMuteRange(rest, a, b, postDuration);
+      });
+    },
+    deleteSourceMute: (index) => {
+      get().updateSpec((spec) => {
+        if (spec.audio?.source_mute) spec.audio.source_mute = spec.audio.source_mute.filter((_, i) => i !== index);
+      });
+      set({ selectedMuteIndex: null });
     },
 
     separateVideo: async (model) => {
