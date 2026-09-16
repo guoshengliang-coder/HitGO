@@ -47,8 +47,8 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       <span className={`save-indicator ${saveState === 'error' ? 'error' : ''}`} title={saveError ?? undefined}>
         {saveText}
       </span>
-      <Link to={`/batches/${batch?.id}/outputs`} className="btn">
-        已回传
+      <Link to={batch ? `/outputs?batch=${encodeURIComponent(batch.id)}` : '/outputs'} className="btn">
+        产物
       </Link>
       <button className="btn primary" onClick={onExport} disabled={rendering} title="保存并导出成片：选择导出这一批、勾选的几条或仅当前这条">
         {rendering ? '导出中…' : '导出'}

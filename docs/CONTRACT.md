@@ -447,7 +447,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 
 ## 4. 回传 JSON（原型只展示）
 
-Job 完成时生成并存到 `job.callback`，"已回传"页展示：
+Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outputs?batch=<id>`）时展示：
 
 ```json
 {
