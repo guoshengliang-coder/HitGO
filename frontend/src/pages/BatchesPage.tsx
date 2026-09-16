@@ -136,8 +136,8 @@ export function BatchesPage() {
                   {b.video_count} 条视频 · <span className="mono">{fmtDate(b.created_at)}</span>
                 </span>
                 <span className="inline">
-                  <a href={`/batches/${b.id}/outputs`} onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/batches/${b.id}/outputs`); }}>
-                    已回传
+                  <a href={`/outputs?batch=${encodeURIComponent(b.id)}`} onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
+                    产物
                   </a>
                   <button className="btn ghost icon sm danger" aria-label="删除批次" onClick={(e) => { e.stopPropagation(); void remove(b); }}>
                     <IconTrash />

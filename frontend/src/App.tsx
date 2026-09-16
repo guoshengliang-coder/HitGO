@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api } from './api';
 import { LoginPage } from './pages/LoginPage';
 import { BatchesPage } from './pages/BatchesPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { EditorPage } from './pages/EditorPage';
-import { OutputsPage } from './pages/OutputsPage';
 import { AllOutputsPage } from './pages/AllOutputsPage';
 import { useEditor } from './store/editor';
 import { ThemeToggle } from './components/ui/ThemeToggle';
@@ -91,10 +90,16 @@ export default function App() {
         <Route path="/" element={<BatchesPage />} />
         <Route path="/assets" element={<AssetsPage />} />
         <Route path="/outputs" element={<AllOutputsPage />} />
-        <Route path="/batches/:id/outputs" element={<OutputsPage />} />
+        <Route path="/batches/:id/outputs" element={<LegacyBatchOutputs />} />
       </Route>
       <Route path="/batches/:id" element={<EditorPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
+}
+
+/** 旧的批次「已回传」页地址，HIG-28 起并入产物页；保留跳转，书签和外部链接不失效。 */
+function LegacyBatchOutputs() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? `/outputs?batch=${encodeURIComponent(id)}` : '/outputs'} replace />;
 }

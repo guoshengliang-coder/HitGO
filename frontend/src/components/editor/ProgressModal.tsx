@@ -31,8 +31,8 @@ export function ProgressModal() {
           <button className="btn" onClick={close}>
             继续编辑其他视频
           </button>
-          <button className="btn primary" onClick={() => navigate(`/batches/${batch?.id}/outputs`)}>
-            查看已回传
+          <button className="btn primary" onClick={() => navigate(batch ? `/outputs?batch=${encodeURIComponent(batch.id)}` : '/outputs')}>
+            查看产物
           </button>
         </>
       }

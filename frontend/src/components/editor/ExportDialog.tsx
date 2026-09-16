@@ -59,7 +59,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       </div>
       {targets.skipped.length > 0 && <div className="hint" style={{ marginTop: 8 }}>其中 {targets.skipped.length} 条还没预处理完或预处理失败，会跳过。</div>}
       <div className="hint" style={{ marginTop: 8 }}>
-        每条视频按各自保存的配置出一个 9:16 文件；本页只编辑当前这条，其他视频要同步配置可先用左侧「批量应用」。导出后在「已回传」里查看成片。
+        每条视频按各自保存的配置出一个 9:16 文件；本页只编辑当前这条，其他视频要同步配置可先用左侧「批量应用」。导出后在「产物」里查看成片。
       </div>
     </Modal>
   );

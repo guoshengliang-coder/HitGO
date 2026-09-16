@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { latestJobIds } from './outputs';
+import { latestJobIds, sortByFinishedDesc } from './outputs';
 import type { Job } from '../types';
 
 function job(
@@ -72,5 +72,30 @@ describe('latestJobIds', () => {
 
   it('handles an empty list', () => {
     expect(latestJobIds([])).toEqual(new Set());
+  });
+});
+
+describe('sortByFinishedDesc', () => {
+  it('puts the newest finished job first', () => {
+    const jobs = [
+      job('j_a', 'v_1', '1x1', '2026-09-15T12:00:00Z'),
+      job('j_b', 'v_2', '9x16', '2026-09-16T13:00:00Z'),
+      job('j_c', 'v_1', '9x16', '2026-09-15T22:00:00Z'),
+    ];
+    expect(sortByFinishedDesc(jobs).map((j) => j.id)).toEqual(['j_b', 'j_c', 'j_a']);
+  });
+
+  it('falls back to created_at when finished_at is missing', () => {
+    const jobs = [
+      job('j_done', 'v_1', '9x16', '2026-09-16T10:00:00Z'),
+      job('j_nofin', 'v_2', '9x16', null, '2026-09-16T11:00:00Z'),
+    ];
+    expect(sortByFinishedDesc(jobs).map((j) => j.id)).toEqual(['j_nofin', 'j_done']);
+  });
+
+  it('breaks ties by id so the order is stable, and does not mutate input', () => {
+    const jobs = [job('j_1', 'v_1', '9x16', '2026-09-16T10:00:00Z'), job('j_2', 'v_2', '9x16', '2026-09-16T10:00:00Z')];
+    expect(sortByFinishedDesc(jobs).map((j) => j.id)).toEqual(['j_2', 'j_1']);
+    expect(jobs.map((j) => j.id)).toEqual(['j_1', 'j_2']);
   });
 });
