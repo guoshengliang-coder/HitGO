@@ -2,7 +2,8 @@
 // 提交时必须压入编辑前的快照（pushHistorySnapshot），否则 ⌘Z 回不到编辑前。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './editor';
-import { defaultTextStyle, emptySpec, type Asset, type EditSpec, type TextLayer, type Video } from '../types';
+import { defaultTextStyle, emptySpec, type Asset, type BatchDetail, type EditSpec, type Job, type SafeZone, type TextLayer, type Video } from '../types';
+import { api } from '../api';
 import { cloneSpec } from '../lib/spec';
 
 const VIDEO = { id: 'v1', name: 'a.mp4', duration: 10, width: 1080, height: 1920 } as Video;
@@ -137,5 +138,105 @@ describe('封面（HIG-9）', () => {
     expect(s.canRemoveAfter()).toBe(false);
     s.setInPoint(-0.5);
     expect(useEditor.getState().inPoint).toBe(0);
+  });
+});
+
+describe('切换任务时重置（HIG-18）', () => {
+  const BATCH_B = {
+    id: 'b2',
+    name: '新任务',
+    videos: [{ id: 'v9', name: 'b.mp4', duration: 8, width: 1080, height: 1920, status: 'ready' } as Video],
+  } as unknown as BatchDetail;
+
+  const ZONES = [{ key: 'generic-vertical', name: '通用竖版', aspect: '9x16', zones: [] }] as SafeZone[];
+  const STICKER = { id: 'a1', type: 'sticker', kind: 'image', status: 'ready', name: 's.png', url: '/s.png' } as unknown as Asset;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('load 清掉上一个任务的残余，跨任务的偏好和全局素材库留着', async () => {
+    vi.spyOn(api, 'getBatch').mockResolvedValue(BATCH_B);
+    vi.spyOn(api, 'batchJobs').mockResolvedValue([]);
+    vi.spyOn(api, 'putSpec').mockResolvedValue(VIDEO);
+    // 让这两个请求一直挂着：loadAssets / loadTextPresets 是 fire-and-forget，
+    // 若让它们完成就分不清 assets 是「没被重置清掉」还是「被重新拉回来了」
+    vi.spyOn(api, 'listAssets').mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, 'listPresets').mockReturnValue(new Promise(() => {}));
+
+    useEditor.setState({
+      batch: { id: 'b1', name: '上一个任务', videos: [VIDEO] } as unknown as BatchDetail,
+      safeZones: ZONES,
+      assets: [STICKER],
+      theme: 'light',
+      // 上一个任务留下的残余
+      layerClipboard: [textLayer('上个任务的图层')],
+      layerClipboardVideoId: 'v1',
+      styleClipboard: defaultTextStyle(),
+      toast: '上个任务的提示',
+      toastAction: { label: '撤销', run: () => {} },
+      progressOpen: true,
+      rendering: true,
+      jobs: [{ id: 'j1', status: 'running' } as unknown as Job],
+      trackedJobIds: ['j1'],
+      selectedIds: ['v1'],
+      selectedLayerId: 'L1',
+      selectedRangeIndex: 2,
+      selectedTrackId: 't1',
+      inPoint: 3,
+      timelinePps: 40,
+      playing: true,
+      step: 'sticker',
+      cropEditing: true,
+    });
+
+    await useEditor.getState().load('b2');
+    const s = useEditor.getState();
+
+    expect(s.batch?.id).toBe('b2');
+    expect(Object.keys(s.specs)).toEqual(['v9']);
+    expect(s.currentVideoId).toBe('v9');
+
+    // 残余全部归零：剪贴板是最要命的一个，它能把上个任务的图层粘进新工程
+    expect(s.layerClipboard).toBeNull();
+    expect(s.layerClipboardVideoId).toBeNull();
+    expect(s.styleClipboard).toBeNull();
+    expect(s.toast).toBeNull();
+    expect(s.toastAction).toBeNull();
+    expect(s.progressOpen).toBe(false);
+    expect(s.rendering).toBe(false);
+    expect(s.jobs).toEqual([]);
+    expect(s.trackedJobIds).toEqual([]);
+    expect(s.selectedIds).toEqual([]);
+    expect(s.selectedLayerId).toBeNull();
+    expect(s.selectedRangeIndex).toBeNull();
+    expect(s.selectedTrackId).toBeNull();
+    expect(s.inPoint).toBeNull();
+    expect(s.timelinePps).toBeNull();
+    expect(s.playing).toBe(false);
+    expect(s.time).toBe(0);
+    expect(s.step).toBe('trim');
+    expect(s.cropEditing).toBe(false);
+    expect(s.history).toEqual({});
+
+    // 跨任务的东西不该被一把梭清掉
+    expect(s.safeZones).toEqual(ZONES);
+    expect(s.theme).toBe('light');
+    expect(s.assets).toEqual([STICKER]);
+  });
+
+  it('load 前把上一个任务的草稿写回，不丢最后 1 秒的编辑', async () => {
+    vi.spyOn(api, 'getBatch').mockResolvedValue(BATCH_B);
+    vi.spyOn(api, 'batchJobs').mockResolvedValue([]);
+    vi.spyOn(api, 'listAssets').mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, 'listPresets').mockReturnValue(new Promise(() => {}));
+    const putSpec = vi.spyOn(api, 'putSpec').mockResolvedValue(VIDEO);
+
+    // beforeEach 的 replaceSpec 已经排了一次防抖保存，此时还没到点
+    expect(putSpec).not.toHaveBeenCalled();
+    await useEditor.getState().load('b2');
+
+    expect(putSpec).toHaveBeenCalledTimes(1);
+    expect(putSpec.mock.calls[0][0]).toBe('v1');
   });
 });
