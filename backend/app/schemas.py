@@ -157,6 +157,33 @@ class TextSpan(BaseModel):
         return self
 
 
+def _media_url(v: str) -> str:
+    if not v.startswith("/media/"):
+        raise ValueError("image_url 必须是 /media/ 开头的站内路径")
+    return v
+
+
+class VariantImage(BaseModel):
+    """The text PNG re-rendered for one output (HIG-29): same text, drawn at that output's pixel size."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    url: str
+    size: tuple[int, int]
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        return _media_url(v)
+
+    @field_validator("size")
+    @classmethod
+    def _validate_size(cls, v: tuple[int, int]) -> tuple[int, int]:
+        if v[0] <= 0 or v[1] <= 0:
+            raise ValueError("size 必须为正整数")
+        return v
+
+
 class TextLayer(LayerBase):
     type: Literal["text"]
     text: str = ""
@@ -164,6 +191,16 @@ class TextLayer(LayerBase):
     spans: list[TextSpan] | None = None
     image_url: str | None = None
     image_size: tuple[int, int] | None = None
+    # Per-output PNGs keyed by variant_key; missing / unresolvable entries fall back to image_url.
+    variant_images: dict[str, VariantImage] | None = None
+
+    @field_validator("variant_images")
+    @classmethod
+    def _validate_variant_images(cls, v: dict[str, VariantImage] | None) -> dict[str, VariantImage] | None:
+        for key in v or {}:
+            if not _VARIANT_KEY.match(key):
+                raise ValueError("variant_images 的键必须是合法的 variant_key")
+        return v or None
 
     @field_validator("spans")
     @classmethod
@@ -180,9 +217,7 @@ class TextLayer(LayerBase):
     def _validate_image_url(cls, v: str | None) -> str | None:
         if v is None or v == "":
             return None
-        if not v.startswith("/media/"):
-            raise ValueError("image_url 必须是 /media/ 开头的站内路径")
-        return v
+        return _media_url(v)
 
     @field_validator("image_size")
     @classmethod

@@ -13,7 +13,9 @@
 // 除非用户手动缩放过（layer.width_manual = true，本地字段，发送时剔除）。
 // 编辑器预览也用同一函数产出的 canvas 作为 Konva.Image，保证预览与成片一致。
 
-import type { TextLayer, TextSpan, TextStyle } from '../types';
+import type { EditSpec, TextLayer, TextSpan, TextStyle, VariantKey } from '../types';
+import { outputFor } from './spec';
+import { resolveLayerBox } from './variantLayout';
 import { api } from '../api';
 import { resolveBackgroundBox, resolveOverflowPad, splitRuns, type TextRun } from './textSpans';
 
@@ -255,6 +257,53 @@ export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
   if (!layer.width_manual || !layer.width) {
     next.width = bakedWidth(rendered.width);
   }
+  return next;
+}
+
+// ---- 按画幅重新渲染（HIG-29 variant_images）----
+
+/** 倍率偏差在这个范围内直接用基准 PNG；相近倍率合并成一张。 */
+export const VARIANT_SCALE_TOLERANCE = 0.02;
+
+/**
+ * 每个要导出的画幅上，文字最终的像素宽相对基准 PNG 的倍率；与 1 相差不到容差的画幅不需要单独渲染，不列出。
+ * 返回 [倍率, 画幅们]，相近倍率（按容差分桶）共用一张。
+ */
+export function variantTextScales(spec: EditSpec, layer: TextLayer, keys: VariantKey[], srcW: number, srcH: number): [number, VariantKey[]][] {
+  const base = layer.image_size;
+  if (!base || !(base[0] > 0) || !(base[1] > 0)) return [];
+  const groups = new Map<number, { scale: number; keys: VariantKey[] }>();
+  for (const key of keys) {
+    if (key === '9x16') continue;
+    const box = resolveLayerBox(spec, layer, outputFor(spec, key), base[0] / base[1], srcW, srcH);
+    const scale = box.w / base[0];
+    if (!(scale > 0) || Math.abs(scale - 1) < VARIANT_SCALE_TOLERANCE) continue;
+    const bucket = Math.round(Math.log(scale) / Math.log(1 + VARIANT_SCALE_TOLERANCE));
+    const g = groups.get(bucket) ?? { scale, keys: [] };
+    g.keys.push(key);
+    groups.set(bucket, g);
+  }
+  return [...groups.values()].map((g) => [g.scale, g.keys]);
+}
+
+/**
+ * 在已烤好基准 PNG 的文字图层上，为要导出的画幅补渲染 variant_images（每次导出重新生成，旧的整份替换）。
+ * 不需要单独渲染时去掉该字段，保持旧 spec 形状。
+ */
+export async function bakeTextLayerVariants(layer: TextLayer, spec: EditSpec, keys: VariantKey[], srcW: number, srcH: number): Promise<TextLayer> {
+  const next: TextLayer = { ...layer };
+  delete next.variant_images;
+  const scales = variantTextScales(spec, layer, keys, srcW, srcH);
+  if (!scales.length) return next;
+  await waitForFont(layer.style, 40, layer.text);
+  const images: NonNullable<TextLayer['variant_images']> = {};
+  for (const [scale, group] of scales) {
+    const rendered = drawTextImage(layer.text, layer.style, TEXT_CANVAS.H * scale, layer.spans);
+    const blob = await new Promise<Blob>((resolve, reject) => rendered.canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG 编码失败'))), 'image/png'));
+    const up = await api.uploadLayerImage(blob);
+    for (const key of group) images[key] = { url: up.url, size: [up.width || rendered.width, up.height || rendered.height] };
+  }
+  next.variant_images = images;
   return next;
 }
 

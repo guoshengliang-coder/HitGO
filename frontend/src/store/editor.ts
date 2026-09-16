@@ -18,7 +18,7 @@ import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset
 import { nudgePlacement, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, type Step } from '../lib/steps';
-import { bakeTextLayer } from '../lib/textImage';
+import { bakeTextLayer, bakeTextLayerVariants } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
@@ -1530,6 +1530,11 @@ export const useEditor = create<EditorState>((set, get) => {
           for (let i = 0; i < spec.layers.length; i++) {
             const l = spec.layers[i];
             if (l.type === 'text') spec.layers[i] = await bakeTextLayer(l as TextLayer);
+          }
+          // 各画幅上文字的实际像素宽和基准 PNG 差得多时，按该画幅重新渲染一张（HIG-29）；要在基准烤完、宽度定下来之后算
+          for (let i = 0; i < spec.layers.length; i++) {
+            const l = spec.layers[i];
+            if (l.type === 'text') spec.layers[i] = await bakeTextLayerVariants(l as TextLayer, spec, variantKeys, video.width, video.height);
           }
           if (saveTimers[id]) {
             window.clearTimeout(saveTimers[id]);

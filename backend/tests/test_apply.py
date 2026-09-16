@@ -277,3 +277,13 @@ def test_replace_mode_keeps_mask_order_as_is():
     src = valid_spec(layers=[valid_spec()["layers"][1], _mask()])
     out = apply_modules(src, _target_with_layers(), ["layers"], 24.6)
     assert [l["type"] for l in out["layers"]] == ["text", "mask"]
+
+
+def test_style_only_variant_images_follow_text():
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][1]["variant_images"] = {"16x9": {"url": "/media/uploads/u_v.png", "size": [300, 72]}}
+    target["layers"][1]["variant_images"] = {"1x1": {"url": "/media/uploads/u_old_v.png", "size": [10, 4]}}
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][1]["variant_images"] == {"16x9": {"url": "/media/uploads/u_v.png", "size": [300, 72]}}
+    del src["layers"][1]["variant_images"]
+    assert "variant_images" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]

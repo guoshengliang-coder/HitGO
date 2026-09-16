@@ -249,6 +249,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       },
       "image_url": "/media/uploads/u_9k8j.png",   // 前端按输出分辨率渲染好的透明 PNG；worker 只用它
       "image_size": [540, 130],              // 该 PNG 的像素尺寸
+      "variant_images": {                    // 可选（HIG-29）：按某个输出重新渲染的 PNG，键为 variant_key，见下方规则
+        "1x1": { "url": "/media/uploads/u_7h6g.png", "size": [304, 73] }
+      },
       "anchor": "top-center", "margin": [0, 0.06],
       "width": 0.5,                          // 相对画布宽；PNG 按此缩放
       "rotate": 0, "opacity": 1, "t": "all",
@@ -316,6 +319,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - **遮盖层**：参考画布上的矩形整体过映射（`w·k`、`h·k`），对准烧进画面的原字幕；映射后被裁出画布的遮盖静默跳过，不写警告。模糊档位的像素半径不跟着缩放。
   - **文字 / 贴纸**：可见视频区域 V = 映射后的参考画布与目标画布的交集；宽 = `width · 参考宽 · min(k, 1)`（cover 放大时不放大图层），位置按上面的锚点公式在 V 里算（`margin` 相对 V 的宽 / 高），最后整体平移回画布内。`blur` / `color` 时这与直接映射参考矩形等价。
   - **与 `layer_overrides` 的合并**：某图层的覆盖里只要出现 `anchor / margin / width / height` 任一项，它在这个输出上就不再跟随，几何完全按 `"canvas"` 语义（覆盖值优先，缺的回落到图层自身值，相对目标画布）；`rotate / opacity` 各自单独覆盖，不影响是否跟随。
+  - **文字按输出重新渲染 `variant_images`**（文字图层可选字段）：`{ [variant_key]: { url, size: [w, h] } }`，`url` 同 `image_url` 必须是 `/media/` 站内路径，`size` 为正整数。worker 渲染某个输出时优先用该输出的 PNG，文件找不到时静默回落到 `image_url`；几何（位置、`width·W` 的宽度）不受影响，PNG 只决定清晰度。前端每次导出按各输出上文字的实际像素宽相对 `image_size` 的倍率重新生成（倍率与 1 相差不到 2% 的输出不单独生成，相近倍率共用一张），旧的整份替换。批量套用 `style_only` 时随文字一起复制。
   - 前端 `lib/variantLayout.ts` 与后端 `services/layout.py` 同一套规则，两端共用 `frontend/src/lib/fixtures/variantLayoutCases.json` 做 golden 测试。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
 - `layer_overrides` 只允许覆盖 `anchor | margin | width | height | rotate | opacity`（`height` 只对遮盖层有意义，其它类型忽略）。

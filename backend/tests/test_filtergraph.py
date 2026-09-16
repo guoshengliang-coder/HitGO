@@ -1470,3 +1470,20 @@ def test_real_ffmpeg_follow_video_puts_the_mask_on_the_mapped_pixels(tmp_path):
         ).stdout  # fmt: skip
         r, g, b = pixel[0], pixel[1], pixel[2]
         assert r > 180 and g < 70 and b < 70, (variant.aspect, r, g, b)
+
+
+def test_text_variant_image_is_preferred_and_falls_back_quietly():
+    big = ImageSource("/data/uploads/u_text16x9.png", 960, 231)
+
+    def resolve(url):
+        return {"/media/uploads/u_text00001.png": TEXT_PNG, "/media/uploads/u_text16x9.png": big}.get(url)
+
+    spec = valid_spec(trim={"remove": []}, layers=[valid_spec()["layers"][1]])
+    spec["layers"][0]["variant_images"] = {
+        "1x1": {"url": "/media/uploads/u_text16x9.png", "size": [960, 231]},
+        "9x16": {"url": "/media/uploads/u_missing.png", "size": [10, 10]},
+    }
+    plan = build(spec, variant_key="1x1", resolve=resolve)
+    assert "/data/uploads/u_text16x9.png" in plan.argv and TEXT_PNG.path not in plan.argv
+    plan = build(spec, variant_key="9x16", resolve=resolve)
+    assert TEXT_PNG.path in plan.argv and plan.warnings == []

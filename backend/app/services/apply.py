@@ -31,7 +31,7 @@ LAYER_MODES = ("replace", "style_only")
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "sticker": ("asset_id", "playback", "mix_audio"),
-    "text": ("text", "spans", "style", "image_url", "image_size"),
+    "text": ("text", "spans", "style", "image_url", "image_size", "variant_images"),
     "mask": ("mode", "color", "blur", "height"),
 }
 

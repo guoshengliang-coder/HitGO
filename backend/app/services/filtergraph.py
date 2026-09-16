@@ -457,7 +457,7 @@ def build_render_command(
             current = f"[c{layer_index}]"
             continue
 
-        image = _resolve_layer_image(layer, assets, resolve_image_url, warnings)
+        image = _resolve_layer_image(layer, assets, resolve_image_url, warnings, variant.variant_key)
         if image is None:
             continue
 
@@ -753,6 +753,7 @@ def _resolve_layer_image(
     assets: Mapping[str, ImageSource],
     resolve_image_url: Callable[[str], ImageSource | None] | None,
     warnings: list[str],
+    variant_key: str | None = None,
 ) -> ImageSource | None:
     if isinstance(layer, StickerLayer):
         image = assets.get(layer.asset_id)
@@ -760,7 +761,13 @@ def _resolve_layer_image(
             warnings.append(f"图层 {layer.id}：贴纸素材 {layer.asset_id} 不存在，已跳过")
         return image
 
-    # text layer: the worker only consumes the pre-rendered PNG
+    # text layer: the worker only consumes the pre-rendered PNG. A PNG re-rendered for this output
+    # (variant_images, HIG-29) wins; if it cannot be found, quietly use the base one.
+    variant_image = (layer.variant_images or {}).get(variant_key) if variant_key else None
+    if variant_image is not None and resolve_image_url is not None:
+        found = resolve_image_url(variant_image.url)
+        if found is not None:
+            return ImageSource(found.path, variant_image.size[0], variant_image.size[1])
     if not layer.image_url:
         warnings.append(f"图层 {layer.id}：文字图层没有 image_url，已跳过")
         return None

@@ -2,8 +2,10 @@
 """End-to-end smoke test against a running HitGO instance.
 
 Waits for preprocessing of the first batch, saves a spec with a trim, two image
-sticker layers, a looping video sticker (when one is available) and two output
-variants on its first video, renders, and prints the job results. Also checks the
+sticker layers, a looping video sticker (when one is available) and four output
+variants on its first video — 9x16, a canvas-relative 1x1 crop, and 4x5 blur / 16x9 crop
+outputs whose layers follow the video frame (layer_fit = "video", HIG-29) — renders them
+through POST /api/render's variant_keys, and prints the job results. Also checks the
 output duration, since a looping sticker must not stretch the clip. When a video
 sticker with its own audio track is available, that layer mixes its audio in
 (mix_audio) and the output must carry an audio stream. When an audio asset is
@@ -161,6 +163,11 @@ spec = {
         {"variant_key": "1x1", "aspect": "1:1", "fill": "crop",
          "crop": {"x": 0.1, "y": 0.2, "w": 0.6, "h": 0.6},
          "layer_overrides": {"l_1": {"margin": [0.04, 0.04]}}},
+        # Layers follow the video frame; the bottom mask band is cropped out of 16:9 on purpose.
+        {"variant_key": "4x5", "aspect": "4:5", "fill": "blur", "layer_fit": "video",
+         "layer_overrides": {"l_2": {"rotate": 5}}},
+        {"variant_key": "16x9", "aspect": "16:9", "fill": "crop", "layer_fit": "video",
+         "layer_overrides": {"l_1": {"margin": [0.02, 0.02], "width": 0.2}}},
     ],
 }
 if use_bgm:
@@ -183,7 +190,8 @@ if use_cover:
 status, resp = call("PUT", f"/api/videos/{video['id']}/spec", {"edit_spec": spec})
 print("put spec", status, "ok" if status == 200 else resp)
 
-status, jobs = call("POST", "/api/render", {"video_ids": [video["id"]]})
+VARIANT_KEYS = ["9x16", "1x1", "4x5", "16x9"]
+status, jobs = call("POST", "/api/render", {"video_ids": [video["id"]], "variant_keys": VARIANT_KEYS})
 if status == 409:
     # A previous run is still active for this video: follow those jobs instead.
     jobs = [j for j in call("GET", f"/api/batches/{batch['id']}/jobs")[1]
@@ -220,7 +228,10 @@ if mix_audio or use_bgm or stem_asset_id:
             print("mixed audio missing from", j["variant_key"], j["output"])
             sys.exit(1)
 
-expected = {"9x16": (1080, 1920), "1x1": (1080, 1080)}
+expected = {"9x16": (1080, 1920), "1x1": (1080, 1080), "4x5": (1080, 1350), "16x9": (1920, 1080)}
+if sorted(j["variant_key"] for j in jobs) != sorted(VARIANT_KEYS):
+    print("unexpected variants rendered", [j["variant_key"] for j in jobs])
+    sys.exit(1)
 for j in jobs:
     if j["status"] == "done" and (j["output"]["width"], j["output"]["height"]) != expected[j["variant_key"]]:
         print("unexpected output size for", j["variant_key"], j["output"])
