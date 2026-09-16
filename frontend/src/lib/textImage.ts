@@ -253,9 +253,18 @@ export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
     image_size: [up.width || rendered.width, up.height || rendered.height],
   };
   if (!layer.width_manual || !layer.width) {
-    next.width = rendered.width / TEXT_CANVAS.W;
+    next.width = bakedWidth(rendered.width);
   }
   return next;
+}
+
+/**
+ * 烤好的 PNG 在画布上的相对宽度。文字不自动换行，一条长字幕（SRT 导入、改语言的译文）会比画布还宽，
+ * 契约要求 width ≤ 1，超出就按画布宽缩放（整段等比缩小，仍是一行）。
+ */
+export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W): number {
+  if (!(renderedPx > 0) || !(canvasW > 0)) return 1;
+  return Math.min(1, renderedPx / canvasW);
 }
 
 // ---- 预览缓存：同一文字 + 样式 + 上色只渲染一次 ----
