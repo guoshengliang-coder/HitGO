@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import cases from './fixtures/variantLayoutCases.json';
-import { fitMap, followLayerBox, followMaskBox, layerFollows, overrideDetaches, resolveLayerBox, variantFitMap } from './variantLayout';
+import { fitMap, followLayerBox, followMaskBox, layerFollows, overrideDetaches, overrideFromBox, placementOfBox, resolveLayerBox, variantFitMap } from './variantLayout';
 import { placeLayer } from './layout';
 import { emptySpec, variantDef, type AspectKey, type EditSpec, type FillMode, type MaskLayer, type StickerLayer, type VariantKey } from '../types';
 
@@ -65,5 +65,30 @@ describe('variantLayout · resolveLayerBox', () => {
     expect(overrideDetaches(moved.outputs[1].layer_overrides!.s)).toBe(true);
     const d = resolveLayerBox(moved, sticker, moved.outputs[1], 2, 1080, 1920);
     expect([d.x, d.y, d.w]).toEqual([0, 0, 324]);
+  });
+});
+
+describe('variantLayout · 写回覆盖', () => {
+  it('像素框写成覆盖后再解析回同一个框（脱离跟随）', () => {
+    const spec = specWith({ key: '16x9', aspect: '16:9', fill: 'blur' }, [mask]);
+    const box = { x: 300, y: 700, w: 900, h: 120 };
+    const o = overrideFromBox(mask, box, 'bottom-center', '16x9');
+    expect(o).toEqual({ anchor: 'bottom-center', margin: [-0.1094, 0.2407], width: 0.4688, height: 0.1111 });
+    const next = { ...spec, outputs: [spec.outputs[0], { ...spec.outputs[1], layer_overrides: { m: o } }] };
+    const r = resolveLayerBox(next, mask, next.outputs[1], 1, 1080, 1920);
+    expect(r.x).toBeCloseTo(300, 0);
+    expect(r.y).toBeCloseTo(700, 0);
+    expect(r.w).toBeCloseTo(900, 0);
+    expect(r.h).toBeCloseTo(120, 0);
+    expect(overrideFromBox(sticker, box, 'top-left', '1x1', 12.34)).toMatchObject({ rotate: 12.3 });
+    expect('height' in overrideFromBox(sticker, box, 'top-left', '1x1')).toBe(false);
+  });
+  it('placementOfBox 与 placeLayer 互逆', () => {
+    const box = { x: 100, y: 200, w: 400, h: 100 };
+    const { placement, aspect, canvas } = placementOfBox(box, 'center-right', '4x5');
+    const back = placeLayer(placement, aspect, canvas);
+    expect(back.x).toBeCloseTo(100);
+    expect(back.y).toBeCloseTo(200);
+    expect(back.h).toBeCloseTo(100);
   });
 });

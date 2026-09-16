@@ -7,14 +7,15 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, VariantKey, Video } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
-import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, toContractSpec } from '../lib/spec';
+import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, toContractSpec } from '../lib/spec';
+import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
-import { nudgePlacement, round4 } from '../lib/layout';
+import { nudgePlacement, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, type Step } from '../lib/steps';
 import { bakeTextLayer } from '../lib/textImage';
@@ -263,6 +264,13 @@ export interface EditorState {
   pasteStyle: () => void;
   /** 按 1080×1920 参考像素平移图层。 */
   nudgeLayer: (id: string, dx: number, dy: number, history?: boolean) => void;
+  /** 设 / 清某画幅上某图层的覆盖（null = 清掉，恢复跟随视频）。 */
+  setLayerOverride: (key: VariantKey, id: string, override: LayerOverride | null, history?: boolean) => void;
+  /**
+   * 预览的是非 9x16 画幅时，在该画幅画布上改图层的像素框并写成覆盖（脱离跟随）；fn 拿到当前框和锚点。
+   * 预览的是 9x16 时什么都不做并返回 false，调用方照旧改图层本身。
+   */
+  editLayerOnPreview: (id: string, fn: (cur: { box: LayerBox; anchor: Anchor }) => { box: LayerBox; anchor?: Anchor; rotate?: number }, history?: boolean) => boolean;
 
   // 封面（契约 §2 cover，HIG-9）
   /** 设封面素材（贴纸库里的图片 / 视频，须 ready）；已有图片封面时沿用它的时长。 */
@@ -1377,8 +1385,46 @@ export const useEditor = create<EditorState>((set, get) => {
     nudgeLayer: (id, dx, dy, history = true) => {
       const layer = get().currentSpec()?.layers.find((l) => l.id === id);
       if (!layer || layer.locked) return;
+      if (get().editLayerOnPreview(id, ({ box }) => ({ box: { ...box, x: box.x + dx, y: box.y + dy } }), history)) return;
       const m = nudgePlacement(layer, layerAspect(layer, get().assets), { W: 1080, H: 1920 }, dx, dy);
       get().updateLayer(id, { margin: [round4(m[0]), round4(m[1])] }, history);
+    },
+
+    setLayerOverride: (key, id, override, history = true) => {
+      get().updateSpec(
+        (spec) => {
+          spec.outputs = ensureVariants(spec, [key]).outputs.map((cur) => {
+            if (cur.variant_key !== key) return cur;
+            const overrides = { ...(cur.layer_overrides ?? {}) };
+            if (override) overrides[id] = override;
+            else delete overrides[id];
+            const o: OutputVariant = { ...cur, layer_overrides: overrides };
+            if (!Object.keys(overrides).length) delete o.layer_overrides;
+            return o;
+          });
+        },
+        { history },
+      );
+    },
+    editLayerOnPreview: (id, fn, history = true) => {
+      const s = get();
+      const key = s.previewVariantKey;
+      if (key === '9x16') return false;
+      const spec = s.currentSpec();
+      const layer = spec?.layers.find((l) => l.id === id);
+      const video = s.videos.find((v) => v.id === s.currentVideoId);
+      if (!spec || !layer || !video) return true;
+      const variant = outputFor(spec, key);
+      const box = resolveLayerBox(spec, layer, variant, layerAspect(layer, s.assets), video.width, video.height);
+      const anchor = effectiveGeometry(layer, variant).anchor;
+      const next = fn({ box, anchor });
+      const prev = variant.layer_overrides?.[id];
+      const o = overrideFromBox(layer, next.box, next.anchor ?? anchor, key, next.rotate);
+      // 旋转 / 不透明度的已有覆盖保留
+      if (next.rotate === undefined && prev?.rotate !== undefined) o.rotate = prev.rotate;
+      if (prev?.opacity !== undefined) o.opacity = prev.opacity;
+      get().setLayerOverride(key, id, o, history);
+      return true;
     },
 
     patchOutput: (patch, key = get().previewVariantKey) => {

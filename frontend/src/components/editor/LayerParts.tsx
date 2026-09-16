@@ -5,11 +5,12 @@
 
 import { useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
-import { ANCHORS, defaultTextStyle, isVideoAsset, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
-import { cloneSpec, layerName, layerOutsideDuration, newLayerId } from '../../lib/spec';
+import { ANCHORS, defaultTextStyle, isVideoAsset, variantDef, type Anchor, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
+import { cloneSpec, layerName, layerOutsideDuration, newLayerId, outputFor } from '../../lib/spec';
 import { layersOfType, type LayerType } from '../../lib/layerKind';
 import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
-import { alignPlacement, reanchor, round4, type AlignEdge } from '../../lib/layout';
+import { alignPlacement, placeLayer, reanchor, round4, type AlignEdge } from '../../lib/layout';
+import { layerFollows, overrideDetaches, placementOfBox } from '../../lib/variantLayout';
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
@@ -170,20 +171,56 @@ const ALIGN_BUTTONS: { edge: AlignEdge; label: string; icon: ReactNode }[] = [
 ];
 
 /** 位置 / 对齐 / 宽度 / 旋转（三类图层共用；遮盖多一个「高度」、没有旋转）。 */
+/** 预览非 9:16 画幅时：这个图层在该画幅上是跟随视频还是已微调，可一键恢复跟随（HIG-29）。 */
+function VariantFitRow({ layer }: { layer: Layer }) {
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId));
+  const setLayerOverride = useEditor((s) => s.setLayerOverride);
+  if (previewKey === '9x16' || !spec || !video) return null;
+  const variant = outputFor(spec, previewKey);
+  const label = variantDef(previewKey).label;
+  const tuned = overrideDetaches(variant.layer_overrides?.[layer.id]);
+  const follows = layerFollows(spec, layer, variant, video.width, video.height);
+  return (
+    <>
+      <span>{label}</span>
+      <div className="inline">
+        <span className="small">{tuned ? '已在画布上单独微调' : follows ? '跟随视频画面' : '相对画布'}</span>
+        {tuned && (
+          <button className="btn ghost sm" onClick={() => setLayerOverride(previewKey, layer.id, null)} title={`清掉 ${label} 上的微调，重新跟随视频画面`}>
+            恢复跟随
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 function PlacementSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
   const aspect = layerAspect(layer, assets);
   const setAnchor = (a: Anchor) => {
     const p = reanchor(layer, aspect, REF, a);
     updateLayer(layer.id, { anchor: a, margin: [round4(p.margin[0]), round4(p.margin[1])] });
   };
   const align = (edge: AlignEdge) => {
+    // 预览非 9:16：对齐只改该画幅（写覆盖）
+    const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
+      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey);
+      const q = alignPlacement(placement, a, canvas, edge);
+      return { box: placeLayer(q, a, canvas), anchor: q.anchor };
+    });
+    if (onVariant) return;
     const p = alignPlacement(layer, aspect, REF, edge);
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
   return (
     <Section title="位置">
+      <VariantFitRow layer={layer} />
       <span>对齐</span>
       <div className="align-row" role="group" aria-label="对齐">
         {ALIGN_BUTTONS.map((b, i) => (
@@ -192,6 +229,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
           </button>
         ))}
       </div>
+      {previewKey !== '9x16' && <div className="hint" style={{ gridColumn: '1 / -1' }}>对齐按钮和画布拖动只改 {variantDef(previewKey).label}；下面的锚点 / 边距 / 宽度是 9:16 基准，改了会带动所有跟随的画幅。</div>}
       <span>锚点</span>
       <div className="inline">
         <div className="anchor-grid" role="radiogroup" aria-label="锚点">

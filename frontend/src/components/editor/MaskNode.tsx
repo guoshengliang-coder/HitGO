@@ -52,6 +52,8 @@ export function MaskNode({
   onGuides,
   onLive,
   registerNode,
+  box: boxProp,
+  onCommitVariant,
 }: {
   layer: MaskLayer;
   W: number;
@@ -66,14 +68,22 @@ export function MaskNode({
   /** 拖动 / 拉伸中的实时框（给 MaskPreview 跟随），松手后传 null */
   onLive: (box: LayerBox | null) => void;
   registerNode: (node: Konva.Rect | null) => void;
+  /** 预览非 9:16 画幅时由 Stage 算好的舞台框（HIG-29）；缺省按图层本身在 9:16 画布上算。 */
+  box?: LayerBox;
+  /** 预览非 9:16 画幅时松手写回该画幅的覆盖，而不是改图层本身。 */
+  onCommitVariant?: (box: LayerBox) => void;
 }) {
   const updateLayer = useEditor((s) => s.updateLayer);
-  const box = maskStageBox(layer, W, H);
+  const box = boxProp ?? maskStageBox(layer, W, H);
   const draggable = selectable && !layer.locked;
   const frosted = layer.mode !== 'solid' && !backdrop;
 
   const liveBox = (node: Konva.Rect): LayerBox => ({ x: node.x(), y: node.y(), w: node.width() * node.scaleX(), h: node.height() * node.scaleY() });
   const commit = (nb: LayerBox) => {
+    if (onCommitVariant) {
+      onCommitVariant(nb);
+      return;
+    }
     const margin = marginFromBox(nb, layer.anchor, { W, H });
     updateLayer(layer.id, {
       margin: [round4(margin[0]), round4(margin[1])],

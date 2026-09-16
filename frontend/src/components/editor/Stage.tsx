@@ -1,7 +1,9 @@
 // 预览舞台：<video>（proxy）在下，react-konva Stage 同尺寸叠在上面，绘制安全区与图层。
 // 图层位置全部由 lib/layout.ts 的契约公式计算；拖动 / 缩放 / 旋转后反算回 margin / width / rotate。
 // 拖动时吸附到画布边 / 中线 / 安全区边（lib/snap.canvasGuides），按住 ⌘/Ctrl 关闭；命中的参考线画在最上层。
-// 画布固定 9:16（编辑器只产出这一个输出，HIG-8）；源画面比例不同时按输出的填充方式（模糊 / 纯色 / 裁切）画底。
+// 画布比例跟着「成片画面」页签的预览画幅（HIG-29，缺省 9:16）；源画面比例不同时按该画幅的填充方式（模糊 / 纯色 / 裁切）画底。
+// 非 9:16 预览时图层位置由 lib/variantLayout 算（跟随视频或已微调），拖动 / 缩放写回该画幅的 layer_overrides；
+// 安全区只在 9:16 显示，内联文字编辑也只在 9:16 上进行。
 // 只有当前模块管理的那几类图层（文本 / 贴纸；字幕管文字 + 遮盖）能选中、拖动；其它类照常显示。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 // 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
@@ -14,7 +16,8 @@ import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect,
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layout';
-import { layerAspect } from '../../lib/spec';
+import { layerAspect, outputFor } from '../../lib/spec';
+import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
 import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
@@ -217,6 +220,8 @@ function CoverPreview({ fill, color, W, H }: { fill: 'blur' | 'color' | 'crop'; 
   return <canvas ref={ref} className="stage-fill" width={Math.max(1, Math.round(W))} height={Math.max(1, Math.round(H))} />;
 }
 
+type StageGeom = { box: LayerBox; rotate: number; opacity: number };
+
 /** 单个图层节点。 */
 function LayerNode({
   layer,
@@ -230,6 +235,8 @@ function LayerNode({
   onEdit,
   onGuides,
   registerNode,
+  geom,
+  onCommitVariant,
 }: {
   layer: Layer;
   W: number;
@@ -243,6 +250,10 @@ function LayerNode({
   onEdit: () => void;
   onGuides: (g: Guides) => void;
   registerNode: (node: Konva.Image | null) => void;
+  /** 预览非 9:16 画幅时由 Stage 算好的舞台框 / 旋转 / 不透明度（HIG-29）。 */
+  geom?: StageGeom;
+  /** 预览非 9:16 画幅时松手写回该画幅的覆盖。 */
+  onCommitVariant?: (box: LayerBox, rotate?: number) => void;
 }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
@@ -324,7 +335,7 @@ function LayerNode({
   if (!image) return null;
 
   const aspect = layerAspect(layer, assets);
-  const box = placeLayer(layer, aspect, { W, H });
+  const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
   const draggable = selectable && !layer.locked;
   const onDblClick = () => {
     onSelect();
@@ -336,6 +347,10 @@ function LayerNode({
     const cx = node.x();
     const cy = node.y();
     const nb = { x: cx - newW / 2, y: cy - h / 2, w: newW, h };
+    if (onCommitVariant) {
+      onCommitVariant(nb, rotate);
+      return;
+    }
     const margin = marginFromBox(nb, layer.anchor, { W, H });
     const m: [number, number] = [round4(margin[0]), round4(margin[1])];
     const w = round4(newW / W);
@@ -361,8 +376,8 @@ function LayerNode({
       height={box.h}
       offsetX={box.w / 2}
       offsetY={box.h / 2}
-      rotation={layer.rotate}
-      opacity={layer.opacity}
+      rotation={geom?.rotate ?? layer.rotate}
+      opacity={geom?.opacity ?? layer.opacity}
       visible={!hidden}
       draggable={draggable}
       listening={selectable}
@@ -396,12 +411,29 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const nodes = useRef<Record<string, Konva.Node | null>>({});
-  const def = variantDef('9x16');
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const isRef = previewKey === '9x16';
+  const def = variantDef(previewKey);
   const { W, H } = useFitSize(wrapRef, def.width / def.height);
 
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
-  const variant = spec?.outputs.find((o) => o.variant_key === '9x16') ?? spec?.outputs[0];
+  const variant = spec ? outputFor(spec, previewKey) : undefined;
+  const assets = useEditor((s) => s.assets);
+  const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
+  // 非 9:16 预览：图层框按该画幅算（输出像素 → 舞台像素），松手写回该画幅的覆盖
+  const stageScale = W / def.width;
+  const geomOf = (l: Layer): StageGeom | undefined => {
+    if (isRef || !spec || !variant || !video) return undefined;
+    const r = resolveLayerBox(spec, l, variant, layerAspect(l, assets), video.width, video.height);
+    return { box: { x: r.x * stageScale, y: r.y * stageScale, w: r.w * stageScale, h: r.h * stageScale }, rotate: r.rotate, opacity: r.opacity };
+  };
+  const commitOnVariant = (l: Layer) =>
+    isRef
+      ? undefined
+      : (b: LayerBox, rotate?: number) => {
+          editLayerOnPreview(l.id, () => ({ box: { x: b.x / stageScale, y: b.y / stageScale, w: b.w / stageScale, h: b.h / stageScale }, rotate }));
+        };
   const fill = variant?.fill ?? 'blur';
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
   const needsFill = !!video && Math.abs(video.width / video.height - def.width / def.height) > 0.01;
@@ -428,12 +460,13 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, [selectedLayerId, editingLayerId]);
   useEffect(() => {
     setEditingLayerId(null);
-  }, [video?.id, step]);
+  }, [video?.id, step, previewKey]);
   useEffect(() => {
     if (coverActive) setEditingLayerId(null);
   }, [coverActive]);
 
-  const guides = canvasGuides(zone, W, H);
+  // 安全区按竖版平台定义：非 9:16 预览时只吸附画布边与中线
+  const guides = canvasGuides(isRef ? zone : null, W, H);
   const guidesRef = useRef(guides);
   guidesRef.current = guides;
 
@@ -521,8 +554,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const editingLayer = layerTypes.includes('text') && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
   const selectedIsMask = !!selectedLayerId && layers.some((l) => l.id === selectedLayerId && l.type === 'mask');
   const hasSrc = !!video?.proxy_url;
-  const overlayUrl = safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
-  const showFrames = safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl);
+  const overlayUrl = isRef && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
+  const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
 
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined}>
@@ -545,8 +578,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         {!coverActive &&
           layers.map((l) => {
             if (l.type !== 'mask' || l.visible === false || !windowContains(l.t, postTime)) return null;
-            const box = liveMask?.id === l.id ? liveMask.box : maskStageBox(l, W, H);
-            return <MaskPreview key={l.id} layer={l} box={box} W={W} backdrop={backdrop} />;
+            const g = geomOf(l);
+            const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
+            return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
           })}
         <div className="konva-layer">
           <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown}>
@@ -573,6 +607,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                       registerNode={(n) => {
                         nodes.current[l.id] = n;
                       }}
+                      box={geomOf(l)?.box}
+                      onCommitVariant={commitOnVariant(l)}
                     />
                   );
                 }
@@ -587,11 +623,13 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
                     onSelect={() => setSelectedLayer(l.id)}
-                    onEdit={() => setEditingLayerId(l.id)}
+                    onEdit={() => isRef && setEditingLayerId(l.id)}
                     onGuides={setHitGuides}
                     registerNode={(n) => {
                       nodes.current[l.id] = n;
                     }}
+                    geom={geomOf(l)}
+                    onCommitVariant={commitOnVariant(l)}
                   />
                 );
               })}

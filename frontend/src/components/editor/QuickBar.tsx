@@ -1,12 +1,13 @@
 // 画布下方的快捷操作条，只放画布相关操作：居中（文本 / 贴纸 / 字幕模块）、安全区、快捷键表。
-// 画布固定 9:16（HIG-8 起编辑器只产出一个 9:16 输出），不再提供比例切换。
+// 画布比例由剪辑模块「成片画面」的画幅页签决定（HIG-29）；预览非 9:16 时居中只改该画幅（写覆盖），安全区不可用。
 // 安全区只在这里设置（HIG-13）：按钮是开关，开启时才在旁边展开预设与显示方式，关闭时全部收起。
 // 撤销 / 重做、删左 / 删右、删除在时间线工具条（TimelineTools），顶栏也有撤销 / 重做。
 // 提示文案统一走 lib/shortcuts 的 hintFor（纯 CSS tooltip：data-tip）。
 
 import { useEditor, type SafeZoneMode } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
-import { alignPlacement, type AlignEdge } from '../../lib/layout';
+import { alignPlacement, placeLayer, type AlignEdge } from '../../lib/layout';
+import { placementOfBox } from '../../lib/variantLayout';
 import { layerAspect } from '../../lib/spec';
 import { layerTypeForStep } from '../../lib/steps';
 import { IconCenter, IconCenterH, IconCenterV, IconHelp, IconSafeZone } from '../ui/Icons';
@@ -29,11 +30,21 @@ export function QuickBar() {
   const safeZoneKey = useEditor((s) => s.safeZoneKey);
   const setSafeZoneKey = useEditor((s) => s.setSafeZoneKey);
   const setShortcutsOpen = useEditor((s) => s.setShortcutsOpen);
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
+  const isRef = previewKey === '9x16';
 
   const center = (axis: 'h' | 'v' | 'both') => {
     if (!layer || layer.locked) return;
     const aspect = layerAspect(layer, assets);
     const edges: AlignEdge[] = axis === 'both' ? ['center-h', 'center-v'] : axis === 'h' ? ['center-h'] : ['center-v'];
+    const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
+      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey);
+      let q = placement;
+      for (const e of edges) q = alignPlacement(q, a, canvas, e);
+      return { box: placeLayer(q, a, canvas), anchor: q.anchor };
+    });
+    if (onVariant) return;
     let p = { anchor: layer.anchor, margin: layer.margin, width: layer.width };
     for (const e of edges) p = alignPlacement(p, aspect, REF, e);
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
@@ -62,14 +73,15 @@ export function QuickBar() {
       )}
       <span className="spacer" />
       <button
-        className={`btn ${safeOn ? 'on' : ''}`}
+        className={`btn ${safeOn && isRef ? 'on' : ''}`}
         onClick={toggleSafeZone}
+        disabled={!isRef}
         aria-pressed={safeOn}
-        data-tip={`${hintFor('safe-zone-view')}：${safeOn ? '已开启 · 点击关闭' : '已关闭 · 点击开启'}`}
+        data-tip={isRef ? `${hintFor('safe-zone-view')}：${safeOn ? '已开启 · 点击关闭' : '已关闭 · 点击开启'}` : '安全区按竖版平台定义，只在预览 9:16 时显示'}
       >
         <IconSafeZone mode={safeZoneView} /> 安全区
       </button>
-      {safeOn && (
+      {safeOn && isRef && (
         <>
           <select className="select sm" value={safeZoneKey} onChange={(e) => setSafeZoneKey(e.target.value)} aria-label="安全区预设">
             {safeZones.map((z) => (
