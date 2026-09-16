@@ -2,19 +2,20 @@
 // 四个可折叠分组，与剪辑面板（HIG-17）同一套 Section。状态都在 video.localization 上，后台任务由 store 轮询；
 // 这里只管展示、编辑草稿（逐句文本 / 音色 / 术语表）、发请求。语言与音色列表来自 GET /api/localize/options，不写死。
 
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
 import { appliedVersion, canApplyVersion, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, voiceLabel } from '../../lib/localize';
 import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
+import { Field } from '../ui/Num';
 import type { Localization, LocalizationVersion, LocalizeIn, LocalizeOptions, Video } from '../../types';
 
 const TRANSCRIPT_HELP = '听写只做一次，结果是所有语言版本的模板：先在这里把识别错的句子改对，再生成版本，译文质量最好。时间点击可跳播放头；播放时当前句高亮。保存修正不会自动重译，已有版本会标「需重译」。';
 const GENERATE_HELP = '勾选目标语言后一键生成：模板没听写过时同一个任务会先听写。每种语言选一个音色；术语表每行「原词=译词」，翻译时强制替换（品牌名、产品名）。已有版本的语言再生成会覆盖旧版本。';
 const VERSIONS_HELP = '每个语言版本独立：展开可逐句改译文、换音色，「重新合成」只重跑配音和混音（不重新翻译）。「需重译」表示模板改过之后译文没更新，点「重译」对该语言再跑一遍翻译 → 合成。';
-const APPLY_HELP = '套用把当前视频的源音轨静音，加一条配音轨（对齐源时间轴）和一条 Demucs 伴奏轨（如果分离过），再把译文按句变成字幕层贴底居中。同一时间只能套用一个语言版本，换版本会替换上一版的层和轨；用户自己加的文字 / 贴纸 / 音轨不动。';
+const APPLY_HELP = '套用把当前视频的源音轨静音，加一条配音轨（对齐源时间轴）和一条 Demucs 伴奏轨（如果分离过），再把译文按句变成字幕层贴底居中，⌘Z 一步撤销。同一时间只能套用一个语言版本，换版本会替换上一版的层和轨；用户自己加的文字 / 贴纸 / 音轨不动，字幕样式可在「文本」模块里调、重新套用时保留。结果只对本条视频有效：要导出多个语言的成片，套用一版 → 导出 → 换另一版再导出。';
 
 interface SectionProps {
   video: Video;
@@ -70,8 +71,7 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
 
   return (
     <Section id="localize.transcript" title="听写（模板）" bodyClass="stack" summary={<span>{summary}</span>} help={TRANSCRIPT_HELP}>
-      <div className="prop-grid">
-        <span>源语言</span>
+      <Field label="源语言">
         <select className="select sm" value={sourceLang} disabled={blocked} onChange={(e) => setSourceLang(e.target.value)} aria-label="源语言">
           {/* 后端的 source_langs 也含 auto：这里固定放第一个，列表里的去重 */}
           <option value="auto">自动识别</option>
@@ -79,9 +79,9 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
             <option key={l.code} value={l.code}>{l.label}</option>
           ))}
         </select>
-      </div>
+      </Field>
       <div className="inline">
-        <button className="btn" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新生成已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并生成勾选的语言版本（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
+        <button className="btn sm" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新生成已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并生成勾选的语言版本（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
           {transcribing ? '听写中…' : t?.status === 'done' ? '重新听写' : '听写'}
         </button>
         <span className={`small ${t?.status === 'failed' ? 'error-text' : 'muted'}`}>{transcriptStatusText(t)}</span>
@@ -156,29 +156,24 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
         })}
         {targets.length === 0 && <span className="hint">没有可用的目标语言。</span>}
       </div>
-      {n > 0 && (
-        <div className="prop-grid">
-          {selected.map((code) => {
-            const t = targets.find((x) => x.code === code);
-            return (
-              <Fragment key={code}>
-                <span>{t?.label ?? code}音色</span>
-                <select className="select sm" value={voiceFor(code)} disabled={blocked} aria-label={`${t?.label ?? code}音色`} onChange={(e) => setVoices((v) => ({ ...v, [code]: e.target.value }))}>
-                  {t?.voices.map((v) => (
-                    <option key={v.id} value={v.id}>{v.label}</option>
-                  ))}
-                </select>
-              </Fragment>
-            );
-          })}
-        </div>
-      )}
-      <div className="prop-grid" style={{ alignItems: 'start' }}>
-        <span>术语表</span>
-        <textarea className="textarea" rows={3} placeholder={'每行一条：原词=译词\nHitGO=힛고'} value={termsText} disabled={blocked} aria-label="术语表" onChange={(e) => setTermsText(e.target.value)} />
+      {selected.map((code) => {
+        const t = targets.find((x) => x.code === code);
+        return (
+          <Field key={code} label={`${t?.label ?? code}音色`}>
+            <select className="select sm" value={voiceFor(code)} disabled={blocked} aria-label={`${t?.label ?? code}音色`} onChange={(e) => setVoices((v) => ({ ...v, [code]: e.target.value }))}>
+              {t?.voices.map((v) => (
+                <option key={v.id} value={v.id}>{v.label}</option>
+              ))}
+            </select>
+          </Field>
+        );
+      })}
+      <div className="stack-2">
+        <span className="small muted">术语表 · 每行「原词=译词」，翻译时强制替换</span>
+        <textarea className="textarea" rows={3} placeholder="HitGO=힛고" value={termsText} disabled={blocked} aria-label="术语表" onChange={(e) => setTermsText(e.target.value)} />
       </div>
       <button className="btn primary" disabled={blocked || !n} onClick={generate} title="后台任务：每种语言约半分钟到一分钟，生成期间可以继续编辑">
-        {transcriptDone ? `生成 ${n} 个语言版本` : `听写并生成 ${n} 个语言版本`}
+        {n === 0 ? '先勾选目标语言' : transcriptDone ? `生成 ${n} 个语言版本` : `听写并生成 ${n} 个语言版本`}
       </button>
     </Section>
   );
@@ -255,15 +250,14 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
               })}
             </div>
           )}
-          <div className="prop-grid">
-            <span>音色</span>
+          <Field label="音色">
             <select className="select sm" value={voice} disabled={blocked || !voiceOpts.length} aria-label={`${label}音色`} onChange={(e) => setVoice(e.target.value)}>
               {!voiceOpts.some((o) => o.id === voice) && <option value={voice}>{voice || '默认音色'}</option>}
               {voiceOpts.map((o) => (
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>
-          </div>
+          </Field>
           <div className="inline">
             <button className="btn sm" disabled={blocked || !hasTranslation || (!changed.length && !voiceChanged)} onClick={resynth} title="只重新合成配音和混音，不重新翻译；只传改过的句子">
               重新合成{changed.length ? `（${changed.length} 句）` : voiceChanged ? '（换音色）' : ''}
@@ -317,19 +311,16 @@ function ApplySection({ video, loc, options }: SectionProps) {
 
   return (
     <Section id="localize.apply" title="套用" bodyClass="stack" summary={<span>{summary}</span>} help={APPLY_HELP}>
-      <div className="prop-grid">
-        <span>当前</span>
-        <span className="inline">
-          {applied ? (
-            <>
-              <b>{langLabel(options, applied.lang)}版</b>
-              {applied.state === 'applied' ? <span className="badge-ok">已套用</span> : <span className="badge-stale">配音已更新，请重新套用</span>}
-            </>
-          ) : (
-            <span className="muted">未套用（原声 + 原字幕）</span>
-          )}
-        </span>
-      </div>
+      <Field label="当前">
+        {applied ? (
+          <>
+            <b>{langLabel(options, applied.lang)}版</b>
+            {applied.state === 'applied' ? <span className="badge-ok">已套用</span> : <span className="badge-stale">配音已更新，请重新套用</span>}
+          </>
+        ) : (
+          <span className="muted small">未套用（原声 + 原字幕）</span>
+        )}
+      </Field>
       {versions.length === 0 ? (
         <div className="hint">生成完成的版本会出现在这里，点一下就套用到这条视频。</div>
       ) : (
@@ -351,8 +342,7 @@ function ApplySection({ video, loc, options }: SectionProps) {
           )}
         </div>
       )}
-      {!sepDone && <div className="hint">还没有分离出的伴奏：套用后成片只有配音没有背景音乐。到「音频」模块分离人声 / 伴奏后再点一次套用即可补上伴奏轨。</div>}
-      <div className="hint">套用 = 源音轨静音 + 配音轨（对齐源时间轴）+ 伴奏轨 + 译文字幕层；换版本会替换上一版的层和轨，⌘Z 一步撤销。字幕样式可在「文本」模块里调，重新套用时保留。</div>
+      {!sepDone && <div className="hint">还没有分离出的伴奏：套用后成片只有配音没有背景音乐。到「音频」模块分离后再点一次套用即可补上。</div>}
     </Section>
   );
 }
@@ -408,7 +398,7 @@ export function LocalizePanel() {
         <span>改语言</span>
         {active && <span className="small muted">处理中…</span>}
       </div>
-      <div className="panel-body">
+      <div className="panel-body inspector">
         {options === null ? (
           <div className="hint">正在读取可用语言…</div>
         ) : !options.enabled ? (
@@ -424,7 +414,6 @@ export function LocalizePanel() {
             <ApplySection video={video} loc={loc} options={options} blocked={blocked} />
           </>
         )}
-        <div className="hint">结果只对本条视频有效（配音和字幕时段都按这条视频的听写结果排）。要导出多个语言的成片：套用一版 → 导出 → 换另一版再导出。</div>
       </div>
     </div>
   );

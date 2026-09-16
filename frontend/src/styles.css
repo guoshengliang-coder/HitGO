@@ -186,6 +186,7 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .chip.active { border-color: var(--line); background: var(--s1); color: var(--ink); font-weight: 500; }
 .chips .chip { border-color: transparent; background: transparent; }
 .chips .chip.active { border-color: var(--line); background: var(--s1); }
+.chips.variant-tabs .chip { flex: 1; }
 
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line-soft); }
 .tab {
@@ -506,7 +507,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .section { display: flex; flex-direction: column; gap: 6px; }
 .section-title { font-size: 12px; color: var(--ink-2); font-weight: 500; display: flex; align-items: center; justify-content: space-between; }
 .hint { font-size: 12px; color: var(--ink-3); line-height: 1.6; }
-.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font-size: 12px; }
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font-size: 12px; margin: 0; }
 .kv dt { color: var(--ink-2); } .kv dd { margin: 0; font-family: var(--mono); text-align: right; }
 
 .range-list { display: flex; flex-direction: column; gap: 4px; }
@@ -654,6 +655,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tile.disabled { opacity: 0.5; cursor: default; }
 .tile.compact { width: 76px; flex: none; padding: 0 6px; }
 .tile.field .v { display: inline-flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.tile.field .v > .btn.sm, .tile.field .v > .sw { flex: none; }
+.tile.field .v > .segt.inner { flex: 1; }
 .tile.field .select { flex: 1; min-width: 0; height: 24px; border: 0; background: transparent; padding: 0 2px; font-size: 12.5px; color: var(--ink); text-align: right; }
 .tile.field .cp-wrap { justify-content: flex-end; }
 .tile.field .cp-trigger { width: 20px; height: 20px; border-radius: 4px; }
@@ -698,9 +701,12 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 /* HIG-25：源音轨行里的原声静音区间（复用 .tl-cut 的斜纹和拖边），HIG-26：素材失效的音轨 */
 .tl-cut.tl-mute { top: 3px; bottom: 3px; z-index: 2; cursor: grab; }
 .tl-audio.broken .tl-bar.audio { border-style: dashed; border-color: var(--danger); }
-.track-list { display: flex; flex-direction: column; gap: 6px; }
-.track-item { border: 1px solid var(--line-soft); border-radius: 4px; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.track-item.selected { border-color: transparent; background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); }
+.track-list { display: flex; flex-direction: column; gap: 4px; }
+/* 音轨 / 版本行：在卡片里下沉一档，选中时抬起并亮左侧橙条（与图层行一致，§3.4） */
+.track-item { border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; background: var(--s2); }
+.track-item.selected { border-color: var(--line); background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); }
+.track-item .track-body { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.track-item.selected .tile, .track-item.selected .segt, .track-item.selected .slider { background: var(--s2); }
 .track-item .track-head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .track-item .track-head .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .track-item .track-head .role { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--tk-bgm-bg); color: var(--tk-bgm-fg); flex: none; }

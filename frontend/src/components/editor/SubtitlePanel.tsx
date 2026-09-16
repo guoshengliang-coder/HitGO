@@ -10,7 +10,11 @@ import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
 import { cuesToTextLayers, parseSrt } from '../../lib/srt';
 import { newMaskLayer, timedTextSpan } from '../../lib/mask';
 import { IconMask, IconText } from '../ui/Icons';
+import { Section } from '../ui/Section';
 import { LayerList, LayerProps } from './LayerParts';
+
+const IMPORT_HELP = '把 .srt 文件的每条字幕变成一个带时段的文字图层，套「黑底白字字幕条」样式贴底居中；超出剪后时长的字幕会被截掉。样式在「文本」模块里调。';
+const MASK_HELP = '画面里烧死的原字幕先用一条遮盖糊掉或盖住，再叠新字幕。遮盖缺省贴底通栏，在画布上拖动、拉伸到原字幕的位置；它总在字幕之下。';
 
 export function SubtitlePanel() {
   const addLayer = useEditor((s) => s.addLayer);
@@ -55,13 +59,14 @@ export function SubtitlePanel() {
   return (
     <div className="panel">
       <div className="panel-head">字幕</div>
-      <div className="panel-body">
-        <div className="hint">导入本地字幕：把 .srt 文件的每条字幕变成一个带时段的文字图层，套「黑底白字字幕条」样式贴底居中；超出剪后时长的字幕会被截掉。</div>
-        <div className="inline">
-          <button className="btn" onClick={() => inputRef.current?.click()}>
-            <IconText /> 选择 .srt 文件
-          </button>
-        </div>
+      <div className="panel-body inspector">
+        <Section id="subtitle.import" title="导入字幕" bodyClass="stack" hint="每条字幕一个文字图层" help={IMPORT_HELP}>
+          <div className="inline">
+            <button className="btn sm" onClick={() => inputRef.current?.click()}>
+              <IconText /> 选择 .srt 文件
+            </button>
+          </div>
+        </Section>
         <input
           ref={inputRef}
           type="file"
@@ -74,15 +79,13 @@ export function SubtitlePanel() {
           }}
         />
 
-        <div className="section">
-          <div className="section-title">遮盖原字幕</div>
-          <div className="hint">画面里烧死的原字幕先用一条遮盖糊掉或盖住，再叠新字幕。遮盖缺省贴底通栏，在画布上拖动、拉伸到原字幕的位置；它总在字幕之下。</div>
+        <Section id="subtitle.mask" title="遮盖原字幕" bodyClass="stack" hint="在画布上拖到原字幕的位置" help={MASK_HELP}>
           <div className="inline">
-            <button className="btn" onClick={() => addLayer(newMaskLayer(newLayerId), { belowType: 'text' })}>
+            <button className="btn sm" onClick={() => addLayer(newMaskLayer(newLayerId), { belowType: 'text' })}>
               <IconMask /> 添加遮盖
             </button>
             <button
-              className="btn ghost"
+              className="btn ghost sm"
               disabled={!selectedMask || !subtitleSpan}
               title={!selectedMask ? '先选中一条遮盖' : !subtitleSpan ? '还没有带时段的字幕' : `把遮盖的显示时段设为 ${subtitleSpan[0].toFixed(1)}s – ${subtitleSpan[1].toFixed(1)}s`}
               onClick={fitToSubtitles}
@@ -90,7 +93,7 @@ export function SubtitlePanel() {
               按字幕时段
             </button>
           </div>
-        </div>
+        </Section>
         <LayerList type="mask" emptyHint="还没有遮盖。点「添加遮盖」，在画布上把它拖到原字幕的位置；模糊 / 色块与强度在属性里改。" />
         {selectedMask && <LayerProps key={selectedMask.id} layer={selectedMask} />}
       </div>

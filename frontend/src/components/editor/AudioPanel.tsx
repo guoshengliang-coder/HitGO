@@ -12,7 +12,9 @@ import { layerName } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { IconTrash } from '../ui/Icons';
 import { Modal } from '../ui/Modal';
-import { Num, Slider } from '../ui/Num';
+import { Field, Num, Slider } from '../ui/Num';
+import { Seg, type SegOption } from '../ui/Seg';
+import { Section } from '../ui/Section';
 import type { AudioRole, AudioTrack, SeparationModel } from '../../types';
 
 /** 选一段音频素材作为 BGM / 口播；可以直接在这里上传（走素材库同一条上传链路）。 */
@@ -66,6 +68,15 @@ function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (asse
   );
 }
 
+const TIME_MODES: SegOption<'all' | 'range'>[] = [
+  { v: 'all', label: '全程' },
+  { v: 'range', label: '区间' },
+];
+const LOOP_MODES: SegOption<boolean>[] = [
+  { v: true, label: '循环', title: '素材短于时段时重复播放' },
+  { v: false, label: '播一遍' },
+];
+
 function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }) {
   const assets = useEditor((s) => s.assets);
   const update = useEditor((s) => s.updateAudioTrack);
@@ -95,60 +106,46 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
         </button>
       </div>
       {selected && (
-        <div className="prop-grid" onClick={(e) => e.stopPropagation()}>
-          <span>时段</span>
-          <div className="inline">
-            <button className={`chip ${r.t === 'all' ? 'active' : ''}`} onClick={() => update(track.id, { t: 'all' })}>全程</button>
-            <button className={`chip ${r.t !== 'all' ? 'active' : ''}`} onClick={() => r.t === 'all' && update(track.id, { t: [0, Math.min(3, postDuration)] })}>区间</button>
-            {r.t !== 'all' && (
-              <>
-                <Num value={r.t[0]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [v, Math.max(v + 0.1, (r.t as [number, number])[1])] })} />
-                <Num value={r.t[1]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [Math.min((r.t as [number, number])[0], v - 0.1), v] })} />
-              </>
-            )}
-          </div>
-          <span>音量</span>
-          <Slider value={r.volume} onChange={(v) => update(track.id, { volume: Math.round(v * 100) / 100 })} />
+        <div className="track-body" onClick={(e) => e.stopPropagation()}>
+          <Seg label="时段" options={TIME_MODES} value={r.t === 'all' ? 'all' : 'range'} onChange={(m) => update(track.id, { t: m === 'all' ? 'all' : [0, Math.min(3, postDuration)] })} />
+          {r.t !== 'all' && (
+            <div className="g2">
+              <Num label="开始" value={r.t[0]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [v, Math.max(v + 0.1, (r.t as [number, number])[1])] })} />
+              <Num label="结束" value={r.t[1]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [Math.min((r.t as [number, number])[0], v - 0.1), v] })} />
+            </div>
+          )}
+          <Slider label="音量" value={r.volume} onChange={(v) => update(track.id, { volume: Math.round(v * 100) / 100 })} />
           {r.align === 'source' ? (
-            <>
-              <span>对齐</span>
-              <div className="hint">按源视频时间轴播放，删除的区间会一起跳过；不能循环或偏移。</div>
-            </>
+            <div className="hint">按源视频时间轴播放，删除的区间会一起跳过；不能循环或偏移。</div>
           ) : (
             <>
-              <span>循环</span>
-              <div className="inline">
-                <button className={`chip ${r.loop ? 'active' : ''}`} title="素材短于时段时重复播放" onClick={() => update(track.id, { loop: !r.loop })}>{r.loop ? '循环' : '播一遍'}</button>
-                <span className="muted small">起点</span>
-                <Num value={r.offset} scale={1} step={0.5} min={0} max={mediaDuration > 0 ? Math.max(0, mediaDuration - 0.1) : undefined} suffix="s" title={r.loop ? '第一遍从素材第几秒开始，之后从头循环' : '从素材第几秒开始播'} onChange={(v) => update(track.id, { offset: Math.round(v * 100) / 100 })} />
+              <div className="g2">
+                <Seg label="循环" options={LOOP_MODES} value={r.loop} onChange={(loop) => update(track.id, { loop })} />
+                <Num label="起点" value={r.offset} scale={1} step={0.5} min={0} max={mediaDuration > 0 ? Math.max(0, mediaDuration - 0.1) : undefined} suffix="s" title={r.loop ? '第一遍从素材第几秒开始，之后从头循环' : '从素材第几秒开始播'} onChange={(v) => update(track.id, { offset: Math.round(v * 100) / 100 })} />
               </div>
               {r.loop && (
-                <>
-                  <span />
-                  <div className="inline" title="拆分出来的后半段默认接着前半段放；也可以改成从素材开头重新放">
-                    <button
-                      className={`chip ${cont !== null && Math.abs(r.offset - cont) < 1e-3 ? 'active' : ''}`}
-                      disabled={cont === null}
-                      title={cont === null ? '前面没有紧挨着的同一素材音轨可接' : `从前一段结束处（素材 ${formatSeconds(cont, 1)}）接着放`}
-                      onClick={() => cont !== null && update(track.id, { offset: cont })}
-                    >
-                      接着放
-                    </button>
-                    <button className={`chip ${r.offset === 0 ? 'active' : ''}`} onClick={() => r.offset !== 0 && update(track.id, { offset: 0 })}>从头放</button>
-                  </div>
-                </>
+                <Field label="拆分后" title="拆分出来的后半段默认接着前半段放；也可以改成从素材开头重新放">
+                  <Seg
+                    className="inner"
+                    label="拆分后的起点"
+                    options={[
+                      { v: 'cont', label: '接着放', disabled: cont === null, title: cont === null ? '前面没有紧挨着的同一素材音轨可接' : `从前一段结束处（素材 ${formatSeconds(cont, 1)}）接着放` },
+                      { v: 'zero', label: '从头放' },
+                    ]}
+                    value={cont !== null && Math.abs(r.offset - cont) < 1e-3 ? 'cont' : r.offset === 0 ? 'zero' : 'other'}
+                    onChange={(m) => update(track.id, { offset: m === 'cont' && cont !== null ? cont : 0 })}
+                  />
+                </Field>
               )}
             </>
           )}
-          <span>淡入</span>
-          <div className="inline">
-            <Num value={r.fade_in} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_out)} suffix="s" onChange={(v) => update(track.id, { fade_in: Math.round(v * 100) / 100 })} />
-            <span className="muted small">淡出</span>
-            <Num value={r.fade_out} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_in)} suffix="s" onChange={(v) => update(track.id, { fade_out: Math.round(v * 100) / 100 })} />
+          <div className="g2">
+            <Num label="淡入" value={r.fade_in} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_out)} suffix="s" onChange={(v) => update(track.id, { fade_in: Math.round(v * 100) / 100 })} />
+            <Num label="淡出" value={r.fade_out} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_in)} suffix="s" onChange={(v) => update(track.id, { fade_out: Math.round(v * 100) / 100 })} />
           </div>
-          {notReady && <div className="error-text" style={{ gridColumn: '1 / -1' }}>{asset ? '素材还在处理中，就绪前预览和成片都不会出声。' : '素材不存在，成片里会跳过这条音轨。'}</div>}
+          {notReady && <div className="error-text">{asset ? '素材还在处理中，就绪前预览和成片都不会出声。' : '素材不存在，成片里会跳过这条音轨。'}</div>}
           {!notReady && !r.loop && r.align !== 'source' && span < windowLen - 0.05 && (
-            <div className="hint" style={{ gridColumn: '1 / -1' }}>素材只够放 {formatSeconds(span, 1)}，之后到时段结束静音；淡出落在素材播完处。要铺满可改为循环。</div>
+            <div className="hint">素材只够放 {formatSeconds(span, 1)}，之后到时段结束静音；淡出落在素材播完处。要铺满可改为循环。</div>
           )}
         </div>
       )}
@@ -163,24 +160,16 @@ function SourceSection() {
   const sv = sourceVolume(audio);
   const mutes = audio?.source_mute ?? [];
   const hasAudio = !!video?.has_audio;
+  const summary = !hasAudio ? '无音轨' : sv === 0 ? '静音' : `${Math.round(sv * 100)}%${mutes.length ? ` · 静音 ${mutes.length} 段` : ''}`;
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>源音轨</span>
-        <button className={`chip ${sv === 0 ? 'active' : ''}`} disabled={!hasAudio} title="源视频自带的声音整个不要（换 BGM / 口播时常用）" onClick={() => setSourceVolume(sv === 0 ? 1 : 0)}>静音</button>
-      </div>
-      <div className="prop-grid">
-        <span>音量</span>
-        <Slider value={sv} disabled={!hasAudio} onChange={setSourceVolume} />
-      </div>
+    <Section id="audio.source" title="源音轨" bodyClass="stack" summary={<span>{summary}</span>} hint={hasAudio ? '时间线上选中源音轨，Q / W 静音左 / 右侧' : undefined} help={SOURCE_HELP}>
+      <Slider label="音量" value={sv} disabled={!hasAudio} onChange={setSourceVolume} />
+      <Field label="整条静音" title="源视频自带的声音整个不要（换 BGM / 口播时常用）">
+        <button type="button" role="switch" aria-checked={sv === 0} aria-label="整条静音" className={`sw ${sv === 0 ? 'on' : ''}`} disabled={!hasAudio} onClick={() => setSourceVolume(sv === 0 ? 1 : 0)} />
+      </Field>
       {!hasAudio && <div className="hint">源视频没有音轨；加 BGM / 口播后成片才有声音。</div>}
-      {hasAudio && sv > 0 && (
-        <div className="hint">
-          {mutes.length > 0 ? `已静音 ${mutes.length} 段原声（${mutes.map(([a, b]) => `${a.toFixed(1)}–${b.toFixed(1)}s`).join('、')}，剪后时间）。` : ''}
-          要剪掉一段原声：在时间线上点「源音轨」，按 Q / W 静音播放头左 / 右侧，或 I、O 标一段；画面不受影响。
-        </div>
-      )}
-    </div>
+      {hasAudio && mutes.length > 0 && <div className="hint">已静音 {mutes.length} 段原声：{mutes.map(([a, b]) => `${a.toFixed(1)}–${b.toFixed(1)}s`).join('、')}（剪后时间）。</div>}
+    </Section>
   );
 }
 
@@ -191,17 +180,13 @@ function TracksSection() {
   const [picking, setPicking] = useState<AudioRole | null>(null);
   const tracks = audio?.tracks ?? [];
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>BGM / 口播</span>
-        <span className="mono muted">{tracks.length}</span>
-      </div>
+    <Section id="audio.tracks" title="BGM / 口播" bodyClass="stack" summary={<span>{tracks.length ? `${tracks.length} 条` : '无'}</span>} hint="时间线上可拖动条与两端" help={TRACKS_HELP}>
       <div className="inline">
-        <button className="btn" onClick={() => setPicking('bgm')}>+ BGM</button>
-        <button className="btn" onClick={() => setPicking('voice')}>+ 口播</button>
+        <button className="btn sm" onClick={() => setPicking('bgm')}>+ BGM</button>
+        <button className="btn sm" onClick={() => setPicking('voice')}>+ 口播</button>
       </div>
       {tracks.length === 0 ? (
-        <div className="hint">还没有叠加音轨。BGM 会循环铺满并在末尾淡出；口播按素材原长播一遍，可设区间。各音轨按原音量直接叠加，不自动压低源音轨。</div>
+        <div className="hint">还没有叠加音轨。</div>
       ) : (
         <div className="track-list">
           {tracks.map((t) => (
@@ -218,14 +203,19 @@ function TracksSection() {
           }}
         />
       )}
-    </div>
+    </Section>
   );
 }
 
-const MODEL_OPTIONS: [SeparationModel, string, string][] = [
-  ['htdemucs', '标准', 'Demucs htdemucs：一条 30 秒素材约半分钟到一分钟'],
-  ['htdemucs_ft', '高质量', 'htdemucs_ft 四模型集成：人声边缘更干净，慢约 4 倍'],
+const MODEL_OPTIONS: SegOption<SeparationModel>[] = [
+  { v: 'htdemucs', label: '标准', title: 'Demucs htdemucs：一条 30 秒素材约半分钟到一分钟' },
+  { v: 'htdemucs_ft', label: '高质量', title: 'htdemucs_ft 四模型集成：人声边缘更干净，慢约 4 倍' },
 ];
+
+const SOURCE_HELP = '源视频自带的声音。要剪掉一段原声：在时间线上点「源音轨」，按 Q / W 静音播放头左 / 右侧，或 I、O 标一段；画面不受影响。';
+const TRACKS_HELP = 'BGM 会循环铺满并在末尾淡出；口播按素材原长播一遍，可设区间。各音轨按原音量直接叠加，不自动压低源音轨。时段基于剪后时间轴，可在时间线上拖动条移动、拖两端调整（按住 ⌥ 不吸附）；修改剪辑不会自动改动音轨时段，超出剪后时长的部分成片里会被截掉。';
+const SEPARATE_HELP = '把源视频的声音拆成人声轨和伴奏轨，之后可以只留一条再叠新的 BGM 或口播。在服务器 CPU 上跑，短片约一分钟。分离结果也会出现在「+ BGM / + 口播」选择器的「分离结果」栏里，可用到别的视频上；重新分离会替换掉这两条素材。';
+const STICKER_AUDIO_HELP = '视频贴纸自带的声音按原音量叠加；时段和播放方式跟着贴纸走，在贴纸模块里改。';
 
 const SEP_STATUS_TEXT: Record<string, string> = { queued: '排队中…', running: '分离中（CPU 运算，短片约一分钟）…', done: '已分离', failed: '分离失败' };
 
@@ -244,21 +234,17 @@ function SeparateSection() {
   const vocals = sep?.status === 'done' ? stemAsset(sep.vocals_asset_id) : undefined;
   const inst = sep?.status === 'done' ? stemAsset(sep.instrumental_asset_id) : undefined;
   const inUse = (id: string | undefined) => !!id && tracks.some((t) => t.asset_id === id);
+  const status = sep ? `${SEP_STATUS_TEXT[sep.status] ?? sep.status}${sep.status === 'done' ? `（${sep.model === 'htdemucs_ft' ? '高质量' : '标准'}）` : ''}` : '未分离';
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>人声 / 伴奏分离</span>
-        {sep && <span className={`small ${sep.status === 'failed' ? 'error-text' : 'muted'}`}>{SEP_STATUS_TEXT[sep.status] ?? sep.status}{sep.status === 'done' ? `（${sep.model === 'htdemucs_ft' ? '高质量' : '标准'}）` : ''}</span>}
-      </div>
+    <Section id="audio.separate" title="人声 / 伴奏分离" bodyClass="stack" defaultOpen={false} summary={<span className={sep?.status === 'failed' ? 'error-text' : undefined}>{status}</span>} help={SEPARATE_HELP}>
+      <Field label="质量">
+        <Seg className="inner" label="分离模型" options={MODEL_OPTIONS} value={model} onChange={setModel} disabled={active} />
+      </Field>
       <div className="inline">
-        <span className="chips" role="radiogroup" aria-label="分离模型">
-          {MODEL_OPTIONS.map(([m, label, title]) => (
-            <button key={m} role="radio" aria-checked={model === m} className={`chip ${model === m ? 'active' : ''}`} title={title} disabled={active} onClick={() => setModel(m)}>{label}</button>
-          ))}
-        </span>
-        <button className="btn" disabled={!hasAudio || active} title={hasAudio ? '用 AI 把源音轨拆成人声和伴奏两条音轨（后台任务）' : '源视频没有音轨'} onClick={() => void separateVideo(model)}>
+        <button className="btn sm" disabled={!hasAudio || active} title={hasAudio ? '用 AI 把源音轨拆成人声和伴奏两条音轨（后台任务）' : '源视频没有音轨'} onClick={() => void separateVideo(model)}>
           {active ? '分离中…' : sep?.status === 'done' ? '重新分离' : '分离人声 / 伴奏'}
         </button>
+        {sep && <span className={`small ${sep.status === 'failed' ? 'error-text' : 'muted'}`}>{status}</span>}
       </div>
       {sep?.status === 'failed' && sep.error && <div className="error-text">{sep.error}</div>}
       {sep?.status === 'done' && (
@@ -271,18 +257,13 @@ function SeparateSection() {
           </button>
         </div>
       )}
-      <div className="hint">
-        {sep?.status === 'done'
-          ? '分离结果也在「+ BGM / + 口播」选择器的「分离结果」栏里，可用到别的视频上。重新分离会替换掉这两条素材。'
-          : '把源视频的声音拆成人声轨和伴奏轨，之后可以只留一条再叠新的 BGM 或口播。在服务器 CPU 上跑，短片约一分钟。'}
-      </div>
-    </div>
+    </Section>
   );
 }
 
-const MIX_MODES: [boolean, string, string][] = [
-  [false, '不合成', '成片不带这个贴纸的声音'],
-  [true, '合成', '贴纸自带的声音叠加进成片（时段内，跟随播放方式）'],
+const MIX_MODES: SegOption<boolean>[] = [
+  { v: false, label: '不合成', title: '成片不带这个贴纸的声音' },
+  { v: true, label: '合成', title: '贴纸自带的声音叠加进成片（时段内，跟随播放方式）' },
 ];
 
 /** 带声音的视频贴纸：在这里也能开关 mix_audio（贴纸面板里的开关保留，两边改的是同一个字段）。 */
@@ -294,11 +275,7 @@ function StickerAudioSection() {
   const list = useMemo(() => stickerAudioLayers(layers ?? [], assets), [layers, assets]);
   if (list.length === 0) return null;
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>贴纸音轨</span>
-        <span className="mono muted">{list.length}</span>
-      </div>
+    <Section id="audio.stickers" title="贴纸音轨" bodyClass="stack" summary={<span>{list.length} 条</span>} help={STICKER_AUDIO_HELP}>
       <div className="track-list">
         {list.map((l) => {
           const [a, b] = windowRange(l.t, postDuration);
@@ -310,19 +287,12 @@ function StickerAudioSection() {
                 <span className="tname" title={name}>{name}</span>
                 <span className="mono muted">{l.t === 'all' ? '全程' : `${a.toFixed(1)}s – ${b.toFixed(1)}s`}</span>
               </div>
-              <div className="inline" role="radiogroup" aria-label={`${name} 的音轨`}>
-                {MIX_MODES.map(([mix, label, title]) => (
-                  <button key={label} role="radio" aria-checked={!!l.mix_audio === mix} className={`chip ${!!l.mix_audio === mix ? 'active' : ''}`} title={title} onClick={() => updateLayer(l.id, { mix_audio: mix })}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+              <Seg label={`${name} 的音轨`} options={MIX_MODES} value={!!l.mix_audio} onChange={(mix) => updateLayer(l.id, { mix_audio: mix })} />
             </div>
           );
         })}
       </div>
-      <div className="hint">视频贴纸自带的声音按原音量叠加；时段和播放方式跟着贴纸走，在贴纸模块里改。</div>
-    </div>
+    </Section>
   );
 }
 
@@ -330,12 +300,11 @@ export function AudioPanel() {
   return (
     <div className="panel">
       <div className="panel-head">音频</div>
-      <div className="panel-body">
+      <div className="panel-body inspector">
         <SourceSection />
-        <SeparateSection />
         <TracksSection />
+        <SeparateSection />
         <StickerAudioSection />
-        <div className="hint">BGM / 口播的时段基于剪后时间轴，可在时间线上拖动条移动、拖两端调整（按住 ⌥ 不吸附）。修改剪辑不会自动改动音轨时段，超出剪后时长的部分成片里会被截掉。</div>
       </div>
     </div>
   );

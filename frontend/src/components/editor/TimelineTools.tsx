@@ -1,4 +1,4 @@
-// 时间线工具（挂在 Transport 工具条里）：删左 / 删右（剪辑）、
+// 时间线工具（挂在 Transport 工具条里）：设入点 / 设出点 / 删左 / 删右（剪辑）、
 // 拆分 / 删左 / 删右（音频：作用于选中的音轨；选中源音轨行时删左 / 删右是给原声加静音区间，HIG-25）、
 // 删除（剪辑删区间 / 音频删音轨或原声静音区间 / 文本、贴纸、字幕删图层）。
 // 提示文案走 lib/shortcuts 的 hintFor；这里用原生 title 而非 data-tip——.timeline 是 overflow: hidden，
@@ -11,6 +11,10 @@ import { IconCutLeft, IconCutRight, IconSplit, IconTrash } from '../ui/Icons';
 
 export function TimelineTools() {
   const step = useEditor((s) => s.step);
+  const time = useEditor((s) => s.time);
+  const inPoint = useEditor((s) => s.inPoint);
+  const setInPoint = useEditor((s) => s.setInPoint);
+  const setOutPoint = useEditor((s) => s.setOutPoint);
   const removeBefore = useEditor((s) => s.removeBefore);
   const removeAfter = useEditor((s) => s.removeAfter);
   const canRemoveBefore = useEditor((s) => s.canRemoveBefore());
@@ -44,6 +48,12 @@ export function TimelineTools() {
     <div className="tl-tools">
       {step === 'trim' && (
         <>
+          <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} title={hintFor('in')}>
+            入点
+          </button>
+          <button className="btn" onClick={() => setOutPoint(time)} disabled={inPoint === null} title={hintFor('out')}>
+            出点
+          </button>
           <button className="btn" onClick={removeBefore} disabled={!canRemoveBefore} title={hintFor('remove-before')}>
             <IconCutLeft /> 删左
           </button>
