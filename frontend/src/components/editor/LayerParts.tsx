@@ -15,8 +15,9 @@ import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
+import { Section } from '../ui/Section';
 import {
-  IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconChevron, IconCopy, IconDown, IconEye, IconLock, IconReset, IconSticker, IconText, IconTrash, IconUp,
+  IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
 import { Num, Slider } from '../ui/Num';
 
@@ -47,44 +48,6 @@ const DEFAULT_SHADOW: TextShadow = { color: '#00000099', blur: 0.01, offset: [0.
 const DEFAULT_GLOW: TextGlow = { color: '#FFD84DCC', blur: 0.012 };
 const DEFAULT_STROKE = { stroke_color: '#000000', stroke_width: 0.004 };
 const DEFAULT_BACKGROUND = '#00000099';
-
-// ---------------------------------------------------------------- 通用小控件
-
-/**
- * 可折叠分组。带 onToggle 时标题左侧出现启用勾选（描边 / 阴影 / 背景）；
- * 带 onReset 时标题右侧出现「重置」。
- */
-function Section({ title, enabled, onToggle, onReset, defaultOpen = true, children }: { title: string; enabled?: boolean; onToggle?: (on: boolean) => void; onReset?: () => void; defaultOpen?: boolean; children: ReactNode }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const collapsed = !open || enabled === false;
-  return (
-    <div className={`sec ${collapsed ? 'collapsed' : ''}`}>
-      <div className="sec-head">
-        {onToggle && (
-          <input
-            type="checkbox"
-            checked={!!enabled}
-            aria-label={`启用${title}`}
-            onChange={(e) => {
-              onToggle(e.target.checked);
-              if (e.target.checked) setOpen(true);
-            }}
-          />
-        )}
-        <button className="sec-title" onClick={() => enabled !== false && setOpen((o) => !o)} disabled={enabled === false} aria-expanded={!collapsed}>
-          <span>{title}</span>
-          <IconChevron open={!collapsed} />
-        </button>
-        {onReset && (
-          <button className="btn ghost icon sm" title="重置为默认值" aria-label={`重置${title}`} onClick={onReset} disabled={enabled === false}>
-            <IconReset />
-          </button>
-        )}
-      </div>
-      {!collapsed && <div className="sec-body prop-grid">{children}</div>}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------- 预设
 

@@ -182,6 +182,9 @@ input[type='checkbox'] { accent-color: var(--accent); }
   white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 0.12s, transform 0.12s; z-index: 40;
 }
 [data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); transition-delay: 0.25s; }
+/* 长文案气泡：默认的 nowrap + 居中在 320px 宽的右栏里会溢出，改成定宽换行并靠右对齐 */
+.tip-wide[data-tip]::after { white-space: normal; width: 240px; left: auto; right: -4px; transform: translateY(2px); text-align: left; }
+.tip-wide[data-tip]:hover::after, .tip-wide[data-tip]:focus-visible::after { transform: translateY(0); }
 
 kbd {
   display: inline-block; min-width: 20px; padding: 1px 6px; margin: 0 1px;
@@ -478,11 +481,19 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .sec { border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel); }
 .sec-head { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; }
 .sec-head input[type='checkbox'] { margin: 0; }
-.sec-title { flex: 1; display: flex; align-items: center; justify-content: space-between; height: 24px; padding: 0 2px; border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; }
+.sec-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 2px; border: 0; background: transparent; color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer; text-align: left; }
 .sec-title:disabled { color: var(--ink-3); cursor: default; }
-.sec-title svg { color: var(--ink-3); }
+.sec-title svg { color: var(--ink-3); flex: none; }
+.sec-name { flex: none; }
+/* 折叠后这一行就是这块设置唯一的可见信息（HIG-17） */
+.sec-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-weight: 400; font-size: 11px; color: var(--ink-3); }
 .sec-body { padding: 4px 8px 8px; border-top: 1px solid var(--line-soft); }
 .sec-body .span2 { grid-column: 1 / -1; }
+.sec-body.stack { display: flex; flex-direction: column; gap: 8px; }
+/* 分组标题旁的「?」：常驻说明收进气泡里（HIG-17） */
+.help-tip { flex: none; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--ink-3); cursor: help; }
+.help-tip:hover { background: var(--line-soft); color: var(--ink-2); }
+.help-tip svg { width: 14px; height: 14px; }
 .num-wrap { display: inline-flex; align-items: center; gap: 2px; }
 .num-wrap .input.num { width: 62px; padding: 0 4px; }
 .num-step { width: 18px; height: 24px; padding: 0; border: 1px solid var(--line); background: var(--panel); color: var(--ink-2); font-size: 13px; line-height: 1; border-radius: 4px; cursor: pointer; }

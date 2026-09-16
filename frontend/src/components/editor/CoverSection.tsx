@@ -12,7 +12,11 @@ import { formatSeconds } from '../../lib/time';
 import { AssetCard, STICKER_ACCEPT } from '../../pages/AssetsPage';
 import { Modal } from '../ui/Modal';
 import { Num } from '../ui/Num';
+import { Section } from '../ui/Section';
+import { coverSummary } from '../../lib/trimSummary';
 import { isAssetReady, isVideoAsset } from '../../types';
+
+const COVER_HELP = '在成片最前面插入一张图片或一段视频。封面期间不叠文字 / 贴纸、不放 BGM，图层与音轨的时间仍从正片第一帧开始算。图片封面可调停留时长，视频封面整段播放并保留原声。';
 
 const KINDS: { key: StickerKindFilter; label: string }[] = [
   { key: 'all', label: '全部' },
@@ -105,20 +109,13 @@ export function CoverSection() {
       : null;
 
   return (
-    <div className="section">
-      <div className="section-title">
-        <span>封面</span>
-        <span className="mono muted">{cover ? formatSeconds(preroll, 1) : '无'}</span>
-      </div>
+    <Section id="trim.cover" title="封面" defaultOpen={false} bodyClass="stack" summary={<span className="mono">{coverSummary(cover, preroll)}</span>} help={COVER_HELP}>
       {!cover ? (
-        <>
-          <div className="inline">
-            <button className="btn" onClick={() => setPicking(true)}>
-              添加封面
-            </button>
-          </div>
-          <div className="hint">在成片最前面插入一张图片或一段视频。封面期间不叠文字 / 贴纸、不放 BGM，图层与音轨的时间仍从正片开始算。</div>
-        </>
+        <div className="inline">
+          <button className="btn" onClick={() => setPicking(true)}>
+            添加封面
+          </button>
+        </div>
       ) : (
         <>
           <div className="cover-item">
@@ -172,6 +169,6 @@ export function CoverSection() {
           onClose={() => setPicking(false)}
         />
       )}
-    </div>
+    </Section>
   );
 }
