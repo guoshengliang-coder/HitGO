@@ -893,7 +893,12 @@ def test_real_ffmpeg_source_mute_silences_only_its_span(tmp_path):
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
 def test_real_ffmpeg_split_track_halves_play_like_the_whole_track(tmp_path):
-    """A 1.5 s looping chirp over [0, 4] split at 1.7 s: the halves must reproduce the unsplit mix."""
+    """A 1.5 s looping chirp over [0, 4] split at 1.7 s: the halves must reproduce the unsplit mix.
+
+    Thresholds are relative: two separate AAC encodes leave a codec-dependent floor (−91 dB on
+    ffmpeg 8, about −37 dB on CI's apt ffmpeg), while a wrong split (second half restarting the
+    file) is only a few dB below the signal itself.
+    """
     src = _src_with_tone(tmp_path, 4)
     chirp = tmp_path / "chirp.wav"
     subprocess.run(
@@ -902,26 +907,32 @@ def test_real_ffmpeg_split_track_halves_play_like_the_whole_track(tmp_path):
     )  # fmt: skip
     assets = {"a_chirp": AudioSource(str(chirp), 1.5)}
     meta = {"duration": 4.0, "has_audio": True}
-    whole = valid_spec(trim={"remove": []}, layers=[])
-    whole["audio"] = {"source_volume": 0, "tracks": [{"id": "au_1", "asset_id": "a_chirp", "t": [0, 4], "loop": True}]}
-    split = valid_spec(trim={"remove": []}, layers=[])
-    split["audio"] = {"source_volume": 0, "tracks": [
-        {"id": "au_1", "asset_id": "a_chirp", "t": [0, 1.7], "loop": True},
-        {"id": "au_2", "asset_id": "a_chirp", "t": [1.7, 4], "loop": True, "offset": 0.2},  # 1.7 mod 1.5
-    ]}  # fmt: skip
-    (tmp_path / "w").mkdir()
-    (tmp_path / "s").mkdir()
-    out_whole, _ = _render(tmp_path / "w", src, whole, assets, meta)
-    out_split, _ = _render(tmp_path / "s", src, split, assets, meta)
-    proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(out_whole), "-i", str(out_split), "-filter_complex",
-         "[1:a]volume=-1[neg];[0:a][neg]amix=inputs=2:normalize=0,atrim=start=0.1:end=3.8,volumedetect",
-         "-f", "null", "-"],
-        capture_output=True, text=True, timeout=60,
-    )  # fmt: skip
-    residual = float(re.search(r"mean_volume: (-?[\d.]+|-inf) dB", proc.stderr).group(1))
-    assert _mean_volume(out_whole, 0.1, 3.7) > -30
-    assert residual < -40
+
+    def render(name, tracks):
+        spec = valid_spec(trim={"remove": []}, layers=[])
+        spec["audio"] = {"source_volume": 0, "tracks": tracks}
+        (tmp_path / name).mkdir()
+        return _render(tmp_path / name, src, spec, assets, meta)[0]
+
+    whole = render("whole", [{"id": "au_1", "asset_id": "a_chirp", "t": [0, 4], "loop": True}])
+    first = {"id": "au_1", "asset_id": "a_chirp", "t": [0, 1.7], "loop": True}
+    split = render("split", [first, {"id": "au_2", "asset_id": "a_chirp", "t": [1.7, 4], "loop": True, "offset": 0.2}])  # 1.7 mod 1.5
+    wrong = render("wrong", [first, {"id": "au_2", "asset_id": "a_chirp", "t": [1.7, 4], "loop": True}])
+
+    def residual(a, b):
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", str(a), "-i", str(b), "-filter_complex",
+             "[1:a]volume=-1[neg];[0:a][neg]amix=inputs=2:normalize=0,atrim=start=0.1:end=3.8,volumedetect",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60,
+        )  # fmt: skip
+        return float(re.search(r"mean_volume: (-?[\d.]+|-inf) dB", proc.stderr).group(1))
+
+    level = _mean_volume(whole, 0.1, 3.7)
+    good, bad = residual(whole, split), residual(whole, wrong)
+    assert level > -30
+    assert good < level - 25, (level, good)
+    assert bad > good + 20, (good, bad)  # the check can tell a continued loop from a restarted one
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
