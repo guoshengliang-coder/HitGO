@@ -4,6 +4,8 @@ import { isAudioAsset, isVideoAsset, type Asset, type AssetType } from '../types
 import { BUCKET_LABEL, canDelete, filterAssets, stemLabel, stemTitle, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
+import { DropZone } from '../components/ui/DropZone';
+import { rejectedText } from '../lib/fileDrop';
 
 /** 音频素材的 accept 与空态文案；剪辑步骤的音轨选择器也用。 */
 /** 贴纸 / 封面素材可上传的格式（契约 §3）；jpg 没有透明通道，主要给封面用（HIG-9）。 */
@@ -98,7 +100,10 @@ export function AssetsPage() {
     void load(tab);
   }, [tab, load]);
 
-  // 视频贴纸是异步预处理的，preparing 期间轮询到 ready / failed 为止
+  // 视频贴纸是异步预处理的，preparing 期间轮询到 ready / failed 为止。
+  // 这一轮全部请求失败（断网等）时 assets 不会变，effect 不会再跑：用 retry 计数强制排下一轮，
+  // 否则卡片会一直停在「处理中…」直到刷新页面（HIG-24 顺带修）
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     const pending = assets.filter((a) => (a.status ?? 'ready') === 'preparing');
     if (!pending.length) return;
@@ -110,12 +115,13 @@ export function AssetsPage() {
       if (!alive) return;
       const byId = new Map(updated.filter(Boolean).map((a) => [a!.id, a!]));
       if (byId.size) setAssets((prev) => prev.map((a) => byId.get(a.id) ?? a));
+      else setRetry((n) => n + 1);
     }, 1500);
     return () => {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [assets]);
+  }, [assets, retry]);
 
   const upload = async (files: File[]) => {
     if (!files.length) return;
@@ -161,7 +167,17 @@ export function AssetsPage() {
           : '还没有字体。支持 ttf / otf / woff2，单个不超过 20 MiB；字体名取文件名。';
 
   return (
-    <div className="page">
+    <DropZone
+      className="page"
+      accept={accept}
+      disabled={progress !== null}
+      hint={`松手上传${kind}`}
+      onFiles={(accepted, rejected) => {
+        const skipped = rejectedText(rejected, tab === 'sticker' ? 'png / jpg / webp / gif / mp4 / mov / webm' : tab === 'audio' ? 'mp3 / wav / m4a' : 'ttf / otf / woff2');
+        if (accepted.length) void upload(accepted).then(() => skipped && setError((prev) => (prev ? `${prev}；${skipped}` : skipped)));
+        else setError(skipped);
+      }}
+    >
       <div className="page-head">
         <h1>素材库</h1>
         <label className="btn primary" style={{ cursor: 'pointer' }}>
@@ -189,6 +205,6 @@ export function AssetsPage() {
           ))}
         </div>
       )}
-    </div>
+    </DropZone>
   );
 }

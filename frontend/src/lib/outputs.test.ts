@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { latestJobIds, sortByFinishedDesc } from './outputs';
+import { latestJobIds, outputFileName, sortByFinishedDesc } from './outputs';
 import type { Job } from '../types';
 
 function job(
@@ -97,5 +97,26 @@ describe('sortByFinishedDesc', () => {
     const jobs = [job('j_1', 'v_1', '9x16', '2026-09-16T10:00:00Z'), job('j_2', 'v_2', '9x16', '2026-09-16T10:00:00Z')];
     expect(sortByFinishedDesc(jobs).map((j) => j.id)).toEqual(['j_2', 'j_1']);
     expect(jobs.map((j) => j.id)).toEqual(['j_1', 'j_2']);
+  });
+});
+
+describe('outputFileName', () => {
+  it('uses the export name, the video name without extension and the variant', () => {
+    const j = { ...job('j_1', 'v_1', '9x16', null), name: '九月投放 A', batch_name: '批次', video_name: 'V01 开场.mp4' };
+    expect(outputFileName(j)).toBe('九月投放 A_V01 开场_9x16.mp4');
+  });
+
+  it('falls back to the batch name, and takes names passed in for per-batch jobs', () => {
+    expect(outputFileName({ ...job('j_1', 'v_1', '9x16', null), batch_name: '九月批次', video_name: 'a.MOV' })).toBe('九月批次_a_9x16.mp4');
+    expect(outputFileName(job('j_1', 'v_1', '9x16', null), { batchName: '批次 B', videoName: 'b.mp4' })).toBe('批次 B_b_9x16.mp4');
+  });
+
+  it('replaces characters a file system would refuse', () => {
+    const j = { ...job('j_1', 'v_1', '9x16', null), name: 'a/b:c*?"<>|d', video_name: 'x.mp4' };
+    expect(outputFileName(j)).toBe('a_b_c_d_x_9x16.mp4');
+  });
+
+  it('falls back to the job id when there is nothing to name it by', () => {
+    expect(outputFileName(job('j_9', 'v_1', '', null))).toBe('j_9.mp4');
   });
 });

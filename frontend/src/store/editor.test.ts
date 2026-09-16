@@ -410,3 +410,85 @@ describe('改语言套用（applyVersion）', () => {
     expect(useEditor.getState().toast).toContain('伴奏');
   });
 });
+
+describe('上传后的预处理状态自动刷新（HIG-24）', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('还有 preparing 的视频就轮询批次详情，就绪后更新状态且不动草稿', async () => {
+    const preparing = { id: 'v7', name: 'new.mp4', duration: 0, width: 0, height: 0, status: 'preparing' } as Video;
+    const ready = { ...preparing, duration: 12, width: 1080, height: 1920, status: 'ready' } as Video;
+    const batch = (v: Video) => ({ id: 'b7', name: '批次', videos: [v] }) as unknown as BatchDetail;
+    const getBatch = vi.spyOn(api, 'getBatch').mockResolvedValueOnce(batch(preparing)).mockResolvedValueOnce(batch(preparing)).mockResolvedValue(batch(ready));
+    vi.spyOn(api, 'batchJobs').mockResolvedValue([]);
+    vi.spyOn(api, 'putSpec').mockResolvedValue(VIDEO);
+    vi.spyOn(api, 'listAssets').mockReturnValue(new Promise(() => {}));
+    vi.spyOn(api, 'listPresets').mockReturnValue(new Promise(() => {}));
+    useEditor.setState({ safeZones: [{ key: 'generic-vertical', name: '通用竖版', aspect: '9x16', zones: [] }] as SafeZone[] });
+
+    await useEditor.getState().load('b7');
+    expect(useEditor.getState().videos[0].status).toBe('preparing');
+    const draft = useEditor.getState().specs.v7;
+
+    await vi.advanceTimersByTimeAsync(2000); // 第 1 轮：还在准备
+    expect(useEditor.getState().videos[0].status).toBe('preparing');
+    await vi.advanceTimersByTimeAsync(2000); // 第 2 轮：就绪
+    expect(useEditor.getState().videos[0].status).toBe('ready');
+    expect(useEditor.getState().specs.v7).toBe(draft);
+
+    const calls = getBatch.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(10000); // 没有 preparing 了就停
+    expect(getBatch.mock.calls.length).toBe(calls);
+  });
+});
+
+describe('删除视频（HIG-20）', () => {
+  const v = (id: string) => ({ id, name: `${id}.mp4`, duration: 10, width: 1080, height: 1920, status: 'ready' }) as Video;
+
+  beforeEach(() => {
+    useEditor.setState({
+      batch: { id: 'b1', name: '批次', videos: [v('v1'), v('v2'), v('v3')], video_count: 3 } as unknown as BatchDetail,
+      videos: [v('v1'), v('v2'), v('v3')],
+      currentVideoId: 'v2',
+      selectedIds: ['v2', 'v3'],
+      specs: { v1: emptySpec(), v2: emptySpec(), v3: emptySpec() },
+      history: { v2: { past: [emptySpec()], future: [] } },
+      jobs: [{ id: 'j2', video_id: 'v2', status: 'done' } as unknown as Job],
+      trackedJobIds: ['j2'],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('删掉的视频从列表 / 草稿 / 历史 / 勾选里拿掉，当前切到后一条', async () => {
+    const del = vi.spyOn(api, 'deleteVideo').mockResolvedValue(undefined);
+    await useEditor.getState().deleteVideos(['v2']);
+    const s = useEditor.getState();
+    expect(del).toHaveBeenCalledWith('v2');
+    expect(s.videos.map((x) => x.id)).toEqual(['v1', 'v3']);
+    expect(s.batch?.videos.map((x) => x.id)).toEqual(['v1', 'v3']);
+    expect(Object.keys(s.specs)).toEqual(['v1', 'v3']);
+    expect(s.history.v2).toBeUndefined();
+    expect(s.selectedIds).toEqual(['v3']);
+    expect(s.currentVideoId).toBe('v3');
+    expect(s.jobs).toEqual([]);
+    expect(s.trackedJobIds).toEqual([]);
+    expect(s.toast).toBe('已删除 1 条视频');
+  });
+
+  it('接口拒绝（有渲染在跑）的那条留着，并提示原因', async () => {
+    const { ApiError } = await import('../api');
+    vi.spyOn(api, 'deleteVideo').mockImplementation(async (id) => {
+      if (id === 'v3') throw new ApiError(409, '这条视频有进行中的渲染任务，等任务结束后再删除');
+    });
+    await useEditor.getState().deleteVideos(['v1', 'v3']);
+    const s = useEditor.getState();
+    expect(s.videos.map((x) => x.id)).toEqual(['v2', 'v3']);
+    expect(s.currentVideoId).toBe('v2');
+    expect(s.toast).toContain('已删除 1 条视频');
+    expect(s.toast).toContain('「v3.mp4」这条视频有进行中的渲染任务');
+  });
+});

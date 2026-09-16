@@ -1,4 +1,5 @@
 // 右上角「导出」弹窗（HIG-8）：选范围后保存并提交渲染。默认导出这一批；每条视频出一个 9:16 文件。
+// 可选填一个导出名称（HIG-27），写到这次的每个任务上：产物页能按它搜，下载的文件名也用它。
 
 import { useMemo, useState } from 'react';
 import { useEditor } from '../../store/editor';
@@ -12,6 +13,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const rendering = useEditor((s) => s.rendering);
   const saveAndRender = useEditor((s) => s.saveAndRender);
   const [scope, setScope] = useState<ExportScope>('batch');
+  const batchName = useEditor((s) => s.batch?.name ?? '');
+  const [name, setName] = useState('');
 
   const current = videos.find((v) => v.id === currentId);
   const selectedCount = videos.filter((v) => selectedIds.includes(v.id)).length;
@@ -37,7 +40,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             className="btn primary"
             disabled={rendering || targets.ids.length === 0}
             onClick={() => {
-              void saveAndRender(targets.ids);
+              void saveAndRender(targets.ids, { name });
               onClose();
             }}
           >
@@ -46,6 +49,17 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         </>
       }
     >
+      <label className="field" style={{ marginBottom: 12 }}>
+        导出名称（可选）
+        <input
+          className="input"
+          value={name}
+          maxLength={120}
+          placeholder={`例如：${batchName ? `${batchName} ` : ''}${exportDateLabel()} 版`}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <span className="hint">产物页可按名称搜索；下载的文件名为「名称_视频名_9x16.mp4」，不填时用批次名。</span>
+      </label>
       <div className="scope-list" role="radiogroup" aria-label="导出范围">
         {options.map((o) => (
           <label key={o.key} className={`scope-option ${scope === o.key ? 'active' : ''} ${o.disabled ? 'disabled' : ''}`}>
@@ -63,4 +77,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       </div>
     </Modal>
   );
+}
+
+/** 名称输入框的示例日期，如「9月16日」。 */
+function exportDateLabel(d = new Date()): string {
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
 }

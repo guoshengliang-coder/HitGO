@@ -2,18 +2,52 @@
 // - 不带参数：跨批次总表，按生成时间从新到旧，分页加载。
 // - ?batch=<id>：只看这一批，多出「回传 JSON」列与「返回编辑」，有任务在跑时自动重拉。
 // 两种视图同一张表、同一种行序，只差筛选与列。
+// - ?q=：按导出名称 / 批次名 / 视频名搜索（HIG-27）；总表交给后端过滤，批次视图在本地过滤。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import type { BatchDetail, Job } from '../types';
 import { formatSeconds } from '../lib/time';
 import { fmtDateOr, fmtSize } from '../lib/datetime';
-import { latestJobIds, sortByFinishedDesc } from '../lib/outputs';
+import { latestJobIds, outputFileName, sortByFinishedDesc } from '../lib/outputs';
+import { matchesQuery } from '../lib/search';
 import { variantDef, type VariantKey } from '../types';
 
 const PAGE = 100;
 /** 批次视图还有任务在跑时的重拉间隔。进度弹窗用 1.5s，这里是看板，慢一点够用。 */
 const POLL_MS = 2000;
+/** 搜索框停止输入多久后才发请求 / 写 URL。 */
+const SEARCH_DEBOUNCE_MS = 300;
+
+/**
+ * 搜索框与 URL 的 ?q= 同步：输入即时显示，停手一会儿再写进 URL（replace，不堆历史）。
+ * 返回 [输入框的值, 设值, 已生效的搜索词]。
+ */
+function useSearchQuery(): [string, (v: string) => void, string] {
+  const [params, setParams] = useSearchParams();
+  const applied = params.get('q') ?? '';
+  const [input, setInput] = useState(applied);
+  useEffect(() => {
+    if (input.trim() === applied) return;
+    const t = window.setTimeout(() => {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (input.trim()) next.set('q', input.trim());
+          else next.delete('q');
+          return next;
+        },
+        { replace: true },
+      );
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [input, applied, setParams]);
+  return [input, setInput, applied];
+}
+
+function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return <input className="input search-input" type="search" placeholder="搜索导出名称 / 批次 / 视频" aria-label="搜索产物" value={value} onChange={(e) => onChange(e.target.value)} />;
+}
 
 export function AllOutputsPage() {
   const [params] = useSearchParams();
@@ -31,23 +65,27 @@ function AllOutputs() {
   // load 里要读「现在有多少条」，但不能把 jobs 放进依赖，否则每次追加都会重建 load
   const jobsRef = useRef<Job[] | null>(null);
   jobsRef.current = jobs;
+  const [input, setInput, query] = useSearchQuery();
+  // 搜索词变了之后，还没回来的旧请求结果要丢掉，不然会盖住新结果
+  const seq = useRef(0);
 
   // offset 从当前已有条数算，而不是存一个页码：中途点「刷新」也不会算错。
   const load = useCallback(async (mode: 'reset' | 'more') => {
     setLoading(true);
+    const mine = ++seq.current;
     try {
       const offset = mode === 'reset' ? 0 : (jobsRef.current?.length ?? 0);
-      const page = await api.allOutputs(PAGE, offset);
-      if (!alive.current) return;
+      const page = await api.allOutputs(PAGE, offset, query);
+      if (!alive.current || mine !== seq.current) return;
       setJobs((prev) => (mode === 'reset' || !prev ? page : [...prev, ...page]));
       setDone(page.length < PAGE);
       setError(null);
     } catch (e) {
-      if (alive.current) setError(e instanceof Error ? e.message : String(e));
+      if (alive.current && mine === seq.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (alive.current) setLoading(false);
+      if (alive.current && mine === seq.current) setLoading(false);
     }
-  }, []);
+  }, [query]);
 
   useEffect(() => {
     alive.current = true;
@@ -62,6 +100,7 @@ function AllOutputs() {
       <div className="page-head">
         <h1>产物</h1>
         <span className="spacer" />
+        <SearchBox value={input} onChange={setInput} />
         <button className="btn" onClick={() => void load('reset')} disabled={loading}>
           刷新
         </button>
@@ -70,7 +109,7 @@ function AllOutputs() {
         所有批次里已完成的成片，按生成时间从新到旧。点批次名只看那一批（含回传 JSON）。
       </div>
       {error && <div className="error-text">{error}</div>}
-      <OutputsTable jobs={jobs} mode="all" />
+      <OutputsTable jobs={jobs} mode="all" emptyText={query ? `没有名称、批次或视频名包含「${query}」的产物。` : undefined} />
       {jobs && jobs.length > 0 && !done && (
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={() => void load('more')} disabled={loading}>
@@ -88,6 +127,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
   const [pending, setPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const alive = useRef(true);
+  const [input, setInput, query] = useSearchQuery();
 
   // 一次拉全：产物列表 + 批次（要视频名）+ 全部任务（要知道还有没有在跑的）。
   // 只拉 outputs 的话，页面会停在「导出那一刻」的快照上——这正是 HIG-19 的现象。
@@ -142,6 +182,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
         <h1>产物 · {batch?.name ?? '…'}</h1>
         <span className="spacer" />
         {pending > 0 && <span className="muted small">还有 {pending} 个任务在跑，完成后会自动出现</span>}
+        <SearchBox value={input} onChange={setInput} />
         <button className="btn" onClick={() => void load()}>
           刷新
         </button>
@@ -157,15 +198,20 @@ function BatchOutputs({ batchId }: { batchId: string }) {
         为默认变体，语义为「替换原素材」，其余变体为派生新素材。同一视频重复导出会各留一行，「最新」是这次导出的那条。
       </div>
       {error && <div className="error-text">{error}</div>}
-      <OutputsTable jobs={jobs} mode="batch" />
+      <OutputsTable
+        jobs={jobs && jobs.filter((j) => matchesQuery(j.name, query) || matchesQuery(j.video_name, query) || matchesQuery(batch?.name, query))}
+        mode="batch"
+        batchName={batch?.name}
+        emptyText={query && jobs?.length ? `这一批里没有名称或视频名包含「${query}」的产物。` : undefined}
+      />
     </div>
   );
 }
 
-function OutputsTable({ jobs, mode }: { jobs: Job[] | null; mode: 'all' | 'batch' }) {
+function OutputsTable({ jobs, mode, batchName, emptyText }: { jobs: Job[] | null; mode: 'all' | 'batch'; batchName?: string; emptyText?: string }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (jobs === null) return <div className="empty">加载中…</div>;
-  if (jobs.length === 0) return <div className="empty">还没有完成的渲染任务。</div>;
+  if (jobs.length === 0) return <div className="empty">{emptyText ?? '还没有完成的渲染任务。'}</div>;
   const latest = mode === 'batch' ? latestJobIds(jobs) : null;
 
   return (
@@ -173,6 +219,7 @@ function OutputsTable({ jobs, mode }: { jobs: Job[] | null; mode: 'all' | 'batch
       <thead>
         <tr>
           <th>视频</th>
+          <th>导出名称</th>
           {mode === 'all' && <th>批次</th>}
           <th>变体</th>
           <th>分辨率</th>
@@ -189,6 +236,7 @@ function OutputsTable({ jobs, mode }: { jobs: Job[] | null; mode: 'all' | 'batch
           return (
             <tr key={j.id}>
               <td>{j.video_name ?? j.video_id}</td>
+              <td>{j.name ?? <span className="muted">—</span>}</td>
               {mode === 'all' && (
                 <td>
                   <Link to={`/outputs?batch=${encodeURIComponent(j.batch_id)}`}>{j.batch_name ?? j.batch_id}</Link>
@@ -207,7 +255,8 @@ function OutputsTable({ jobs, mode }: { jobs: Job[] | null; mode: 'all' | 'batch
               </td>
               <td>
                 {j.output_url ? (
-                  <a href={j.output_url} download target="_blank" rel="noreferrer">
+                  // /media 与页面同源，download 属性里的文件名会生效（HIG-27）
+                  <a href={j.output_url} download={outputFileName(j, { batchName })} target="_blank" rel="noreferrer">
                     下载
                   </a>
                 ) : (

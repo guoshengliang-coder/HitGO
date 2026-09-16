@@ -21,6 +21,7 @@ import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
 import { calibrationFromJobs, type Calibration } from '../lib/estimate';
+import { hasPreparingVideos, nextCurrentAfterDelete } from '../lib/videos';
 
 export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -124,6 +125,8 @@ export interface EditorState {
   lastApply: LastApply | null;
   // 成片大小估算校准（来自该批次已完成任务的实际码率）
   outputCalibration: Calibration;
+  /** 往本批次追加视频的上传进度（0–1）；null = 没在传（HIG-21）。 */
+  appendProgress: number | null;
 
   load: (batchId: string) => Promise<void>;
   loadTextPresets: () => Promise<void>;
@@ -133,6 +136,13 @@ export interface EditorState {
   loadOutputCalibration: () => Promise<void>;
   refreshVideos: () => Promise<void>;
   loadAssets: () => Promise<void>;
+  /** 把视频文件追加到当前批次（左栏拖入，HIG-21）；传完并入列表并轮询预处理。 */
+  appendVideos: (files: File[]) => Promise<void>;
+  /** 删除视频（左栏，HIG-20）：逐条调接口，删成功的从列表 / 草稿 / 历史里拿掉。调用方负责二次确认。 */
+  deleteVideos: (ids: string[]) => Promise<void>;
+  /** 改批次名 / 视频名（HIG-27）；成功返回 true，失败 toast 原因。 */
+  renameBatch: (name: string) => Promise<boolean>;
+  renameVideo: (id: string, name: string) => Promise<boolean>;
   setCurrent: (id: string) => void;
   toggleSelected: (id: string) => void;
   setSelectedAll: (on: boolean) => void;
@@ -251,7 +261,8 @@ export interface EditorState {
   applyToTargets: (targetIds: string[], modules: ApplyModule[], opts?: { layerMode?: ApplyLayerMode }) => Promise<void>;
   /** 撤销最近一次批量应用：把每个目标恢复到应用前的 spec。 */
   undoLastApply: () => void;
-  saveAndRender: (targetIds: string[]) => Promise<void>;
+  /** opts.name：导出名称，写到本次建出的每个任务上（HIG-27）。 */
+  saveAndRender: (targetIds: string[], opts?: { name?: string }) => Promise<void>;
   retryJob: (id: string) => Promise<void>;
   closeProgress: () => void;
   openProgressFor: (jobs: Job[]) => void;
@@ -298,11 +309,13 @@ const PER_BATCH_INITIAL = {
   styleClipboard: null,
   lastApply: null,
   outputCalibration: {},
+  appendProgress: null,
 } satisfies Partial<EditorState>;
 
 const saveTimers: Record<string, number> = {};
 let pollTimer: number | null = null;
 let assetPollTimer: number | null = null;
+let videoPollTimer: number | null = null;
 
 /**
  * 视频贴纸是异步预处理的：preparing 期间没有尺寸也没有预览代理，画布画不出来。
@@ -454,6 +467,21 @@ export const useEditor = create<EditorState>((set, get) => {
    * 换批次前把上一个工程清干净。store 是模块级单例，光靠 load 的 set 覆盖不了
    * 全部字段，模块级定时器和 player 更不会自己复位（HIG-18）。
    */
+  /**
+   * 源视频上传后是异步预处理的（HIG-24）：只要列表里还有 preparing，就每 2 秒重拉一次批次详情，
+   * 让状态、尺寸、封面自己更新，不用刷新页面。refreshVideos 只换服务端字段，草稿 spec 不动。
+   */
+  const pollPreparingVideos = () => {
+    if (videoPollTimer !== null) return;
+    const tick = async () => {
+      videoPollTimer = null;
+      if (!get().batch || !hasPreparingVideos(get().videos)) return;
+      await get().refreshVideos(); // 失败时它自己吞掉，下一轮再试
+      if (get().batch && hasPreparingVideos(get().videos)) videoPollTimer = window.setTimeout(tick, 2000);
+    };
+    videoPollTimer = window.setTimeout(tick, 2000);
+  };
+
   const resetForNewBatch = () => {
     for (const id of Object.keys(saveTimers)) {
       window.clearTimeout(saveTimers[id]);
@@ -466,6 +494,10 @@ export const useEditor = create<EditorState>((set, get) => {
     if (assetPollTimer !== null) {
       window.clearTimeout(assetPollTimer);
       assetPollTimer = null;
+    }
+    if (videoPollTimer !== null) {
+      window.clearTimeout(videoPollTimer);
+      videoPollTimer = null;
     }
     player.pause();
     player.setPreroll(0); // 封面时长是 player 的跨视频状态，不清会带进新任务的播放头计算
@@ -523,6 +555,7 @@ export const useEditor = create<EditorState>((set, get) => {
           cropEditing: false,
         });
         for (const id of collapsed) scheduleSave(id);
+        pollPreparingVideos();
         void get().loadAssets();
         void get().loadTextPresets();
         // 刷新页面时分离 / 改语言可能还在跑：恢复轮询，结束时照常提示
@@ -551,13 +584,114 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!b) return;
       try {
         const fresh = await api.getBatch(b.id);
+        if (get().batch?.id !== b.id) return; // 请求途中换了批次
         set((s) => ({
           batch: fresh,
           videos: fresh.videos,
           specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? toSingleOutput(cloneSpec(v.edit_spec)) : emptySpec())])),
+          selectedIds: s.selectedIds.filter((id) => fresh.videos.some((v) => v.id === id)),
+          currentVideoId: nextCurrentAfterDelete(s.videos, s.currentVideoId, s.videos.filter((v) => !fresh.videos.some((f) => f.id === v.id)).map((v) => v.id)) ?? fresh.videos[0]?.id ?? null,
         }));
       } catch {
         /* ignore */
+      }
+    },
+
+    appendVideos: async (files) => {
+      const b = get().batch;
+      if (!b || !files.length || get().appendProgress !== null) return;
+      set({ appendProgress: 0 });
+      try {
+        const created = await api.uploadVideos(b.id, files, (f) => {
+          if (get().batch?.id === b.id) set({ appendProgress: f });
+        });
+        if (get().batch?.id !== b.id) return;
+        await get().refreshVideos();
+        set((s) => ({ appendProgress: null, currentVideoId: s.currentVideoId ?? created[0]?.id ?? null, toast: `已追加 ${created.length} 条视频，预处理完成后即可编辑`, toastAction: null }));
+        pollPreparingVideos();
+      } catch (e) {
+        if (get().batch?.id === b.id) set({ appendProgress: null, toast: `追加视频失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+      }
+    },
+
+    deleteVideos: async (ids) => {
+      const b = get().batch;
+      if (!b || !ids.length) return;
+      const deleted: string[] = [];
+      const failures: string[] = [];
+      for (const id of ids) {
+        const name = get().videos.find((v) => v.id === id)?.name ?? id;
+        try {
+          await api.deleteVideo(id);
+          deleted.push(id);
+        } catch (e) {
+          // 404 = 别处已经删了，按删成功处理
+          if (e instanceof ApiError && e.status === 404) deleted.push(id);
+          else failures.push(`「${name}」${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      if (get().batch?.id !== b.id) return;
+      if (deleted.length) {
+        for (const id of deleted) {
+          if (saveTimers[id]) {
+            window.clearTimeout(saveTimers[id]);
+            delete saveTimers[id];
+          }
+        }
+        const gone = new Set(deleted);
+        const s = get();
+        const nextId = nextCurrentAfterDelete(s.videos, s.currentVideoId, deleted);
+        if (nextId !== s.currentVideoId) player.pause();
+        const omit = <T,>(rec: Record<string, T>) => Object.fromEntries(Object.entries(rec).filter(([id]) => !gone.has(id)));
+        const videos = s.videos.filter((v) => !gone.has(v.id));
+        set({
+          videos,
+          batch: s.batch ? { ...s.batch, videos, video_count: videos.length } : s.batch,
+          specs: omit(s.specs),
+          history: omit(s.history),
+          selectedIds: s.selectedIds.filter((id) => !gone.has(id)),
+          jobs: s.jobs.filter((j) => !gone.has(j.video_id)),
+          trackedJobIds: s.trackedJobIds.filter((id) => !s.jobs.some((j) => j.id === id && gone.has(j.video_id))),
+          lastApply: s.lastApply && s.lastApply.targetIds.some((id) => gone.has(id)) ? null : s.lastApply,
+          layerClipboardVideoId: s.layerClipboardVideoId && gone.has(s.layerClipboardVideoId) ? null : s.layerClipboardVideoId,
+          ...(nextId !== s.currentVideoId
+            ? { currentVideoId: nextId, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null }
+            : {}),
+        });
+      }
+      const ok = deleted.length ? `已删除 ${deleted.length} 条视频` : '';
+      const bad = failures.length ? `删除失败：${failures.join('；')}` : '';
+      set({ toast: [ok, bad].filter(Boolean).join('。') || null, toastAction: null });
+    },
+
+    renameBatch: async (name) => {
+      const b = get().batch;
+      const nm = name.trim();
+      if (!b || !nm) return false;
+      if (nm === b.name) return true;
+      try {
+        const updated = await api.renameBatch(b.id, nm);
+        set((s) => (s.batch?.id === b.id ? { batch: { ...s.batch, name: updated.name } } : {}));
+        return true;
+      } catch (e) {
+        set({ toast: `重命名失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+        return false;
+      }
+    },
+
+    renameVideo: async (id, name) => {
+      const v = get().videos.find((x) => x.id === id);
+      const nm = name.trim();
+      if (!v || !nm) return false;
+      if (nm === v.name) return true;
+      try {
+        const updated = await api.renameVideo(id, nm);
+        // 只换名字：返回的整条 Video 里的 edit_spec 可能比本地草稿旧
+        set((s) => ({ videos: s.videos.map((x) => (x.id === id ? { ...x, name: updated.name } : x)) }));
+        return true;
+      } catch (e) {
+        set({ toast: `重命名失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+        return false;
       }
     },
 
@@ -1223,7 +1357,7 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
 
-    saveAndRender: async (targetIds) => {
+    saveAndRender: async (targetIds, opts) => {
       const s = get();
       if (!targetIds.length || s.rendering) return;
       set({ rendering: true, toast: null });
@@ -1247,7 +1381,7 @@ export const useEditor = create<EditorState>((set, get) => {
         }
         let jobs: Job[];
         try {
-          jobs = await api.render(targetIds);
+          jobs = await api.render(targetIds, opts?.name);
         } catch (e) {
           if (e instanceof ApiError && e.status === 409) {
             set({ toast: `有任务仍在进行：${e.message}` });

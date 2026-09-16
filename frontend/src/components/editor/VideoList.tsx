@@ -3,9 +3,13 @@ import { useEditor, type ApplyModule } from '../../store/editor';
 import { Pill, videoPillKind } from '../ui/Pill';
 import { Modal } from '../ui/Modal';
 import { formatSeconds } from '../../lib/time';
-import type { EditSpec } from '../../types';
+import type { EditSpec, Video } from '../../types';
 import { isDefaultAudio } from '../../lib/audioTracks';
 import { applyCrossVideoWarnings } from '../../lib/localize';
+import { VIDEO_ACCEPT, rejectedText } from '../../lib/fileDrop';
+import { DropZone } from '../ui/DropZone';
+import { InlineName } from '../ui/InlineName';
+import { IconTrash } from '../ui/Icons';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
@@ -101,14 +105,39 @@ export function VideoList() {
   const toggleSelected = useEditor((s) => s.toggleSelected);
   const setSelectedAll = useEditor((s) => s.setSelectedAll);
   const batchName = useEditor((s) => s.batch?.name);
+  const renameBatch = useEditor((s) => s.renameBatch);
+  const renameVideo = useEditor((s) => s.renameVideo);
+  const deleteVideos = useEditor((s) => s.deleteVideos);
+  const appendVideos = useEditor((s) => s.appendVideos);
+  const appendProgress = useEditor((s) => s.appendProgress);
+  const setToast = useEditor((s) => s.setToast);
   const [applyOpen, setApplyOpen] = useState(false);
   const allOn = videos.length > 0 && selectedIds.length === videos.length;
+  const checked = videos.filter((v) => selectedIds.includes(v.id));
+
+  // 删除前二次确认（HIG-20）：产物文件一起删，分离 / 配音素材留在素材库
+  const confirmDelete = (targets: Video[]) => {
+    if (!targets.length) return;
+    const what = targets.length === 1 ? `视频「${targets[0].name}」` : `勾选的 ${targets.length} 条视频`;
+    if (!window.confirm(`删除${what}？\n它的编辑配置和已导出的产物文件会一起删除，不可恢复；分离出来的人声 / 伴奏和配音素材会保留。`)) return;
+    void deleteVideos(targets.map((v) => v.id));
+  };
 
   return (
-    <div className="col-left">
-      {/* 批次名放在「全选」上方（HIG-14），顶栏只留品牌与版本号 */}
-      <div className="vlist-batch" title={batchName}>
-        {batchName ?? '…'}
+    <DropZone
+      className="col-left"
+      accept={VIDEO_ACCEPT}
+      disabled={appendProgress !== null}
+      hint="松手追加到本批次"
+      onFiles={(accepted, rejected) => {
+        const skipped = rejectedText(rejected, 'mp4 / mov');
+        if (skipped) setToast(skipped);
+        if (accepted.length) void appendVideos(accepted);
+      }}
+    >
+      {/* 批次名放在「全选」上方（HIG-14），顶栏只留品牌与版本号；双击改名（HIG-27） */}
+      <div className="vlist-batch">
+        {batchName ? <InlineName value={batchName} label="批次名" onSave={renameBatch} inputClassName="vlist-rename" /> : '…'}
       </div>
       <div className="vlist-head">
         <label className="inline">
@@ -121,12 +150,12 @@ export function VideoList() {
         {videos.map((v) => {
           const hasDraft = !!specs[v.id] && (specs[v.id].trim.remove.length > 0 || specs[v.id].layers.length > 0 || !!specs[v.id].cover);
           return (
-            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && setCurrent(v.id)}>
+            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && setCurrent(v.id)}>
               <input type="checkbox" checked={selectedIds.includes(v.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(v.id)} aria-label={`选择 ${v.name}`} />
               <div className="poster" style={{ backgroundImage: v.poster_url ? `url("${v.poster_url}")` : undefined }} />
-              <div>
-                <div className="vname" title={v.name}>
-                  {v.name}
+              <div className="vbody">
+                <div className="vname">
+                  <InlineName value={v.name} label="视频名" onSave={(name) => renameVideo(v.id, name)} inputClassName="vlist-rename" />
                 </div>
                 <div className="vmeta">
                   <span className="mono">
@@ -137,17 +166,43 @@ export function VideoList() {
                   </span>
                 </div>
               </div>
+              <button
+                className="btn ghost icon sm danger vrow-delete"
+                title="删除这条视频"
+                aria-label={`删除 ${v.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  confirmDelete([v]);
+                }}
+              >
+                <IconTrash />
+              </button>
             </div>
           );
         })}
         {videos.length === 0 && <div className="empty small">批次里还没有视频</div>}
       </div>
       <div className="vlist-foot">
+        {appendProgress !== null ? (
+          <div className="form-col">
+            <div className="progress">
+              <i style={{ width: `${Math.round(appendProgress * 100)}%` }} />
+            </div>
+            <div className="muted small">{appendProgress < 1 ? `追加视频上传中 ${Math.round(appendProgress * 100)}%` : '上传完成，正在入库…'}</div>
+          </div>
+        ) : (
+          <div className="hint small vlist-drop-hint">拖入 mp4 / mov 追加到本批次</div>
+        )}
         <button className="btn" disabled={selectedIds.filter((id) => id !== currentId).length === 0} onClick={() => setApplyOpen(true)}>
           批量应用当前配置 → 选中 {selectedIds.filter((id) => id !== currentId).length} 条
         </button>
+        {checked.length > 0 && (
+          <button className="btn danger" onClick={() => confirmDelete(checked)}>
+            <IconTrash /> 删除勾选的 {checked.length} 条
+          </button>
+        )}
       </div>
       {applyOpen && <ApplyDialog targetIds={selectedIds} onClose={() => setApplyOpen(false)} />}
-    </div>
+    </DropZone>
   );
 }

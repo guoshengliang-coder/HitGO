@@ -596,6 +596,12 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
   if ((mm = m(/^\/api\/batches\/([^/]+)$/))) {
     const b = batches.find((x) => x.id === mm![1]);
     if (!b) throw new ApiError(404, '批次不存在');
+    if (method === 'PATCH') {
+      const nm = ((body as { name?: string }).name ?? '').trim();
+      if (nm.length < 1 || nm.length > 255) throw new ApiError(400, '名称不能为空');
+      b.name = nm;
+      return clone(b);
+    }
     if (method === 'DELETE') {
       batches.splice(batches.indexOf(b), 1);
       for (let i = videos.length - 1; i >= 0; i--) if (videos[i].batch_id === b.id) videos.splice(i, 1);
@@ -668,13 +674,15 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
   if (path === '/api/outputs') {
     const limit = Number(q.get('limit') ?? 100);
     const offset = Number(q.get('offset') ?? 0);
+    const term = (q.get('q') ?? '').trim().toLowerCase();
     const done = jobs
       .filter((j) => j.status === 'done')
       .map((j) => ({
         ...j,
         batch_name: batches.find((b) => b.id === j.batch_id)?.name ?? null,
         video_name: videos.find((v) => v.id === j.video_id)?.name ?? null,
-      }));
+      }))
+      .filter((j) => !term || [j.name, j.batch_name, j.video_name].some((s) => (s ?? '').toLowerCase().includes(term)));
     done.sort((a, b) => (b.finished_at ?? b.created_at).localeCompare(a.finished_at ?? a.created_at) || b.id.localeCompare(a.id));
     return clone(done.slice(offset, offset + limit));
   }
@@ -801,7 +809,15 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
   if ((mm = m(/^\/api\/videos\/([^/]+)$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');
+    if (method === 'PATCH') {
+      const nm = ((body as { name?: string }).name ?? '').trim();
+      if (nm.length < 1 || nm.length > 255) throw new ApiError(400, '名称不能为空');
+      v.name = nm;
+      v.updated_at = now();
+      return clone(v);
+    }
     if (method === 'DELETE') {
+      if (jobs.some((j) => j.video_id === v.id && (j.status === 'queued' || j.status === 'running'))) throw new ApiError(409, '这条视频有进行中的渲染任务，等任务结束后再删除');
       videos.splice(videos.indexOf(v), 1);
       for (const b of batches) recount(b);
       return undefined;
@@ -875,13 +891,13 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return { url, width: dims[0], height: dims[1] };
   }
   if (path === '/api/render') {
-    const { video_ids } = body as { video_ids: string[] };
+    const { video_ids, name } = body as { video_ids: string[]; name?: string };
     const created: Job[] = [];
     for (const vid of video_ids) {
       const v = videos.find((x) => x.id === vid);
       if (!v?.edit_spec) continue;
       for (const o of v.edit_spec.outputs) {
-        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
+        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, name: name?.trim() || null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
         jobs.push(j);
         created.push(j);
       }

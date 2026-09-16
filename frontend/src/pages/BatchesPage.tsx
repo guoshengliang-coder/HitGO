@@ -5,6 +5,12 @@ import type { Batch } from '../types';
 import { Pill } from '../components/ui/Pill';
 import { IconPlus, IconTrash } from '../components/ui/Icons';
 import { fmtDate } from '../lib/datetime';
+import { VIDEO_ACCEPT, mergeFiles, rejectedText } from '../lib/fileDrop';
+import { matchesQuery } from '../lib/search';
+import { DropZone } from '../components/ui/DropZone';
+
+/** 有批次在预处理时重拉列表的间隔（HIG-24），和编辑器里一致。 */
+const POLL_MS = 2000;
 
 const STATUS_ORDER: (keyof Batch['status_counts'])[] = ['preparing', 'ready', 'edited', 'rendering', 'done', 'failed'];
 const STATUS_LABEL: Record<string, string> = { preparing: '准备中', ready: '未编辑', edited: '已编辑', rendering: '渲染中', done: '已完成', failed: '失败' };
@@ -18,6 +24,7 @@ export function BatchesPage() {
   const [files, setFiles] = useState<File[]>([]);
   const [progress, setProgress] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const [query, setQuery] = useState('');
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -31,6 +38,35 @@ export function BatchesPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 刚上传的视频在后台预处理：卡片上的「准备中 N」轮询到归零为止，不用手动刷新（HIG-24）
+  const preparing = batches?.some((b) => b.status_counts.preparing > 0) ?? false;
+  useEffect(() => {
+    if (!preparing) return;
+    const t = window.setTimeout(() => void load(), POLL_MS);
+    return () => window.clearTimeout(t);
+  }, [preparing, batches, load]);
+
+  // 拖进来的视频加到待上传列表；表单没开就先打开（HIG-21）
+  const addFiles = (accepted: File[], rejected: File[]) => {
+    setError(rejectedText(rejected, 'mp4 / mov'));
+    if (!accepted.length) return;
+    setCreating(true);
+    setFiles((prev) => mergeFiles(prev, accepted));
+  };
+
+  const rename = async (b: Batch) => {
+    const next = window.prompt('批次名称', b.name)?.trim();
+    if (!next || next === b.name) return;
+    try {
+      await api.renameBatch(b.id, next);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const shown = batches?.filter((b) => matchesQuery(b.name, query)) ?? null;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -60,9 +96,11 @@ export function BatchesPage() {
   };
 
   return (
-    <div className="page">
+    <DropZone className="page" accept={VIDEO_ACCEPT} disabled={busy} hint="松手把视频加入新批次" onFiles={addFiles}>
       <div className="page-head">
         <h1>批次列表</h1>
+        <span className="spacer" />
+        <input className="input search-input" type="search" placeholder="搜索批次名" aria-label="搜索批次名" value={query} onChange={(e) => setQuery(e.target.value)} />
         <button className="btn primary" onClick={() => setCreating((v) => !v)}>
           <IconPlus /> 新建批次
         </button>
@@ -81,18 +119,27 @@ export function BatchesPage() {
                 className="input"
                 type="file"
                 multiple
-                accept="video/mp4,video/quicktime,.mp4,.mov"
-                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+                accept={VIDEO_ACCEPT}
+                onChange={(e) => {
+                  setFiles((prev) => mergeFiles(prev, Array.from(e.target.files ?? [])));
+                  e.target.value = '';
+                }}
               />
             </label>
           </div>
+          {files.length === 0 && <div className="hint">也可以直接把 mp4 / mov 文件拖到这个页面上。</div>}
           {files.length > 0 && (
             <div className="upload-list">
               {files.map((f) => (
-                <div key={f.name} className="mono">
+                <div key={`${f.name}:${f.size}`} className="mono">
                   {f.name} · {(f.size / 1024 / 1024).toFixed(1)} MB
                 </div>
               ))}
+              {!busy && (
+                <button className="btn ghost sm" type="button" style={{ alignSelf: 'flex-start' }} onClick={() => setFiles([])}>
+                  清空列表
+                </button>
+              )}
             </div>
           )}
           {progress !== null && (
@@ -119,10 +166,12 @@ export function BatchesPage() {
       {batches === null ? (
         <div className="empty">加载中…</div>
       ) : batches.length === 0 ? (
-        <div className="empty">还没有批次。点击右上角「新建批次」上传视频。</div>
+        <div className="empty">还没有批次。点击右上角「新建批次」，或直接把视频拖到这个页面上。</div>
+      ) : shown!.length === 0 ? (
+        <div className="empty">没有名称包含「{query.trim()}」的批次。</div>
       ) : (
         <div className="card-grid">
-          {batches.map((b) => (
+          {shown!.map((b) => (
             <div key={b.id} className="card batch-card" onClick={() => navigate(`/batches/${b.id}`)} role="link" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && navigate(`/batches/${b.id}`)}>
               <div className="name">{b.name}</div>
               <div className="chips">
@@ -139,6 +188,9 @@ export function BatchesPage() {
                   <a href={`/outputs?batch=${encodeURIComponent(b.id)}`} onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
                     产物
                   </a>
+                  <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); void rename(b); }}>
+                    重命名
+                  </button>
                   <button className="btn ghost icon sm danger" aria-label="删除批次" onClick={(e) => { e.stopPropagation(); void remove(b); }}>
                     <IconTrash />
                   </button>
@@ -148,6 +200,6 @@ export function BatchesPage() {
           ))}
         </div>
       )}
-    </div>
+    </DropZone>
   );
 }
