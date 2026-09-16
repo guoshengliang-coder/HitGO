@@ -51,7 +51,95 @@ export interface Video {
   render_status: RenderStatus;
   /** 可选；人声 / 伴奏分离状态（契约 §1），null / 缺省 = 从未分离。 */
   separation?: Separation | null;
+  /** 可选；改语言状态（契约 §1 localization）：一份听写模板 + 按目标语言的版本，null / 缺省 = 从未生成。 */
+  localization?: Localization | null;
   updated_at: string;
+}
+
+// ---- 改语言（契约 §1 localization）----
+
+/** 听写 / 版本任务状态，与分离一样是后台任务。 */
+export type LocalizeStatus = 'queued' | 'running' | 'done' | 'failed';
+/** 版本 running 时走到哪一步；queued 且 stage = tts 表示只重合成（译文不变）。 */
+export type VersionStage = 'translate' | 'tts' | 'mix';
+
+/** 模板里的一句：start / end 是**源时间轴**的秒，前端用 trim.remove 换算到剪后时间轴（lib/time.sourceRangeToPost）。 */
+export interface TranscriptCue {
+  i: number;
+  start: number;
+  end: number;
+  text: string;
+}
+
+/** 听写模板：听写一次，可人工修正；所有语言版本都从它派生。 */
+export interface Transcript {
+  status: LocalizeStatus;
+  error?: string | null;
+  cues: TranscriptCue[];
+  updated_at?: string | null;
+}
+
+/** 术语表条目：原词 → 译词，翻译时强制替换。 */
+export interface LocalizationTerm {
+  source: string;
+  target: string;
+}
+
+/** 版本里的一句译文，按 i 与 transcript.cues 对齐。 */
+export interface VersionCue {
+  i: number;
+  translated: string;
+}
+
+export interface LocalizationVersion {
+  status: LocalizeStatus;
+  stage?: VersionStage | null;
+  voice?: string | null;
+  terms?: LocalizationTerm[];
+  cues: VersionCue[];
+  /** 模板改过之后为 true：译文不是最新模板译出来的，要重译。 */
+  stale?: boolean;
+  error?: string | null;
+  warnings?: string[];
+  /** done 才有：配音素材（type audio、source derived、derived_from.stem = dubbed）。每次生成换新 id。 */
+  voice_asset_id?: string | null;
+  updated_at?: string | null;
+}
+
+export interface Localization {
+  /** 听写用的源语言；请求 auto 时为识别结果。 */
+  source_lang: string;
+  transcript: Transcript | null;
+  /** 按目标语言码一份，互相独立。 */
+  versions: Record<string, LocalizationVersion>;
+}
+
+/** POST /api/videos/{id}/localize 的请求体。 */
+export interface LocalizeIn {
+  /** 缺省 auto。 */
+  source_lang?: string;
+  target_langs: string[];
+  /** 每个目标语言用的音色 id；缺省用该语言的第一个音色。 */
+  voices?: Record<string, string>;
+  terms?: LocalizationTerm[];
+  /** true = 即使模板已 done 也重新听写。 */
+  retranscribe?: boolean;
+}
+
+export interface LangOption {
+  code: string;
+  label: string;
+}
+
+export interface TargetLangOption extends LangOption {
+  voices: { id: string; label: string }[];
+}
+
+/** GET /api/localize/options：语言与音色都由后端下发，前端不写死。enabled = false 表示没配 key。 */
+export interface LocalizeOptions {
+  enabled: boolean;
+  source_langs: LangOption[];
+  target_langs: TargetLangOption[];
 }
 
 export type SeparationStatus = 'queued' | 'running' | 'done' | 'failed';
@@ -78,11 +166,12 @@ export type AssetStatus = 'preparing' | 'ready' | 'failed';
 /** 素材来源（契约 §1）。`library` 预留给正式物料库，原型阶段不会出现，见 docs/ASSETS.md。 */
 export type AssetSource = 'upload' | 'builtin' | 'library' | 'derived';
 
-/** source = derived 才有：从哪条视频分离出的哪个声部。 */
+/** source = derived 才有：从哪条视频分离出的哪个声部；dubbed = 改语言生成的配音，lang 是目标语言码。 */
 export interface DerivedFrom {
   video_id: string;
   video_name: string;
-  stem: 'vocals' | 'instrumental';
+  stem: 'vocals' | 'instrumental' | 'dubbed';
+  lang?: string | null;
 }
 
 export interface Asset {
@@ -211,6 +300,10 @@ export interface LayerBase {
   rotate: number;
   opacity: number;
   t: TimeWindow;
+  /** 可选；改语言模块生成的图层打 'localize'（契约 §2），套用别的语言版本时按它整批替换。发送给后端，原样存取。 */
+  origin?: 'localize';
+  /** 可选；与 origin 配套：这层译文字幕属于哪个目标语言。 */
+  lang?: string;
   // 前端本地字段（不发送给后端语义无影响；后端 schema 允许附加字段则透传）
   name?: string;
   visible?: boolean;
@@ -382,6 +475,9 @@ export interface AudioTrack {
   loop?: boolean;
   fade_in?: number;
   fade_out?: number;
+  /** 可选；改语言模块加的配音 / 伴奏轨打 'localize'（契约 §2），与 layers[].origin 同义。 */
+  origin?: 'localize';
+  lang?: string;
 }
 
 /** 契约 §2 audio：源音轨音量 + 叠加音轨。缺省（无此块）= 源音轨原样保留。 */

@@ -583,9 +583,15 @@ export function Timeline() {
           })}
           {layerType && layerRows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
-              <div className="lbl">{step === 'subtitle' ? '字幕' : layerType === 'text' ? '文字' : '贴纸'}</div>
+              <div className="lbl">{step === 'subtitle' ? '字幕' : step === 'localize' ? '译文字幕' : layerType === 'text' ? '文字' : '贴纸'}</div>
               <div className="body hint" style={{ padding: '6px 8px' }}>
-                {step === 'subtitle' ? '还没有字幕，在右侧选择 .srt 文件导入；要遮住画面里的原字幕，在右侧「遮盖原字幕」里添加。' : layerType === 'text' ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。' : '还没有贴纸，在右侧素材里点选添加。'}
+                {step === 'subtitle'
+                  ? '还没有字幕，在右侧选择 .srt 文件导入；要遮住画面里的原字幕，在右侧「遮盖原字幕」里添加。'
+                  : step === 'localize'
+                    ? '还没有译文字幕，在右侧生成语言版本后「套用」，字幕层和配音轨会一起加进来。'
+                    : layerType === 'text'
+                      ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。'
+                      : '还没有贴纸，在右侧素材里点选添加。'}
               </div>
             </div>
           )}

@@ -1,4 +1,4 @@
-"""Celery app + tasks (preprocess_video, preprocess_asset, render_job, separate_video) and the API-side ``enqueue`` helper.
+"""Celery app + tasks (preprocess_video, preprocess_asset, render_job, separate_video, localize_video) and the API-side ``enqueue`` helper.
 
 The API never blocks on Redis for long: publishing uses a short connection
 timeout and a single retry, and failures are turned into ``QueueUnavailable``
@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
 from kombu.exceptions import OperationalError
 
 from app.config import settings
@@ -24,7 +25,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.services import asset_preprocess, ffprobe, preprocess, render, separate, storage
+from app.services import asset_preprocess, ffprobe, localize, preprocess, render, separate, storage
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +192,31 @@ def separate_video(self, video_id: str) -> None:  # noqa: ANN001
             log.info("separate: video %s vanished", video_id)
             return
         separate.run_separation(db, video_id)
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="hitgo.localize_video",
+    bind=True,
+    max_retries=3,
+    soft_time_limit=settings.localize_timeout_seconds,
+    time_limit=settings.localize_timeout_seconds + 60,
+)
+def localize_video(self, video_id: str) -> None:  # noqa: ANN001
+    """Transcribe / translate / dub (contract §6); network-bound, so it runs on the default queue."""
+    db = SessionLocal()
+    try:
+        if db.get(Video, video_id) is None:
+            if self.request.retries < self.max_retries:
+                raise self.retry(countdown=1)
+            log.info("localize: video %s vanished", video_id)
+            return
+        try:
+            localize.run_localization(db, video_id)
+        except SoftTimeLimitExceeded:
+            # run_localization already wrote the failed state; only the retry bookkeeping is left.
+            log.error("localize %s exceeded %ss", video_id, settings.localize_timeout_seconds)
     finally:
         db.close()
 

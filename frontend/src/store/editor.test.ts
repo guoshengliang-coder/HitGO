@@ -2,7 +2,7 @@
 // 提交时必须压入编辑前的快照（pushHistorySnapshot），否则 ⌘Z 回不到编辑前。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './editor';
-import { defaultTextStyle, emptySpec, type Asset, type BatchDetail, type EditSpec, type Job, type SafeZone, type TextLayer, type Video } from '../types';
+import { defaultTextStyle, emptySpec, type Asset, type BatchDetail, type EditSpec, type Job, type LocalizationVersion, type SafeZone, type TextLayer, type Video } from '../types';
 import { api } from '../api';
 import { cloneSpec } from '../lib/spec';
 
@@ -300,5 +300,113 @@ describe('遮盖层的插入位置', () => {
     useEditor.getState().pasteLayer();
     expect(useEditor.getState().toast).toContain('贴纸');
     expect(ids()).toEqual(['M1', 'L1', 'S1']);
+  });
+});
+
+// 改语言：套用一个语言版本 = 一步历史；换版本替换上一版的层 / 轨；不可用时不入历史。
+describe('改语言套用（applyVersion）', () => {
+  const dubbed = (id: string, lang: string): Asset => ({ id, type: 'audio', kind: 'audio', status: 'ready', name: `${lang}.m4a`, url: '/media/x', source: 'derived', derived_from: { video_id: 'v1', video_name: 'a.mp4', stem: 'dubbed', lang }, created_at: '' });
+  const ver = (assetId: string, translated: string): LocalizationVersion => ({ status: 'done', stage: null, voice: null, terms: [], cues: [{ i: 0, translated }], stale: false, error: null, warnings: [], voice_asset_id: assetId, updated_at: 'x' });
+  const LOC_VIDEO = {
+    ...VIDEO,
+    has_audio: true,
+    status: 'ready',
+    separation: { status: 'done', model: 'htdemucs', vocals_asset_id: 'a_voc', instrumental_asset_id: 'a_inst' },
+    localization: {
+      source_lang: 'en',
+      transcript: { status: 'done', cues: [{ i: 0, start: 1, end: 3, text: 'Hello.' }] },
+      versions: { ko: ver('a_ko', '안녕.'), ja: ver('a_ja', 'こんにちは。'), de: { ...ver('a_de', 'Hallo.'), status: 'running' } },
+    },
+  } as Video;
+  const assets: Asset[] = [dubbed('a_ko', 'ko'), dubbed('a_ja', 'ja'), { ...dubbed('a_inst', ''), derived_from: { video_id: 'v1', video_name: 'a.mp4', stem: 'instrumental' } }];
+
+  beforeEach(() => {
+    useEditor.setState({ videos: [LOC_VIDEO], assets, localizeOptions: null, toast: null, toastAction: null });
+    // 用户自己的东西：一个文字层、一条 BGM 轨
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [textLayer('用户标题')], audio: { source_volume: 1, tracks: [{ id: 'au_user', asset_id: 'a_up', role: 'bgm', t: 'all' }] } });
+  });
+
+  const spec = () => useEditor.getState().currentSpec()!;
+  const localizeLayers = () => spec().layers.filter((l) => l.origin === 'localize');
+  const localizeTracks = () => spec().audio!.tracks.filter((t) => t.origin === 'localize');
+
+  it('套用 = 一步历史，toast 带撤销；再套同一版本是空操作', () => {
+    const before = cloneSpec(spec());
+    expect(useEditor.getState().applyVersion('ko')).toBe(true);
+    const st = useEditor.getState();
+    expect(st.history.v1.past).toHaveLength(1);
+    expect(st.toast).toContain('已套用韩语版');
+    expect(st.toastAction?.label).toBe('撤销');
+    expect(spec().audio!.source_volume).toBe(0);
+    expect(localizeTracks().map((t) => [t.role, t.asset_id, t.align])).toEqual([
+      ['voice', 'a_ko', 'source'],
+      ['bgm', 'a_inst', 'source'],
+    ]);
+    expect(localizeLayers().map((l) => (l as TextLayer).text)).toEqual(['안녕.']);
+    // 字幕层在最后（压在其它层之上），用户的层 / 轨原样保留
+    expect(spec().layers[0].id).toBe('L1');
+    expect(spec().layers[spec().layers.length - 1].origin).toBe('localize');
+    expect(spec().audio!.tracks[0].id).toBe('au_user');
+
+    // 幂等：已是当前版本 → 不改 spec、不记历史
+    const applied = cloneSpec(spec());
+    expect(useEditor.getState().applyVersion('ko')).toBe(false);
+    expect(useEditor.getState().history.v1.past).toHaveLength(1);
+    expect(spec()).toEqual(applied);
+
+    // 撤销回到套用前
+    st.toastAction!.run();
+    expect(spec()).toEqual(before);
+    expect(useEditor.getState().canRedo()).toBe(true);
+  });
+
+  it('切换语言：上一版的层 / 轨被替换，用户的层 / 轨不动，还是一步历史', () => {
+    useEditor.getState().applyVersion('ko');
+    expect(useEditor.getState().applyVersion('ja')).toBe(true);
+    expect(useEditor.getState().history.v1.past).toHaveLength(2);
+    expect(localizeLayers().map((l) => [l.lang, (l as TextLayer).text])).toEqual([['ja', 'こんにちは。']]);
+    expect(localizeTracks().map((t) => [t.lang, t.asset_id])).toEqual([
+      ['ja', 'a_ja'],
+      ['ja', 'a_inst'],
+    ]);
+    expect(spec().layers.filter((l) => l.id === 'L1')).toHaveLength(1);
+    expect(spec().audio!.tracks.filter((t) => t.id === 'au_user')).toHaveLength(1);
+    expect(spec().audio!.tracks).toHaveLength(3);
+    useEditor.getState().undo();
+    expect(localizeLayers()[0].lang).toBe('ko');
+  });
+
+  it('不可用（没这个版本 / 生成中 / 素材不存在）时返回 false、不入历史、toast 原因', () => {
+    const before = cloneSpec(spec());
+    expect(useEditor.getState().applyVersion('fr')).toBe(false);
+    expect(useEditor.getState().toast).toBe('还没有这个语言的版本');
+    expect(useEditor.getState().applyVersion('de')).toBe(false);
+    expect(useEditor.getState().toast).toBe('这个版本还在生成中');
+    useEditor.setState({ assets: [] });
+    expect(useEditor.getState().applyVersion('ko')).toBe(false);
+    expect(useEditor.getState().toast).toContain('不存在');
+    expect(useEditor.getState().history.v1?.past ?? []).toHaveLength(0);
+    expect(spec()).toEqual(before);
+    expect(useEditor.getState().toastAction).toBeNull();
+  });
+
+  it('force 重新套用：沿用已调过的字幕样式，记一步历史', () => {
+    useEditor.getState().applyVersion('ko');
+    const l = localizeLayers()[0];
+    useEditor.getState().updateLayer(l.id, (x) => {
+      if (x.type === 'text') x.style.color = '#123456';
+    });
+    expect(useEditor.getState().applyVersion('ko', { force: true })).toBe(true);
+    expect(useEditor.getState().history.v1.past).toHaveLength(3);
+    const nl = localizeLayers()[0] as TextLayer;
+    expect(nl.id).not.toBe(l.id);
+    expect(nl.style.color).toBe('#123456');
+  });
+
+  it('没有伴奏时只加配音轨，toast 里带提示', () => {
+    useEditor.setState({ videos: [{ ...LOC_VIDEO, separation: null }] });
+    expect(useEditor.getState().applyVersion('ko')).toBe(true);
+    expect(localizeTracks().map((t) => t.role)).toEqual(['voice']);
+    expect(useEditor.getState().toast).toContain('伴奏');
   });
 });

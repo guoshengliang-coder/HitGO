@@ -5,7 +5,7 @@
     {DATA_DIR}/assets/{asset_id}.{ext} | {asset_id}.poster.jpg | {asset_id}.preview.{webm|mp4}
     {DATA_DIR}/uploads/{upload_id}.png
     {DATA_DIR}/outputs/{job_id}.mp4
-    {DATA_DIR}/tmp/
+    {DATA_DIR}/tmp/                          ({video_id}.loc/ while a localization runs)
 """
 
 from __future__ import annotations
@@ -91,6 +91,11 @@ def tmp_dir() -> Path:
 
 def tmp_output_path(job_id: str) -> Path:
     return tmp_dir() / f"{job_id}.mp4"
+
+
+def localize_tmp_dir(video_id: str) -> Path:
+    """Scratch dir for one localization run (16 kHz wav, per-cue TTS clips); removed after."""
+    return tmp_dir() / f"{video_id}.loc"
 
 
 # --- URL mapping -------------------------------------------------------------

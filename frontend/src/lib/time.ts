@@ -79,6 +79,20 @@ export function sourceToPost(t: number, remove: Range[]): number {
   return Math.max(0, t - removed);
 }
 
+/**
+ * 源时间轴上的一段 [a, b] → 剪后时间轴。给听写模板的句子换算用（transcript.cues 是源时间）：
+ * 整句落在删除区里返回 null；跨删除区的句子自动缩短（删掉的那部分不占剪后时长）；
+ * 剩下的长度不足 minLen 时补到 minLen（与字幕最短时长一致，避免零长度时段）。
+ */
+export function sourceRangeToPost([a0, b0]: Range, remove: Range[], minLen = 0.1): Range | null {
+  const a = Math.min(a0, b0);
+  const b = Math.max(a0, b0);
+  const pa = sourceToPost(a, remove);
+  const pb = sourceToPost(b, remove);
+  if (pb - pa <= EPS) return null;
+  return [pa, Math.max(pb, pa + minLen)];
+}
+
 /** 剪后时间 → 源时间。 */
 export function postToSource(t: number, remove: Range[]): number {
   let src = Math.max(0, t);

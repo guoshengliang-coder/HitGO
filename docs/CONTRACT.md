@@ -49,6 +49,7 @@
   "edited": false,                // edit_spec 非空
   "render_status": "idle",        // idle | queued | running | done | failed（该视频最新一轮渲染任务的汇总）
   "separation": null,             // 可选；人声 / 伴奏分离状态，见下；null = 从未分离
+  "localization": null,           // 可选；改语言状态（听写模板 + 各语言配音版本），见下；null = 从未生成
   "updated_at": "2026-09-14T10:05:00Z"
 }
 ```
@@ -66,6 +67,39 @@
   "updated_at": "..."
 }
 ```
+
+**改语言 `localization`**（可选，缺省 null）：把源视频的口播听写成一份**模板**（源语言逐句文本 + 时间），再按目标
+语言各派生一个**版本**（译文 + 合成配音）。配音是 `type = "audio"`、`source = "derived"`、`derived_from.stem = "dubbed"`
+的素材，前端用 `audio.tracks[]`（`align = "source"`、`role = "voice"`）套用，译文字幕用文字图层套用：
+
+```jsonc
+{
+  "source_lang": "en",              // 听写用的源语言；请求 "auto" 时为识别结果（模型没报语言则仍是 "auto"）
+  "transcript": {                   // 模板：听写一次，可人工修正
+    "status": "done",               // queued | running | done | failed
+    "error": null,                  // failed 时的中文原因
+    "cues": [ { "i": 0, "start": 0.42, "end": 2.91, "text": "Welcome to HitGO." } ],   // 秒，基于源时间轴
+    "updated_at": "..."
+  },
+  "versions": {                     // 按目标语言一份，互相独立；键 = 语言码
+    "ko": {
+      "status": "done",             // queued | running | done | failed
+      "stage": null,                // running 时 translate | tts | mix；queued 且 = "tts" 表示只重新合成（不重译）
+      "voice": "loongkyong_v3",     // 合成用的音色 id（见 GET /api/localize/options）
+      "terms": [ { "source": "HitGO", "target": "힛고" } ],   // 翻译术语表
+      "cues": [ { "i": 0, "translated": "힛고에 오신 것을 환영합니다." } ],   // 与 transcript.cues 按 i 对齐
+      "stale": false,               // 模板改过之后为 true：译文不是最新模板译出来的，需重译
+      "error": null, "warnings": [],   // warnings：配音塞不进原句时段等提示
+      "voice_asset_id": "a_d0bb3d", // done 才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
+      "updated_at": "..."
+    }
+  }
+}
+```
+
+`transcript.cues[].start / end` 基于**源时间轴**，前端要经 `trim.remove` 换算到剪后时间轴再生成字幕图层；版本
+`cues` 只有译文，按 `i` 对齐模板。一条视频同一时间只能「套用」一个语言版本（一份 `edit_spec`）；切换版本 =
+把旧的 `origin = "localize"` 层 / 轨换成新的。配音只含人声（其余静音），背景音乐由前端另加分离出的伴奏轨。
 
 ### Asset（素材）
 
@@ -87,7 +121,7 @@
   "preview_url": "/media/assets/a_s1t2u3.preview.webm?v=1757923200", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
   "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）| derived（系统从某条视频分离出来的）
-  "derived_from": null,           // 可选；source = derived 才有：{ "video_id", "video_name", "stem": "vocals" | "instrumental" }
+  "derived_from": null,           // 可选；source = derived 才有：{ "video_id", "video_name", "stem": "vocals" | "instrumental" | "dubbed", "lang"? }（lang 只在 dubbed 时有，如 "ko"）
   "created_at": "..."
 }
 ```
@@ -109,6 +143,10 @@
 `status = ready`，时长等于源视频；`derived_from` 记录来自哪条视频的哪个声部。它和上传的音频一样可以用在任何
 视频的 `audio.tracks[]` 里，也可以删除；再次分离同一条视频会替换掉上一次的两个素材（引用旧素材的音轨渲染时会
 跳过并记警告）。
+
+**配音**（`source = "derived"`，`derived_from.stem = "dubbed"`）：由改语言产生，每个语言版本一条（`derived_from.lang`
+是语言码），`type = audio`、`kind = audio`、`status = ready`，时长等于源视频，内容是按源时间轴铺好的合成人声（其余
+静音）。重新合成同一语言会换新 id 并删掉旧素材（连文件）；`DELETE …/localize/versions/{lang}` 也会删掉它。
 
 **透明通道**：`mp4`（H.264）没有 alpha 通道，只能作为不透明矩形叠加；`mov`（ProRes 4444 /
 QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明。前端按 `has_alpha` 给出提示。
@@ -195,7 +233,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "image_size": [540, 130],              // 该 PNG 的像素尺寸
       "anchor": "top-center", "margin": [0, 0.06],
       "width": 0.5,                          // 相对画布宽；PNG 按此缩放
-      "rotate": 0, "opacity": 1, "t": "all"
+      "rotate": 0, "opacity": 1, "t": "all",
+      "origin": "localize", "lang": "ko"     // 可选；前端标记：改语言套用出来的译文字幕（见下方规则）
     },
     {
       "id": "l_3",
@@ -227,7 +266,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时必须为 0
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
-        "fade_in": 0, "fade_out": 0          // 可选，缺省 0：秒；两者之和不能超过时段长
+        "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
+        "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
     ]
   },
@@ -297,6 +337,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 素材不存在、不是贴纸素材或还没 `ready` 时，worker 不插封面，在 job.error 里记警告（不失败）。
   - 编辑器预览同样先放封面再接正片；时间线上封面块排在正片之前。
   - 批量套用 `cover` 模块时整块深拷贝；源没有封面时目标的也被清掉。
+- **改语言标记 `origin` / `lang`**（可选）：`layers[]` 与 `audio.tracks[]` 上的前端标记，`origin = "localize"` 表示这一层 / 轨
+  是套用某个语言版本生成的，`lang` 是语言码。worker 忽略这两个字段（`extra = "ignore"` 校验但原样存取），批量套用
+  原样复制；前端靠它们在切换版本时替换旧层 / 轨、判断当前套用的是哪个版本。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -327,7 +370,19 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   视频未 `ready` 或没有音轨 400；已有 queued / running 的分离 409；队列不可用 503。完成后 `separation` 变 `done`
   并带两个素材 id；前端轮询 `GET /api/videos/{id}`。分离由独立的 `separator` worker（带 torch + Demucs 的镜像）
   执行；没有起这个 worker 时任务会一直停在 queued。
-- `DELETE /api/videos/{id}` → 204（分离出来的素材不随视频删除，仍可在别的视频里用）
+- `POST /api/videos/{id}/localize` `{ source_lang?: "auto", target_langs: ["ko","ja"], voices?: { ko: "loongkyong_v3" }, terms?: [{ source, target }], retranscribe?: false }`
+  → 202 `Video`。一个任务：`transcript` 不是 `done`（或 `retranscribe`）就先听写，再对每个目标语言依次 翻译 → 合成 → 混音，
+  每个版本独立 done / failed。`source_lang` 只在听写时生效；`target_langs` 1–5 个且必须在 options 的 `target_langs` 里，
+  `voices` 缺省取该语言第一个音色。视频未 `ready` / 没有音轨 / 不支持的语言或音色 400；`transcript` 或任一请求的版本
+  正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`。
+- `PUT /api/videos/{id}/localize/transcript` `{ cues: [{ i, text }], source_lang? }` → 200 `Video`。修正模板文本（只传改动的句子），
+  不触发任务；所有已有译文的版本 `stale = true`，之后对该语言再 `POST` 即重译。还没有听写结果 400；有版本正在生成 409。
+- `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice? }` → 202 `Video`。改译文 / 换音色后只重跑
+  合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice`；该版本没有译文 400；进行中 409；503 同上。
+- `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
+- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, voices: [{ id, label }] }] }`。
+  `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
+- `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）
 
 ### 素材
 - `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library|derived` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
@@ -416,10 +471,11 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 /data/assets/{asset_id}.{ext}
 /data/assets/{asset_id}.poster.jpg            视频贴纸：首帧
 /data/assets/{asset_id}.preview.{webm|mp4}    视频贴纸：浏览器可播的预览代理
-/data/assets/{asset_id}.m4a                   分离出来的人声 / 伴奏（aac 192k，source = derived）
+/data/assets/{asset_id}.m4a                   分离出来的人声 / 伴奏、改语言配音（aac 192k，source = derived）
 /data/uploads/{upload_id}.png
 /data/outputs/{job_id}.mp4
 /data/tmp/                                    worker 临时文件
+/data/tmp/{video_id}.loc/                     改语言运行中的临时目录（16 kHz wav、逐句配音片段），结束即删
 ```
 `/media` 直接映射到 `DATA_DIR`（`hitgo.db` 和 `tmp/` 不对外）。
 
@@ -443,6 +499,25 @@ Job 完成时生成并存到 `job.callback`，"已回传"页展示：
 3. 两路各编码成 `{asset_id}.m4a`（`aac 192k`，44.1 kHz 立体声），建两条 `type = audio`、`source = derived`、
    `status = ready` 的素材（`duration` 取源视频时长），写回 `Video.separation`；上一次分离的两条素材连文件一起删掉。
 4. 任何一步失败：`separation.status = failed` 并写 `error`，不产生素材。
+
+### 改语言（`POST /api/videos/{id}/localize` 之后，普通 worker，纯网络调用）
+全部走阿里云百炼（`DASHSCOPE_API_KEY`），不吃本机算力；任务 `hitgo.localize_video` 在默认队列，软超时
+`LOCALIZE_TIMEOUT_SECONDS`（缺省 900 秒），超时后进行中 / 排队中的版本记 failed。任务开始时把所有 `queued` 的版本都
+接下来做，写回时只改自己负责的模板 / 版本，所以任务运行期间 `POST` 加的语言、`DELETE` 掉的别的版本都不会被覆盖。
+1. **听写一次**（`transcript` 不是 done 或 `retranscribe`）：`ffmpeg -vn -ac 1 -ar 16000 -c:a pcm_s16le` 抽成
+   `/data/tmp/{video_id}.loc/asr.wav`（没有音轨、或超过 `LOCALIZE_MAX_SECONDS`（缺省 600 秒）直接 failed），
+   `paraformer-realtime-v2` 逐句给出毫秒起止；`source_lang = auto` 时不传语言提示、取识别到的语言。去掉空句、裁到
+   源时长、最多 400 句，写成 `transcript.cues`（源时间轴）；一句都没有则 failed。听写失败时本次请求的所有版本一并 failed；
+   重新听写后所有已有版本 `stale = true`。
+2. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
+   - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
+     回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。
+   - tts：每句用版本的 `voice` 调 `cosyvoice-v3-flash` 出 wav（每句一个新实例）。
+   - mix：每句放在模板里该句的源起点；配音比到下一句起点的间隔长时 `atempo` 加速，上限 `LOCALIZE_MAX_TEMPO`（缺省 1.3），
+     仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`
+     → `{asset_id}.m4a`（aac 192k，44.1 kHz 立体声），建一条 `type = audio`、`source = derived`、`stem = dubbed` 的素材，
+     `stale = false`，上一次这个语言的配音素材连文件一起删掉。
+3. 临时目录 `tmp/{video_id}.loc/` 结束即删；`LOCALIZE_PROVIDER = fake` 时三步都用假实现（静音配音），只给测试 / 演示。
 
 ### 预处理（每条视频入库后）
 1. `ffprobe -v error -print_format json -show_format -show_streams`

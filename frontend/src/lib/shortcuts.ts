@@ -17,8 +17,8 @@ export interface Shortcut {
 
 const TRIM: Step[] = ['trim'];
 const AUDIO: Step[] = ['audio'];
-const LAYER_STEPS: Step[] = ['text', 'sticker', 'subtitle'];
-const TEXT: Step[] = ['text', 'subtitle'];
+const LAYER_STEPS: Step[] = ['text', 'sticker', 'subtitle', 'localize'];
+const TEXT: Step[] = ['text', 'subtitle', 'localize'];
 
 export const SHORTCUTS: Shortcut[] = [
   // 全局

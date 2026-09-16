@@ -1,7 +1,7 @@
 // 类型化 API 客户端，路由与契约第 3 节一一对应。
 // VITE_MOCK=1 时由 src/mocks 提供内存实现（见 request()）。
 
-import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, Preset, PresetType, SafeZone, SeparationModel, UploadTicket, Video } from './types';
+import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, LocalizeIn, LocalizeOptions, Preset, PresetType, SafeZone, SeparationModel, UploadTicket, Video } from './types';
 import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
@@ -120,6 +120,15 @@ export const api = {
   putSpec: (id: string, edit_spec: EditSpec) => request<Video>('PUT', `/api/videos/${id}/spec`, { edit_spec }),
   separateVideo: (id: string, model: SeparationModel) => request<Video>('POST', `/api/videos/${id}/separate`, { model }),
   deleteVideo: (id: string) => request<void>('DELETE', `/api/videos/${id}`),
+
+  // 改语言（契约 §3）：一个任务 = 听写（模板未就绪时）+ 逐语言 翻译 → 合成 → 混音；都是 202 + Video，之后轮询 GET /api/videos/{id}
+  localizeVideo: (id: string, body: LocalizeIn) => request<Video>('POST', `/api/videos/${id}/localize`, body),
+  /** 修正模板文本，不触发任务；所有版本会被标为 stale。 */
+  updateTranscript: (id: string, body: { cues: { i: number; text: string }[]; source_lang?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/transcript`, body),
+  /** 改译文 / 换音色后只重跑 TTS + 混音。 */
+  updateVersionCues: (id: string, lang: string, body: { cues: { i: number; translated: string }[]; voice?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/versions/${lang}`, body),
+  deleteVersion: (id: string, lang: string) => request<void>('DELETE', `/api/videos/${id}/localize/versions/${lang}`),
+  getLocalizeOptions: () => request<LocalizeOptions>('GET', '/api/localize/options'),
 
   // 素材
   listAssets: (type: AssetType) => request<Asset[]>('GET', `/api/assets?type=${type}`),

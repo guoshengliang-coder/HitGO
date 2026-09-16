@@ -27,7 +27,16 @@ from app.models import (
     Job,
     Video,
 )
-from app.schemas import AssetOut, BatchDetailOut, BatchOut, JobOut, SeparationOut, StatusCounts, VideoOut
+from app.schemas import (
+    AssetOut,
+    BatchDetailOut,
+    BatchOut,
+    JobOut,
+    LocalizationOut,
+    SeparationOut,
+    StatusCounts,
+    VideoOut,
+)
 from app.services import storage
 
 RENDER_IDLE = "idle"
@@ -82,6 +91,7 @@ def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
         edited=video.edit_spec is not None,
         render_status=render_status(jobs),
         separation=SeparationOut(**video.separation) if video.separation else None,
+        localization=LocalizationOut.model_validate(video.localization) if video.localization else None,
         updated_at=iso(video.updated_at) or "",
     )
 

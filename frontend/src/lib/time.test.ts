@@ -9,10 +9,36 @@ import {
   postTrimDuration,
   removedRangeAt,
   skipRemoved,
+  sourceRangeToPost,
   sourceToPost,
   windowContains,
   wouldRemoveAll,
 } from './time';
+
+// 听写模板的句子在源时间轴上，字幕层的 t 在剪后时间轴上：整段换算的十种情形
+describe('sourceRangeToPost', () => {
+  const rm: [number, number][] = [[3, 5]];
+  const near = (r: [number, number] | null, want: [number, number]) => {
+    expect(r).not.toBeNull();
+    expect(r![0]).toBeCloseTo(want[0], 6);
+    expect(r![1]).toBeCloseTo(want[1], 6);
+  };
+  it('1. 没有删除区：原样返回', () => near(sourceRangeToPost([1, 2], []), [1, 2]));
+  it('2. 整段在删除区之前：不变', () => near(sourceRangeToPost([1, 2.5], rm), [1, 2.5]));
+  it('3. 整段在删除区之后：整体前移删除的长度', () => near(sourceRangeToPost([6, 8], rm), [4, 6]));
+  it('4. 整段落在删除区里：null', () => expect(sourceRangeToPost([3.2, 4.8], rm)).toBeNull());
+  it('5. 跨过删除区起点：尾部被裁掉', () => near(sourceRangeToPost([2, 4], rm), [2, 3]));
+  it('6. 跨过删除区终点：从删除区起点对应的剪后时间开始，只剩后半段', () => near(sourceRangeToPost([4, 6], rm), [3, 4]));
+  it('7. 包住整个删除区：缩短删除的长度', () => near(sourceRangeToPost([2, 7], rm), [2, 5]));
+  it('8. 跨过两个删除区：两段都扣掉', () => near(sourceRangeToPost([1, 12], [[3, 5], [8, 9]]), [1, 9]));
+  it('9. 剩下的比 minLen 短：补到 minLen', () => near(sourceRangeToPost([2.97, 4], rm), [2.97, 3.07]));
+  it('10. 零长度 / 正好贴着删除区边界：null；起止写反会自动纠正', () => {
+    expect(sourceRangeToPost([3, 5], rm)).toBeNull();
+    expect(sourceRangeToPost([2, 2], rm)).toBeNull();
+    near(sourceRangeToPost([2, 1], rm), [1, 2]);
+  });
+  it('删除区无序 / 重叠也能算（内部会规范化）', () => near(sourceRangeToPost([6, 8], [[4, 5], [3, 4.5]]), [4, 6]));
+});
 
 const remove: [number, number][] = [
   [3.2, 5.8],

@@ -47,3 +47,14 @@ def test_ensure_columns_restores_a_defaulted_column_with_usable_rows():
         kind = conn.execute(sa.text("SELECT kind FROM assets WHERE id = 'a_mig1'")).scalar()
         conn.execute(sa.text("DELETE FROM assets WHERE id = 'a_mig1'"))
     assert kind == "image"  # the DEFAULT came along with the ALTER
+
+
+def test_ensure_columns_adds_the_video_localization_column():
+    """Databases from before 改语言 have no ``videos.localization``; startup must add it."""
+    with engine.begin() as conn:
+        conn.execute(sa.text("ALTER TABLE videos DROP COLUMN localization"))
+    assert "localization" not in _columns("videos")
+    ensure_columns()
+    assert "localization" in _columns("videos")
+    ensure_columns()
+    assert {c.name for c in Base.metadata.tables["videos"].columns} <= _columns("videos")

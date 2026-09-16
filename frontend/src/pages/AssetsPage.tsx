@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { isAudioAsset, isVideoAsset, type Asset, type AssetType } from '../types';
-import { BUCKET_LABEL, canDelete, filterAssets, type AssetBucket } from '../lib/assets';
+import { BUCKET_LABEL, canDelete, filterAssets, stemLabel, stemTitle, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
 
@@ -31,7 +31,7 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
           {status === 'ready' && asset.duration ? (
             <div className="asset-badges">
               <span className="badge">{asset.duration.toFixed(1)}s</span>
-              {asset.derived_from && <span className="badge" title={`从「${asset.derived_from.video_name}」分离`}>{asset.derived_from.stem === 'vocals' ? '人声' : '伴奏'}</span>}
+              {asset.derived_from && <span className="badge" title={stemTitle(asset.derived_from)}>{stemLabel(asset.derived_from)}</span>}
             </div>
           ) : null}
         </div>

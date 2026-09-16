@@ -1,9 +1,22 @@
 // 素材来源分栏与筛选。前端一次性把全部素材拉进 store，所以筛选在本地做；
 // 接正式物料库后只需让 'library' 这一栏多出 source === 'library' 的素材，见 docs/ASSETS.md。
-import { isVideoAsset, type Asset, type AssetSource, type AssetType } from '../types';
+import { isVideoAsset, type Asset, type AssetSource, type AssetType, type DerivedFrom } from '../types';
+import { langLabel } from './localize';
 
-/** 界面上的三栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的 / 分离结果（从视频分离出的人声、伴奏）。 */
+/** 界面上的三栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的 / 分离结果（从视频分离出的人声、伴奏，以及改语言生成的配音）。 */
 export type AssetBucket = 'library' | 'mine' | 'derived';
+
+/** 派生素材的角标：人声 / 伴奏 / 配音（带目标语言）。 */
+export function stemLabel(d: DerivedFrom): string {
+  if (d.stem === 'vocals') return '人声';
+  if (d.stem === 'instrumental') return '伴奏';
+  return d.lang ? `${langLabel(null, d.lang)}配音` : '配音';
+}
+
+/** 派生素材角标的悬停说明。 */
+export function stemTitle(d: DerivedFrom): string {
+  return d.stem === 'dubbed' ? `「${d.video_name}」改语言生成的配音` : `从「${d.video_name}」分离`;
+}
 
 const BUCKET_SOURCES: Record<AssetBucket, AssetSource[]> = {
   library: ['builtin', 'library'],

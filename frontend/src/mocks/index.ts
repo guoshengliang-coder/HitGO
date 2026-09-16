@@ -4,7 +4,7 @@
 // 播放器会退回到"合成时钟"模式（见 lib/player.ts）。
 
 import { installMock, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, Batch, BatchDetail, EditSpec, Job, Layer, Preset, SafeZone, SeparationModel, Video } from '../types';
+import type { Asset, Batch, BatchDetail, EditSpec, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, SeparationModel, TranscriptCue, VersionCue, Video } from '../types';
 
 const now = () => new Date().toISOString();
 let seq = 100;
@@ -162,6 +162,131 @@ function probeAudio(asset: Asset, url: string) {
   el.onloadedmetadata = () => window.setTimeout(() => finish(true), 600);
   el.onerror = () => window.setTimeout(() => finish(false), 600);
   el.src = url;
+}
+
+// ---- 改语言（契约 §1 localization / §3 localize）----
+// 语言与音色由后端下发；mock 给三种目标语言，韩语两个音色。听写 / 翻译 / 合成都用定时器和样例文本模拟。
+
+const LOCALIZE_OPTIONS: LocalizeOptions = {
+  enabled: true,
+  source_langs: [
+    { code: 'auto', label: '自动识别' },
+    { code: 'zh', label: '中文' },
+    { code: 'en', label: '英语' },
+    { code: 'ja', label: '日语' },
+    { code: 'ko', label: '韩语' },
+  ],
+  target_langs: [
+    { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: '韩语女声 Kyong' }, { id: 'loongjihun_v3', label: '韩语男声 Jihun' }] },
+    { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: '日语女声 Tomoka' }] },
+    { code: 'en', label: '英语', voices: [{ id: 'loongstella_v3', label: '英语女声 Stella' }, { id: 'loongbella_v3', label: '英语女声 Bella' }] },
+  ],
+};
+
+const SAMPLE_EN = ['Welcome to HitGO.', 'Trim, subtitle and dub your ads in minutes.', 'Pick a template and apply it to the whole batch.', 'Export once, publish everywhere.', 'Try it free today.'];
+const SAMPLE_BY_LANG: Record<string, string[]> = {
+  en: SAMPLE_EN,
+  ko: ['HitGO에 오신 것을 환영합니다.', '몇 분 만에 광고를 자르고 자막과 더빙을 입히세요.', '템플릿 하나를 골라 전체 배치에 적용하세요.', '한 번 내보내고 어디서나 게시하세요.', '오늘 무료로 사용해 보세요.'],
+  ja: ['HitGOへようこそ。', '数分で広告をカットし、字幕と吹き替えを付けられます。', 'テンプレートを選んでバッチ全体に適用しましょう。', '一度書き出せばどこでも公開できます。', '今すぐ無料でお試しください。'],
+  zh: ['欢迎使用 HitGO。', '几分钟内完成广告的剪辑、字幕和配音。', '选一个模板套用到整批素材。', '导出一次，处处发布。', '今天就免费试用。'],
+};
+
+/** 假听写：每 3 秒一句，句长 2.4 秒（裁到视频时长）。 */
+function fakeTranscript(duration: number): TranscriptCue[] {
+  const cues: TranscriptCue[] = [];
+  for (let i = 0; i * 3 + 0.4 < duration && i < 400; i++) {
+    const start = Math.round((i * 3 + 0.4) * 100) / 100;
+    const end = Math.round(Math.min(start + 2.4, duration) * 100) / 100;
+    if (end - start < 0.1) break;
+    cues.push({ i, start, end, text: SAMPLE_EN[i % SAMPLE_EN.length] });
+  }
+  return cues;
+}
+
+/** 假翻译：按语言取样例句（按 i 循环），术语表在译文里做字面替换。 */
+function fakeTranslate(lang: string, cues: TranscriptCue[], terms: LocalizationTerm[]): VersionCue[] {
+  const pool = SAMPLE_BY_LANG[lang] ?? SAMPLE_EN;
+  return cues.map((c) => {
+    let translated = pool[c.i % pool.length];
+    for (const t of terms) translated = translated.split(t.source).join(t.target);
+    return { i: c.i, translated };
+  });
+}
+
+/**
+ * 模拟 worker 跑一个改语言任务：模板未就绪（或 retranscribe）先听写，然后逐语言 translate → tts → mix。
+ * 每个版本独立 done / failed；V03 在 tts 阶段一半概率失败（和渲染 mock 一样，用来看失败路径）。
+ * stage 已是 tts 的版本（PUT versions 触发）跳过翻译。
+ */
+function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
+  const at = (ms: number, fn: () => void) => window.setTimeout(() => { if (v.localization) fn(); }, ms);
+  let delay = 0;
+  const loc = v.localization!;
+  const needTranscribe = !loc.transcript || loc.transcript.status !== 'done' || retranscribe;
+  if (needTranscribe) {
+    loc.transcript = { status: 'queued', error: null, cues: loc.transcript?.cues ?? [], updated_at: now() };
+    delay += 800;
+    at(delay, () => { v.localization!.transcript = { ...v.localization!.transcript!, status: 'running', updated_at: now() }; });
+    delay += 2200;
+    at(delay, () => {
+      const l = v.localization!;
+      l.transcript = { status: 'done', error: null, cues: fakeTranscript(v.duration), updated_at: now() };
+      if (l.source_lang === 'auto') l.source_lang = 'en';
+      for (const ver of Object.values(l.versions)) if (ver.status === 'done') ver.stale = true;
+    });
+  }
+  for (const lang of targetLangs) {
+    const skipTranslate = loc.versions[lang]?.stage === 'tts';
+    if (!skipTranslate) {
+      delay += 500;
+      at(delay, () => { const ver = v.localization!.versions[lang]; if (ver) Object.assign(ver, { status: 'running', stage: 'translate', updated_at: now() }); });
+      delay += 1500;
+      at(delay, () => {
+        const l = v.localization!;
+        const ver = l.versions[lang];
+        if (!ver) return;
+        ver.cues = fakeTranslate(lang, l.transcript?.cues ?? [], ver.terms ?? []);
+        ver.stale = false;
+      });
+    }
+    delay += 300;
+    at(delay, () => { const ver = v.localization!.versions[lang]; if (ver) Object.assign(ver, { status: 'running', stage: 'tts', updated_at: now() }); });
+    delay += 2000;
+    at(delay, () => {
+      const ver = v.localization!.versions[lang];
+      if (!ver) return;
+      if (v.name.includes('V03') && Math.random() < 0.5) {
+        Object.assign(ver, { status: 'failed', stage: null, error: '模拟失败：CosyVoice 返回 429（mock）', updated_at: now() });
+        return;
+      }
+      Object.assign(ver, { stage: 'mix', updated_at: now() });
+    });
+    delay += 800;
+    at(delay, () => {
+      const ver = v.localization!.versions[lang];
+      if (!ver || ver.status !== 'running') return;
+      // 配音素材沿用分离的替换语义：新 id，删旧行
+      const old = assets.findIndex((a) => a.id === ver.voice_asset_id);
+      if (old >= 0) assets.splice(old, 1);
+      const label = LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.label ?? lang;
+      const asset: Asset = {
+        id: nid('a'),
+        type: 'audio',
+        kind: 'audio',
+        status: 'ready',
+        name: `${v.name.replace(/\.[a-z0-9]+$/i, '')} · ${label}配音.m4a`,
+        url: toneWav(v.duration, 440),
+        duration: v.duration,
+        has_audio: true,
+        source: 'derived',
+        derived_from: { video_id: v.id, video_name: v.name, stem: 'dubbed', lang },
+        created_at: now(),
+      };
+      assets.push(asset);
+      const longest = Math.max(0, ...ver.cues.map((c) => c.translated.length));
+      Object.assign(ver, { status: 'done', stage: null, error: null, voice_asset_id: asset.id, warnings: longest > 30 ? ['第 2 句译文较长，已按 1.3 倍速压缩仍略超下一句起点'] : [], updated_at: now() });
+    });
+  }
 }
 
 function stickerImage(text: string, color: string): { url: string; width: number; height: number } {
@@ -427,6 +552,7 @@ function clone<T>(x: T): T {
 }
 
 async function handler(method: string, url: string, body?: unknown): Promise<unknown> {
+  const body_ = body;
   await new Promise((r) => setTimeout(r, 80));
   const [path, qs] = url.split('?');
   const q = new URLSearchParams(qs ?? '');
@@ -601,6 +727,75 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
         v.separation = { status: 'done', model, error: null, vocals_asset_id: vocals.id, instrumental_asset_id: inst.id, updated_at: now() };
       }, 3000);
     }, 2000);
+    return clone(v);
+  }
+  if (path === '/api/localize/options') return clone(LOCALIZE_OPTIONS);
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/localize$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    if (v.status !== 'ready') throw new ApiError(400, '视频尚未预处理完成，暂时不能改语言');
+    if (!v.has_audio) throw new ApiError(400, '源视频没有音轨，没有可听写的内容');
+    const body = (body_ as LocalizeIn | undefined) ?? { target_langs: [] };
+    const targetLangs = Array.from(new Set(body.target_langs ?? []));
+    if (targetLangs.length < 1 || targetLangs.length > 5) throw new ApiError(400, 'target_langs 需 1–5 种目标语言');
+    const bad = targetLangs.find((l) => !LOCALIZE_OPTIONS.target_langs.some((t) => t.code === l));
+    if (bad) throw new ApiError(400, `不支持的目标语言：${bad}`);
+    const sourceLang = body.source_lang ?? 'auto';
+    if (sourceLang !== 'auto' && !LOCALIZE_OPTIONS.source_langs.some((s) => s.code === sourceLang)) throw new ApiError(400, `不支持的源语言：${sourceLang}`);
+    const loc = v.localization ?? { source_lang: sourceLang, transcript: null, versions: {} };
+    const tActive = loc.transcript?.status === 'queued' || loc.transcript?.status === 'running';
+    if (tActive) throw new ApiError(409, '这条视频正在听写中，请等它完成');
+    if (targetLangs.some((l) => loc.versions[l]?.status === 'queued' || loc.versions[l]?.status === 'running')) throw new ApiError(409, '请求的语言版本正在生成中，请等它完成');
+    if (sourceLang !== 'auto' || !loc.transcript || body.retranscribe) loc.source_lang = sourceLang;
+    for (const lang of targetLangs) {
+      const voice = body.voices?.[lang] ?? LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.voices[0]?.id ?? null;
+      const prev = loc.versions[lang];
+      const ver: LocalizationVersion = { status: 'queued', stage: null, voice, terms: clone(body.terms ?? []), cues: prev?.cues ?? [], stale: false, error: null, warnings: [], voice_asset_id: prev?.voice_asset_id ?? null, updated_at: now() };
+      loc.versions[lang] = ver;
+    }
+    v.localization = loc;
+    runLocalize(v, targetLangs, !!body.retranscribe);
+    return clone(v);
+  }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/localize\/transcript$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    const loc = v.localization;
+    if (!loc?.transcript || loc.transcript.status !== 'done') throw new ApiError(400, '模板还没有听写完成');
+    if (Object.values(loc.versions).some((x) => x.status === 'queued' || x.status === 'running')) throw new ApiError(409, '有语言版本正在生成中，请等它完成');
+    const body = body_ as { cues: { i: number; text: string }[]; source_lang?: string };
+    for (const e of body.cues ?? []) {
+      const c = loc.transcript.cues.find((x) => x.i === e.i);
+      if (c) c.text = e.text;
+    }
+    if (body.source_lang && body.source_lang !== 'auto') loc.source_lang = body.source_lang;
+    loc.transcript.updated_at = now();
+    for (const ver of Object.values(loc.versions)) ver.stale = true;
+    return clone(v);
+  }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/localize\/versions\/([^/]+)$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    const lang = mm[2];
+    const ver = v.localization?.versions[lang];
+    if (!ver) throw new ApiError(404, '没有这个语言的版本');
+    if (ver.status === 'queued' || ver.status === 'running') throw new ApiError(409, '这个版本正在生成中，请等它完成');
+    if (method === 'DELETE') {
+      const i = assets.findIndex((a) => a.id === ver.voice_asset_id);
+      if (i >= 0) assets.splice(i, 1);
+      delete v.localization!.versions[lang];
+      return undefined;
+    }
+    if (!ver.cues.length) throw new ApiError(400, '这个版本还没有译文，请先生成');
+    const body = body_ as { cues: { i: number; translated: string }[]; voice?: string };
+    if (!(body.cues ?? []).length && !body.voice) throw new ApiError(400, '没有改动的句子时必须指定音色');
+    for (const e of body.cues ?? []) {
+      const c = ver.cues.find((x) => x.i === e.i);
+      if (c) c.translated = e.translated;
+    }
+    if (body.voice) ver.voice = body.voice;
+    Object.assign(ver, { status: 'queued', stage: 'tts', error: null, warnings: [], updated_at: now() });
+    runLocalize(v, [lang], false);
     return clone(v);
   }
   if ((mm = m(/^\/api\/videos\/([^/]+)$/))) {

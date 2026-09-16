@@ -12,6 +12,7 @@ dependencies = [
     "redis>=5.0",
     "python-multipart>=0.0.9",
     "pillow>=10.3",
+    "dashscope>=1.27.5",
 ]
 
 [project.optional-dependencies]
