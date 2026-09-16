@@ -13,7 +13,7 @@ import { player } from '../../lib/player';
 import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
-import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
+import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
@@ -499,17 +499,9 @@ export function Timeline() {
               const problem = trackAssetProblem(t, assets);
               return (
                 <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
-                  <div className="lbl" title={name}>
-                    <button
-                      className={`chip ${all ? 'active' : ''}`}
-                      style={{ height: 18, padding: '0 6px', fontSize: 10, flex: 'none' }}
-                      title="全程 / 区间"
-                      onClick={() => updateAudioTrack(t.id, { t: toggleTrackWindow(r.t, sourceToPost(time, remove), postDuration) })}
-                    >
-                      {all ? '全程' : '区间'}
-                    </button>
-                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }} title={r.align === 'source' ? '对齐源时间轴：随剪辑一起裁' : undefined}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
-                    <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+                  <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}`}>
+                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
+                    <span className="lname">{name}</span>
                   </div>
                   <div className="body" {...scrub.handlers}>
                     <CoverGap width={off} />
@@ -556,7 +548,7 @@ export function Timeline() {
               <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
                 <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改）`}>
                   <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
-                  <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+                  <span className="lname">{name}</span>
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
@@ -579,7 +571,8 @@ export function Timeline() {
             const locked = !!l.locked;
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
-                <div className="lbl" title={layerName(l, assets)}>
+                <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
+                  <span className="lname">{layerName(l, assets)}</span>
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                     <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: hidden }, false)}>
                       <IconEye off={hidden} />
@@ -588,20 +581,6 @@ export function Timeline() {
                       <IconLock open={!locked} />
                     </button>
                   </span>
-                  <button
-                    className={`chip ${all ? 'active' : ''}`}
-                    style={{ height: 18, padding: '0 6px', fontSize: 10 }}
-                    title="全程 / 区间"
-                    onClick={() => {
-                      if (all) {
-                        const cur = sourceToPost(Math.max(0, time), remove);
-                        updateLayer(l.id, { t: [Math.round(cur * 100) / 100, Math.round(Math.min(postDuration, cur + 3) * 100) / 100] });
-                      } else updateLayer(l.id, { t: 'all' });
-                    }}
-                  >
-                    {all ? '全程' : '区间'}
-                  </button>
-                  <span className="lname" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{layerName(l, assets)}</span>
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
