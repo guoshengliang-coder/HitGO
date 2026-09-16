@@ -434,6 +434,20 @@ class BatchCreate(BaseModel):
         return v
 
 
+class RenameIn(BaseModel):
+    """PATCH body for renaming a batch or a video."""
+
+    name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("名称不能为空")
+        return v
+
+
 class SpecIn(BaseModel):
     edit_spec: dict[str, Any] | None
 
@@ -445,8 +459,22 @@ class ApplyIn(BaseModel):
     layer_mode: LayerMode = "replace"
 
 
+RENDER_NAME_MAX = 120
+
+
 class RenderIn(BaseModel):
     video_ids: list[str] = Field(min_length=1)
+    name: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if len(v) > RENDER_NAME_MAX:
+            raise ValueError(f"导出名称最多 {RENDER_NAME_MAX} 个字符")
+        return v or None
 
 
 PRESET_TYPES: frozenset[str] = frozenset({"text_style"})
@@ -722,6 +750,7 @@ class JobOut(BaseModel):
     created_at: str
     started_at: str | None
     finished_at: str | None
+    name: str | None = None
     # Only the cross-batch list fills these; every other endpoint leaves them None
     # because its caller already knows which batch (and video) it asked about.
     batch_name: str | None = None

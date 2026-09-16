@@ -178,10 +178,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "output": null,                 // done 时：{ "width", "height", "duration", "size", "codec": "h264/aac" }
   "callback": null,               // done 时：第 4 节的回传 JSON（原型只展示，不真正发送）
   "created_at": "...", "started_at": null, "finished_at": null,
+  "name": null,                   // 导出时填的名称（POST /api/render 的 name），没填为 null
   "batch_name": null,             // 只有跨批次的 GET /api/outputs 会填；其余端点为 null
   "video_name": null              // 同上
 }
 ```
+
+`name` 是一次导出共用的名称，同一次 `POST /api/render` 建出的所有任务带同一个值；前端下载时用它拼文件名
+（`名称_视频名_规格.mp4`，没有名称时用批次名），并可在 `GET /api/outputs?q=` 里搜到。
 
 `batch_name` / `video_name` 是给跨批次列表用的冗余字段：`GET /api/outputs` 一次返回来自不同批次的
 任务，调用方没法像单批次页面那样再拉一次 `GET /api/batches/{id}` 去查名字。其余返回 `Job` 的端点
@@ -352,19 +356,23 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/batches` → `Batch[]`（按创建时间倒序）
 - `POST /api/batches` `{ name }` → `Batch`
 - `GET /api/batches/{id}` → `Batch & { videos: Video[] }`
+- `PATCH /api/batches/{id}` `{ name }` → `Batch`（改名；`name` 去掉前后空白后 1–255 字符，否则 400；不存在 404）
 - `DELETE /api/batches/{id}` → 204（删除视频、任务、文件）
-- `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov）→ `Video[]`，每条立即入队预处理
+- `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov）→ `Video[]`，每条立即入队预处理。
+  已有视频的批次也可以再调用来追加，新视频排在末尾（`order_index` 接着现有数量）。
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
     - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
-- `GET /api/outputs?limit=100&offset=0` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
+- `GET /api/outputs?limit=100&offset=0&q=` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
   每项额外带上 `batch_name` 与 `video_name`。`limit` 默认 100、上限 500，`offset` 默认 0；越界返回空数组。
+  `q` 可选：去掉前后空白后非空时，只返回任务 `name`、批次名或视频名包含它（不区分大小写）的产物；分页作用在过滤之后。
 
 ### 视频
 - `GET /api/videos/{id}` → `Video`
+- `PATCH /api/videos/{id}` `{ name }` → `Video`（改显示名，不动源文件；`name` 规则同批次改名）
 - `PUT /api/videos/{id}/spec` `{ edit_spec }` → `Video`（服务端做 schema 校验，400 返回具体字段）
 - `POST /api/videos/{id}/separate` `{ model?: "htdemucs" | "htdemucs_ft" }` → 202 `Video`（`separation.status = queued`）。
   视频未 `ready` 或没有音轨 400；已有 queued / running 的分离 409；队列不可用 503。完成后 `separation` 变 `done`
@@ -383,7 +391,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, voices: [{ id, label }] }] }`。
   `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。
   `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
-- `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）
+- `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）。
+  该视频有 queued / running 的渲染任务时 409（worker 还会往它的路径写文件），等任务结束再删。
 
 ### 素材
 - `GET /api/assets?type=sticker|font|audio&source=upload|builtin|library|derived` → `Asset[]`（两个参数都可选，缺省不过滤；非法值 400）
@@ -410,7 +419,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `POST /api/uploads/layer-image` multipart：`file`（png）→ `{ url, width, height }`
 
 ### 渲染
-- `POST /api/render` `{ video_ids: [] }` → `Job[]`。每个视频按其 spec 的 `outputs` 生成任务；已有 queued / running 任务的同一 video+variant 不重复建（409 列出冲突）。
+- `POST /api/render` `{ video_ids: [], name?: string }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。每个视频按其 spec 的 `outputs` 生成任务；已有 queued / running 任务的同一 video+variant 不重复建（409 列出冲突）。
 - `GET /api/jobs/{id}` → `Job`
 - `POST /api/jobs/{id}/retry` → `Job`（failed 才允许）
 - `GET /api/jobs?ids=a,b,c` → `Job[]`（前端轮询进度，1.5 秒一次）

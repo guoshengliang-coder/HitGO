@@ -17,7 +17,7 @@ from app.routers._common import (
     jobs_for_batch,
     videos_for_batch,
 )
-from app.schemas import ApplyIn, BatchCreate, BatchDetailOut, BatchOut, JobOut, VideoOut
+from app.schemas import ApplyIn, BatchCreate, BatchDetailOut, BatchOut, JobOut, RenameIn, VideoOut
 from app.serializers import batch_detail_out, batch_out, group_jobs_by_video, job_out, video_out
 from app.services import storage
 from app.services.apply import apply_modules
@@ -53,6 +53,14 @@ def create_batch(body: BatchCreate, db: Session = Depends(get_db)) -> BatchOut:
 def get_batch(batch_id: str, db: Session = Depends(get_db)) -> BatchDetailOut:
     batch = get_batch_or_404(db, batch_id)
     return batch_detail_out(batch, videos_for_batch(db, batch_id), jobs_for_batch(db, batch_id))
+
+
+@router.patch("/{batch_id}", response_model=BatchOut)
+def rename_batch(batch_id: str, body: RenameIn, db: Session = Depends(get_db)) -> BatchOut:
+    batch = get_batch_or_404(db, batch_id)
+    batch.name = body.name
+    db.commit()
+    return batch_out(batch, videos_for_batch(db, batch_id), jobs_for_batch(db, batch_id))
 
 
 @router.delete("/{batch_id}", status_code=204)

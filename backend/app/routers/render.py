@@ -68,6 +68,7 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
                     batch_id=video.batch_id,
                     video_id=video.id,
                     variant_key=key,
+                    name=body.name,
                     status=JOB_QUEUED,
                 )
                 db.add(job)

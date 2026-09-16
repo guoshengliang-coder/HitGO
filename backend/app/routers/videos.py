@@ -1,17 +1,18 @@
-"""Videos: GET /api/videos/{id}, PUT /api/videos/{id}/spec, POST /api/videos/{id}/separate, DELETE /api/videos/{id}."""
+"""Videos: GET/PATCH /api/videos/{id}, PUT /api/videos/{id}/spec, POST /api/videos/{id}/separate, DELETE /api/videos/{id}."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import worker
 from app.db import get_db, iso, utcnow
-from app.models import SEP_ACTIVE, SEP_QUEUED, VIDEO_READY
+from app.models import JOB_ACTIVE, SEP_ACTIVE, SEP_QUEUED, VIDEO_READY, Job
 from app.routers._common import enqueue_or_503, get_video_or_404, jobs_for_videos
-from app.schemas import EditSpec, SeparateIn, SpecIn, VideoOut
+from app.schemas import EditSpec, RenameIn, SeparateIn, SpecIn, VideoOut
 from app.serializers import video_out
 from app.services import storage
 
@@ -33,6 +34,15 @@ def format_validation_errors(exc: ValidationError) -> list[dict[str, str]]:
 @router.get("/{video_id}", response_model=VideoOut)
 def get_video(video_id: str, db: Session = Depends(get_db)) -> VideoOut:
     video = get_video_or_404(db, video_id)
+    return video_out(video, jobs_for_videos(db, [video.id]))
+
+
+@router.patch("/{video_id}", response_model=VideoOut)
+def rename_video(video_id: str, body: RenameIn, db: Session = Depends(get_db)) -> VideoOut:
+    video = get_video_or_404(db, video_id)
+    video.name = body.name
+    video.updated_at = utcnow()
+    db.commit()
     return video_out(video, jobs_for_videos(db, [video.id]))
 
 
@@ -86,6 +96,10 @@ def separate_video(video_id: str, body: SeparateIn | None = None, db: Session = 
 @router.delete("/{video_id}", status_code=204)
 def delete_video(video_id: str, db: Session = Depends(get_db)) -> None:
     video = get_video_or_404(db, video_id)
+    active = db.scalars(select(Job.id).where(Job.video_id == video_id, Job.status.in_(JOB_ACTIVE))).first()
+    if active:
+        # The worker would keep writing into the directory we are about to remove.
+        raise HTTPException(409, "这条视频有进行中的渲染任务，等任务结束后再删除")
     batch_id = video.batch_id
     job_ids = [j.id for j in video.jobs]
     db.delete(video)  # cascades to jobs

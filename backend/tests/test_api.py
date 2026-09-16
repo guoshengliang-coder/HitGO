@@ -349,6 +349,33 @@ def test_delete_video(client, ready_video, db):
     assert client.get(f"/api/batches/{BATCH}").json()["video_count"] == 0
 
 
+def test_delete_video_refuses_while_rendering(client, ready_video, db):
+    add_job(db, VIDEO, "9x16", "running")
+    r = client.delete(f"/api/videos/{VIDEO}")
+    assert r.status_code == 409 and "渲染" in r.json()["detail"]
+    assert client.get(f"/api/videos/{VIDEO}").status_code == 200
+    assert storage.video_dir(BATCH, VIDEO).exists()
+
+
+def test_rename_video(client, ready_video):
+    r = client.patch(f"/api/videos/{VIDEO}", json={"name": "  开场 A 版  "})
+    assert r.status_code == 200 and r.json()["name"] == "开场 A 版"
+    assert client.get(f"/api/videos/{VIDEO}").json()["name"] == "开场 A 版"
+    assert client.patch(f"/api/videos/{VIDEO}", json={"name": "   "}).status_code == 400
+    assert client.patch(f"/api/videos/{VIDEO}", json={"name": "x" * 256}).status_code == 400
+    assert client.patch("/api/videos/v_missing", json={"name": "a"}).status_code == 404
+
+
+def test_rename_batch(client, ready_video):
+    r = client.patch(f"/api/batches/{BATCH}", json={"name": " 9 月投放 "})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "9 月投放" and body["video_count"] == 1
+    assert client.get(f"/api/batches/{BATCH}").json()["name"] == "9 月投放"
+    assert client.patch(f"/api/batches/{BATCH}", json={"name": ""}).status_code == 400
+    assert client.patch("/api/batches/b_missing", json={"name": "a"}).status_code == 404
+
+
 # --- render status derivation --------------------------------------------------
 
 
@@ -411,6 +438,23 @@ def test_render_creates_jobs_and_conflicts(client, ready_video, enqueued):
 
     listed = client.get(f"/api/batches/{BATCH}/jobs").json()
     assert len(listed) == 2 and client.get(f"/api/batches/{BATCH}/outputs").json() == []
+
+
+def test_render_name_is_stored_on_every_job(client, ready_video, enqueued):
+    spec = valid_spec()
+    put_spec(client, VIDEO, spec)
+    r = client.post("/api/render", json={"video_ids": [VIDEO], "name": "  九月投放 A  "})
+    assert r.status_code == 201
+    jobs = r.json()
+    assert jobs and all(j["name"] == "九月投放 A" for j in jobs)
+    assert client.get(f"/api/jobs/{jobs[0]['id']}").json()["name"] == "九月投放 A"
+
+
+def test_render_name_is_optional_and_bounded(client, ready_video, enqueued):
+    put_spec(client, VIDEO, valid_spec())
+    assert client.post("/api/render", json={"video_ids": [VIDEO], "name": "x" * 121}).status_code == 400
+    jobs = client.post("/api/render", json={"video_ids": [VIDEO], "name": "   "}).json()
+    assert all(j["name"] is None for j in jobs)
 
 
 def test_render_refuses_not_ready_video(client, enqueued):
@@ -505,6 +549,25 @@ def test_all_outputs_paging(client, ready_video, db):
     assert client.get("/api/outputs?limit=0").status_code == 400
     assert client.get("/api/outputs?limit=501").status_code == 400
     assert client.get("/api/outputs?offset=-1").status_code == 400
+
+
+def test_all_outputs_search(client, ready_video, db):
+    b2, v2 = _two_batches(db)
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    base = utcnow()
+    add_job(db, VIDEO, "9x16", "done", id="j_named", output=out, name="Spring Promo", finished_at=base - timedelta(minutes=3))
+    add_job(db, VIDEO, "1x1", "done", id="j_plain", output=out, finished_at=base - timedelta(minutes=2))
+    add_job(db, v2.id, "9x16", "done", id="j_b2", batch_id=b2.id, output=out, finished_at=base - timedelta(minutes=1))
+
+    def ids(q):
+        return [j["id"] for j in client.get("/api/outputs", params={"q": q}).json()]
+
+    assert ids("spring") == ["j_named"]  # export name, case-insensitive
+    assert ids("第二批") == ["j_b2"]  # batch name
+    assert ids("V01") == ["j_plain", "j_named"]  # video name
+    assert ids("  ") == ["j_b2", "j_plain", "j_named"]  # blank = no filter
+    assert ids("%") == []  # wildcards match literally
+    assert [j["id"] for j in client.get("/api/outputs", params={"q": "V01", "limit": 1, "offset": 1}).json()] == ["j_named"]
 
 
 def test_all_outputs_empty(client):
