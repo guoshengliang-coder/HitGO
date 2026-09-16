@@ -9,7 +9,7 @@ import { applyCrossVideoWarnings } from '../../lib/localize';
 import { VIDEO_ACCEPT, rejectedText } from '../../lib/fileDrop';
 import { DropZone } from '../ui/DropZone';
 import { InlineName } from '../ui/InlineName';
-import { IconTrash } from '../ui/Icons';
+import { IconPen, IconTrash } from '../ui/Icons';
 import { defaultApplyModules } from '../../lib/steps';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
@@ -114,6 +114,8 @@ export function VideoList() {
   const appendProgress = useEditor((s) => s.appendProgress);
   const setToast = useEditor((s) => s.setToast);
   const [applyOpen, setApplyOpen] = useState(false);
+  // 行操作「重命名」点了哪一条：InlineName 据此进入编辑态（双击改名仍然可用）
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const allOn = videos.length > 0 && selectedIds.length === videos.length;
   const checked = videos.filter((v) => selectedIds.includes(v.id));
   const targetCount = selectedIds.filter((id) => id !== currentId).length;
@@ -164,7 +166,7 @@ export function VideoList() {
               </div>
               <div className="vbody">
                 <div className="vname">
-                  <InlineName value={v.name} label="视频名" onSave={(name) => renameVideo(v.id, name)} inputClassName="vlist-rename" />
+                  <InlineName value={v.name} label="视频名" onSave={(name) => renameVideo(v.id, name)} inputClassName="vlist-rename" editRequested={renamingId === v.id} onEditEnd={() => setRenamingId((cur) => (cur === v.id ? null : cur))} />
                 </div>
                 <div className="vmeta mono">
                   {formatSeconds(v.duration)} · {v.width}×{v.height}
@@ -176,6 +178,17 @@ export function VideoList() {
                 </div>
               </div>
               <span className="vrow-acts">
+                <button
+                  className="btn ghost icon sm"
+                  title="重命名"
+                  aria-label={`重命名 ${v.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingId(v.id);
+                  }}
+                >
+                  <IconPen />
+                </button>
                 <button
                   className="btn ghost icon sm danger"
                   title="从批次移除这条视频"
