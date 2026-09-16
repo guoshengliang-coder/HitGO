@@ -2,11 +2,12 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Batch } from '../types';
-import { Pill } from '../components/ui/Pill';
-import { IconPlus, IconTrash } from '../components/ui/Icons';
+import { IconExport, IconPen, IconPlus, IconTrash } from '../components/ui/Icons';
+import { Seg } from '../components/ui/Seg';
 import { fmtDate } from '../lib/datetime';
 import { VIDEO_ACCEPT, mergeFiles, rejectedText } from '../lib/fileDrop';
 import { matchesQuery } from '../lib/search';
+import { sortBatches, type BatchSort } from '../lib/batches';
 import { DropZone } from '../components/ui/DropZone';
 
 /** 有批次在预处理时重拉列表的间隔（HIG-24），和编辑器里一致。 */
@@ -25,6 +26,7 @@ export function BatchesPage() {
   const [progress, setProgress] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<BatchSort>('recent');
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -66,7 +68,7 @@ export function BatchesPage() {
     }
   };
 
-  const shown = batches?.filter((b) => matchesQuery(b.name, query)) ?? null;
+  const shown = batches ? sortBatches(batches.filter((b) => matchesQuery(b.name, query)), sort) : null;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -100,6 +102,7 @@ export function BatchesPage() {
       <div className="page-head">
         <h1>批次列表</h1>
         <span className="spacer" />
+        <Seg className="page-sort" label="排序" options={[{ v: 'recent', label: '最近创建' }, { v: 'name', label: '名称' }]} value={sort} onChange={setSort} />
         <input className="input search-input" type="search" placeholder="搜索批次名" aria-label="搜索批次名" value={query} onChange={(e) => setQuery(e.target.value)} />
         <button className="btn primary" onClick={() => setCreating((v) => !v)}>
           <IconPlus /> 新建批次
@@ -173,28 +176,34 @@ export function BatchesPage() {
         <div className="card-grid">
           {shown!.map((b) => (
             <div key={b.id} className="card batch-card" onClick={() => navigate(`/batches/${b.id}`)} role="link" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && navigate(`/batches/${b.id}`)}>
-              <div className="name">{b.name}</div>
-              <div className="chips">
+              <div className="batch-top">
+                <div className="name">{b.name}</div>
+                {/* 重命名 / 删除平时藏起来，悬停或键盘聚焦才露出；产物是导航，常显 */}
+                <span className="batch-acts" onClick={(e) => e.stopPropagation()}>
+                  <button className="btn ghost icon sm" title="重命名" aria-label={`重命名 ${b.name}`} onClick={() => void rename(b)}>
+                    <IconPen />
+                  </button>
+                  <button className="btn ghost icon sm danger" title="删除批次" aria-label={`删除批次 ${b.name}`} onClick={() => void remove(b)}>
+                    <IconTrash />
+                  </button>
+                </span>
+              </div>
+              <div className="batch-states">
                 {STATUS_ORDER.filter((k) => b.status_counts[k] > 0).map((k) => (
-                  <Pill key={k} kind={k} label={`${STATUS_LABEL[k]} ${b.status_counts[k]}`} />
+                  <span key={k} className={`vstate ${k}`}>
+                    <i />
+                    {STATUS_LABEL[k]} {b.status_counts[k]}
+                  </span>
                 ))}
                 {STATUS_ORDER.every((k) => !b.status_counts[k]) && <span className="muted small">暂无视频</span>}
               </div>
               <div className="meta">
-                <span>
-                  {b.video_count} 条视频 · <span className="mono">{fmtDate(b.created_at)}</span>
+                <span className="mono">
+                  {b.video_count} 条 · {fmtDate(b.created_at)}
                 </span>
-                <span className="inline">
-                  <a href={`/outputs?batch=${encodeURIComponent(b.id)}`} onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
-                    产物
-                  </a>
-                  <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); void rename(b); }}>
-                    重命名
-                  </button>
-                  <button className="btn ghost icon sm danger" aria-label="删除批次" onClick={(e) => { e.stopPropagation(); void remove(b); }}>
-                    <IconTrash />
-                  </button>
-                </span>
+                <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
+                  <IconExport /> 产物
+                </button>
               </div>
             </div>
           ))}

@@ -4,6 +4,7 @@ import { isAudioAsset, isVideoAsset, type Asset, type AssetType } from '../types
 import { BUCKET_LABEL, canDelete, filterAssets, stemLabel, stemTitle, type AssetBucket } from '../lib/assets';
 import { ensureFontLoaded } from '../lib/fonts';
 import { IconTrash } from '../components/ui/Icons';
+import { Seg } from '../components/ui/Seg';
 import { DropZone } from '../components/ui/DropZone';
 import { rejectedText } from '../lib/fileDrop';
 
@@ -12,6 +13,16 @@ import { rejectedText } from '../lib/fileDrop';
 export const STICKER_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm,.png,.jpg,.jpeg,.webp,.gif,.mp4,.mov,.webm';
 export const AUDIO_ACCEPT = 'audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.mp3,.wav,.m4a';
 export const AUDIO_EMPTY_TEXT = '还没有音频。支持 mp3 / wav / m4a，单个不超过 50 MiB；上传后在「剪辑」步骤里加为 BGM 或口播。';
+
+/** 卡片第二行：尺寸 / 时长 / 字体族，没有就留空。 */
+export function assetMeta(a: Asset): string {
+  const parts: string[] = [];
+  if (a.type === 'font' && a.family) parts.push(a.family);
+  if (a.width && a.height) parts.push(`${a.width}×${a.height}`);
+  if (a.duration) parts.push(`${a.duration.toFixed(1)}s`);
+  if (a.type === 'sticker') parts.push(isVideoAsset(a) ? '视频' : '图片');
+  return parts.join(' · ');
+}
 
 export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?: () => void; onPick?: () => void }) {
   const [fontReady, setFontReady] = useState(false);
@@ -70,7 +81,10 @@ export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?
         </div>
       )}
       <div className="cap">
-        <span title={status === 'failed' && asset.error ? asset.error : asset.name}>{asset.name}</span>
+        <span className="cap-main">
+          <span className="cap-name" title={status === 'failed' && asset.error ? asset.error : asset.name}>{asset.name}</span>
+          <span className="cap-meta mono">{assetMeta(asset)}</span>
+        </span>
         {onDelete && (
           <button className="btn ghost icon sm danger" aria-label="删除素材" onClick={(e) => { e.stopPropagation(); onDelete(); }}>
             <IconTrash />
@@ -85,6 +99,7 @@ export function AssetsPage() {
   const [tab, setTab] = useState<AssetType>('sticker');
   const [bucket, setBucket] = useState<AssetBucket>('mine');
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [q, setQ] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
 
@@ -153,7 +168,7 @@ export function AssetsPage() {
       : tab === 'audio'
         ? AUDIO_ACCEPT
         : '.ttf,.otf,.woff2,font/ttf,font/otf,font/woff2';
-  const shown = filterAssets(assets, { bucket });
+  const shown = filterAssets(assets, { bucket, q });
   const kind = tab === 'sticker' ? '贴纸' : tab === 'audio' ? '音频' : '字体';
   const emptyText =
     bucket === 'derived'
@@ -191,13 +206,13 @@ export function AssetsPage() {
         <button className={`tab ${tab === 'audio' ? 'active' : ''}`} onClick={() => setTab('audio')}>音频</button>
       </div>
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
-      <div className="chips" style={{ marginBottom: 12 }}>
-        {(['mine', 'library', ...(tab === 'audio' ? (['derived'] as AssetBucket[]) : [])] as AssetBucket[]).map((b) => (
-          <button key={b} className={`chip ${bucket === b ? 'active' : ''}`} onClick={() => setBucket(b)}>{BUCKET_LABEL[b]}</button>
-        ))}
+      <div className="page-tools">
+        <Seg className="page-sort" label="来源" options={(['mine', 'library', ...(tab === 'audio' ? (['derived'] as AssetBucket[]) : [])] as AssetBucket[]).map((b) => ({ v: b, label: BUCKET_LABEL[b] }))} value={bucket} onChange={setBucket} />
+        <input className="input search-input" type="search" placeholder={`搜索${kind}`} aria-label={`搜索${kind}`} value={q} onChange={(e) => setQ(e.target.value)} />
+        <span className="muted small">{shown.length} 个</span>
       </div>
       {shown.length === 0 ? (
-        <div className="empty">{emptyText}</div>
+        <div className="empty">{q ? `没有名称包含「${q.trim()}」的${kind}。` : emptyText}</div>
       ) : (
         <div className="asset-grid">
           {shown.map((a) => (

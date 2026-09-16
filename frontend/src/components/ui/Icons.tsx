@@ -168,3 +168,15 @@ export const IconGrid = () => (
   </svg>
 );
 export const IconExport = () => <svg {...base}><path d="M8 10V2.5M5 5.5l3-3 3 3M3 9v3.5h10V9" /></svg>;
+export const IconPen = () => (
+  <svg {...base} strokeWidth={1.4}>
+    <path d="M3 13l.8-3.2 7-7 2.4 2.4-7 7z" />
+    <path d="M9.6 4l2.4 2.4" />
+  </svg>
+);
+export const IconFilm = () => (
+  <svg {...base}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M5 3v10M11 3v10M2 6h3M2 10h3M11 6h3M11 10h3" strokeWidth={1.2} />
+  </svg>
+);

@@ -8,7 +8,8 @@ import { EditorPage } from './pages/EditorPage';
 import { AllOutputsPage } from './pages/AllOutputsPage';
 import { useEditor } from './store/editor';
 import { ThemeToggle } from './components/ui/ThemeToggle';
-import { AppVersion } from './components/ui/AppVersion';
+import { APP_VERSION } from './lib/version';
+import { IconFilm, IconGrid, IconSticker } from './components/ui/Icons';
 
 type AuthState = 'checking' | 'ok' | 'required';
 
@@ -16,21 +17,23 @@ function Shell() {
   return (
     <>
       <nav className="app-nav">
-        <span className="brand-group">
-          <NavLink to="/" className="brand">
+        <NavLink to="/" className="brand2" title={`HitGO ${APP_VERSION}`}>
+          <span className="wm">
             Hit<b>GO</b>
+          </span>
+          <span className="ver">{APP_VERSION || 'dev'}</span>
+        </NavLink>
+        <div className="modes row">
+          <NavLink to="/" end className={({ isActive }) => `mode ${isActive ? 'active' : ''}`}>
+            <IconFilm /> 批次
           </NavLink>
-          <AppVersion />
-        </span>
-        <NavLink to="/" end className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
-          批次
-        </NavLink>
-        <NavLink to="/assets" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
-          素材库
-        </NavLink>
-        <NavLink to="/outputs" className={({ isActive }) => `navlink ${isActive ? 'active' : ''}`}>
-          产物
-        </NavLink>
+          <NavLink to="/assets" className={({ isActive }) => `mode ${isActive ? 'active' : ''}`}>
+            <IconSticker /> 素材库
+          </NavLink>
+          <NavLink to="/outputs" className={({ isActive }) => `mode ${isActive ? 'active' : ''}`}>
+            <IconGrid /> 产物
+          </NavLink>
+        </div>
         <span className="spacer" />
         <ThemeToggle />
       </nav>

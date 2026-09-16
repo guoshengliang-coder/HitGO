@@ -3,12 +3,13 @@
 // - ?batch=<id>：只看这一批，多出「回传 JSON」列与「返回编辑」，有任务在跑时自动重拉。
 // 两种视图同一张表、同一种行序，只差筛选与列。
 // - ?q=：按导出名称 / 批次名 / 视频名搜索（HIG-27）；总表交给后端过滤，批次视图在本地过滤。
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import type { BatchDetail, Job } from '../types';
 import { formatSeconds } from '../lib/time';
 import { fmtDateOr, fmtSize } from '../lib/datetime';
+import { IconExport } from '../components/ui/Icons';
 import { audioMixSummary, jobWarning, outputFileName, sortByFinishedDesc, versionTags } from '../lib/outputs';
 import { matchesQuery } from '../lib/search';
 import { variantDef, type VariantKey } from '../types';
@@ -61,6 +62,7 @@ function AllOutputs() {
   const [done, setDone] = useState(false); // 后端已经给完了
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const alive = useRef(true);
   // load 里要读「现在有多少条」，但不能把 jobs 放进依赖，否则每次追加都会重建 load
   const jobsRef = useRef<Job[] | null>(null);
@@ -79,6 +81,7 @@ function AllOutputs() {
       if (!alive.current || mine !== seq.current) return;
       setJobs((prev) => (mode === 'reset' || !prev ? page : [...prev, ...page]));
       setDone(page.length < PAGE);
+      setUpdatedAt(new Date());
       setError(null);
     } catch (e) {
       if (alive.current && mine === seq.current) setError(e instanceof Error ? e.message : String(e));
@@ -101,15 +104,13 @@ function AllOutputs() {
         <h1>产物</h1>
         <span className="spacer" />
         <SearchBox value={input} onChange={setInput} />
-        <button className="btn" onClick={() => void load('reset')} disabled={loading}>
-          刷新
+        <button className="btn" onClick={() => void load('reset')} disabled={loading} title="重新拉取列表">
+          {loading ? '刷新中…' : updatedAt ? `更新于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '刷新'}
         </button>
       </div>
-      <div className="hint" style={{ marginBottom: 12 }}>
-        所有批次里已完成的成片，按生成时间从新到旧。点批次名只看那一批（含回传 JSON）。
-      </div>
+      <div className="hint" style={{ marginBottom: 12 }}>所有批次已完成的成片，从新到旧；点批次名只看那一批。</div>
       {error && <div className="error-text">{error}</div>}
-      <OutputsTable jobs={jobs} mode="all" emptyText={query ? `没有名称、批次或视频名包含「${query}」的产物。` : undefined} />
+      <OutputsTable jobs={jobs} mode="all" emptyText={query ? `没有名称、批次或视频名包含「${query}」的产物。` : undefined} emptyAction={!query ? <Link to="/" className="btn"><IconExport /> 去批次列表导出</Link> : undefined} />
       {jobs && jobs.length > 0 && !done && (
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={() => void load('more')} disabled={loading}>
@@ -126,6 +127,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [pending, setPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const alive = useRef(true);
   const [input, setInput, query] = useSearchQuery();
 
@@ -140,6 +142,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
       const named = js.map((j) => ({ ...j, video_name: j.video_name ?? b.videos.find((v) => v.id === j.video_id)?.name ?? null }));
       setJobs(sortByFinishedDesc(named));
       setPending(all.filter((j) => j.status === 'queued' || j.status === 'running').length);
+      setUpdatedAt(new Date());
       setError(null);
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : String(e));
@@ -181,9 +184,12 @@ function BatchOutputs({ batchId }: { batchId: string }) {
       <div className="page-head">
         <h1>产物 · {batch?.name ?? '…'}</h1>
         <span className="spacer" />
-        {pending > 0 && <span className="muted small">还有 {pending} 个任务在跑，完成后会自动出现</span>}
         <SearchBox value={input} onChange={setInput} />
-        <button className="btn" onClick={() => void load()}>
+        <span className="save-indicator" title="有任务在跑时每 2 秒自动重拉">
+          <i className={pending > 0 ? 'busy' : ''} />
+          {pending > 0 ? `${pending} 个任务在跑` : updatedAt ? `更新于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '…'}
+        </span>
+        <button className="btn ghost sm" onClick={() => void load()} title="立即重拉">
           刷新
         </button>
         <Link to="/outputs" className="btn">
@@ -193,9 +199,8 @@ function BatchOutputs({ batchId }: { batchId: string }) {
           返回编辑
         </Link>
       </div>
-      <div className="hint" style={{ marginBottom: 12 }}>
-        这一批已完成的成片，按生成时间从新到旧。原型不真正回调上游，「回传」列展示将要回传的内容（job.callback）。9:16
-        为默认变体，语义为「替换原素材」，其余变体为派生新素材。同一视频重复导出会各留一行，「最新」是这次导出的那条。
+      <div className="hint" style={{ marginBottom: 12 }} title="原型不真正回调上游，「回传」列展示将要回传的内容（job.callback）。9:16 为默认变体，语义为「替换原素材」，其余变体为派生新素材。">
+        这一批已完成的成片，从新到旧；同一视频重复导出各留一行，「最新」是最近的那条。
       </div>
       {error && <div className="error-text">{error}</div>}
       <OutputsTable
@@ -208,10 +213,17 @@ function BatchOutputs({ batchId }: { batchId: string }) {
   );
 }
 
-function OutputsTable({ jobs, mode, batchName, emptyText }: { jobs: Job[] | null; mode: 'all' | 'batch'; batchName?: string; emptyText?: string }) {
+function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs: Job[] | null; mode: 'all' | 'batch'; batchName?: string; emptyText?: string; emptyAction?: React.ReactNode }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (jobs === null) return <div className="empty">加载中…</div>;
-  if (jobs.length === 0) return <div className="empty">{emptyText ?? '还没有完成的渲染任务。'}</div>;
+  if (jobs.length === 0) {
+    return (
+      <div className="empty">
+        <div>{emptyText ?? '还没有完成的渲染任务。'}</div>
+        {emptyAction && <div style={{ marginTop: 12 }}>{emptyAction}</div>}
+      </div>
+    );
+  }
   // 同一视频同一变体重复导出时标出最新那条（HIG-26：旧成片不含后来加的音轨，容易听错）
   const versions = versionTags(jobs);
 
