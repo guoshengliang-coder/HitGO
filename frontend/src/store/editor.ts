@@ -122,6 +122,7 @@ export interface EditorState {
   /** 整站配色（类名挂在 <html> 上，见 App.tsx）；存本机 */
   theme: EditorTheme;
   timelinePps: number | null; // null = 适应窗口
+  timelineViewPps: number; // 时间线实际生效的 px/s（适应模式下由容器宽算出），给 Transport 的缩放滑杆读
   layerClipboard: Layer[] | null;
   layerClipboardVideoId: string | null;
   styleClipboard: TextStyle | null;
@@ -167,6 +168,7 @@ export interface EditorState {
   /** 安全区开关：开着就关（none），关着就恢复上次的显示方式 */
   toggleSafeZone: () => void;
   setTimelinePps: (pps: number | null) => void;
+  setTimelineViewPps: (pps: number) => void;
 
   currentSpec: () => EditSpec | null;
   currentVideo: () => Video | null;
@@ -335,6 +337,7 @@ const PER_BATCH_INITIAL = {
   shortcutsOpen: false,
   snapEnabled: true,
   timelinePps: null,
+  timelineViewPps: 32,
   layerClipboard: null,
   layerClipboardVideoId: null,
   styleClipboard: null,
@@ -862,6 +865,7 @@ export const useEditor = create<EditorState>((set, get) => {
       get().setSafeZoneView(safeZoneView === 'none' ? safeZoneMode : 'none');
     },
     setTimelinePps: (timelinePps) => set({ timelinePps }),
+    setTimelineViewPps: (timelineViewPps) => set({ timelineViewPps }),
     setSelectedRange: (selectedRangeIndex) => set({ selectedRangeIndex }),
     // 封面段（time < 0）不属于源视频：入出点夹到 0
     setInPoint: (inPoint) => set({ inPoint: inPoint === null ? null : Math.max(0, inPoint) }),

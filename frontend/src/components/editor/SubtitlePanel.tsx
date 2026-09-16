@@ -10,9 +10,9 @@ import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
 import { cuesToTextLayers, parseSrt } from '../../lib/srt';
 import { newMaskLayer, timedTextSpan } from '../../lib/mask';
 import { IconMask, IconText } from '../ui/Icons';
-import { ApplyLayersFoot, LayerList, LayerProps } from './LayerParts';
+import { LayerList, LayerProps } from './LayerParts';
 
-export function SubtitlePanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
+export function SubtitlePanel() {
   const addLayer = useEditor((s) => s.addLayer);
   const addLayers = useEditor((s) => s.addLayers);
   const updateLayer = useEditor((s) => s.updateLayer);
@@ -94,7 +94,6 @@ export function SubtitlePanel({ onApply, targetCount }: { onApply: () => void; t
         <LayerList type="mask" emptyHint="还没有遮盖。点「添加遮盖」，在画布上把它拖到原字幕的位置；模糊 / 色块与强度在属性里改。" />
         {selectedMask && <LayerProps key={selectedMask.id} layer={selectedMask} />}
       </div>
-      <ApplyLayersFoot onApply={onApply} targetCount={targetCount} />
     </div>
   );
 }

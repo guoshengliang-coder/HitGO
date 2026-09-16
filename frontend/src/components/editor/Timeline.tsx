@@ -18,12 +18,10 @@ import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
-import { hintFor } from '../../lib/shortcuts';
-import { IconEye, IconFit, IconLock } from '../ui/Icons';
-import { TimelineTools } from './TimelineTools';
+import { IconEye, IconLock } from '../ui/Icons';
 import type { Asset, Layer } from '../../types';
 
-const LABEL_W = 112;
+const LABEL_W = 96;
 const SNAP_PX = 6;
 
 /** 封面段在非视频行里的占位斜纹（封面期间不叠图层、不放音轨）。 */
@@ -146,6 +144,7 @@ export function Timeline() {
   const updateSourceMute = useEditor((s) => s.updateSourceMute);
   const timelinePps = useEditor((s) => s.timelinePps);
   const setTimelinePps = useEditor((s) => s.setTimelinePps);
+  const setTimelineViewPps = useEditor((s) => s.setTimelineViewPps);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [dragVal, setDragVal] = useState<[number, number] | null>(null);
   const [snapX, setSnapX] = useState<number | null>(null);
@@ -213,16 +212,27 @@ export function Timeline() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setTimelinePps]);
 
-  // ---- 键盘缩放（⌘= / ⌘-，HIG-30）：围绕播放头缩放 ----
+  // 有效 px/s 写回 store：Transport 里的滑杆和「px/s」读它（适应模式下 pps 由容器宽算出，只有这里知道）
+  useEffect(() => {
+    setTimelineViewPps(pps);
+  }, [pps, setTimelineViewPps]);
+
+  // ---- 缩放事件：键盘 ⌘= / ⌘-（detail 为 ±1，围绕播放头，HIG-30）；Transport 滑杆（detail 为 { pps }，围绕视口中心） ----
   useEffect(() => {
     const onZoom = (e: Event) => {
       const el = scrollRef.current;
       if (!el) return;
-      const dir = (e as CustomEvent<1 | -1>).detail;
+      const detail = (e as CustomEvent<1 | -1 | { pps: number }>).detail;
       const cur = ppsRef.current;
+      if (typeof detail === 'object') {
+        const viewW = el.clientWidth - LABEL_W;
+        const center = (el.scrollLeft + viewW / 2) / cur - prerollRef.current;
+        zoomTo(detail.pps, { time: center, offsetX: viewW / 2 });
+        return;
+      }
       const t = player.currentTime;
       const offsetX = Math.min(Math.max(0, timelineX(t, prerollRef.current, cur) - el.scrollLeft), el.clientWidth - LABEL_W);
-      zoomTo(stepZoom(cur, dir), { time: t, offsetX });
+      zoomTo(stepZoom(cur, detail), { time: t, offsetX });
     };
     window.addEventListener(TIMELINE_ZOOM_EVENT, onZoom);
     return () => window.removeEventListener(TIMELINE_ZOOM_EVENT, onZoom);
@@ -373,29 +383,8 @@ export function Timeline() {
     return drag && drag.kind.startsWith('bar') && drag.index === i && dragVal ? dragVal : l.t;
   };
 
-  const zoomSlider = Math.round((Math.log(pps / MIN_PPS) / Math.log(MAX_PPS / MIN_PPS)) * 1000);
-  const onSlider = (v: number) => {
-    const el = scrollRef.current;
-    const next = MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, v / 1000);
-    const viewW = el ? el.clientWidth - LABEL_W : 0;
-    const center = el ? (el.scrollLeft + viewW / 2) / ppsRef.current - prerollRef.current : 0;
-    zoomTo(next, { time: center, offsetX: viewW / 2 });
-  };
-
   return (
     <div className="timeline">
-      <div className="tl-head">
-        <TimelineTools />
-        <span className="tl-sep" />
-        <span>缩放</span>
-        <input type="range" min={0} max={1000} value={zoomSlider} onChange={(e) => onSlider(Number(e.target.value))} aria-label="时间轴缩放" title={hintFor('tl-zoom')} />
-        <span className="mono">{Math.round(pps)} px/s</span>
-        <button className="btn ghost" onClick={() => setTimelinePps(null)} disabled={timelinePps === null} title={hintFor('tl-fit')}>
-          <IconFit /> 适应
-        </button>
-        <span className="spacer" />
-        <span>{hintFor('tl-zoom')} · {hintFor('tl-scroll')} · {hintFor('tl-no-snap')}</span>
-      </div>
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''}`} ref={scrollRef}>
         <div className="tl-inner" style={{ width: off + trackW + LABEL_W }}>
           <div className="tl-row" style={{ height: 20 }}>

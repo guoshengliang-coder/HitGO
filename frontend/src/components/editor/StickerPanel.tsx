@@ -8,7 +8,7 @@ import { newLayerId } from '../../lib/spec';
 import { filterAssets, type AssetBucket, type StickerKindFilter } from '../../lib/assets';
 import { AssetCard } from '../../pages/AssetsPage';
 import { IconSticker } from '../ui/Icons';
-import { ApplyLayersFoot, LayerList, LayerProps } from './LayerParts';
+import { LayerList, LayerProps } from './LayerParts';
 
 type StickerTab = 'layers' | AssetBucket;
 
@@ -24,7 +24,7 @@ const KINDS: { key: StickerKindFilter; label: string }[] = [
   { key: 'video', label: '视频' },
 ];
 
-export function StickerPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
+export function StickerPanel() {
   const [tab, setTab] = useState<StickerTab>('layers');
   const [kind, setKind] = useState<StickerKindFilter>('all');
   const [q, setQ] = useState('');
@@ -94,7 +94,6 @@ export function StickerPanel({ onApply, targetCount }: { onApply: () => void; ta
           <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）。视频贴纸默认循环播放，可在属性里改。</div>
         </div>
       )}
-      <ApplyLayersFoot onApply={onApply} targetCount={targetCount} />
     </div>
   );
 }

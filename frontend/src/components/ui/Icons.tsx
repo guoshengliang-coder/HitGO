@@ -137,3 +137,34 @@ export const IconMoon = () => (
 export const IconSun = () => (
   <svg {...base}><circle cx="8" cy="8" r="3" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>
 );
+
+// ---- 顶栏模块组（docs/DESIGN.md §4.1）与顶栏按钮 ----
+export const IconCut = () => (
+  <svg {...base}>
+    <circle cx="4.5" cy="11.5" r="2" />
+    <circle cx="11.5" cy="11.5" r="2" />
+    <path d="M6 10L12 2M10 10L4 2" />
+  </svg>
+);
+export const IconWave = () => <svg {...base}><path d="M2 8h1.5M4.5 5v6M7 3v10M9.5 6v4M12 4.5v7M14 8h-.5" /></svg>;
+export const IconSubtitle = () => (
+  <svg {...base}>
+    <rect x="2" y="3.5" width="12" height="9" rx="1.5" />
+    <path d="M4.5 9.5h4M10 9.5h1.5" />
+  </svg>
+);
+export const IconGlobe = () => (
+  <svg {...base}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M2 8h12M8 2c2.5 2.5 2.5 9.5 0 12M8 2c-2.5 2.5-2.5 9.5 0 12" strokeWidth={1.2} />
+  </svg>
+);
+export const IconGrid = () => (
+  <svg {...base} strokeWidth={1.3}>
+    <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" />
+    <rect x="9" y="2.5" width="4.5" height="4.5" rx="1" />
+    <rect x="2.5" y="9" width="4.5" height="4.5" rx="1" />
+    <rect x="9" y="9" width="4.5" height="4.5" rx="1" />
+  </svg>
+);
+export const IconExport = () => <svg {...base}><path d="M8 10V2.5M5 5.5l3-3 3 3M3 9v3.5h10V9" /></svg>;

@@ -1,11 +1,22 @@
-// 编辑器顶栏：品牌 + 版本号、模块 tab、配色 / 撤销重做 / 保存状态 / 导出。
+// 编辑器顶栏（docs/DESIGN.md §4.1）：品牌两行（字标 + 版本号）、连体模块组（图标上文字下）、
+// 右侧：保存状态 · [撤销|重做] · 主题 · 产物 · 导出（唯一的实心橙）。
 // 批次名在左栏「全选」上方（HIG-14），安全区在画布下方 QuickBar（HIG-13），顶栏不再放。
+// 撤销 / 重做只在这里：历史是一条栈，撤销的不只是时间线上的动作（§9.1）。
 import { Link } from 'react-router-dom';
 import { useEditor } from '../../store/editor';
-import { STEPS } from '../../lib/steps';
-import { AppVersion } from '../ui/AppVersion';
-import { IconRedo, IconUndo } from '../ui/Icons';
+import { STEPS, type Step } from '../../lib/steps';
+import { APP_VERSION } from '../../lib/version';
+import { IconCut, IconExport, IconGlobe, IconGrid, IconRedo, IconSticker, IconSubtitle, IconText, IconUndo, IconWave } from '../ui/Icons';
 import { ThemeToggle } from '../ui/ThemeToggle';
+
+const STEP_ICON: Record<Step, () => JSX.Element> = {
+  trim: IconCut,
+  audio: IconWave,
+  text: IconText,
+  sticker: IconSticker,
+  subtitle: IconSubtitle,
+  localize: IconGlobe,
+};
 
 export function TopBar({ onExport }: { onExport: () => void }) {
   const batch = useEditor((s) => s.batch);
@@ -19,39 +30,46 @@ export function TopBar({ onExport }: { onExport: () => void }) {
   const saveError = useEditor((s) => s.saveError);
   const rendering = useEditor((s) => s.rendering);
 
-  const saveText = { idle: '', dirty: '未保存', saving: '保存中…', saved: '已保存', error: '保存失败' }[saveState];
+  const saveText = { idle: '已保存', dirty: '未保存', saving: '保存中…', saved: '已保存', error: '保存失败' }[saveState];
 
   return (
     <div className="topbar">
-      <span className="brand-group">
-        <Link to="/" className="brand">
+      <Link to="/" className="brand2" title={`HitGO ${APP_VERSION}`}>
+        <span className="wm">
           Hit<b>GO</b>
-        </Link>
-        <AppVersion />
-      </span>
-      <div className="steps" role="tablist">
-        {STEPS.map((s) => (
-          <button key={s.key} role="tab" aria-selected={step === s.key} className={`step-btn ${step === s.key ? 'active' : ''}`} onClick={() => setStep(s.key)}>
-            {s.label}
-          </button>
-        ))}
+        </span>
+        <span className="ver">{APP_VERSION || 'dev'}</span>
+      </Link>
+      <div className="modes" role="tablist">
+        {STEPS.map((s) => {
+          const Icon = STEP_ICON[s.key];
+          return (
+            <button key={s.key} role="tab" aria-selected={step === s.key} className={`mode ${step === s.key ? 'active' : ''}`} onClick={() => setStep(s.key)}>
+              <Icon />
+              <span>{s.label}</span>
+            </button>
+          );
+        })}
       </div>
       <span className="spacer" />
-      <ThemeToggle />
-      <button className="btn icon" onClick={undo} disabled={!canUndo} aria-label="撤销" title="撤销（⌘Z）">
-        <IconUndo />
-      </button>
-      <button className="btn icon" onClick={redo} disabled={!canRedo} aria-label="重做" title="重做（⇧⌘Z）">
-        <IconRedo />
-      </button>
-      <span className={`save-indicator ${saveState === 'error' ? 'error' : ''}`} title={saveError ?? undefined}>
+      <span className={`save-indicator ${saveState} ${saveState === 'error' ? 'error' : ''}`} title={saveError ?? undefined}>
+        <i />
         {saveText}
       </span>
+      <span className="btn-group">
+        <button className="btn icon" onClick={undo} disabled={!canUndo} aria-label="撤销" title="撤销（⌘Z）">
+          <IconUndo />
+        </button>
+        <button className="btn icon" onClick={redo} disabled={!canRedo} aria-label="重做" title="重做（⇧⌘Z）">
+          <IconRedo />
+        </button>
+      </span>
+      <ThemeToggle />
       <Link to={batch ? `/outputs?batch=${encodeURIComponent(batch.id)}` : '/outputs'} className="btn">
-        产物
+        <IconGrid /> 产物
       </Link>
       <button className="btn primary" onClick={onExport} disabled={rendering} title="保存并导出成片：选择导出这一批、勾选的几条或仅当前这条">
-        {rendering ? '导出中…' : '导出'}
+        <IconExport /> {rendering ? '导出中…' : '导出'}
       </button>
     </div>
   );

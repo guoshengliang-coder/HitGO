@@ -326,7 +326,7 @@ function StickerAudioSection() {
   );
 }
 
-export function AudioPanel({ onApply, targetCount }: { onApply: () => void; targetCount: number }) {
+export function AudioPanel() {
   return (
     <div className="panel">
       <div className="panel-head">音频</div>
@@ -336,11 +336,6 @@ export function AudioPanel({ onApply, targetCount }: { onApply: () => void; targ
         <TracksSection />
         <StickerAudioSection />
         <div className="hint">BGM / 口播的时段基于剪后时间轴，可在时间线上拖动条移动、拖两端调整（按住 ⌥ 不吸附）。修改剪辑不会自动改动音轨时段，超出剪后时长的部分成片里会被截掉。</div>
-      </div>
-      <div className="panel-foot">
-        <button className="btn" disabled={targetCount === 0} onClick={onApply} title="源音轨音量与 BGM / 口播音轨一起套用到目标视频">
-          把音频应用到选中 {targetCount} 条
-        </button>
       </div>
     </div>
   );
