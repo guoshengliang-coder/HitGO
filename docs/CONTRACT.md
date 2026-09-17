@@ -96,7 +96,9 @@
       "cues": [ { "i": 0, "translated": "힛고에 오신 것을 환영합니다." } ],   // 与 transcript.cues 按 i 对齐
       "stale": false,               // 模板改过之后为 true：译文不是最新模板译出来的，需重译
       "error": null, "warnings": [],   // warnings：配音塞不进原句时段等提示
-      "voice_asset_id": "a_d0bb3d", // done 才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
+      "voice_asset_id": "a_d0bb3d", // 合成过才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
+      "dub": true,                  // 可选，缺省 true（HIG-56）：false = 这次只翻译不合成，done 时可能没有 voice_asset_id
+      "voice_stale": false,         // 可选，缺省 false（HIG-56）：只翻译覆盖了译文，旧配音还在但对不上新译文，需再合成
       "updated_at": "..."
     }
   }
@@ -577,15 +579,17 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   视频未 `ready` 或没有音轨 400；已有 queued / running 的分离 409；队列不可用 503。完成后 `separation` 变 `done`
   并带两个素材 id；前端轮询 `GET /api/videos/{id}`。分离由独立的 `separator` worker（带 torch + Demucs 的镜像）
   执行；没有起这个 worker 时任务会一直停在 queued。
-- `POST /api/videos/{id}/localize` `{ source_lang?: "auto", target_langs: ["ko","ja"], voices?: { ko: "loongkyong_v3" }, terms?: [{ source, target }], retranscribe?: false }`
+- `POST /api/videos/{id}/localize` `{ source_lang?: "auto", target_langs: ["ko","ja"], voices?: { ko: "loongkyong_v3" }, terms?: [{ source, target }], retranscribe?: false, dub?: true }`
   → 202 `Video`。一个任务：`transcript` 不是 `done`（或 `retranscribe`）就先听写，再对每个目标语言依次 翻译 → 合成 → 混音，
-  每个版本独立 done / failed。`source_lang` 只在听写时生效；`target_langs` 1–5 个且必须在 options 的 `target_langs` 里，
+  每个版本独立 done / failed。`dub = false`（HIG-56，前端「翻译」按钮）翻译完就 done，不合成不混音：没有配音的版本
+  `voice_asset_id = null`，已有配音的保留旧素材并置 `voice_stale = true`；之后用下面的 `PUT …/versions/{lang}` 生成口播。`source_lang` 只在听写时生效；`target_langs` 1–5 个且必须在 options 的 `target_langs` 里，
   `voices` 缺省取该语言第一个音色。视频未 `ready` / 没有音轨 / 不支持的语言或音色 400；`transcript` 或任一请求的版本
   正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`。
 - `PUT /api/videos/{id}/localize/transcript` `{ cues: [{ i, text }], source_lang? }` → 200 `Video`。修正模板文本（只传改动的句子），
   不触发任务；所有已有译文的版本 `stale = true`，之后对该语言再 `POST` 即重译。还没有听写结果 400；有版本正在生成 409。
 - `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice? }` → 202 `Video`。改译文 / 换音色后只重跑
-  合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice`；该版本没有译文 400；进行中 409；503 同上。
+  合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice`——例外（HIG-56）：版本还没有配音（`voice_asset_id = null`）或 `voice_stale = true` 时
+  允许空 body `{}`，表示按现有译文和音色直接合成（「生成口播」）。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。
 - `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
 - `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, voices: [{ id, label }] }] }`。
   `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。
@@ -735,7 +739,8 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    重新听写后所有已有版本 `stale = true`。
 2. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
    - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
-     回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。
+     回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。`dub = false` 的版本到此为止：
+     `status = done`、`stage = null`，有旧配音则 `voice_stale = true`，不进 tts / mix。
    - tts：每句用版本的 `voice` 出 wav。音色各自属于某个 TTS 模型：中 / 英 / 日 / 韩 / 粤 / 印尼用 `cosyvoice-v3-flash`（每句一个新实例），
      西 / 葡 / 法 / 德 / 意 / 俄用 `qwen3-tts-flash`（HTTP 调用，返回 24 小时有效的 wav 地址，worker 立即下载；这个模型没有语速参数，
      超长只靠下一步的 `atempo`）；`LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），

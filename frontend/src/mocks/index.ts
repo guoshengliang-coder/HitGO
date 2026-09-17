@@ -229,7 +229,7 @@ function fakeTranslate(lang: string, cues: TranscriptCue[], terms: LocalizationT
 /**
  * 模拟 worker 跑一个改语言任务：模板未就绪（或 retranscribe）先听写，然后逐语言 translate → tts → mix。
  * 每个版本独立 done / failed；V03 在 tts 阶段一半概率失败（和渲染 mock 一样，用来看失败路径）。
- * stage 已是 tts 的版本（PUT versions 触发）跳过翻译。
+ * stage 已是 tts 的版本（PUT versions 触发）跳过翻译；dub = false 的版本翻译完就 done（HIG-56）。
  */
 function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
   const at = (ms: number, fn: () => void) => window.setTimeout(() => { if (v.localization) fn(); }, ms);
@@ -260,7 +260,9 @@ function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
         if (!ver) return;
         ver.cues = fakeTranslate(lang, l.transcript?.cues ?? [], ver.terms ?? []);
         ver.stale = false;
+        if (ver.dub === false) Object.assign(ver, { status: 'done', stage: null, error: null, warnings: [], voice_stale: !!ver.voice_asset_id, updated_at: now() });
       });
+      if (loc.versions[lang]?.dub === false) continue;
     }
     delay += 300;
     at(delay, () => { const ver = v.localization!.versions[lang]; if (ver) Object.assign(ver, { status: 'running', stage: 'tts', updated_at: now() }); });
@@ -297,7 +299,7 @@ function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
       };
       assets.push(asset);
       const longest = Math.max(0, ...ver.cues.map((c) => c.translated.length));
-      Object.assign(ver, { status: 'done', stage: null, error: null, voice_asset_id: asset.id, warnings: longest > 30 ? ['第 2 句译文较长，已按 1.3 倍速压缩仍略超下一句起点'] : [], updated_at: now() });
+      Object.assign(ver, { status: 'done', stage: null, error: null, voice_asset_id: asset.id, dub: true, voice_stale: false, warnings: longest > 30 ? ['第 2 句译文较长，已按 1.3 倍速压缩仍略超下一句起点'] : [], updated_at: now() });
     });
   }
 }
@@ -848,7 +850,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     for (const lang of targetLangs) {
       const voice = body.voices?.[lang] ?? LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.voices[0]?.id ?? null;
       const prev = loc.versions[lang];
-      const ver: LocalizationVersion = { status: 'queued', stage: null, voice, terms: clone(body.terms ?? []), cues: prev?.cues ?? [], stale: false, error: null, warnings: [], voice_asset_id: prev?.voice_asset_id ?? null, updated_at: now() };
+      const ver: LocalizationVersion = { status: 'queued', stage: null, voice, terms: clone(body.terms ?? []), cues: prev?.cues ?? [], stale: false, error: null, warnings: [], voice_asset_id: prev?.voice_asset_id ?? null, dub: body.dub ?? true, voice_stale: prev?.voice_stale ?? false, updated_at: now() };
       loc.versions[lang] = ver;
     }
     v.localization = loc;
@@ -886,13 +888,14 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     }
     if (!ver.cues.length) throw new ApiError(400, '这个版本还没有译文，请先生成');
     const body = body_ as { cues: { i: number; translated: string }[]; voice?: string };
-    if (!(body.cues ?? []).length && !body.voice) throw new ApiError(400, '没有改动的句子时必须指定音色');
+    const undubbed = !ver.voice_asset_id || !!ver.voice_stale;
+    if (!(body.cues ?? []).length && !body.voice && !undubbed) throw new ApiError(400, '没有改动的句子时必须指定音色');
     for (const e of body.cues ?? []) {
       const c = ver.cues.find((x) => x.i === e.i);
       if (c) c.translated = e.translated;
     }
     if (body.voice) ver.voice = body.voice;
-    Object.assign(ver, { status: 'queued', stage: 'tts', error: null, warnings: [], updated_at: now() });
+    Object.assign(ver, { status: 'queued', stage: 'tts', dub: true, error: null, warnings: [], updated_at: now() });
     runLocalize(v, [lang], false);
     return clone(v);
   }

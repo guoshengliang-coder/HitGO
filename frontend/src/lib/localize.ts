@@ -57,13 +57,19 @@ export function transcriptStatusText(t: Transcript | null | undefined): string {
   return `已听写 ${t.cues.length} 句`;
 }
 
-const STAGE_TEXT: Record<string, string> = { translate: '翻译中…', tts: '合成配音中…', mix: '混音中…' };
+const STAGE_TEXT: Record<string, string> = { translate: '翻译中…', tts: '生成口播中…', mix: '混音中…' };
+
+/** 有能用的口播：done、有配音素材、且不是只翻译后留下的旧配音（HIG-56）。 */
+export function hasDub(v: LocalizationVersion | null | undefined): boolean {
+  return v?.status === 'done' && !!v.voice_asset_id && !v.voice_stale;
+}
 
 export function versionStatusText(v: LocalizationVersion): string {
-  if (v.status === 'queued') return v.stage === 'tts' ? '排队中（重新合成）…' : '排队中…';
+  if (v.status === 'queued') return v.stage === 'tts' ? '排队中（生成口播）…' : '排队中…';
   if (v.status === 'running') return STAGE_TEXT[v.stage ?? ''] ?? '处理中…';
   if (v.status === 'failed') return '生成失败';
-  return '已生成';
+  if (!v.voice_asset_id) return '已翻译';
+  return v.voice_stale ? '已翻译 · 口播待更新' : '已生成口播';
 }
 
 export function isVersionActive(v: LocalizationVersion | null | undefined): boolean {
@@ -78,6 +84,30 @@ export function isLocalizationActive(loc: Localization | null | undefined): bool
   return Object.values(loc.versions ?? {}).some(isVersionActive);
 }
 
+/** 「生成口播」可选的语言：已翻译完（done 且有译文）的版本，按 options 里的语言顺序；dubbed = 已有能用的口播。 */
+export function dubbableLangs(loc: Localization | null | undefined, options: LocalizeOptions | null | undefined): { lang: string; dubbed: boolean }[] {
+  const order = options?.target_langs.map((t) => t.code) ?? [];
+  const rank = (code: string) => order.indexOf(code) + 1 || 999;
+  return Object.entries(loc?.versions ?? {})
+    .filter(([, v]) => v.status === 'done' && v.cues.some((c) => c.translated.trim()))
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([lang, v]) => ({ lang, dubbed: hasDub(v) }));
+}
+
+/**
+ * 口播生成完后自动套用哪个语言（HIG-56）：按发起时的顺序，取第一个这轮新出了能用口播的语言；
+ * 同一时间只能套用一个语言，其余留给多语言导出。没有返回 null。
+ */
+export function autoApplyLang(before: Localization | null | undefined, after: Localization | null | undefined, requested: string[]): string | null {
+  for (const lang of requested) {
+    const v = after?.versions?.[lang];
+    if (!hasDub(v)) continue;
+    const b = before?.versions?.[lang];
+    if (!hasDub(b) || b!.voice_asset_id !== v!.voice_asset_id) return lang;
+  }
+  return null;
+}
+
 /**
  * 一轮轮询结束时的提示：只报告这轮里状态变过的版本（之前就 done 的不再重复报），听写失败单独说。
  * before 是发起轮询时的快照；after 是结束时的。返回 null 表示没什么可说的。
@@ -87,18 +117,20 @@ export function localizationFinishText(before: Localization | null | undefined, 
   const t = after.transcript;
   if (t?.status === 'failed' && before?.transcript?.status !== 'failed') return `听写失败：${t.error ?? '未知原因'}`;
   const done: string[] = [];
+  const translated: string[] = [];
   const failed: string[] = [];
   for (const [lang, v] of Object.entries(after.versions ?? {})) {
     const b = before?.versions?.[lang];
     const changed = !b || b.status !== v.status || (b.updated_at ?? null) !== (v.updated_at ?? null);
     if (!changed) continue;
-    if (v.status === 'done') done.push(langLabel(options, lang));
+    if (v.status === 'done') (hasDub(v) ? done : translated).push(langLabel(options, lang));
     else if (v.status === 'failed') failed.push(`${langLabel(options, lang)}（${v.error ?? '未知原因'}）`);
   }
   const parts: string[] = [];
-  if (done.length) parts.push(`${done.join('、')}版已生成，可在「改语言」模块套用`);
+  if (translated.length) parts.push(`${translated.join('、')}已翻译，可在「生成口播」里合成配音`);
+  if (done.length) parts.push(`${done.join('、')}口播已生成，可在「改语言」模块套用`);
   if (failed.length) parts.push(`${failed.join('、')}生成失败`);
-  if (!parts.length && t?.status === 'done' && before?.transcript?.status !== 'done') return `已听写 ${t.cues.length} 句，可以修正模板或直接生成语言版本`;
+  if (!parts.length && t?.status === 'done' && before?.transcript?.status !== 'done') return `已听写 ${t.cues.length} 句，可以修正模板或直接翻译`;
   return parts.length ? parts.join('；') : null;
 }
 
@@ -301,7 +333,8 @@ export function canApplyVersion(video: Video | null | undefined, lang: string, a
   const v = video?.localization?.versions?.[lang];
   if (!v) return { ok: false, reason: '还没有这个语言的版本' };
   if (isVersionActive(v)) return { ok: false, reason: '这个版本还在生成中' };
-  if (v.status !== 'done' || !v.voice_asset_id) return { ok: false, reason: v.error ? `这个版本生成失败：${v.error}` : '这个版本还没有配音' };
+  if (v.status !== 'done' || !v.voice_asset_id) return { ok: false, reason: v.error ? `这个版本生成失败：${v.error}` : '这个版本还没有口播，先在「生成口播」里生成' };
+  if (v.voice_stale) return { ok: false, reason: '译文已重新翻译，口播还没更新：先在「生成口播」里重新生成' };
   const asset = assets.find((a) => a.id === v.voice_asset_id);
   if (!asset) return { ok: false, reason: '配音素材不存在（可能已被删除），请重新生成' };
   if (!isAssetReady(asset)) return { ok: false, reason: '配音素材还在处理中，稍后再试' };

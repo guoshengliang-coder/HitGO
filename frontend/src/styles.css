@@ -796,6 +796,12 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 
 /* ---- 改语言（LocalizePanel）：逐句列表 + 版本行 ---- */
 .cue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+/* 生成口播（HIG-56）：每种语言一行 勾选 + 音色 + 状态；窄栏时状态换到下一行 */
+.dub-list { display: flex; flex-direction: column; gap: 6px; }
+.dub-row { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.dub-row .select { min-width: 0; width: 100%; }
+.dub-check { min-width: 0; }
+.dub-lang { white-space: nowrap; }
 .cue-item { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 2px 6px; align-items: start; padding: 4px 6px; border: 1px solid var(--line-soft); border-radius: 4px; font-size: 12px; }
 .cue-item.current { border-color: transparent; background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); }
 .cue-item .cue-time { grid-row: 1 / span 2; font-family: var(--mono); font-size: 11px; color: var(--ink-3); background: transparent; border: 0; padding: 3px 0; text-align: left; cursor: pointer; white-space: nowrap; }

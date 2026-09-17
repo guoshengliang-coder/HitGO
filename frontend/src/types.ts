@@ -108,6 +108,10 @@ export interface LocalizationVersion {
   warnings?: string[];
   /** done 才有：配音素材（type audio、source derived、derived_from.stem = dubbed）。每次生成换新 id。 */
   voice_asset_id?: string | null;
+  /** 缺省 true（HIG-56）：false = 这次只翻译不合成，done 时可能没有 voice_asset_id。 */
+  dub?: boolean;
+  /** 只翻译覆盖了译文，旧配音还在但对不上新译文，要重新生成口播。 */
+  voice_stale?: boolean;
   updated_at?: string | null;
 }
 
@@ -129,6 +133,8 @@ export interface LocalizeIn {
   terms?: LocalizationTerm[];
   /** true = 即使模板已 done 也重新听写。 */
   retranscribe?: boolean;
+  /** 缺省 true；false = 只听写 + 翻译，口播之后用 PUT versions/{lang} 生成（HIG-56）。 */
+  dub?: boolean;
 }
 
 export interface LangOption {

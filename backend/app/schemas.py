@@ -1002,6 +1002,8 @@ class LocalizeIn(BaseModel):
     voices: dict[str, str] | None = None
     terms: list[TermIn] = Field(default_factory=list, max_length=200)
     retranscribe: bool = False
+    # False: stop after translating (HIG-56); the voice-over is a later PUT …/versions/{lang}.
+    dub: bool = True
 
     @field_validator("target_langs")
     @classmethod
@@ -1086,6 +1088,8 @@ class VersionOut(BaseModel):
     error: str | None = None
     warnings: list[str] = Field(default_factory=list)
     voice_asset_id: str | None = None
+    dub: bool = True
+    voice_stale: bool = False
     updated_at: str | None = None
 
 

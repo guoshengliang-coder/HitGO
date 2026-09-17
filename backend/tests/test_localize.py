@@ -437,6 +437,28 @@ def test_stage_tts_skips_translation_and_replaces_the_old_asset(ready_video, db,
     assert db.get(Asset, v["voice_asset_id"]) is not None
 
 
+def test_translate_only_stops_before_tts_and_marks_an_older_voice_over_stale(ready_video, db, no_ffmpeg):
+    """dub=false (HIG-56): translation lands, no TTS / mix, a previous voice-over is kept but flagged."""
+    ko = {"voice": KO_VOICE, "cues": [{"i": 0, "translated": "old"}, {"i": 1, "translated": "old"}], "voice_asset_id": "a_oldko"}
+    video = queue(db, ["ko", "ja"], transcript=DONE_TRANSCRIPT, versions={"ko": ko}, source_lang="en")
+    loc = copy.deepcopy(video.localization)
+    for v in loc["versions"].values():
+        v["dub"] = False
+    video.localization = loc
+    db.commit()
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    versions = db.get(Video, VIDEO).localization["versions"]
+    assert providers.tts.calls == [] and no_ffmpeg == [] and len(providers.mt.calls) == 2
+    for lang, target in (("ko", "Korean"), ("ja", "Japanese")):
+        v = versions[lang]
+        assert v["status"] == "done" and v["stage"] is None and v["dub"] is False
+        assert v["cues"][0] == {"i": 0, "translated": f"[{target}] Welcome to HitGO."}
+    assert versions["ko"]["voice_asset_id"] == "a_oldko" and versions["ko"]["voice_stale"] is True
+    assert versions["ja"]["voice_asset_id"] is None and versions["ja"]["voice_stale"] is False
+
+
 def test_one_language_failing_keeps_its_translation_and_the_other_language(ready_video, db, no_ffmpeg):
     queue(db, ["ko", "ja"], transcript=DONE_TRANSCRIPT, source_lang="en")
     providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=localize.FakeTts(fail_voices={JA_VOICE}))
@@ -731,6 +753,30 @@ def test_put_version_requeues_only_tts_and_mix(client, ready_video, enqueued, db
     assert r.status_code == 202 and r.json()["localization"]["versions"]["ko"]["voice"] == "loongjihun_v3"
 
 
+def test_put_version_with_an_empty_body_dubs_a_translate_only_or_outdated_version(client, ready_video, enqueued, db):
+    put = lambda body: client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json=body)  # noqa: E731
+    _done_state(db, voice_asset_id=None, dub=False)
+    r = put({})
+    assert r.status_code == 202, r.text
+    ko = r.json()["localization"]["versions"]["ko"]
+    assert ko["status"] == "queued" and ko["stage"] == "tts" and ko["dub"] is True and ko["voice"] == KO_VOICE
+    assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="done", voice_asset_id="a_ko", voice_stale=True))
+    assert put({}).status_code == 202  # outdated voice-over
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="done", voice_stale=False))
+    assert put({}).status_code == 400  # up-to-date voice-over: nothing to do
+
+
+def test_localize_endpoint_translate_only_request(client, ready_video, enqueued, db):
+    r = client.post(f"/api/videos/{VIDEO}/localize", json={"target_langs": ["ko"], "dub": False})
+    assert r.status_code == 202, r.text
+    ko = r.json()["localization"]["versions"]["ko"]
+    assert ko["dub"] is False and ko["voice_stale"] is False and ko["voice"] == KO_VOICE
+    patch_loc(db, lambda loc: [v.update(status="done") for v in (loc["transcript"], loc["versions"]["ko"])])
+    r = client.post(f"/api/videos/{VIDEO}/localize", json={"target_langs": ["ko"]})
+    assert r.status_code == 202 and r.json()["localization"]["versions"]["ko"]["dub"] is True  # default keeps the old behaviour
+
+
 def test_put_version_reverts_when_the_queue_is_down(client, ready_video, monkeypatch, db):
     _done_state(db)
 
@@ -768,7 +814,8 @@ def test_video_serialization_carries_the_full_localization_block(client, ready_v
     assert loc["source_lang"] == "en"
     assert loc["transcript"]["cues"][0] == {"i": 0, "start": 0.42, "end": 2.91, "text": "Welcome to HitGO."}
     ko = loc["versions"]["ko"]
-    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "updated_at"}
+    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "dub", "voice_stale", "updated_at"}
+    assert ko["dub"] is True and ko["voice_stale"] is False  # old rows without the fields
     assert ko["warnings"][0].startswith("第 2 句") and ko["voice_asset_id"] == "a_ko"
     listed = client.get("/api/assets?source=derived").json()
     assert listed[0]["derived_from"] == {"video_id": VIDEO, "video_name": "V01.mp4", "stem": "dubbed", "lang": "ko"}

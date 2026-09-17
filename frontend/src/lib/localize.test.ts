@@ -7,7 +7,10 @@ import {
   appliedVersion,
   applyCrossVideoWarnings,
   applyLocalizationToSpec,
+  autoApplyLang,
   canApplyVersion,
+  dubbableLangs,
+  hasDub,
   FONT_BY_LANG,
   fontForLang,
   isLocalizationActive,
@@ -107,11 +110,13 @@ describe('文案与状态', () => {
     expect(transcriptStatusText({ status: 'running', cues: [] })).toBe('听写中…');
     expect(transcriptStatusText(TRANSCRIPT)).toBe('已听写 3 句');
     expect(versionStatusText(version({ status: 'queued' }))).toBe('排队中…');
-    expect(versionStatusText(version({ status: 'queued', stage: 'tts' }))).toBe('排队中（重新合成）…');
+    expect(versionStatusText(version({ status: 'queued', stage: 'tts' }))).toBe('排队中（生成口播）…');
     expect(versionStatusText(version({ status: 'running', stage: 'translate' }))).toBe('翻译中…');
     expect(versionStatusText(version({ status: 'running', stage: 'mix' }))).toBe('混音中…');
     expect(versionStatusText(version({ status: 'failed' }))).toBe('生成失败');
-    expect(versionStatusText(version())).toBe('已生成');
+    expect(versionStatusText(version())).toBe('已生成口播');
+    expect(versionStatusText(version({ voice_asset_id: null }))).toBe('已翻译');
+    expect(versionStatusText(version({ voice_stale: true }))).toBe('已翻译 · 口播待更新');
   });
   it('isLocalizationActive：听写或任一版本 queued / running', () => {
     expect(isLocalizationActive(null)).toBe(false);
@@ -123,12 +128,14 @@ describe('文案与状态', () => {
   it('localizationFinishText：只报告这轮变过的版本', () => {
     const before: Localization = { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: version(), ja: version({ status: 'running' }) } };
     const after: Localization = { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: version(), ja: version({ status: 'done', updated_at: 'v2' }) } };
-    expect(localizationFinishText(before, after, OPTIONS)).toBe('日语版已生成，可在「改语言」模块套用');
+    expect(localizationFinishText(before, after, OPTIONS)).toBe('日语口播已生成，可在「改语言」模块套用');
+    const translated: Localization = { ...after, versions: { ...after.versions, ja: version({ status: 'done', voice_asset_id: null, dub: false, updated_at: 'v2' }) } };
+    expect(localizationFinishText(before, translated, OPTIONS)).toBe('日语已翻译，可在「生成口播」里合成配音');
     const failed: Localization = { ...after, versions: { ...after.versions, ja: version({ status: 'failed', error: '429' }) } };
     expect(localizationFinishText(before, failed, OPTIONS)).toBe('日语（429）生成失败');
     expect(localizationFinishText(after, after, OPTIONS)).toBeNull();
     expect(localizationFinishText(null, { source_lang: 'en', transcript: { status: 'failed', error: '没声音', cues: [] }, versions: {} }, OPTIONS)).toBe('听写失败：没声音');
-    expect(localizationFinishText(null, { source_lang: 'en', transcript: TRANSCRIPT, versions: {} }, OPTIONS)).toBe('已听写 3 句，可以修正模板或直接生成语言版本');
+    expect(localizationFinishText(null, { source_lang: 'en', transcript: TRANSCRIPT, versions: {} }, OPTIONS)).toBe('已听写 3 句，可以修正模板或直接翻译');
   });
 });
 
@@ -209,6 +216,36 @@ describe('localizedCuesToLayers', () => {
   });
 });
 
+describe('口播（HIG-56）', () => {
+  const loc = (versions: Record<string, LocalizationVersion>): Localization => ({ source_lang: 'en', transcript: TRANSCRIPT, versions });
+  it('hasDub：done + 有配音素材 + 不是旧配音', () => {
+    expect(hasDub(version())).toBe(true);
+    expect(hasDub(version({ voice_asset_id: null }))).toBe(false);
+    expect(hasDub(version({ voice_stale: true }))).toBe(false);
+    expect(hasDub(version({ status: 'running' }))).toBe(false);
+    expect(hasDub(null)).toBe(false);
+  });
+  it('dubbableLangs：已翻译完的版本，按 options 顺序', () => {
+    const l = loc({
+      ja: version({ voice_asset_id: null }),
+      ko: version(),
+      de: version({ status: 'running' }),
+      fr: version({ cues: [{ i: 0, translated: '  ' }] }),
+    });
+    expect(dubbableLangs(l, OPTIONS)).toEqual([{ lang: 'ko', dubbed: true }, { lang: 'ja', dubbed: false }]);
+    expect(dubbableLangs(null, OPTIONS)).toEqual([]);
+  });
+  it('autoApplyLang：按发起顺序取第一个新出口播的语言', () => {
+    const before = loc({ ko: version({ status: 'queued', stage: 'tts', voice_asset_id: null }), ja: version({ status: 'queued', stage: 'tts', voice_stale: true }) });
+    const after = loc({ ko: version({ status: 'failed', error: 'x', voice_asset_id: null }), ja: version({ voice_asset_id: 'a_new' }) });
+    expect(autoApplyLang(before, after, ['ko', 'ja'])).toBe('ja');
+    expect(autoApplyLang(before, loc({ ko: version(), ja: version({ voice_asset_id: 'a_new' }) }), ['ko', 'ja'])).toBe('ko');
+    // 口播没变（同一个素材）不算新出
+    expect(autoApplyLang(loc({ ko: version() }), loc({ ko: version() }), ['ko'])).toBeNull();
+    expect(autoApplyLang(before, after, [])).toBeNull();
+  });
+});
+
 describe('canApplyVersion', () => {
   it('done + 配音素材就绪才能套用，其它情况给中文原因', () => {
     expect(canApplyVersion(video(), 'ko', ASSETS)).toEqual({ ok: true });
@@ -218,6 +255,8 @@ describe('canApplyVersion', () => {
     expect(canApplyVersion(video(), 'ko', [])).toMatchObject({ ok: false, reason: expect.stringContaining('不存在') });
     expect(canApplyVersion(video(), 'ko', [{ ...ASSETS[0], status: 'preparing' }])).toMatchObject({ ok: false, reason: expect.stringContaining('处理中') });
     expect(canApplyVersion(null, 'ko', ASSETS).ok).toBe(false);
+    expect(canApplyVersion(video({ localization: { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: version({ voice_asset_id: null }) } } }), 'ko', ASSETS)).toMatchObject({ ok: false, reason: expect.stringContaining('还没有口播') });
+    expect(canApplyVersion(video({ localization: { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: version({ voice_stale: true }) } } }), 'ko', ASSETS)).toMatchObject({ ok: false, reason: expect.stringContaining('口播还没更新') });
   });
 });
 

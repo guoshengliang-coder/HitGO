@@ -11,7 +11,8 @@ import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDet
 import { defaultTextStyle, emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
-import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization } from '../lib/localize';
+import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization } from '../lib/localize';
+import { loadFeaturePrefs } from '../lib/featurePrefs';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
 
@@ -269,6 +270,8 @@ export interface EditorState {
   updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
   /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
   resynthesizeVersion: (lang: string, edits: { i: number; translated: string }[], voice?: string) => Promise<boolean>;
+  /** 「生成口播」（HIG-56）：按现有译文逐个语言合成；完成后按偏好自动套用发起顺序里第一个出口播的语言。 */
+  dubVersions: (items: { lang: string; voice: string }[]) => Promise<boolean>;
   deleteVersion: (lang: string) => Promise<boolean>;
   /**
    * 把某个语言版本套用到当前视频：一次 updateSpec = 一步历史，toast 带「撤销」。
@@ -449,6 +452,8 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
 /** 视频上会异步变化、需要轮询的字段：分离（separation）和改语言（localization）。 */
 type PolledField = 'separation' | 'localization';
 const fieldTimers: Record<string, number> = {};
+/** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
+const dubRequests: Record<string, string[]> = {};
 
 /** 该字段是否还有后台任务在跑：分离看 status；改语言看听写和所有版本。 */
 function fieldActive(video: Video | null | undefined, field: PolledField): boolean {
@@ -485,6 +490,14 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
       } else {
         const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
         if (text) get().setToast(text);
+        const requested = dubRequests[videoId] ?? [];
+        delete dubRequests[videoId];
+        const lang = autoApplyLang(before, fresh.localization, requested);
+        if (lang && loadFeaturePrefs().autoApplyDub) {
+          // 切到别的视频就不动它的 spec：提示回去手动套用
+          if (get().currentVideoId === videoId) get().applyVersion(lang, { force: true });
+          else get().setToast(`${fresh.name} 的${langLabel(get().localizeOptions, lang)}口播已生成；切回该视频在「套用」里套用`);
+        }
       }
       return;
     }
@@ -1323,6 +1336,24 @@ export const useEditor = create<EditorState>((set, get) => {
         get().setToast(e instanceof ApiError ? e.message : '重新合成请求失败');
         return false;
       }
+    },
+    dubVersions: async (items) => {
+      const video = get().currentVideo();
+      if (!video || !items.length) return false;
+      const started: string[] = [];
+      for (const { lang, voice } of items) {
+        try {
+          const updated = await api.updateVersionCues(video.id, lang, { cues: [], ...(voice ? { voice } : {}) });
+          mergeVideoField(set, updated, 'localization');
+          started.push(lang);
+        } catch (e) {
+          get().setToast(`${langLabel(get().localizeOptions, lang)}口播请求失败：${e instanceof ApiError ? e.message : '网络错误'}`);
+        }
+      }
+      if (!started.length) return false;
+      dubRequests[video.id] = [...(dubRequests[video.id] ?? []).filter((l) => !started.includes(l)), ...started];
+      pollVideoField(video.id, 'localization', set, get);
+      return true;
     },
     deleteVersion: async (lang) => {
       const video = get().currentVideo();
