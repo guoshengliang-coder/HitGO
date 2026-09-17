@@ -49,7 +49,7 @@ def localize_options() -> dict:
 
 @router.post("/videos/{video_id}/localize", response_model=VideoOut, status_code=202)
 def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db)):
-    """Queue: transcribe if needed, then translate → synthesize → mix each target language."""
+    """Queue: transcribe if needed, then translate (→ synthesize → mix unless ``dub`` is false) each target language."""
     video = get_video_or_404(db, video_id)
     if video.status != VIDEO_READY:
         raise HTTPException(400, "视频尚未预处理完成，暂时不能改语言")
@@ -100,6 +100,8 @@ def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db
             "error": None,
             "warnings": [],
             "voice_asset_id": old.get("voice_asset_id"),
+            "dub": body.dub,
+            "voice_stale": bool(old.get("voice_stale", False)),
             "updated_at": now,
         }
     loc["versions"] = versions
@@ -147,7 +149,7 @@ def update_transcript(video_id: str, body: TranscriptCuesIn, db: Session = Depen
 
 @router.put("/videos/{video_id}/localize/versions/{lang}", response_model=VideoOut, status_code=202)
 def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = Depends(get_db)):
-    """Edit the translation and / or change the voice, then re-run only TTS + mix."""
+    """Edit the translation and / or change the voice (or dub a translate-only version), then run only TTS + mix."""
     video = get_video_or_404(db, video_id)
     if lang not in localize.LANGS:
         raise HTTPException(400, f"不支持的目标语言：{lang}")
@@ -156,7 +158,9 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
     version = (loc.get("versions") or {}).get(lang)
     if not version or not version.get("cues"):
         raise HTTPException(400, "该版本还没有译文，请先生成")
-    if not body.cues and body.voice is None:
+    # No voice-over yet (translated only) or an outdated one: an empty body means "dub it as it is" (HIG-56).
+    undubbed = not version.get("voice_asset_id") or bool(version.get("voice_stale"))
+    if not body.cues and body.voice is None and not undubbed:
         raise HTTPException(400, "没有改动：请修改译文或选择音色")
     if _active(version) or _active(loc.get("transcript")):
         raise HTTPException(409, "这个版本正在生成中，请等它完成")
@@ -174,6 +178,7 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
     version.update(
         status=LOC_QUEUED,
         stage=localize.STAGE_TTS,
+        dub=True,
         voice=voice,
         cues=cues,
         error=None,

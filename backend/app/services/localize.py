@@ -761,6 +761,11 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         _save(db, video, loc, langs=[lang])
         translated = translate_with_fallback(providers.mt, [c["text"] for c in cues], mt_name(source_lang), mt_name(lang), terms)
         version["cues"] = [{"i": c["i"], "translated": t} for c, t in zip(cues, translated, strict=True)]
+        if version.get("dub") is False:
+            # Translate only (HIG-56): an older voice-over no longer matches the text, but stays until re-dubbed.
+            _stamp(version, status=LOC_DONE, stage=None, error=None, warnings=[], stale=False, voice_stale=bool(version.get("voice_asset_id")))
+            _save(db, video, loc, langs=[lang])
+            return
 
     _stamp(version, status=LOC_RUNNING, stage=STAGE_TTS, error=None)
     _save(db, video, loc, langs=[lang])
@@ -825,7 +830,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
             derived_from={"video_id": video.id, "video_name": video.name, "stem": STEM_DUBBED, "lang": lang},
         )
     )
-    _stamp(version, status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False, voice=voice, voice_asset_id=asset_id)
+    _stamp(version, status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False, voice=voice, voice_asset_id=asset_id, dub=True, voice_stale=False)
     _save(db, video, loc, langs=[lang])
 
 

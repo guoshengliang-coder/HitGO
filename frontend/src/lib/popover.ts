@@ -25,3 +25,14 @@ export function placePopover(
   const left = Math.max(margin, Math.min(anchor.left, maxLeft));
   return { left, top };
 }
+
+/**
+ * 「?」说明气泡（纯 CSS 的 .tip-wide，定宽换行）朝上还是朝下弹（HIG-57）：默认朝上；按字数估出气泡高度，
+ * 上方到裁切它的滚动容器顶放不下就朝下。字数估算偏保守（11px 字号、按全角字符宽度算），宁可早翻。
+ */
+export function tipSide(anchorTop: number, clipTop: number, text: string, width = 240, gap = 6): 'top' | 'bottom' {
+  const perLine = Math.max(1, Math.floor((width - 16) / 11));
+  const lines = Math.max(1, Math.ceil(Array.from(text).length / perLine));
+  const height = lines * 11 * 1.4 + 8;
+  return anchorTop - clipTop >= height + gap ? 'top' : 'bottom';
+}

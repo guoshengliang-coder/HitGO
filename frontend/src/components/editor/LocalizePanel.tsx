@@ -1,20 +1,22 @@
-// 「改语言」模块（需求 5）：听写一次出模板 → 按目标语言 翻译 → 合成 → 混音 出版本 → 一键套用到本条视频。
-// 四个可折叠分组，与剪辑面板（HIG-17）同一套 Section。状态都在 video.localization 上，后台任务由 store 轮询；
+// 「改语言」模块（需求 5）：听写一次出模板 → 按目标语言翻译 → 生成口播（合成 + 混音，HIG-56 拆成单独一步）→ 套用到本条视频。
+// 五个可折叠分组，与剪辑面板（HIG-17）同一套 Section。状态都在 video.localization 上，后台任务由 store 轮询；
 // 这里只管展示、编辑草稿（逐句文本 / 音色 / 术语表）、发请求。语言与音色列表来自 GET /api/localize/options，不写死。
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
-import { appliedVersion, canApplyVersion, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, voiceLabel } from '../../lib/localize';
+import { appliedVersion, canApplyVersion, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, voiceLabel } from '../../lib/localize';
+import { loadFeaturePrefs, saveFeaturePrefs } from '../../lib/featurePrefs';
 import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
 import type { Localization, LocalizationVersion, LocalizeIn, LocalizeOptions, Video } from '../../types';
 
-const TRANSCRIPT_HELP = '听写只做一次，结果是所有语言版本的模板：先在这里把识别错的句子改对，再生成版本，译文质量最好。时间点击可跳播放头；播放时当前句高亮。保存修正不会自动重译，已有版本会标「需重译」。';
-const GENERATE_HELP = '勾选目标语言后一键生成：模板没听写过时同一个任务会先听写。每种语言选一个音色；术语表每行「原词=译词」，翻译时强制替换（品牌名、产品名）。已有版本的语言再生成会覆盖旧版本。';
-const VERSIONS_HELP = '每个语言版本独立：展开可逐句改译文、换音色，「重新合成」只重跑配音和混音（不重新翻译）。「需重译」表示模板改过之后译文没更新，点「重译」对该语言再跑一遍翻译 → 合成。';
+const TRANSCRIPT_HELP = '听写只做一次，结果是所有语言版本的模板：先在这里把识别错的句子改对，再翻译，译文质量最好。时间点击可跳播放头；播放时当前句高亮。保存修正不会自动重译，已有版本会标「需重译」。';
+const GENERATE_HELP = '勾选目标语言后一键翻译：模板没听写过时同一个任务会先听写。术语表每行「原词=译词」，翻译时强制替换（品牌名、产品名）。已有版本的语言再翻译会覆盖旧译文；旧口播保留但标「口播待更新」，要在「生成口播」里重新生成。';
+const DUB_HELP = '按译文合成目标语言口播：每种语言选一个音色，逐句合成后按原句时间铺好混成一条配音。打开「生成后自动套用」时，口播生成完会直接套用到这条视频（原声静音、加配音轨和译文字幕，⌘Z 可撤销）；一次选多种语言时只自动套用排在最前、成功的那个，其余在「套用」里切换或「导出多语言」。';
+const VERSIONS_HELP = '每个语言版本独立：展开可逐句改译文、换音色，「重新合成」只重跑口播（不重新翻译）。「需重译」表示模板改过之后译文没更新，点「重译」对该语言再翻译一遍。';
 const APPLY_HELP = '套用把当前视频的源音轨静音，加一条配音轨（对齐源时间轴）和一条 Demucs 伴奏轨（如果分离过），再把译文按句变成字幕层贴底居中（按画布宽 90% 自动换行，画布上拖字幕框左右边可调换行宽度），⌘Z 一步撤销。同一时间只能套用一个语言版本，换版本会替换上一版的层和轨；用户自己加的文字 / 贴纸 / 音轨不动，字幕样式可在「文本」模块里调、重新套用时保留。结果只对本条视频有效：要导出多个语言的成片，套用一版 → 导出 → 换另一版再导出。';
 
 interface SectionProps {
@@ -61,7 +63,7 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
   const transcribe = (retranscribe: boolean) => {
     const req = requestFor(retranscribe);
     if (!req) {
-      setToast('听写和生成是同一个任务：先在「生成版本」里勾选至少一种目标语言');
+      setToast('听写和翻译是同一个任务：先在「翻译」里勾选至少一种目标语言');
       return;
     }
     void localizeVideo(req);
@@ -81,7 +83,7 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
         </select>
       </Field>
       <div className="inline">
-        <button className="btn sm" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新生成已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并生成勾选的语言版本（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
+        <button className="btn sm" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新翻译已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并翻译成勾选的语言（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
           {transcribing ? '听写中…' : t?.status === 'done' ? '重新听写' : '听写'}
         </button>
         <span className={`small ${t?.status === 'failed' ? 'error-text' : 'muted'}`}>{transcriptStatusText(t)}</span>
@@ -127,13 +129,12 @@ function pickVoice(code: string, voices: Record<string, string>, loc: Localizati
   return voices[code] ?? loc?.versions?.[code]?.voice ?? options?.target_langs.find((t) => t.code === code)?.voices[0]?.id ?? '';
 }
 
-/** 生成版本：目标语言多选、每种语言的音色、术语表、一键生成。 */
+/** 翻译：目标语言多选、术语表、一键翻译（只翻译不合成，HIG-56）。 */
 function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionProps & { requestFor: (retranscribe: boolean) => LocalizeIn | null; draft: GenerateDraft }) {
   const localizeVideo = useEditor((s) => s.localizeVideo);
   const targets = options?.target_langs ?? [];
-  const { selected, setSelected, voices, setVoices, termsText, setTermsText } = draft;
+  const { selected, setSelected, termsText, setTermsText } = draft;
   const toggle = (code: string) => setSelected((s) => (s.includes(code) ? s.filter((x) => x !== code) : [...s, code]));
-  const voiceFor = (code: string) => pickVoice(code, voices, loc, options);
   const n = selected.length;
   const transcriptDone = loc?.transcript?.status === 'done';
   const generate = () => {
@@ -142,13 +143,13 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
   };
 
   return (
-    <Section id="localize.generate" title="生成版本" bodyClass="stack" summary={<span>{n ? `已选 ${n} 种语言` : `${targets.length} 种可选`}</span>} help={GENERATE_HELP}>
+    <Section id="localize.generate" title="翻译" bodyClass="stack" summary={<span>{n ? `已选 ${n} 种语言` : `${targets.length} 种可选`}</span>} help={GENERATE_HELP}>
       <div className="chips" role="group" aria-label="目标语言">
         {targets.map((t) => {
           const has = !!loc?.versions?.[t.code];
           const on = selected.includes(t.code);
           return (
-            <button key={t.code} className={`chip ${on ? 'active' : ''}`} aria-pressed={on} disabled={blocked} title={has ? '已有这个语言的版本，再生成会覆盖' : undefined} onClick={() => toggle(t.code)}>
+            <button key={t.code} className={`chip ${on ? 'active' : ''}`} aria-pressed={on} disabled={blocked} title={has ? '已有这个语言的译文，再翻译会覆盖' : undefined} onClick={() => toggle(t.code)}>
               {t.label}
               {has ? ' ·' : ''}
             </button>
@@ -156,24 +157,74 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
         })}
         {targets.length === 0 && <span className="hint">没有可用的目标语言。</span>}
       </div>
-      {selected.map((code) => {
-        const t = targets.find((x) => x.code === code);
-        return (
-          <Field key={code} label={`${t?.label ?? code}音色`}>
-            <select className="select sm" value={voiceFor(code)} disabled={blocked} aria-label={`${t?.label ?? code}音色`} onChange={(e) => setVoices((v) => ({ ...v, [code]: e.target.value }))}>
-              {t?.voices.map((v) => (
-                <option key={v.id} value={v.id}>{v.label}</option>
-              ))}
-            </select>
-          </Field>
-        );
-      })}
       <div className="stack-2">
         <span className="small muted">术语表 · 每行「原词=译词」，翻译时强制替换</span>
         <textarea className="textarea" rows={3} placeholder="HitGO=힛고" value={termsText} disabled={blocked} aria-label="术语表" onChange={(e) => setTermsText(e.target.value)} />
       </div>
-      <button className="btn primary" disabled={blocked || !n} onClick={generate} title="后台任务：每种语言约半分钟到一分钟，生成期间可以继续编辑">
-        {n === 0 ? '先勾选目标语言' : transcriptDone ? `生成 ${n} 个语言版本` : `听写并生成 ${n} 个语言版本`}
+      <button className="btn primary" disabled={blocked || !n} onClick={generate} title="后台任务：每种语言十几秒，翻译期间可以继续编辑">
+        {n === 0 ? '先勾选目标语言' : transcriptDone ? `翻译 ${n} 种语言` : `听写并翻译 ${n} 种语言`}
+      </button>
+    </Section>
+  );
+}
+
+/** 生成口播（HIG-56）：已翻译的语言各选音色、勾选后合成；完成后可自动套用。 */
+function DubSection({ loc, options, blocked, voices, setVoices }: SectionProps & Pick<GenerateDraft, 'voices' | 'setVoices'>) {
+  const dubVersions = useEditor((s) => s.dubVersions);
+  const langs = useMemo(() => dubbableLangs(loc, options), [loc, options]);
+  // 勾选：用户点过的以用户为准，没点过的默认勾「还没有能用口播」的语言
+  const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [autoApply, setAutoApply] = useState(() => loadFeaturePrefs().autoApplyDub);
+  const isOn = (lang: string, dubbed: boolean) => picked[lang] ?? !dubbed;
+  const chosen = langs.filter((l) => isOn(l.lang, l.dubbed));
+  const n = chosen.length;
+  const dubbing = Object.values(loc?.versions ?? {}).filter((v) => isVersionActive(v) && v.stage !== 'translate' && v.cues.length > 0 && v.dub !== false).length;
+  const start = () => {
+    void dubVersions(chosen.map(({ lang }) => ({ lang, voice: pickVoice(lang, voices, loc, options) })));
+    setPicked({});
+  };
+  const summary = dubbing ? `生成中 ${dubbing} 种` : langs.length ? `${langs.filter((l) => l.dubbed).length} / ${langs.length} 已有口播` : '先翻译';
+
+  return (
+    <Section id="localize.dub" title="生成口播" bodyClass="stack" summary={<span>{summary}</span>} help={DUB_HELP}>
+      {langs.length === 0 ? (
+        <div className="hint">还没有翻译好的语言。先在上面「翻译」里勾选目标语言并翻译。</div>
+      ) : (
+        <div className="dub-list">
+          {langs.map(({ lang, dubbed }) => {
+            const t = options?.target_langs.find((x) => x.code === lang);
+            const label = langLabel(options, lang);
+            const v = loc!.versions[lang];
+            return (
+              <div key={lang} className="dub-row">
+                <label className="inline dub-check" title={dubbed ? '已有口播，勾上会按当前译文和音色重新生成' : '还没有能用的口播'}>
+                  <input type="checkbox" checked={isOn(lang, dubbed)} disabled={blocked} onChange={(e) => setPicked((p) => ({ ...p, [lang]: e.target.checked }))} />
+                  <span className="dub-lang">{label}</span>
+                </label>
+                <select className="select sm" value={pickVoice(lang, voices, loc, options)} disabled={blocked || !t?.voices.length} aria-label={`${label}音色`} onChange={(e) => setVoices((m) => ({ ...m, [lang]: e.target.value }))}>
+                  {t?.voices.map((o) => (
+                    <option key={o.id} value={o.id}>{o.label}</option>
+                  ))}
+                </select>
+                <span className={`small ${dubbed ? 'muted' : 'warn-text'}`}>{dubbed ? '已有口播' : v.voice_stale ? '待更新' : '无口播'}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <label className="inline small">
+        <input
+          type="checkbox"
+          checked={autoApply}
+          onChange={(e) => {
+            setAutoApply(e.target.checked);
+            saveFeaturePrefs({ autoApplyDub: e.target.checked });
+          }}
+        />
+        生成后自动套用到这条视频
+      </label>
+      <button className="btn primary" disabled={blocked || !n} onClick={start} title="后台任务：每种语言约半分钟，生成期间可以继续编辑">
+        {n === 0 ? '先勾选要生成口播的语言' : `生成 ${n} 种语言口播`}
       </button>
     </Section>
   );
@@ -198,7 +249,8 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
   const label = langLabel(options, lang);
   const voiceOpts = options?.target_langs.find((t) => t.code === lang)?.voices ?? [];
   const hasTranslation = cues.some((c) => c.translated.trim());
-  const retranslate = () => void localizeVideo({ source_lang: loc?.source_lang, target_langs: [lang], ...(v.voice ? { voices: { [lang]: v.voice } } : {}), terms: v.terms ?? [] });
+  // 重译沿用这一版有没有口播：有就连口播一起重出，只翻译过的仍只翻译
+  const retranslate = () => void localizeVideo({ source_lang: loc?.source_lang, target_langs: [lang], ...(v.voice ? { voices: { [lang]: v.voice } } : {}), terms: v.terms ?? [], dub: !!v.voice_asset_id });
   const resynth = () => void resynthesizeVersion(lang, changed.map((c) => ({ i: c.i, translated: drafts[c.i] })), voiceChanged ? voice : undefined);
   const remove = () => {
     if (window.confirm(`删除${label}版及其配音素材？已套用到视频上的层 / 轨不会自动删除。`)) void deleteVersion(lang);
@@ -219,7 +271,7 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
       {v.stale && !active && (
         <div className="inline">
           <span className="hint">模板已改，这版译文不是最新的。</span>
-          <button className="btn sm" disabled={blocked} onClick={retranslate} title="按最新模板重新翻译并合成">重译</button>
+          <button className="btn sm" disabled={blocked} onClick={retranslate} title={v.voice_asset_id ? '按最新模板重新翻译并重新生成口播' : '按最新模板重新翻译'}>重译</button>
         </div>
       )}
       {(v.warnings?.length ?? 0) > 0 && (
@@ -259,7 +311,7 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
             </select>
           </Field>
           <div className="inline">
-            <button className="btn sm" disabled={blocked || !hasTranslation || (!changed.length && !voiceChanged)} onClick={resynth} title="只重新合成配音和混音，不重新翻译；只传改过的句子">
+            <button className="btn sm" disabled={blocked || !hasTranslation || (!changed.length && !voiceChanged)} onClick={resynth} title="只重新生成口播，不重新翻译；只传改过的句子">
               重新合成{changed.length ? `（${changed.length} 句）` : voiceChanged ? '（换音色）' : ''}
             </button>
             {changed.length > 0 && (
@@ -287,7 +339,7 @@ function VersionsSection(props: SectionProps) {
   return (
     <Section id="localize.versions" title="版本列表" bodyClass="stack" summary={<span>{summary}</span>} help={VERSIONS_HELP}>
       {versions.length === 0 ? (
-        <div className="hint">还没有语言版本。在「生成版本」里勾选目标语言后生成。</div>
+        <div className="hint">还没有语言版本。在「翻译」里勾选目标语言后翻译。</div>
       ) : (
         <div className="track-list">
           {versions.map(([lang, v]) => (
@@ -323,7 +375,7 @@ function ApplySection({ video, loc, options }: SectionProps) {
         )}
       </Field>
       {versions.length === 0 ? (
-        <div className="hint">生成完成的版本会出现在这里，点一下就套用到这条视频。</div>
+        <div className="hint">生成了口播的版本会出现在这里，点一下就套用到这条视频。</div>
       ) : (
         <div className="inline">
           {versions.map(([lang]) => {
@@ -372,7 +424,7 @@ export function LocalizePanel() {
   useEffect(() => {
     setSourceLang(loc?.source_lang ?? 'auto');
   }, [video?.id, loc?.source_lang]);
-  // 「生成版本」的选择：换视频时清掉，术语表预填已有版本的
+  // 「翻译」「生成口播」的选择：换视频时清掉，术语表预填已有版本的
   const [selected, setSelected] = useState<string[]>([]);
   const [voices, setVoices] = useState<Record<string, string>>({});
   const [termsText, setTermsText] = useState('');
@@ -395,6 +447,7 @@ export function LocalizePanel() {
       voices: Object.fromEntries(langs.map((c) => [c, pickVoice(c, voices, loc, options)]).filter(([, v]) => v)),
       terms: parseTerms(termsText),
       retranscribe,
+      dub: false,
     };
   };
 
@@ -422,6 +475,7 @@ export function LocalizePanel() {
           <>
             <TranscriptSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} setSourceLang={setSourceLang} requestFor={requestFor} />
             <GenerateSection video={video} loc={loc} options={options} blocked={blocked} requestFor={requestFor} draft={draft} />
+            <DubSection video={video} loc={loc} options={options} blocked={blocked} voices={voices} setVoices={setVoices} />
             <VersionsSection video={video} loc={loc} options={options} blocked={blocked} />
             <ApplySection video={video} loc={loc} options={options} blocked={blocked} />
           </>

@@ -140,12 +140,12 @@ function FrameSection() {
         })}
       </div>
       {previewKey === 'custom' && (
-        <div className="stack">
+        <div className="stack-2">
           <div className="g2">
-            <Field label="宽度（像素）"><input className="input mono" aria-label="自定义宽度" inputMode="numeric" value={widthInput} onChange={(e) => changeSize('width', e.target.value)} /></Field>
-            <Field label="高度（像素）"><input className="input mono" aria-label="自定义高度" inputMode="numeric" value={heightInput} onChange={(e) => changeSize('height', e.target.value)} /></Field>
+            <Field label="宽度 px" title="成片宽度（像素）"><input className="input mono" aria-label="自定义宽度" inputMode="numeric" value={widthInput} onChange={(e) => changeSize('width', e.target.value)} /></Field>
+            <Field label="高度 px" title="成片高度（像素）"><input className="input mono" aria-label="自定义高度" inputMode="numeric" value={heightInput} onChange={(e) => changeSize('height', e.target.value)} /></Field>
           </div>
-          <button type="button" className={`btn sm ${locked ? 'on' : ''}`} aria-pressed={locked} onClick={() => { lockRatio.current = size.width / size.height; setLocked(!locked); }}>
+          <button type="button" className={`btn sm ${locked ? 'on' : ''}`} style={{ alignSelf: 'flex-start' }} aria-pressed={locked} onClick={() => { lockRatio.current = size.width / size.height; setLocked(!locked); }}>
             {locked ? '宽高比已锁定' : '锁定宽高比'}
           </button>
           {(canvasDimension(widthInput) === null || canvasDimension(heightInput) === null) && <div className="hint" style={{ color: 'var(--st-failed-fg)' }}>宽高须为不小于 2 的偶整数；当前输入尚未应用到画布。</div>}
