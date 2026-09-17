@@ -8,7 +8,7 @@ import { useEditor, type SafeZoneMode } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
 import { alignPlacement, placeLayer, type AlignEdge } from '../../lib/layout';
 import { placementOfBox } from '../../lib/variantLayout';
-import { layerAspect } from '../../lib/spec';
+import { layerAspect, outputFor } from '../../lib/spec';
 import { layerTypeForStep } from '../../lib/steps';
 import { IconCenter, IconCenterH, IconCenterV, IconHelp, IconSafeZone } from '../ui/Icons';
 
@@ -31,6 +31,7 @@ export function QuickBar() {
   const setSafeZoneKey = useEditor((s) => s.setSafeZoneKey);
   const setShortcutsOpen = useEditor((s) => s.setShortcutsOpen);
   const previewKey = useEditor((s) => s.previewVariantKey);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
   const isRef = previewKey === '9x16';
 
@@ -39,7 +40,7 @@ export function QuickBar() {
     const aspect = layerAspect(layer, assets);
     const edges: AlignEdge[] = axis === 'both' ? ['center-h', 'center-v'] : axis === 'h' ? ['center-h'] : ['center-v'];
     const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
-      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey);
+      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey, spec ? outputFor(spec, previewKey) : undefined);
       let q = placement;
       for (const e of edges) q = alignPlacement(q, a, canvas, e);
       return { box: placeLayer(q, a, canvas), anchor: q.anchor };

@@ -531,7 +531,9 @@ function tickJobs() {
           j.status = 'done';
           j.finished_at = now();
           const dims: Record<string, [number, number]> = { '9x16': [1080, 1920], '1x1': [1080, 1080], '4x5': [1080, 1350], '16x9': [1920, 1080] };
-          const [w, h] = dims[j.variant_key] ?? [1080, 1920];
+          const configured = v?.edit_spec?.outputs.find((o) => o.variant_key === j.variant_key);
+          const [w, h] = configured?.variant_key === 'custom' && configured.width && configured.height
+            ? [configured.width, configured.height] : dims[j.variant_key] ?? [1080, 1920];
           j.output_url = v?.proxy_url || '';
           j.output = { width: w, height: h, duration: v?.duration ?? 0, size: 5832211, codec: 'h264/aac' };
           // 同 worker（契约 §1 Job output.audio，HIG-26）：spec 带 audio 块时记下实际混进的音轨，素材不在的算跳过

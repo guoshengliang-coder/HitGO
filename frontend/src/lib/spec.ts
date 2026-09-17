@@ -112,6 +112,14 @@ export function normalizeOutputs(spec: EditSpec): EditSpec {
   for (const o of outs) {
     if (!VARIANT_DEFS.some((d) => d.key === o.variant_key) || byKey.has(o.variant_key)) continue;
     const next: OutputVariant = { ...o, aspect: variantDef(o.variant_key).aspect };
+    if (o.variant_key === 'custom') {
+      const { width, height } = variantDef('custom');
+      next.width = Number.isInteger(o.width) && (o.width ?? 0) >= 2 && (o.width ?? 0) % 2 === 0 ? o.width : width;
+      next.height = Number.isInteger(o.height) && (o.height ?? 0) >= 2 && (o.height ?? 0) % 2 === 0 ? o.height : height;
+    } else {
+      delete next.width;
+      delete next.height;
+    }
     if (o.variant_key !== '9x16' && !o.layer_fit) {
       next.layer_fit = 'video';
       delete next.layer_overrides;
@@ -131,7 +139,9 @@ export function normalizeOutputs(spec: EditSpec): EditSpec {
 /** 新画幅的缺省设置：模糊铺底、跟随视频、清晰度随 9x16。 */
 export function defaultVariant(key: VariantKey, spec: EditSpec): OutputVariant {
   const ref = spec.outputs.find((o) => o.variant_key === '9x16');
-  const o: OutputVariant = { variant_key: key, aspect: variantDef(key).aspect, fill: 'blur', quality: ref?.quality === 'high' ? 'high' : 'standard' };
+  const d = variantDef(key);
+  const o: OutputVariant = { variant_key: key, aspect: d.aspect, fill: 'blur', quality: ref?.quality === 'high' ? 'high' : 'standard' };
+  if (key === 'custom') { o.width = d.width; o.height = d.height; }
   if (key !== '9x16') o.layer_fit = 'video';
   return o;
 }

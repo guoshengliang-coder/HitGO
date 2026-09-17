@@ -34,6 +34,9 @@ describe('estimateOutputBytes', () => {
     expect(estimateOutputBytes({ variant_key: '1x1' }, 10)).toBe(Math.round(((4000 * 0.6 + 128) * 1000 * 10) / 8));
     expect(estimateOutputBytes({ variant_key: '4x5', quality: 'high' }, 10)).toBe(Math.round(((7500 * 0.75 + 128) * 1000 * 10) / 8));
   });
+  it('自定义画幅按实际像素量估算', () => {
+    expect(estimateOutputBytes({ variant_key: 'custom', width: 1080, height: 960 }, 10)).toBe(Math.round(((4000 * 0.5 + 128) * 1000 * 10) / 8));
+  });
   it('时长为 0 / 负数时返回 0', () => {
     expect(estimateOutputBytes({ variant_key: '9x16' }, 0)).toBe(0);
     expect(estimateOutputBytes({ variant_key: '9x16' }, -3)).toBe(0);

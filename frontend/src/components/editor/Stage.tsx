@@ -43,7 +43,7 @@ import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
-import { isVideoAsset, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
+import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
 // Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、左右边改换行宽度（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
@@ -572,16 +572,15 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const nodes = useRef<Record<string, Konva.Node | null>>({});
   const previewKey = useEditor((s) => s.previewVariantKey);
   const isRef = previewKey === '9x16';
-  const def = variantDef(previewKey);
-  const { W, H } = useFitSize(wrapRef, def.width / def.height);
-
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const variant = spec ? outputFor(spec, previewKey) : undefined;
+  const { width: outputW, height: outputH } = variant ? outputSize(variant) : variantDef(previewKey);
+  const { W, H } = useFitSize(wrapRef, outputW / outputH);
   const assets = useEditor((s) => s.assets);
   const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
   // 非 9:16 预览：图层框按该画幅算（输出像素 → 舞台像素），松手写回该画幅的覆盖
-  const stageScale = W / def.width;
+  const stageScale = W / outputW;
   const geomOf = (l: Layer): StageGeom | undefined => {
     if (isRef || !spec || !variant || !video) return undefined;
     const r = resolveLayerBox(spec, l, variant, layerAspect(l, assets), video.width, video.height);
@@ -595,7 +594,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         };
   const fill = variant?.fill ?? 'blur';
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
-  const needsFill = !!video && Math.abs(video.width / video.height - def.width / def.height) > 0.01;
+  const needsFill = !!video && Math.abs(video.width / video.height - outputW / outputH) > 0.01;
   const step = useEditor((s) => s.step);
   const layerTypes = layerTypesForStep(step);
   const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
@@ -726,7 +725,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
       <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, def.width, def.height, W / 2)} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
+        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}
@@ -739,7 +738,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             e.currentTarget.volume = srcVolume;
           }}
         />
-        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, def.width, def.height, W)} W={W} H={H} />}
+        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
         <AudioTracks />
         {!coverActive &&
           layers.map((l) => {

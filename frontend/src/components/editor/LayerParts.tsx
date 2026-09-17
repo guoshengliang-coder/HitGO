@@ -202,6 +202,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
   const previewKey = useEditor((s) => s.previewVariantKey);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
   const aspect = layerAspect(layer, assets);
   const setAnchor = (a: Anchor) => {
@@ -211,7 +212,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
   const align = (edge: AlignEdge) => {
     // 预览非 9:16：对齐只改该画幅（写覆盖）
     const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
-      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey);
+      const { placement, aspect: a, canvas } = placementOfBox(box, anchor, previewKey, spec ? outputFor(spec, previewKey) : undefined);
       const q = alignPlacement(placement, a, canvas, edge);
       return { box: placeLayer(q, a, canvas), anchor: q.anchor };
     });
@@ -766,4 +767,3 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
     </div>
   );
 }
-

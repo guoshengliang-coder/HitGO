@@ -77,7 +77,7 @@ describe('normalizeOutputs / ensureVariants（HIG-29）', () => {
       ...emptySpec(),
       outputs: [
         { variant_key: '16x9', aspect: '16:9', fill: 'color', color: '#112233', quality: 'high', layer_fit: 'video' },
-        { variant_key: 'custom', aspect: '1:1', fill: 'blur' },
+        { variant_key: 'unknown', aspect: '1:1', fill: 'blur' },
         { variant_key: '16x9', aspect: '16:9', fill: 'blur', layer_fit: 'video' },
       ],
     } as unknown as EditSpec;
@@ -99,6 +99,14 @@ describe('normalizeOutputs / ensureVariants（HIG-29）', () => {
     expect(out.outputs[1]).toEqual(spec.outputs[1]);
     expect(out.outputs[2]).toEqual({ variant_key: '16x9', aspect: '16:9', fill: 'blur', quality: 'high', layer_fit: 'video' });
     expect(outputFor(spec, '1x1')).toEqual({ variant_key: '1x1', aspect: '1:1', fill: 'blur', quality: 'high', layer_fit: 'video' });
+  });
+  it('自定义画幅保留宽高，缺省尺寸可随导出勾选创建', () => {
+    const spec = ensureVariants(emptySpec(), ['custom']);
+    expect(outputFor(spec, 'custom')).toMatchObject({ aspect: 'custom', width: 1080, height: 1350, layer_fit: 'video' });
+    const resized = { ...spec, outputs: spec.outputs.map((o) => o.variant_key === 'custom' ? { ...o, width: 1000, height: 1400 } : o) };
+    expect(normalizeOutputs(resized)).toBe(resized);
+    expect(toContractSpec(resized).outputs[1]).toMatchObject({ width: 1000, height: 1400 });
+    expect(exportKeys(setExportKeys(resized, ['9x16', 'custom']))).toEqual(['9x16', 'custom']);
   });
 });
 
