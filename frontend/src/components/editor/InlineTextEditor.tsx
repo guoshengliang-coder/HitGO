@@ -1,11 +1,13 @@
 // 画布内联文字编辑：双击文字图层后，在图层所在位置叠一个 textarea 直接改字（对齐剪映）。
 // 输入实时写入 store 但不产生历史；失焦 / ⌘Enter 提交时把挂载时抓的 spec 快照压入历史；Esc 还原双击时的原文并退出。
 // 位置用 lib/layout.placeLayer 的契约公式算，与 Konva 节点同一套坐标；旋转绕中心，与图层一致。
+// 开了自动换行（style.wrap_width，HIG-51）时输入框宽度、内边距和字号按烤好的 PNG 换算，折行位置与画布上基本一致。
 
 import { useEffect, useRef } from 'react';
 import { useEditor } from '../../store/editor';
 import { placeLayer } from '../../lib/layout';
 import { cloneSpec, layerAspect } from '../../lib/spec';
+import { getCachedText, TEXT_CANVAS } from '../../lib/textImage';
 import type { EditSpec, TextLayer } from '../../types';
 
 const MIN_W = 120;
@@ -53,16 +55,25 @@ export function InlineTextEditor({ layer, W, H, onClose }: { layer: TextLayer; W
   }, []);
 
   const box = placeLayer(layer, layerAspect(layer, assets), { W, H });
-  const w = Math.max(MIN_W, box.w);
-  const h = Math.max(MIN_H, box.h);
   const st = layer.style;
+  const rendered = getCachedText(layer);
+  const wrap = st.wrap_width && st.wrap_width > 0 && rendered ? st.wrap_width : null;
+  // 舞台像素 / PNG 像素（PNG 按 1080×1920 基准渲染）
+  const ratio = wrap && rendered ? box.w / rendered.width : H / TEXT_CANVAS.H;
+  const w = wrap ? box.w : Math.max(MIN_W, box.w);
+  const h = Math.max(MIN_H, box.h);
+  const wrapInner = wrap ? (wrap * TEXT_CANVAS.W - 2 * (st.padding + st.stroke_width) * TEXT_CANVAS.H) * ratio : 0;
+  const padX = wrap ? Math.max(0, (w - wrapInner) / 2) : undefined;
   const style: React.CSSProperties = {
     left: box.x + box.w / 2 - w / 2,
     top: box.y + box.h / 2 - h / 2,
     width: w,
     height: h,
     transform: `rotate(${layer.rotate || 0}deg)`,
-    fontSize: Math.max(10, st.font_size * H),
+    fontSize: Math.max(10, st.font_size * TEXT_CANVAS.H * ratio),
+    paddingLeft: padX,
+    paddingRight: padX,
+    overflowWrap: wrap ? 'anywhere' : undefined,
     fontFamily: `"${st.font_family}", sans-serif`,
     fontWeight: st.font_weight,
     lineHeight: st.line_height,

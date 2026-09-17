@@ -160,6 +160,19 @@ def test_media_blocks_db_and_tmp(client):
     assert r.status_code == 200 and r.content == png.read_bytes()
 
 
+def test_media_output_playable_inline_with_range(client):
+    # 产物页「播放」（HIG-52）直接把 /media 地址交给 <video>：要能按 Range 取片段（拖进度条），且不能强制下载
+    out = storage.output_path("j_play")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(bytes(range(64)))
+    r = client.get("/media/outputs/j_play.mp4", headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206
+    assert r.content == bytes(range(10))
+    assert r.headers["content-range"] == "bytes 0-9/64"
+    assert r.headers["content-type"] == "video/mp4"
+    assert "content-disposition" not in r.headers
+
+
 def test_spa_fallback_without_dist(client):
     r = client.get("/")
     assert r.status_code == 404 and "前端" in r.text

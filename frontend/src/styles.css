@@ -316,6 +316,8 @@ table.table { width: 100%; border-collapse: collapse; background: var(--panel); 
 .table .col-check input { margin: 2px 0 0; cursor: pointer; }
 .table tr.picked td { background: var(--accent-soft, var(--panel-2)); }
 .outputs-bulk { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; min-height: 28px; }
+.output-actions { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
+.output-player .modal-body { padding: 16px 20px; }
 pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); padding: 8px; border-radius: 4px; font-size: 11px; max-height: 320px; overflow: auto; margin: 6px 0 0; }
 
 /* ---- 素材库 ---- */
