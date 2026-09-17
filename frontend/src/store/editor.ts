@@ -11,7 +11,7 @@ import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDet
 import { emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
-import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, toContractSpec } from '../lib/spec';
+import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
@@ -288,6 +288,8 @@ export interface EditorState {
   // 画面（唯一的 9:16 输出）
   /** 改某个画幅的输出设置（缺省 = previewVariantKey）；spec 里还没有这个画幅时先按缺省补上。 */
   patchOutput: (patch: Partial<OutputVariant>, key?: VariantKey) => void;
+  /** 当前视频导出时勾选哪些画幅（HIG-35）：写进 outputs[].export，缺的画幅按缺省补上。 */
+  setExportVariants: (keys: VariantKey[]) => void;
   /** 写 9:16 输出的裁切窗口；null = 删掉（回到 cover 居中）。 */
   setCrop: (rect: CropRect | null, history?: boolean, key?: VariantKey) => void;
 
@@ -1451,6 +1453,11 @@ export const useEditor = create<EditorState>((set, get) => {
       return true;
     },
 
+    setExportVariants: (keys) => {
+      get().updateSpec((spec) => {
+        spec.outputs = setExportKeys(spec, keys).outputs;
+      });
+    },
     patchOutput: (patch, key = get().previewVariantKey) => {
       get().updateSpec((spec) => {
         spec.outputs = ensureVariants(spec, [key]).outputs.map((cur) => {

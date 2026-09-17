@@ -777,3 +777,12 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-drop { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--focus); z-index: 6; pointer-events: none; }
 .tl-drop-tip { position: absolute; top: 2px; left: 4px; font-size: 10.5px; white-space: nowrap; padding: 1px 6px; border-radius: 4px; background: var(--focus); color: #fff; }
 .asset-card.drag { cursor: grab; }
+
+/* HIG-35：画幅页签 = 导出勾 + 预览页签，两处分开点 */
+.chips.variant-tabs .chip.variant-tab { display: flex; align-items: center; gap: 0; padding: 0 0 0 6px; }
+.variant-tab .vt-check { flex: none; width: 13px; height: 13px; padding: 0; border-radius: 3px; border: 1px solid var(--ink-3); background: transparent; position: relative; cursor: pointer; }
+.variant-tab .vt-check.on { background: var(--accent); border-color: var(--accent); }
+.variant-tab .vt-check.on::after { content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 7px; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.variant-tab .vt-label { flex: 1; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; padding: 0 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
+.variant-tab .vt-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
+.chip.export-variant { display: inline-flex; align-items: center; gap: 6px; }

@@ -124,6 +124,35 @@ export function ensureVariants(spec: EditSpec, keys: VariantKey[]): EditSpec {
   return normalizeOutputs({ ...base, outputs: [...base.outputs, ...missing.map((k) => defaultVariant(k, base))] });
 }
 
+/** 该画幅是否勾选导出（HIG-35）；没写 export 时 9x16 勾选、其余不勾。 */
+export function isExported(o: Pick<OutputVariant, 'variant_key' | 'export'>): boolean {
+  return o.export ?? o.variant_key === '9x16';
+}
+
+/** spec 里勾选导出的画幅，按画幅顺序；一个都没有时回到 ['9x16']。 */
+export function exportKeys(spec: EditSpec): VariantKey[] {
+  const keys = VARIANT_DEFS.map((d) => d.key).filter((k) => {
+    const o = spec.outputs.find((x) => x.variant_key === k);
+    return o ? isExported(o) : false;
+  });
+  return keys.length ? keys : ['9x16'];
+}
+
+/** spec 里有没有明确写过导出勾选（HIG-35 之前的 spec 没有，导出弹窗会退回本机记住的勾选）。 */
+export function hasExportChoice(spec: EditSpec): boolean {
+  return spec.outputs.some((o) => typeof o.export === 'boolean');
+}
+
+/**
+ * 把导出勾选写进 outputs：keys 里还没配置的画幅按缺省补上，每个画幅写明 export true / false。
+ * keys 为空时按 ['9x16']（至少出一个）。纯函数，返回新 spec。
+ */
+export function setExportKeys(spec: EditSpec, keys: VariantKey[]): EditSpec {
+  const want = keys.length ? keys : (['9x16'] as VariantKey[]);
+  const base = ensureVariants(spec, want);
+  return { ...base, outputs: base.outputs.map((o) => ({ ...o, export: want.includes(o.variant_key) })) };
+}
+
 /** 与所选安全区重叠的图层数量（按 9:16 默认画布计算）。 */
 export function countSafeZoneOverlaps(spec: EditSpec, zone: SafeZone | undefined, assets: Asset[]): number {
   if (!zone) return 0;

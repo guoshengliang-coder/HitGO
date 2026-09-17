@@ -333,6 +333,19 @@ def test_put_spec_keeps_localize_markers_on_layers_and_tracks(client, ready_vide
     assert got["audio"]["tracks"][0]["origin"] == "localize" and got["audio"]["tracks"][0]["lang"] == "ko"
 
 
+def test_put_spec_keeps_hidden_flags_and_export_ticks(client, ready_video):
+    """HIG-33 hidden / source_hidden and HIG-35 outputs[].export survive the round trip."""
+    spec = valid_spec()
+    spec["layers"][0]["hidden"] = True
+    spec["outputs"][1]["export"] = True
+    spec["audio"] = {"source_volume": 0.5, "source_hidden": True, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "hidden": True}]}
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    got = client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]
+    assert got["layers"][0]["hidden"] is True and got["outputs"][1]["export"] is True
+    assert got["audio"]["source_hidden"] is True and got["audio"]["tracks"][0]["hidden"] is True
+
+
 def test_put_spec_requires_ready_video(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     vid = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"])).json()[0]["id"]

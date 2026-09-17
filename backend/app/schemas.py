@@ -306,6 +306,9 @@ class OutputVariant(BaseModel):
     crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
     layer_fit: LayerFit = "canvas"
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
+    # Editor preference (HIG-35): is this output ticked for export? None = only 9x16 is.
+    # The worker ignores it; POST /api/render's variant_keys decides what gets rendered.
+    export: bool | None = None
 
     @field_validator("variant_key")
     @classmethod

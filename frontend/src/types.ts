@@ -469,6 +469,8 @@ export interface OutputVariant {
   /** 非 9x16 输出上图层怎么摆（HIG-29）：canvas = 相对该画布（缺省）；video = 跟着视频画面走（lib/variantLayout）。 */
   layer_fit?: 'canvas' | 'video';
   layer_overrides?: Record<string, LayerOverride>;
+  /** 可选（HIG-35）：导出时是否勾选这个画幅。缺省：9x16 视为勾选，其余视为不勾。只记用户偏好，出哪些文件仍以 render 的 variant_keys 为准。 */
+  export?: boolean;
 }
 
 /** 音轨角色，只给界面分类（契约 §2 audio.tracks[].role）；worker 不区分。 */

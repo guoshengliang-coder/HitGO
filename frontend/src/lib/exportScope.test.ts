@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanExportVariants, loadExportVariants, resolveExportTargets, saveExportVariants, toggleExportVariant } from './exportScope';
+import { cleanExportVariants, loadExportVariants, resolveExportTargets, toggleExportVariant } from './exportScope';
 import type { Video } from '../types';
 
 const VIDEOS: Pick<Video, 'id' | 'status'>[] = [
@@ -35,10 +35,9 @@ describe('导出画幅勾选（HIG-29）', () => {
     expect(toggleExportVariant(['9x16', '4x5'], '9x16')).toEqual(['4x5']);
     expect(toggleExportVariant(['4x5'], '4x5')).toEqual(['4x5']);
   });
-  it('读写 storage；坏 JSON 回退 9x16', () => {
-    const m = new Map<string, string>();
-    const s = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
-    saveExportVariants(['1x1', '9x16'], s);
+  it('读本机旧记录（老 spec 兜底）；坏 JSON 回退 9x16', () => {
+    const m = new Map<string, string>([['hitgo.exportVariants', JSON.stringify(['1x1', '9x16'])]]);
+    const s = { getItem: (k: string) => m.get(k) ?? null };
     expect(loadExportVariants(s)).toEqual(['9x16', '1x1']);
     m.set('hitgo.exportVariants', '{bad');
     expect(loadExportVariants(s)).toEqual(['9x16']);

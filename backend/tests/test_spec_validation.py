@@ -400,3 +400,15 @@ def test_hidden_flags_default_off_and_must_be_booleans():
     bad = valid_spec()
     bad["layers"][0]["hidden"] = "maybe"
     assert "hidden" in errors_of(bad)
+
+
+def test_output_export_flag_is_optional_and_boolean():
+    """HIG-35: the editor stores the export tick on each output; the worker ignores it."""
+    spec = validate(valid_spec())
+    assert [o.export for o in spec.outputs] == [None, None]
+    raw = valid_spec()
+    raw["outputs"][0]["export"] = False
+    raw["outputs"][1]["export"] = True
+    assert [o.export for o in validate(raw).outputs] == [False, True]
+    raw["outputs"][1]["export"] = "yes please"
+    assert "export" in errors_of(raw)

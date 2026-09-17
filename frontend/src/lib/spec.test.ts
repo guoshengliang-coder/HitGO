@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countSafeZoneOverlaps, ensureVariants, layerAspect, layerName, normalizeOutputs, outputFor, toContractSpec } from './spec';
+import { countSafeZoneOverlaps, ensureVariants, exportKeys, hasExportChoice, layerAspect, layerName, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from './spec';
 import { emptySpec, type EditSpec, type MaskLayer, type SafeZone } from '../types';
 
 describe('toContractSpec · audio', () => {
@@ -99,5 +99,44 @@ describe('遮盖层', () => {
   it('toContractSpec 剔除本地字段后原样透传遮盖字段', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [{ ...mask, name: 'x', blur: 3, color: '#112233' }] };
     expect(toContractSpec(spec).layers[0]).toEqual({ ...mask, blur: 3, color: '#112233' });
+  });
+});
+
+describe('导出勾选 exportKeys / setExportKeys（HIG-35）', () => {
+  const multi = (): EditSpec => ({
+    ...emptySpec(),
+    outputs: [
+      { variant_key: '9x16', aspect: '9:16', fill: 'blur' },
+      { variant_key: '16x9', aspect: '16:9', fill: 'crop', layer_fit: 'video' },
+    ],
+  });
+  it('没写 export 时只有 9x16 算勾选（老 spec 行为不变）', () => {
+    expect(exportKeys(multi())).toEqual(['9x16']);
+    expect(hasExportChoice(multi())).toBe(false);
+  });
+  it('按 export 取勾选，按画幅顺序；全部取消时回到 9x16', () => {
+    const spec = multi();
+    spec.outputs[0].export = false;
+    spec.outputs[1].export = true;
+    expect(exportKeys(spec)).toEqual(['16x9']);
+    expect(hasExportChoice(spec)).toBe(true);
+    spec.outputs[1].export = false;
+    expect(exportKeys(spec)).toEqual(['9x16']);
+  });
+  it('写回时补上缺的画幅、保留已有设置，并逐个写明 export', () => {
+    const next = setExportKeys(multi(), ['1x1', '16x9']);
+    expect(next.outputs.map((o) => [o.variant_key, o.export])).toEqual([
+      ['9x16', false],
+      ['1x1', true],
+      ['16x9', true],
+    ]);
+    expect(next.outputs[2].fill).toBe('crop');
+    expect(next.outputs[1]).toMatchObject({ fill: 'blur', layer_fit: 'video' });
+    expect(exportKeys(next)).toEqual(['1x1', '16x9']);
+  });
+  it('空勾选按 9x16 处理；export 原样发给后端', () => {
+    const next = setExportKeys(multi(), []);
+    expect(exportKeys(next)).toEqual(['9x16']);
+    expect(toContractSpec(next).outputs.map((o) => o.export)).toEqual([true, false]);
   });
 });

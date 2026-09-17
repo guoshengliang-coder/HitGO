@@ -270,7 +270,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     }
   ],
   "outputs": [
-    { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high" },
+    { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high",
+      "export": true },                      // 可选（HIG-35）：导出时是否勾选这个画幅；缺省时 9x16 视为 true、其余视为 false，见下方规则
     { "variant_key": "1x1",  "aspect": "1:1",  "fill": "blur",
       "layer_fit": "video",                  // 可选，缺省 "canvas"：图层相对该画布 | "video"：跟着视频画面走，见下方规则
       "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
@@ -315,7 +316,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
 - **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
-- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
+- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。勾选结果写进各输出的 `export`（HIG-35，可选布尔；缺省时 `9x16` 视为勾选、其余视为不勾），「成片画面」画幅页签上的勾与导出对话框是同一份，随视频保存；worker 不读 `export`，这次出哪些文件仍只由 `variant_keys` 决定。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
 - **`layer_fit`**（可选，缺省 `"canvas"`）：非 `9x16` 输出上图层怎么摆。`"canvas"` = 上面的公式直接套该输出的画布（此前的行为）；`"video"` = 图层跟着视频画面走：
   - **参考画布**：spec 里 `variant_key = "9x16"` 的输出（没有时按 `9:16` + `blur`）。图层的 `anchor / margin / width / height` 都按参考画布理解。参考输出自身、以及源视频宽高未知时忽略此字段，按 `"canvas"` 处理。
   - **映射**：分别算出源画面在参考画布与目标画布上的位置（`blur` / `color`：contain 居中；`crop`：先取裁切窗口再 cover 居中），得到「参考画布像素 → 源像素 → 目标画布像素」的等比映射 `p' = offset + p·k`。
