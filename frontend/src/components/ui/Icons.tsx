@@ -153,6 +153,13 @@ export const IconSubtitle = () => (
     <path d="M4.5 9.5h4M10 9.5h1.5" />
   </svg>
 );
+/** 大字报（HIG-50）：一个框里三行字向上滚。 */
+export const IconScroll = () => (
+  <svg {...base}>
+    <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+    <path d="M5 6h6M5 8.5h6M5 11h3.5" />
+  </svg>
+);
 export const IconGlobe = () => (
   <svg {...base}>
     <circle cx="8" cy="8" r="6" />

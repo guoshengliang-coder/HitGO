@@ -5,7 +5,8 @@ import type { Batch } from '../types';
 import { IconExport, IconPen, IconPlus, IconTrash } from '../components/ui/Icons';
 import { Seg } from '../components/ui/Seg';
 import { fmtDate } from '../lib/datetime';
-import { VIDEO_ACCEPT, mergeFiles, rejectedText } from '../lib/fileDrop';
+import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL, mergeFiles, rejectedText } from '../lib/fileDrop';
+import { BLANK_DEFAULTS, BlankMaterialFields, blankDraftToBody, blankDraftValid, type BlankDraft } from '../components/ui/NewMaterial';
 import { matchesQuery } from '../lib/search';
 import { sortBatches, type BatchSort } from '../lib/batches';
 import { DropZone } from '../components/ui/DropZone';
@@ -23,6 +24,9 @@ export function BatchesPage() {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  // 新批次的第一批素材从哪来（HIG-50）：上传视频 / 图片，或者先建一条空白素材
+  const [source, setSource] = useState<'upload' | 'blank'>('upload');
+  const [blank, setBlank] = useState<BlankDraft>(BLANK_DEFAULTS);
   const [progress, setProgress] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState('');
@@ -51,9 +55,10 @@ export function BatchesPage() {
 
   // 拖进来的视频加到待上传列表；表单没开就先打开（HIG-21）
   const addFiles = (accepted: File[], rejected: File[]) => {
-    setError(rejectedText(rejected, 'mp4 / mov'));
+    setError(rejectedText(rejected, VIDEO_ACCEPT_LABEL));
     if (!accepted.length) return;
     setCreating(true);
+    setSource('upload');
     setFiles((prev) => mergeFiles(prev, accepted));
   };
 
@@ -70,15 +75,21 @@ export function BatchesPage() {
 
   const shown = batches ? sortBatches(batches.filter((b) => matchesQuery(b.name, query)), sort) : null;
 
+  const canSubmit = !!name.trim() && (source === 'upload' ? files.length > 0 : blankDraftValid(blank));
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !files.length) return;
+    if (!canSubmit) return;
     setBusy(true);
     setError(null);
     try {
       const b = await api.createBatch(name.trim());
-      setProgress(0);
-      await api.uploadVideos(b.id, files, (f) => setProgress(f));
+      if (source === 'blank') {
+        await api.createBlankVideo(b.id, blankDraftToBody(blank));
+      } else {
+        setProgress(0);
+        await api.uploadVideos(b.id, files, (f) => setProgress(f));
+      }
       navigate(`/batches/${b.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -116,22 +127,34 @@ export function BatchesPage() {
               批次名称
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：9 月新手引导 A/B" autoFocus />
             </label>
-            <label className="field">
-              视频文件（mp4 / mov，可多选）
-              <input
-                className="input"
-                type="file"
-                multiple
-                accept={VIDEO_ACCEPT}
-                onChange={(e) => {
-                  setFiles((prev) => mergeFiles(prev, Array.from(e.target.files ?? [])));
-                  e.target.value = '';
-                }}
-              />
-            </label>
+            <span className="field-col">
+              第一批素材
+              <Seg label="素材来源" options={[{ v: 'upload', label: '上传视频 / 图片' }, { v: 'blank', label: '空白素材' }]} value={source} disabled={busy} onChange={setSource} />
+            </span>
+            {source === 'upload' && (
+              <label className="field">
+                文件（{VIDEO_ACCEPT_LABEL}，可多选）
+                <input
+                  className="input"
+                  type="file"
+                  multiple
+                  accept={VIDEO_ACCEPT}
+                  onChange={(e) => {
+                    setFiles((prev) => mergeFiles(prev, Array.from(e.target.files ?? [])));
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            )}
           </div>
-          {files.length === 0 && <div className="hint">也可以直接把 mp4 / mov 文件拖到这个页面上。</div>}
-          {files.length > 0 && (
+          {source === 'blank' && (
+            <>
+              <div className="hint">一段纯色画面，当大字报 / 文字动画的底；建好批次后可以再上传视频或加更多空白素材。</div>
+              <BlankMaterialFields value={blank} onChange={setBlank} disabled={busy} />
+            </>
+          )}
+          {source === 'upload' && files.length === 0 && <div className="hint">也可以直接把 {VIDEO_ACCEPT_LABEL} 文件拖到这个页面上。</div>}
+          {source === 'upload' && files.length > 0 && (
             <div className="upload-list">
               {files.map((f) => (
                 <div key={`${f.name}:${f.size}`} className="mono">
@@ -155,8 +178,8 @@ export function BatchesPage() {
           )}
           {error && <div className="error-text">{error}</div>}
           <div className="form-row">
-            <button className="btn primary" type="submit" disabled={busy || !name.trim() || !files.length}>
-              {busy ? '处理中…' : `创建并上传 ${files.length} 个文件`}
+            <button className="btn primary" type="submit" disabled={busy || !canSubmit}>
+              {busy ? '处理中…' : source === 'blank' ? '创建批次并新建空白素材' : `创建并上传 ${files.length} 个文件`}
             </button>
             <button className="btn" type="button" onClick={() => setCreating(false)} disabled={busy}>
               取消

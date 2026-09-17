@@ -262,6 +262,73 @@ def test_upload_returns_503_when_queue_down(monkeypatch):
         assert c.get(f"/api/batches/{bid}").json()["videos"] == []
 
 
+def test_upload_image_becomes_a_still_video(client, enqueued, png_bytes):
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    files = [("files", ("bg.png", io.BytesIO(png_bytes), "image/png"))] + upload_files(["V01.mp4"])
+    r = client.post(f"/api/batches/{bid}/videos", files=files)
+    assert r.status_code == 201, r.text
+    image, video = r.json()
+    assert image["kind"] == "image" and video["kind"] == "video"
+    assert image["status"] == "preparing" and image["source_url"].endswith("/source.mp4")
+    still = storage.still_path(bid, image["id"], "png")
+    assert still.is_file() and still.read_bytes() == png_bytes
+    assert storage.find_still(bid, image["id"]) == still
+    assert not storage.source_path(bid, image["id"]).exists()  # preprocess generates it
+    assert enqueued.names() == ["hitgo.preprocess_video", "hitgo.preprocess_video"]
+    assert [a[0] for _, a in enqueued.calls] == [image["id"], video["id"]]
+    assert [v["kind"] for v in client.get(f"/api/batches/{bid}").json()["videos"]] == ["image", "video"]
+
+    # unsupported image type: whole request rejected, nothing left behind
+    r = client.post(f"/api/batches/{bid}/videos", files=[("files", ("a.gif", io.BytesIO(png_bytes), "image/gif"))])
+    assert r.status_code == 400 and "jpg / png" in r.json()["detail"]
+    assert client.get(f"/api/batches/{bid}").json()["video_count"] == 2
+    assert not any(storage.batch_dir(bid).rglob("still.gif"))
+
+
+def test_upload_image_rejects_oversized(client, enqueued, monkeypatch):
+    from app.routers import batches as batches_router
+
+    monkeypatch.setattr(batches_router, "IMAGE_MAX_BYTES", 64)
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    r = client.post(f"/api/batches/{bid}/videos", files=[("files", ("big.jpg", io.BytesIO(b"\xff" * 65), "image/jpeg"))])
+    assert r.status_code == 400 and "20 MiB" in r.json()["detail"]
+    assert client.get(f"/api/batches/{bid}").json()["videos"] == []
+    assert not any(storage.batch_dir(bid).rglob("still.*"))
+    assert enqueued.calls == []
+
+
+def test_create_blank_video(client, enqueued):
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    r = client.post(f"/api/batches/{bid}/blank", json={})
+    assert r.status_code == 201, r.text
+    v = r.json()
+    assert v["kind"] == "blank" and v["name"] == "空白素材 1" and v["order"] == 0
+    assert v["status"] == "preparing" and v["source_url"].endswith("/source.mp4")
+    assert enqueued.calls == [("hitgo.preprocess_video", (v["id"],))]
+
+    r = client.post(f"/api/batches/{bid}/blank", json={"name": " 白底 ", "color": "#ff8800", "duration": 3, "aspect": "1:1"})
+    assert r.status_code == 201 and r.json()["name"] == "白底" and r.json()["order"] == 1
+    with SessionLocal() as db:
+        row = db.get(Video, r.json()["id"])
+        assert row.kind == "blank" and row.blank_params == {"color": "#FF8800", "duration": 3.0, "aspect": "1:1"}
+    assert client.post(f"/api/batches/{bid}/blank", json={"name": ""}).json()["name"] == "空白素材 3"
+
+    # validation goes through the app-wide 422 → 400 handler
+    assert client.post(f"/api/batches/{bid}/blank", json={"color": "red"}).status_code == 400
+    assert client.post(f"/api/batches/{bid}/blank", json={"duration": 0}).status_code == 400
+    assert client.post(f"/api/batches/{bid}/blank", json={"aspect": "3:4"}).status_code == 400
+    assert client.post("/api/batches/b_missing/blank", json={}).status_code == 404
+    assert client.get(f"/api/batches/{bid}").json()["video_count"] == 3
+
+
+def test_create_blank_video_returns_503_when_queue_down():
+    with TestClient(app) as c:
+        bid = c.post("/api/batches", json={"name": "b"}).json()["id"]
+        r = c.post(f"/api/batches/{bid}/blank", json={})
+        assert r.status_code == 503, r.text
+        assert c.get(f"/api/batches/{bid}").json()["videos"] == []
+
+
 def test_delete_batch_removes_files_and_jobs(client, ready_video, db):
     out = storage.output_path("j_del")
     out.parent.mkdir(exist_ok=True)
@@ -1002,6 +1069,26 @@ def test_preprocess_command_builders(tmp_path):
     assert meta == {"url": "/media/x/sprite.jpg", "interval": 1.0, "tile_width": 90, "tile_height": 160, "columns": 10, "count": 25}
 
 
+def test_source_gen_command_builders(tmp_path):
+    from app.services import preprocess
+
+    still, dst = tmp_path / "still.png", tmp_path / "source.mp4"
+    a = preprocess.still_args(still, dst)
+    assert a[1:] == [
+        "-hide_banner", "-y", "-nostats", "-loglevel", "error",
+        "-loop", "1", "-framerate", "30", "-t", "5", "-i", str(still),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-movflags", "+faststart", str(dst),
+    ]  # fmt: skip
+    b = preprocess.blank_args(dst, "#FF8800", 2.5, (1080, 1920))
+    assert b[1:] == [
+        "-hide_banner", "-y", "-nostats", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=0xFF8800:s=1080x1920:r=30:d=2.5",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", str(dst),
+    ]  # fmt: skip
+
+
 def test_storage_media_url_roundtrip():
     p = storage.upload_path("u_abc")
     assert storage.media_url(p) == "/media/uploads/u_abc.png"
@@ -1435,3 +1522,95 @@ def test_mask_layer_round_trips_through_the_spec_api(client, ready_video):
     spec["layers"][1] = {"id": "l_m", "type": "mask", "color": "#00000080"}
     r = put_spec(client, VIDEO, spec)
     assert r.status_code == 400 and "color" in r.json()["errors"][0]["field"]
+
+
+# --- poster: read aloud + highlight (HIG-50) -----------------------------------------
+
+
+POSTER_COPY = (
+    "已经出来了 有三个好消息 和两个坏消息 尤其是最后一个消息 非常的重要 第一个好消息 今年中秋节放假时间为 "
+    "9月25日至9月27日 连休三天不调休 第二个好消息 根据规定 中秋节当天加班的 用人单位需要发放三倍工资"
+)
+
+
+def test_tts_endpoint_creates_a_preparing_derived_audio_asset_and_queues_it(client, enqueued, db):
+    r = client.post("/api/tts", json={"text": "  " + POSTER_COPY + " ", "lang": "zh", "voice": "longcheng_v3", "speech_rate": 1.2})
+    assert r.status_code == 202, r.text
+    a = r.json()
+    assert a["type"] == "audio" and a["kind"] == "audio" and a["status"] == "preparing" and a["source"] == "derived"
+    assert a["name"] == POSTER_COPY[:20] and a["url"] == f"/media/assets/{a['id']}.m4a" and a["duration"] is None
+    info = a["derived_from"]
+    assert info["stem"] == "tts" and info["lang"] == "zh" and info["voice"] == "longcheng_v3" and info["speech_rate"] == 1.2
+    assert info["text"] == POSTER_COPY[:40] and info["tts_text"] == POSTER_COPY
+    assert enqueued.calls == [("hitgo.synthesize_tts", (a["id"],))]
+    assert client.get(f"/api/assets/{a['id']}").json()["status"] == "preparing"
+    # a name of its own is kept
+    named = client.post("/api/tts", json={"text": "中秋快乐", "lang": "zh", "voice": "longxiaochun_v3", "name": " 中秋朗读 "}).json()
+    assert named["name"] == "中秋朗读"
+    # the worker's result shows up through the same GET
+    asset = db.get(Asset, a["id"])
+    asset.status, asset.duration = "ready", 12.5
+    db.commit()
+    polled = client.get(f"/api/assets/{a['id']}").json()
+    assert polled["status"] == "ready" and polled["duration"] == 12.5
+
+
+def test_tts_endpoint_validates_text_voice_and_rate(client, enqueued):
+    base = {"lang": "zh", "voice": "longxiaochun_v3"}
+    assert client.post("/api/tts", json={"text": "   ", **base}).status_code == 400
+    assert client.post("/api/tts", json={"text": "", **base}).status_code == 400
+    assert client.post("/api/tts", json={"text": "x" * 5001, **base}).status_code == 400
+    assert client.post("/api/tts", json={"text": "你好", **base, "speech_rate": 2.5}).status_code == 400
+    r = client.post("/api/tts", json={"text": "你好", "lang": "zh", "voice": "loongabby_v3"})  # an English voice
+    assert r.status_code == 400 and "音色" in r.json()["detail"]
+    assert client.post("/api/tts", json={"text": "你好", "lang": "xx", "voice": "longxiaochun_v3"}).status_code == 400
+    assert enqueued.calls == []
+
+
+def test_tts_endpoint_is_503_without_a_key_or_a_queue(client, monkeypatch, db):
+    body = {"text": "你好", "lang": "zh", "voice": "longxiaochun_v3"}
+    monkeypatch.setattr(settings, "localize_provider", "dashscope")
+    monkeypatch.setattr(settings, "dashscope_api_key", "")
+    r = client.post("/api/tts", json=body)
+    assert r.status_code == 503 and "DASHSCOPE_API_KEY" in r.json()["detail"]
+    monkeypatch.setattr(settings, "localize_provider", "fake")
+
+    def down(task, *args):  # noqa: ANN001
+        raise worker.QueueUnavailable("redis down")
+
+    monkeypatch.setattr(worker, "enqueue", down)
+    assert client.post("/api/tts", json=body).status_code == 503
+    assert db.query(Asset).count() == 0  # the row was rolled back
+
+
+def test_highlight_endpoint_returns_utf16_ranges(client, monkeypatch):
+    r = client.post("/api/highlight", json={"text": "🎉" + POSTER_COPY})
+    assert r.status_code == 200, r.text
+    phrases = r.json()["phrases"]
+    texts = [p["text"] for p in phrases]
+    assert "9月25日至9月27日" in texts and "三倍工资" in texts and len(phrases) <= 8
+    starts = [p["start"] for p in phrases]
+    assert starts == sorted(starts) and all(p["end"] > p["start"] for p in phrases)
+    date = next(p for p in phrases if p["text"] == "9月25日至9月27日")
+    assert date["start"] == POSTER_COPY.index("9月25日至9月27日") + 2  # the emoji counts as two UTF-16 units
+    assert len(client.post("/api/highlight", json={"text": POSTER_COPY, "max_phrases": 2}).json()["phrases"]) == 2
+    assert client.post("/api/highlight", json={"text": ""}).status_code == 400
+    assert client.post("/api/highlight", json={"text": "x", "max_phrases": 21}).status_code == 400
+
+    monkeypatch.setattr(settings, "localize_provider", "dashscope")
+    monkeypatch.setattr(settings, "dashscope_api_key", "")
+    assert client.post("/api/highlight", json={"text": POSTER_COPY}).status_code == 503
+
+
+def test_highlight_endpoint_wraps_provider_errors_as_502(client, monkeypatch):
+    from app.services import localize
+
+    class Broken:
+        def pick(self, text, max_phrases):  # noqa: ANN001
+            raise localize.LocalizeError("百炼 429")
+
+    providers = localize.fake_providers()
+    providers.highlight = Broken()
+    monkeypatch.setattr(localize, "make_providers", lambda cfg=None: providers)
+    r = client.post("/api/highlight", json={"text": POSTER_COPY})
+    assert r.status_code == 502 and r.json()["detail"] == "重点词挑选失败：百炼 429"

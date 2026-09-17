@@ -1,10 +1,18 @@
 // 历史栈：文字这类「输入期间 history=false、提交时才记一条」的编辑，
 // 提交时必须压入编辑前的快照（pushHistorySnapshot），否则 ⌘Z 回不到编辑前。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useEditor } from './editor';
+import { selectPostDuration, selectPostTime, useEditor } from './editor';
 import { defaultTextStyle, emptySpec, type Asset, type BatchDetail, type EditSpec, type Job, type LocalizationVersion, type SafeZone, type TextLayer, type Video } from '../types';
-import { api } from '../api';
+import { api, ApiError } from '../api';
 import { cloneSpec } from '../lib/spec';
+import { ensureTextRendered } from '../lib/textImage';
+import { DEFAULT_SCROLL_BOX, posterDuration } from '../lib/poster';
+
+// node 环境没有 canvas：滚动文案的预览渲染换成固定尺寸（950 × 3000 px，相当于 1080 画布上 0.88 宽的一篇长文案）
+vi.mock('../lib/textImage', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/textImage')>()),
+  ensureTextRendered: vi.fn(async () => ({ canvas: null as unknown as HTMLCanvasElement, width: 950, height: 3000, pad: 0 })),
+}));
 
 const VIDEO = { id: 'v1', name: 'a.mp4', duration: 10, width: 1080, height: 1920 } as Video;
 
@@ -490,5 +498,163 @@ describe('删除视频（HIG-20）', () => {
     expect(s.currentVideoId).toBe('v2');
     expect(s.toast).toContain('已删除 1 条视频');
     expect(s.toast).toContain('「v3.mp4」这条视频有进行中的渲染任务');
+  });
+});
+
+// 大字报（HIG-50）：滚动文案图层、朗读轨与成片时长 trim.duration 的联动
+describe('大字报（HIG-50）', () => {
+  const ZONE = { key: 'douyin', name: '抖音', aspect: '9x16', zones: [], inner: { x: 0.1, y: 0.2, w: 0.8, h: 0.5, label: '内' } } as SafeZone;
+  const spec = () => useEditor.getState().currentSpec()!;
+  const poster = () => useEditor.getState().posterLayer();
+
+  beforeEach(() => {
+    useEditor.setState({ assets: [], safeZones: [ZONE], safeZoneKey: 'douyin', toast: null, posterVoicePending: null, lap: 0 });
+    useEditor.getState().replaceSpec('v1', emptySpec());
+    vi.mocked(ensureTextRendered).mockClear();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('addPosterLayer：框取当前安全区的内安全框，按框宽折行、宽 = 框宽，选中并返回 id；没有内安全框时用缺省框', async () => {
+    const id = useEditor.getState().addPosterLayer('第一行\n第二行');
+    expect(id).not.toBeNull();
+    const l = poster()!;
+    expect(l.id).toBe(id);
+    expect(l.text).toBe('第一行\n第二行');
+    expect(l.scroll?.box).toEqual({ x: 0.1, y: 0.2, w: 0.8, h: 0.5 });
+    expect(l.style.wrap_width).toBe(0.8);
+    expect(l.width).toBe(0.8);
+    expect(l.width_manual).toBe(true);
+    expect(l.style.font_size).toBe(0.045);
+    expect(l.style.line_height).toBe(1.4);
+    expect(l.style.align).toBe('center');
+    expect(useEditor.getState().selectedLayerId).toBe(id);
+    // 预览渲染回来后 image_size 写进图层、成片时长跟着算出来
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poster()!.image_size).toEqual([950, 3000]);
+    expect(spec().trim.duration).toBe(posterDuration(spec(), []));
+    expect(spec().trim.duration).toBeGreaterThan(0);
+
+    useEditor.setState({ safeZoneKey: 'generic-vertical' });
+    useEditor.getState().replaceSpec('v1', emptySpec());
+    useEditor.getState().addPosterLayer();
+    expect(poster()!.scroll?.box).toEqual(DEFAULT_SCROLL_BOX);
+    expect(poster()!.text).toBe('');
+  });
+
+  it('setScroll：合并进缺省值；改框时折行宽 / 图层宽跟着框宽走并重算成片时长', async () => {
+    const id = useEditor.getState().addPosterLayer('文案')!;
+    await vi.advanceTimersByTimeAsync(0);
+    const before = spec().trim.duration!;
+    useEditor.getState().setScroll(id, { speed: 0.16 });
+    expect(poster()!.scroll).toMatchObject({ speed: 0.16, start: 'enter', end: 'exit', hold_start: 0, hold_end: 0 });
+    expect(spec().trim.duration).toBeLessThan(before); // 快一倍，滚动时长减半
+
+    useEditor.getState().setScroll(id, { box: { x: 0.2, y: 0.1, w: 0.6, h: 0.7 } });
+    await vi.advanceTimersByTimeAsync(0);
+    const l = poster()!;
+    expect(l.scroll?.box).toEqual({ x: 0.2, y: 0.1, w: 0.6, h: 0.7 });
+    expect(l.scroll?.speed).toBe(0.16);
+    expect(l.style.wrap_width).toBe(0.6);
+    expect(l.width).toBe(0.6);
+    expect(spec().trim.duration).toBe(posterDuration(spec(), []));
+  });
+
+  it('setPosterText：上色区间随文字平移；autoHighlight 把后端挑出的词组并入区间', async () => {
+    const id = useEditor.getState().addPosterLayer('今天大促')!;
+    useEditor.getState().updateLayer(id, { spans: [{ start: 2, end: 4, color: '#FF0000' }] });
+    useEditor.getState().setPosterText(id, '明天今天大促');
+    expect(poster()!.text).toBe('明天今天大促');
+    expect(poster()!.spans).toEqual([{ start: 4, end: 6, color: '#FF0000' }]);
+
+    vi.spyOn(api, 'highlight').mockResolvedValue({ phrases: [{ text: '明天', start: 0, end: 2 }] });
+    expect(await useEditor.getState().autoHighlight(id)).toBe(true);
+    expect(poster()!.spans!.map((s) => [s.start, s.end])).toEqual([[0, 2], [4, 6]]);
+
+    vi.spyOn(api, 'highlight').mockRejectedValue(new ApiError(503, '重点提取未配置'));
+    expect(await useEditor.getState().autoHighlight(id)).toBe(false);
+    expect(useEditor.getState().toast).toBe('重点提取未配置');
+  });
+
+  it('syncPosterDuration：按滚动 / 朗读写 trim.duration，不记历史；没变不写；什么都没有时清掉', async () => {
+    const id = useEditor.getState().addPosterLayer('文案')!;
+    await vi.advanceTimersByTimeAsync(0);
+    const past = useEditor.getState().history.v1.past.length;
+    const d = spec().trim.duration!;
+    expect(d).toBe(posterDuration(spec(), []));
+    const snapshot = spec();
+    useEditor.getState().syncPosterDuration();
+    expect(spec()).toBe(snapshot); // 没变：不写、不排保存
+    expect(useEditor.getState().history.v1.past.length).toBe(past);
+
+    // 删掉滚动图层 → 清掉成片时长
+    useEditor.getState().removeLayer(id);
+    expect(spec().trim.duration).toBeUndefined();
+    expect(useEditor.getState().history.v1.past.length).toBe(past + 1);
+  });
+
+  it('generateVoice：素材就绪后替换旧朗读轨、加为口播轨并写成片时长；失败 toast 后端 detail 并返回 null', async () => {
+    const tts = (id: string, status: 'preparing' | 'ready', duration?: number): Asset => ({ id, type: 'audio', kind: 'audio', status, name: '朗读', url: '/media/tts.m4a', source: 'derived', duration, derived_from: { stem: 'tts', lang: 'zh', voice: 'v1' }, created_at: '' });
+    // 上一次生成的朗读轨（tts 派生素材）应被替换；用户自己的 BGM 轨留着
+    const old = tts('a_old', 'ready', 5);
+    useEditor.setState({ assets: [old] });
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), audio: { source_volume: 1, tracks: [{ id: 'au_bgm', asset_id: 'a_bgm', role: 'bgm', t: 'all' }, { id: 'au_old', asset_id: 'a_old', role: 'voice', align: 'post', t: [0, 5] }] } });
+    vi.spyOn(api, 'synthesizeTts').mockResolvedValue(tts('a_new', 'preparing'));
+    vi.spyOn(api, 'getAsset').mockResolvedValue(tts('a_new', 'ready', 12.34));
+
+    const id = await useEditor.getState().generateVoice('文案', 'zh', 'v1', 1.2);
+    expect(id).toBe('a_new');
+    expect(api.synthesizeTts).toHaveBeenCalledWith({ text: '文案', lang: 'zh', voice: 'v1', speech_rate: 1.2 });
+    expect(useEditor.getState().posterVoicePending).toBe('a_new');
+    expect(useEditor.getState().assets.map((a) => a.id)).toEqual(['a_old', 'a_new']);
+
+    await vi.advanceTimersByTimeAsync(2000); // 轮询到就绪
+    const st = useEditor.getState();
+    expect(st.posterVoicePending).toBeNull();
+    expect(st.assets.find((a) => a.id === 'a_new')?.status).toBe('ready');
+    const tracks = spec().audio!.tracks;
+    expect(tracks.map((t) => [t.id === 'au_bgm' ? 'au_bgm' : 'new', t.role, t.asset_id])).toEqual([
+      ['au_bgm', 'bgm', 'a_bgm'],
+      ['new', 'voice', 'a_new'],
+    ]);
+    expect(tracks[1]).toMatchObject({ align: 'post', t: [0, 12.34], offset: 0, volume: 1, loop: false });
+    expect(st.selectedTrackId).toBe(tracks[1].id);
+    expect(spec().trim.duration).toBe(12.4);
+    expect(st.toast).toContain('已加为口播轨');
+
+    vi.spyOn(api, 'synthesizeTts').mockRejectedValue(new ApiError(503, '朗读服务未配置'));
+    expect(await useEditor.getState().generateVoice('文案', 'zh', 'v1')).toBeNull();
+    expect(useEditor.getState().toast).toBe('朗读服务未配置');
+  });
+
+  it('generateVoice：素材处理失败时清掉 pending 并提示', async () => {
+    vi.spyOn(api, 'synthesizeTts').mockResolvedValue({ id: 'a_bad', type: 'audio', kind: 'audio', status: 'preparing', name: '朗读', url: '', source: 'derived', derived_from: { stem: 'tts' }, created_at: '' });
+    vi.spyOn(api, 'getAsset').mockResolvedValue({ id: 'a_bad', type: 'audio', kind: 'audio', status: 'failed', error: '合成超时', name: '朗读', url: '', source: 'derived', derived_from: { stem: 'tts' }, created_at: '' });
+    await useEditor.getState().generateVoice('文案', 'zh', 'v1');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useEditor.getState().posterVoicePending).toBeNull();
+    expect(useEditor.getState().toast).toBe('朗读生成失败：合成超时');
+    expect(spec().audio?.tracks ?? []).toEqual([]);
+  });
+
+  it('usePostDuration 优先取 trim.duration；usePostTime 按第几遍累加剪后时刻', () => {
+    useEditor.getState().updateSpec((s) => {
+      s.trim.remove = [[2, 4]]; // 剪后 8 秒
+    });
+    expect(selectPostDuration(useEditor.getState())).toBe(8);
+    useEditor.getState().updateSpec((s) => {
+      s.trim.duration = 20;
+    });
+    expect(selectPostDuration(useEditor.getState())).toBe(20);
+    useEditor.setState({ time: 5, lap: 0 });
+    expect(selectPostTime(useEditor.getState())).toBe(3);
+    useEditor.setState({ time: 5, lap: 2 });
+    expect(selectPostTime(useEditor.getState())).toBe(19);
+    // 短于剪后时长：成片截到这里
+    useEditor.getState().updateSpec((s) => {
+      s.trim.duration = 3;
+    });
+    expect(selectPostDuration(useEditor.getState())).toBe(3);
   });
 });

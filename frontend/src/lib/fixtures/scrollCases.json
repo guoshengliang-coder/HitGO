@@ -1,0 +1,807 @@
+{
+ "_note": "HIG-50 滚动文字 golden：后端 services/scroll.py 生成，前端 lib/poster.ts 与后端各自对照。png_h = PNG 高（相对画布高），u = 图层时段内的本地时间（秒）；y0 / y1 / y 是裁切窗口顶边在上下各留 box.h 透明边的高图里的位置（相对画布高），duration = 全程时长（秒）。",
+ "cases": [
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": -0.5,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 0.0
+   }
+  },
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": 0,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 0.0
+   }
+  },
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": 3,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 0.3
+   }
+  },
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": 9,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 0.9
+   }
+  },
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": 18,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 1.8
+   }
+  },
+  {
+   "name": "enter/exit",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    }
+   },
+   "png_h": 1.2,
+   "u": 30,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.8,
+    "duration": 18.0,
+    "y": 1.8
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 0,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 1,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 1.5,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 4,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 1.1
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 10.5,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 1.8
+   }
+  },
+  {
+   "name": "visible + hold_start",
+   "scroll": {
+    "speed": 0.2,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "hold_start": 1.5
+   },
+   "png_h": 1.2,
+   "u": 20,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.8,
+    "duration": 7.5,
+    "y": 1.8
+   }
+  },
+  {
+   "name": "stay + hold_end",
+   "scroll": {
+    "speed": 0.25,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 2
+   },
+   "png_h": 1.5,
+   "u": 0,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.5,
+    "duration": 8.0,
+    "y": 0.0
+   }
+  },
+  {
+   "name": "stay + hold_end",
+   "scroll": {
+    "speed": 0.25,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 2
+   },
+   "png_h": 1.5,
+   "u": 2,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.5,
+    "duration": 8.0,
+    "y": 0.5
+   }
+  },
+  {
+   "name": "stay + hold_end",
+   "scroll": {
+    "speed": 0.25,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 2
+   },
+   "png_h": 1.5,
+   "u": 6,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.5,
+    "duration": 8.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "stay + hold_end",
+   "scroll": {
+    "speed": 0.25,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 2
+   },
+   "png_h": 1.5,
+   "u": 8,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.5,
+    "duration": 8.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "stay + hold_end",
+   "scroll": {
+    "speed": 0.25,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 2
+   },
+   "png_h": 1.5,
+   "u": 12,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.5,
+    "duration": 8.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 0,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 0.5,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 1,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 5,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 1.0
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 10,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 11,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "visible + stay, long copy",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 1.5,
+   "u": 20,
+   "expect": {
+    "y0": 0.6,
+    "y1": 1.5,
+    "duration": 11.0,
+    "y": 1.5
+   }
+  },
+  {
+   "name": "visible + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 0.3,
+   "u": 0,
+   "expect": {
+    "y0": 0.6,
+    "y1": 0.6,
+    "duration": 2.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 0.3,
+   "u": 1,
+   "expect": {
+    "y0": 0.6,
+    "y1": 0.6,
+    "duration": 2.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 0.3,
+   "u": 2,
+   "expect": {
+    "y0": 0.6,
+    "y1": 0.6,
+    "duration": 2.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "visible + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "start": "visible",
+    "end": "stay",
+    "hold_start": 1,
+    "hold_end": 1
+   },
+   "png_h": 0.3,
+   "u": 5,
+   "expect": {
+    "y0": 0.6,
+    "y1": 0.6,
+    "duration": 2.0,
+    "y": 0.6
+   }
+  },
+  {
+   "name": "enter + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 0.5
+   },
+   "png_h": 0.3,
+   "u": 0,
+   "expect": {
+    "y0": 0.0,
+    "y1": 0.3,
+    "duration": 3.5,
+    "y": 0.0
+   }
+  },
+  {
+   "name": "enter + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 0.5
+   },
+   "png_h": 0.3,
+   "u": 1.5,
+   "expect": {
+    "y0": 0.0,
+    "y1": 0.3,
+    "duration": 3.5,
+    "y": 0.15
+   }
+  },
+  {
+   "name": "enter + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 0.5
+   },
+   "png_h": 0.3,
+   "u": 3,
+   "expect": {
+    "y0": 0.0,
+    "y1": 0.3,
+    "duration": 3.5,
+    "y": 0.3
+   }
+  },
+  {
+   "name": "enter + stay, copy shorter than box",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "end": "stay",
+    "hold_end": 0.5
+   },
+   "png_h": 0.3,
+   "u": 5,
+   "expect": {
+    "y0": 0.0,
+    "y1": 0.3,
+    "duration": 3.5,
+    "y": 0.3
+   }
+  },
+  {
+   "name": "holds ignored when the end is not held",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "hold_start": 3,
+    "hold_end": 3
+   },
+   "png_h": 0.5,
+   "u": 0,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.1,
+    "duration": 11.0,
+    "y": 0.0
+   }
+  },
+  {
+   "name": "holds ignored when the end is not held",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "hold_start": 3,
+    "hold_end": 3
+   },
+   "png_h": 0.5,
+   "u": 3,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.1,
+    "duration": 11.0,
+    "y": 0.3
+   }
+  },
+  {
+   "name": "holds ignored when the end is not held",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "hold_start": 3,
+    "hold_end": 3
+   },
+   "png_h": 0.5,
+   "u": 8,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.1,
+    "duration": 11.0,
+    "y": 0.8
+   }
+  },
+  {
+   "name": "holds ignored when the end is not held",
+   "scroll": {
+    "speed": 0.1,
+    "box": {
+     "x": 0.06,
+     "y": 0.14,
+     "w": 0.88,
+     "h": 0.6
+    },
+    "hold_start": 3,
+    "hold_end": 3
+   },
+   "png_h": 0.5,
+   "u": 11,
+   "expect": {
+    "y0": 0.0,
+    "y1": 1.1,
+    "duration": 11.0,
+    "y": 1.1
+   }
+  }
+ ]
+}

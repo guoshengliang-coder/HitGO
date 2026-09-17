@@ -24,6 +24,13 @@ import { wrapRuns } from './textWrap';
 
 export const TEXT_CANVAS = { W: 1080, H: 1920 };
 
+/**
+ * PNG 高度上限（px）：浏览器 canvas 单边超过 16384 就画不出来（Safari 更早失败），
+ * 大字报（HIG-50）整篇文案烘成一张高图时可能撞上；超过就让用户拆段。
+ */
+export const TEXT_CANVAS_MAX_H = 16000;
+export const TEXT_TOO_LONG = '文案过长，请拆成几段';
+
 /** 发光叠画遍数：canvas 的 shadowBlur 单遍太淡，叠 3 遍才有剪映「发光」的亮度。 */
 const GLOW_PASSES = 3;
 
@@ -140,6 +147,7 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   const boxH = Math.ceil(contentH + padPx * 2 + strokePx * 2);
   const width = outerW + shadowPad * 2;
   const height = boxH + shadowPad * 2;
+  if (height > TEXT_CANVAS_MAX_H) throw new Error(TEXT_TOO_LONG);
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, width);
@@ -317,6 +325,8 @@ export function variantTextScales(spec: EditSpec, layer: TextLayer, keys: Varian
 export async function bakeTextLayerVariants(layer: TextLayer, spec: EditSpec, keys: VariantKey[], srcW: number, srcH: number): Promise<TextLayer> {
   const next: TextLayer = { ...layer };
   delete next.variant_images;
+  // 滚动文字（HIG-50）的裁切框在每个画幅上都是画布相对的，PNG 按框宽缩放，不需要按画幅重渲染
+  if (layer.scroll) return next;
   const scales = variantTextScales(spec, layer, keys, srcW, srcH);
   if (!scales.length) return next;
   await waitForFont(layer.style, 40, layer.text);
@@ -344,6 +354,10 @@ export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W):
 const cache = new Map<string, RenderedText>();
 const pending = new Map<string, Promise<RenderedText>>();
 
+/**
+ * 缓存键只看文字、样式、上色。滚动文字（HIG-50）的折行宽也走 style.wrap_width（newPosterLayer 把它设成 box.w，
+ * 改框宽时一起改），所以 scroll 本身不参与渲染、不用进键。
+ */
 export function textCacheKey(layer: TextLayer): string {
   return JSON.stringify([layer.text, layer.style, layer.spans ?? null]);
 }

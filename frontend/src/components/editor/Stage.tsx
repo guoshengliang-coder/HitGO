@@ -11,6 +11,8 @@
 // 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），拖动中实时重新折行，高度跟着行数变。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
 // 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
+// 滚动文字（HIG-50 大字报）：PNG 在裁切框（scroll.box）里按 lib/poster 的曲线向上滚，框外裁掉；不能拖动 / 缩放，
+// 选中且暂停时画出框线。成片时长（trim.duration）交给 player 循环补足，播放头的成片时刻从 usePostTime 取（跨遍累加）。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Konva from 'konva';
@@ -21,7 +23,8 @@ import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layo
 import { cloneSpec, layerAspect, outputFor } from '../../lib/spec';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
-import { sourceToPost, windowContains } from '../../lib/time';
+import { windowContains } from '../../lib/time';
+import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
 import { clampWrapWidth } from '../../lib/textWrap';
@@ -267,6 +270,7 @@ function LayerNode({
 }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const syncPosterLayer = useEditor((s) => s.syncPosterLayer);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const postDuration = usePostDuration();
   const postTime = usePostTime();
@@ -313,9 +317,9 @@ function LayerNode({
         if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
       }
     };
-    // 封面段（t < 0）里图层不出现：按暂停对齐，不播也不出声
-    sync(sourceToPost(player.currentTime, player.remove), player.mediaRate > 0 && player.currentTime >= 0);
-    const unsub = player.subscribe((t) => sync(sourceToPost(t, player.remove), player.mediaRate > 0 && t >= 0));
+    // 封面段（t < 0）里图层不出现：按暂停对齐，不播也不出声。成片时刻跨遍累加（HIG-50）
+    sync(player.postTime, player.mediaRate > 0 && player.currentTime >= 0);
+    const unsub = player.subscribe((t) => sync(player.postTime, player.mediaRate > 0 && t >= 0));
     return () => {
       unsub();
       stickerVideo.pause();
@@ -335,11 +339,19 @@ function LayerNode({
       bump((n) => n + 1);
       const autoW = round4(r.width / TEXT_CANVAS.W);
       if (!widthManual && Math.abs(autoW - layer.width) > 1e-4) updateLayer(layer.id, { width: autoW }, false);
+      // 滚动文案（HIG-50）：PNG 高度变了（改字号 / 折行）成片时长也要跟着变
+      if ((layer as TextLayer).scroll) void syncPosterLayer(layer.id);
     });
     return () => {
       alive = false;
     };
   }, [textKey, widthManual]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 滚动文字（HIG-50）没有可变换的节点：把 Transformer 里的引用清掉，免得留着旧节点
+  const isScroll = layer.type === 'text' && !!layer.scroll;
+  useEffect(() => {
+    if (isScroll) registerNode(null);
+  }, [isScroll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 改了文字 / 样式、新 PNG 还没渲染好时先沿用上一张：拖边改换行宽度时节点不会中途消失
   const lastText = useRef<RenderedText | undefined>(undefined);
@@ -354,6 +366,32 @@ function LayerNode({
   if (!image) return null;
 
   const aspect = layer.type === 'text' && lastText.current ? lastText.current.width / lastText.current.height : layerAspect(layer, assets);
+  if (layer.type === 'text' && layer.scroll) {
+    // 滚动文字：与 lib/poster / 后端同一套几何——PNG 宽 = min(width, box.w) × W，水平居中于框，
+    // 窗口顶边 y（相对画布高）从 y0 走到 y1，PNG 顶边 = 框底边 − y
+    const sc = resolveScroll(layer.scroll);
+    const bx = { x: sc.box.x * W, y: sc.box.y * H, w: sc.box.w * W, h: sc.box.h * H };
+    const imgW = Math.min(layer.width > 0 ? layer.width : sc.box.w, sc.box.w) * W;
+    const imgH = imgW / aspect;
+    const [a] = windowRange(layer.t, postDuration);
+    const y = sampleScrollY(scrollPath(sc, imgH / H), postTime - a);
+    return (
+      <Group clipX={bx.x} clipY={bx.y} clipWidth={bx.w} clipHeight={bx.h} visible={!hidden}>
+        <KImage
+          image={image}
+          x={bx.x + (bx.w - imgW) / 2}
+          y={bx.y + bx.h - y * H}
+          width={imgW}
+          height={imgH}
+          opacity={geom?.opacity ?? layer.opacity}
+          listening={selectable}
+          onClick={onSelect}
+          onTap={onSelect}
+        />
+        {selected && !playing && <Rect x={bx.x + 0.5} y={bx.y + 0.5} width={bx.w - 1} height={bx.h - 1} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} listening={false} />}
+      </Group>
+    );
+  }
   const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
   const draggable = selectable && !layer.locked;
   // 文字动画（HIG-40）：按成片同一套曲线采样，只叠加在显示上。选中且暂停时显示静止状态，
@@ -529,8 +567,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
-  const setTime = useEditor((s) => s.setTime);
-  const setPlaying = useEditor((s) => s.setPlaying);
+  const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
   const preroll = useCoverDuration();
   const coverActive = useInCover();
@@ -566,12 +603,12 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     if (!el) return;
     el.volume = srcVolume;
     if (!srcAudio?.source_mute?.length || srcAudio.source_hidden) return;
-    const apply = (t: number) => {
+    const apply = () => {
       const v = videoRef.current;
-      if (v) v.volume = sourceGainAt(srcAudio, sourceToPost(Math.max(0, t), player.remove));
+      if (v) v.volume = sourceGainAt(srcAudio, player.postTime);
     };
-    apply(player.currentTime);
-    return player.subscribe((t) => apply(t));
+    apply();
+    return player.subscribe(apply);
   }, [srcVolume, srcAudio, video?.id]);
 
   // 封面时长 → 播放头前面的封面段。必须写在「播放器挂载」之前：换视频时先有新的封面时长，挂载时才能退到封面起点。
@@ -582,23 +619,26 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     if (wasOff && preroll > 0 && !player.isPlaying && player.currentTime === 0) player.seek(-preroll);
   }, [preroll]);
 
+  // 成片时长（HIG-50）→ player 循环补足 / 截断的依据；只在这里同步，store 里换批次时清零
+  const fixedDuration = spec?.trim.duration ?? null;
+  useEffect(() => {
+    player.setOutputDuration(fixedDuration);
+  }, [fixedDuration]);
+
   // 播放器挂载
   useEffect(() => {
     const el = videoRef.current;
     player.attach(el);
     player.duration = video?.duration ?? 0;
-    player.seek(-player.preroll);
-    const unsub = player.subscribe((t, playing) => {
-      setTime(t);
-      setPlaying(playing);
-    });
+    player.seek(-player.preroll, 0);
+    const unsub = player.subscribe((t, playing, lap) => setPlayhead(t, playing, lap));
     return () => {
       unsub();
       player.pause();
       // 换素材时先解绑旧 <video>：子组件（填充底图）的 effect 先于这里的 attach 执行，不解绑会从旧元素抓帧（HIG-12）
       player.detach();
     };
-  }, [video?.id, video?.duration, setTime, setPlaying]);
+  }, [video?.id, video?.duration, setPlayhead]);
 
   useEffect(() => {
     player.remove = spec?.trim.remove ?? [];

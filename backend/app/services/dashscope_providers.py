@@ -7,6 +7,7 @@ worker when a localization actually runs, and tests must never touch it or the n
     MT   qwen-mt-plus            Generation.call(translation_options={source_lang, target_lang, terms})
     TTS  cosyvoice-v3-flash      SpeechSynthesizer(model, voice, WAV 22.05 kHz mono).call(text) → bytes
          qwen3-tts-flash         MultiModalConversation.call(text, voice, language_type) → wav URL → bytes
+    HL   qwen-plus               Generation.call(system prompt + copy) → JSON array of phrases (HIG-50)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.services.highlight import parse_phrase_json
 from app.services.localize import MT_DOMAINS, AsrResult, LocalizeError, Providers, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
@@ -203,10 +205,50 @@ class DashScopeTts:
         return data
 
 
+HIGHLIGHT_PROMPT = (
+    "你是短视频投放文案的排版助手。用户给你一段口播文案，请挑出其中最值得在画面上放大、变色强调的"
+    "{n} 个以内的短词组：日期、时间、数字、金额、百分比、倍数，以及承载核心卖点或结论的关键名词 / 说法。"
+    "每个词组必须逐字照抄原文（不要改写、不要加标点、不要合并不相邻的字），长度尽量在 2–12 个字，"
+    "按在原文中出现的先后排列，互不重叠。只输出一个 JSON 字符串数组，不要任何解释、编号或代码块。"
+)
+
+
+@dataclass
+class DashScopeHighlight:
+    api_key: str
+    model: str
+
+    def pick(self, text: str, max_phrases: int) -> list[str]:
+        dashscope = _import_dashscope()
+        from dashscope import Generation  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        prompt = HIGHLIGHT_PROMPT.format(n=max_phrases)
+
+        def call() -> Any:
+            return Generation.call(
+                api_key=self.api_key,
+                model=self.model,
+                messages=[{"role": "system", "content": prompt}, {"role": "user", "content": text}],
+                result_format="message",
+            )
+
+        result = _with_retry("重点词挑选", call)
+        try:
+            raw = str(result.output.choices[0].message.content)
+        except (AttributeError, IndexError, KeyError, TypeError) as exc:
+            raise LocalizeError("重点词结果为空") from exc
+        phrases = parse_phrase_json(raw)
+        if not phrases and raw.strip():
+            log.warning("highlight model %s did not return a JSON array: %.200s", self.model, raw)
+        return phrases[:max_phrases]
+
+
 def make_providers(cfg: Settings) -> Providers:
     key = cfg.dashscope_api_key
     return Providers(
         asr=DashScopeAsr(api_key=key, model=cfg.localize_asr_model),
         mt=DashScopeTranslate(api_key=key, model=cfg.localize_mt_model),
         tts=DashScopeTts(api_key=key, model=cfg.localize_tts_model),
+        highlight=DashScopeHighlight(api_key=key, model=cfg.highlight_model),
     )

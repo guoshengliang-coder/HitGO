@@ -30,11 +30,16 @@ export interface SpriteMeta {
   count: number;
 }
 
+/** 素材来源（契约 §1 Video.kind，HIG-50）：上传的视频 | 上传的图片（转 5 秒静止片）| 空白素材。缺省 video。 */
+export type VideoKind = 'video' | 'image' | 'blank';
+
 export interface Video {
   id: string;
   batch_id: string;
   name: string;
   order: number;
+  /** 可选，缺省 'video'（HIG-50）；旧后端不返回。 */
+  kind?: VideoKind;
   status: VideoStatus;
   error: string | null;
   width: number;
@@ -168,12 +173,51 @@ export type AssetStatus = 'preparing' | 'ready' | 'failed';
 /** 素材来源（契约 §1）。`library` 预留给正式物料库，原型阶段不会出现，见 docs/ASSETS.md。 */
 export type AssetSource = 'upload' | 'builtin' | 'library' | 'derived';
 
-/** source = derived 才有：从哪条视频分离出的哪个声部；dubbed = 改语言生成的配音，lang 是目标语言码。 */
+/**
+ * source = derived 才有：从哪条视频分离出的哪个声部；dubbed = 改语言生成的配音，lang 是目标语言码；
+ * tts = 大字报朗读（HIG-50），不属于任何视频，所以 video_id / video_name 可缺，另带音色 voice 与文案前 40 字 text。
+ */
 export interface DerivedFrom {
-  video_id: string;
-  video_name: string;
-  stem: 'vocals' | 'instrumental' | 'dubbed';
+  video_id?: string | null;
+  video_name?: string | null;
+  stem: 'vocals' | 'instrumental' | 'dubbed' | 'tts';
   lang?: string | null;
+  voice?: string | null;
+  text?: string | null;
+}
+
+// ---- 大字报（契约 §3，HIG-50）----
+
+/** POST /api/tts 的请求体：把一段文案朗读成派生音频素材（202，之后轮询 GET /api/assets/{id}）。 */
+export interface TtsIn {
+  text: string;
+  lang: string;
+  voice: string;
+  /** [0.5, 2.0]，缺省 1.0；只对 cosyvoice 音色生效。 */
+  speech_rate?: number;
+  /** 素材名，缺省取文案前 20 字。 */
+  name?: string;
+}
+
+/** POST /api/highlight 挑出的重点词组：start / end 是 text 的 UTF-16 区间 [start, end)，与 TextSpan 同一索引空间。 */
+export interface HighlightPhrase {
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface HighlightOut {
+  phrases: HighlightPhrase[];
+}
+
+/** POST /api/batches/{id}/blank 的请求体：空白素材，全部可选（缺省黑色、10 秒、9:16）。 */
+export interface BlankVideoIn {
+  name?: string;
+  /** #RRGGBB */
+  color?: string;
+  /** 秒，(0, 600] */
+  duration?: number;
+  aspect?: AspectKey;
 }
 
 export interface Asset {
@@ -421,6 +465,33 @@ export interface TextAnimation {
   loop?: { preset: TextAnimLoopPreset; period?: number };
 }
 
+/** 滚动文字的裁切框（契约 §2 scroll.box），相对画布宽 / 高。 */
+export interface ScrollBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * 滚动文字（HIG-50 大字报，契约 §2 layers[type=text].scroll）：整篇文案烘焙成一张高 PNG，在裁切框内向上滚动。
+ * 前端类型里全部可选，缺省见 lib/poster.DEFAULT_SCROLL；曲线在 lib/poster.ts（与后端 services/scroll.py 共用 golden）。
+ */
+export interface TextScroll {
+  /** 画布高 / 秒，(0, 2]，缺省 0.08。 */
+  speed?: number;
+  /** 缺省 = 通用竖版安全区（lib/poster.DEFAULT_SCROLL_BOX）。 */
+  box?: ScrollBox;
+  /** enter（缺省）：从框底边滚入 | visible：开头就有字，首行贴框顶边。 */
+  start?: 'enter' | 'visible';
+  /** exit（缺省）：滚到全部离开框顶边 | stay：末行贴框底边就停。 */
+  end?: 'exit' | 'stay';
+  /** 秒，≥ 0，缺省 0：开头停留，只在 start = visible 时生效。 */
+  hold_start?: number;
+  /** 秒，≥ 0，缺省 0：结尾停留，只在 end = stay 时生效。 */
+  hold_end?: number;
+}
+
 export interface TextLayer extends LayerBase {
   type: 'text';
   text: string;
@@ -433,6 +504,8 @@ export interface TextLayer extends LayerBase {
   variant_images?: Record<string, { url: string; size: [number, number] }> | null;
   /** 可选（HIG-40）：入场 / 出场 / 循环动画；空对象等于没有，发送时省略。 */
   animation?: TextAnimation;
+  /** 可选（HIG-50）：整篇文案在裁切框内滚动；与 animation 互斥（后端 400）。null / 缺省 = 不滚动，发送时省略。 */
+  scroll?: TextScroll | null;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */
   width_manual?: boolean;
 }
@@ -543,9 +616,16 @@ export interface CoverSpec {
   duration?: number;
 }
 
+/** 契约 §2 trim：remove 基于源时间轴；duration（HIG-50）是成片正片时长，null / 缺省 = 剪后时长，长于剪后时长时保留段循环补足。 */
+export interface Trim {
+  remove: [number, number][];
+  /** 秒，(0, 600]；只在正数时发送。 */
+  duration?: number | null;
+}
+
 export interface EditSpec {
   spec_version: 1;
-  trim: { remove: [number, number][] };
+  trim: Trim;
   layers: Layer[];
   outputs: OutputVariant[];
   audio?: AudioSpec | null;

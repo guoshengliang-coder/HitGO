@@ -426,3 +426,74 @@ def test_output_export_flag_is_optional_and_boolean():
     assert [o.export for o in validate(raw).outputs] == [False, True]
     raw["outputs"][1]["export"] = "yes please"
     assert "export" in errors_of(raw)
+
+
+# --- HIG-50: trim.duration + text scroll ------------------------------------
+
+
+def test_trim_duration_is_optional_and_bounded():
+    spec = valid_spec()
+    assert validate(spec).trim.duration is None
+    spec["trim"]["duration"] = 42.5
+    assert validate(spec).trim.duration == 42.5
+    spec["trim"]["duration"] = 0
+    assert "duration" in errors_of(spec)
+    spec["trim"]["duration"] = 601
+    assert "duration" in errors_of(spec)
+
+
+def _scroll_text(**scroll):
+    return {
+        "id": "l_s",
+        "type": "text",
+        "text": "第一行\n第二行",
+        "anchor": "top-center",
+        "margin": [0, 0],
+        "width": 0.88,
+        "rotate": 0,
+        "opacity": 1,
+        "t": "all",
+        "scroll": scroll,
+    }
+
+
+def test_text_scroll_defaults_fill_in():
+    spec = valid_spec()
+    spec["layers"].append(_scroll_text())
+    layer = validate(spec).layers[-1]
+    assert isinstance(layer, TextLayer) and layer.scroll is not None
+    s = layer.scroll
+    assert s.speed == 0.08 and s.start == "enter" and s.end == "exit"
+    assert s.hold_start == 0 and s.hold_end == 0
+    assert (s.box.x, s.box.y, s.box.w, s.box.h) == (0.06, 0.14, 0.88, 0.60)
+    # No scroll → the field stays None and nothing changes for old specs.
+    assert validate(valid_spec()).layers[1].scroll is None
+
+
+@pytest.mark.parametrize(
+    "scroll,fragment",
+    [
+        ({"speed": 0}, "speed"),
+        ({"speed": 2.5}, "speed"),
+        ({"start": "middle"}, "start"),
+        ({"end": "loop"}, "end"),
+        ({"hold_start": -1}, "hold_start"),
+        ({"box": {"x": 0.5, "y": 0.1, "w": 0.6, "h": 0.5}}, "右边界"),
+        ({"box": {"x": 0.1, "y": 0.6, "w": 0.6, "h": 0.5}}, "下边界"),
+    ],
+)
+def test_text_scroll_rules(scroll, fragment):
+    spec = valid_spec()
+    spec["layers"].append(_scroll_text(**scroll))
+    assert fragment in errors_of(spec)
+
+
+def test_text_scroll_excludes_animation():
+    spec = valid_spec()
+    layer = _scroll_text()
+    layer["animation"] = {"in": {"preset": "fade", "duration": 0.5}}
+    spec["layers"].append(layer)
+    assert "不能同时设置" in errors_of(spec)
+    # An empty animation object is "no animation" and is allowed alongside scroll.
+    layer["animation"] = {}
+    validate(spec)

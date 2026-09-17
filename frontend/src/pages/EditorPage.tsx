@@ -18,6 +18,7 @@ import { TextPanel } from '../components/editor/TextPanel';
 import { StickerPanel } from '../components/editor/StickerPanel';
 import { SubtitlePanel } from '../components/editor/SubtitlePanel';
 import { LocalizePanel } from '../components/editor/LocalizePanel';
+import { PosterPanel } from '../components/editor/PosterPanel';
 import { CropEditor } from '../components/editor/CropEditor';
 import { ExportDialog } from '../components/editor/ExportDialog';
 import { ProgressModal } from '../components/editor/ProgressModal';
@@ -397,6 +398,7 @@ export function EditorPage() {
           {step === 'sticker' && <StickerPanel />}
           {step === 'subtitle' && <SubtitlePanel />}
           {step === 'localize' && <LocalizePanel />}
+          {step === 'poster' && <PosterPanel />}
         </div>
       </div>
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}

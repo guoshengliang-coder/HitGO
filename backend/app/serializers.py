@@ -75,6 +75,7 @@ def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
         id=vid,
         batch_id=batch_id,
         name=video.name,
+        kind=video.kind,
         order=video.order_index,
         status=video.status,
         error=video.error,

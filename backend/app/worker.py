@@ -25,7 +25,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.services import asset_preprocess, ffprobe, localize, preprocess, render, separate, storage
+from app.services import asset_preprocess, ffprobe, localize, preprocess, render, separate, storage, tts
 
 log = logging.getLogger(__name__)
 
@@ -87,12 +87,27 @@ def preprocess_video(self, video_id: str) -> None:  # noqa: ANN001
         source = storage.source_path(batch_id, video.id, video.source_ext)
         sprite = storage.sprite_path(batch_id, video.id)
         try:
+            # Step 0 (contract §6): stills and blanks have no uploaded source.mp4 yet.
+            source_gen: list[str] | None = None
+            if video.kind == "image":
+                still = storage.find_still(batch_id, video.id)
+                if still is None:
+                    raise preprocess.PreprocessError("找不到上传的图片")
+                source_gen = preprocess.still_args(still, source)
+            elif video.kind == "blank":
+                from app.schemas import CANVAS_SIZES  # local: the module header is shared
+
+                p = video.blank_params or {}
+                source_gen = preprocess.blank_args(
+                    source, p["color"], p["duration"], CANVAS_SIZES[p["aspect"]]
+                )
             meta = preprocess.run_preprocess(
                 source=source,
                 proxy=storage.proxy_path(batch_id, video.id),
                 sprite=sprite,
                 poster=storage.poster_path(batch_id, video.id),
                 sprite_url=storage.media_url(sprite),
+                source_gen=source_gen,
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("preprocess %s failed", video_id)
@@ -231,5 +246,37 @@ def render_job(self, job_id: str) -> None:  # noqa: ANN001
     except render.RenderError as exc:
         # Already persisted as status=failed by the service; just log it.
         log.error("render %s failed: %s", job_id, str(exc).splitlines()[0] if str(exc) else exc)
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="hitgo.synthesize_tts",
+    bind=True,
+    max_retries=3,
+    soft_time_limit=settings.localize_timeout_seconds,
+    time_limit=settings.localize_timeout_seconds + 60,
+)
+def synthesize_tts(self, asset_id: str) -> None:  # noqa: ANN001
+    """Read poster copy aloud into a derived audio asset (HIG-50, contract §6); network-bound, default queue."""
+    db = SessionLocal()
+    try:
+        if db.get(Asset, asset_id) is None:
+            # Row not visible yet (published right after commit) or deleted.
+            if self.request.retries < self.max_retries:
+                raise self.retry(countdown=1)
+            log.info("tts: asset %s vanished", asset_id)
+            return
+        try:
+            tts.run_tts(db, asset_id)
+        except SoftTimeLimitExceeded:
+            log.error("tts %s exceeded %ss", asset_id, settings.localize_timeout_seconds)
+            # run_tts marks the asset failed itself; this covers the limit firing before it got there.
+            db.rollback()
+            asset = db.get(Asset, asset_id)
+            if asset is not None and asset.status != ASSET_FAILED:
+                asset.status = ASSET_FAILED
+                asset.error = f"朗读合成超过 {settings.localize_timeout_seconds} 秒仍未完成，已中止"
+                db.commit()
     finally:
         db.close()

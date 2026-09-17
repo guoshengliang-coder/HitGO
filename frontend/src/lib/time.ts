@@ -114,6 +114,33 @@ export function skipRemoved(t: number, remove: Range[]): number {
   return cur;
 }
 
+// ---- 成片时长与循环补足（HIG-50，契约 §2 trim.duration）----
+
+/** 成片正片时长：trim.duration（正数）优先，否则剪后时长。 */
+export function outputDuration(duration: number, trim: { remove: Range[]; duration?: number | null }): number {
+  const d = trim.duration;
+  if (typeof d === 'number' && Number.isFinite(d) && d > 0) return d;
+  return postTrimDuration(duration, trim.remove);
+}
+
+/** 成片要把剪后保留段放几遍（≥ 1）：没设成片时长、或不长于剪后时长时 1 遍。 */
+export function lapsFor(outputDuration: number | null | undefined, postLen: number): number {
+  if (!(typeof outputDuration === 'number' && outputDuration > 0) || !(postLen > 0)) return 1;
+  return Math.max(1, Math.ceil(outputDuration / postLen - EPS));
+}
+
+/** 第 lap 遍（0 起）里的剪后时刻 → 成片时间轴上的时刻。 */
+export function postTimeOf(lap: number, postLen: number, sourcePostTime: number): number {
+  return Math.max(0, lap) * Math.max(0, postLen) + sourcePostTime;
+}
+
+/** 成片时刻 → 第几遍（0 起，夹到 [0, laps-1]）与该遍内的剪后时刻。 */
+export function splitPostTime(postTime: number, postLen: number, laps: number): { lap: number; rem: number } {
+  if (!(postLen > 0) || laps <= 1) return { lap: 0, rem: Math.max(0, postTime) };
+  const lap = Math.min(laps - 1, Math.max(0, Math.floor(postTime / postLen + EPS)));
+  return { lap, rem: Math.max(0, postTime - lap * postLen) };
+}
+
 /** 剪后时间轴上的时段是否与当前剪后时间相交（'all' 恒真）。 */
 export function windowContains(t: [number, number] | 'all', postTime: number): boolean {
   if (t === 'all') return true;

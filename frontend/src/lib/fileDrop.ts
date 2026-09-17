@@ -1,7 +1,12 @@
 // 从系统里把文件拖进页面（HIG-21）的纯逻辑：认不认这次拖拽、哪些文件收、哪些跳过。
 
-/** 批次视频可上传的格式，和新建批次表单的 input accept 一致（契约 §3）。 */
-export const VIDEO_ACCEPT = 'video/mp4,video/quicktime,.mp4,.mov';
+/**
+ * 批次素材可上传的格式，和新建批次表单的 input accept 一致（契约 §3）：
+ * mp4 / mov 视频，以及 jpg / png 图片（HIG-50，入库为 kind = image，worker 转成 5 秒静止源片）。
+ */
+export const VIDEO_ACCEPT = 'video/mp4,video/quicktime,image/jpeg,image/png,.mp4,.mov,.jpg,.jpeg,.png';
+/** 跳过提示 / 空态里说的格式，与 VIDEO_ACCEPT 对应（rejectedText 的 what）。 */
+export const VIDEO_ACCEPT_LABEL = 'mp4 / mov / jpg / png';
 
 /**
  * 这次拖拽带的是不是系统文件。页面内部的拖拽（图层排序用 text/plain）不算，

@@ -15,11 +15,16 @@ const LOCAL_LAYER_FIELDS = ['locked', 'width_manual'] as const;
 export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
   const audio = contractAudio(spec.audio);
   const cover = contractCover(spec.cover);
+  // 成片时长（HIG-50）：只在正数时发送，null / 0 / 缺省 = 剪后时长，保持旧 spec 形状
+  const fixedDuration = spec.trim.duration;
   return {
     ...(audio ? { audio } : {}),
     ...(cover ? { cover } : {}),
     spec_version: 1,
-    trim: { remove: normalizeRanges(spec.trim.remove, duration).map(([a, b]) => [round3(a), round3(b)]) },
+    trim: {
+      remove: normalizeRanges(spec.trim.remove, duration).map(([a, b]) => [round3(a), round3(b)]),
+      ...(typeof fixedDuration === 'number' && fixedDuration > 0 ? { duration: round3(fixedDuration) } : {}),
+    },
     layers: spec.layers.map((l) => {
       // 浅拷贝即可：style（含 shadow / letter_spacing）等嵌套对象原样透传
       const copy: Record<string, unknown> = { ...l };
@@ -36,6 +41,8 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
         const animation = contractAnimation(l.animation, l.t === 'all' ? null : l.t[1] - l.t[0]);
         if (animation) copy.animation = animation;
         else delete copy.animation;
+        // 滚动（HIG-50）原样透传；null / 缺省不发。与 animation 互斥由后端校验（编辑器加滚动时清掉动画）
+        if (!l.scroll) delete copy.scroll;
       }
       return copy as unknown as Layer;
     }),

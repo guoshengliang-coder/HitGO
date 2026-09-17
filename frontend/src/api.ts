@@ -1,7 +1,7 @@
 // 类型化 API 客户端，路由与契约第 3 节一一对应。
 // VITE_MOCK=1 时由 src/mocks 提供内存实现（见 request()）。
 
-import type { Asset, AssetType, Batch, BatchDetail, EditSpec, Job, LocalizeIn, LocalizeOptions, Preset, PresetType, SafeZone, SeparationModel, UploadTicket, Video } from './types';
+import type { Asset, AssetType, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightOut, Job, LocalizeIn, LocalizeOptions, Preset, PresetType, SafeZone, SeparationModel, TtsIn, UploadTicket, Video } from './types';
 import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
@@ -109,6 +109,8 @@ export const api = {
     for (const f of files) form.append('files', f, f.name);
     return uploadWithProgress<Video[]>(`/api/batches/${batchId}/videos`, form, onProgress);
   },
+  /** 空白素材（HIG-50，契约 §3）：201 Video（kind = blank），worker 生成源片，之后轮询 GET /api/videos/{id}。 */
+  createBlankVideo: (batchId: string, body: BlankVideoIn) => request<Video>('POST', `/api/batches/${batchId}/blank`, body),
   applySpec: (batchId: string, body: { source_video_id: string; target_video_ids: string[]; modules: string[]; layer_mode?: ApplyLayerMode }) =>
     request<Video[]>('POST', `/api/batches/${batchId}/apply`, body),
   batchJobs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/jobs`),
@@ -179,6 +181,12 @@ export const api = {
   updateVersionCues: (id: string, lang: string, body: { cues: { i: number; translated: string }[]; voice?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/versions/${lang}`, body),
   deleteVersion: (id: string, lang: string) => request<void>('DELETE', `/api/videos/${id}/localize/versions/${lang}`),
   getLocalizeOptions: () => request<LocalizeOptions>('GET', '/api/localize/options'),
+
+  // 大字报（契约 §3，HIG-50）
+  /** 朗读文案：202 + preparing 的音频素材，之后轮询 GET /api/assets/{id} 直到 ready / failed。lang / voice 取自 getLocalizeOptions。 */
+  synthesizeTts: (body: TtsIn) => request<Asset>('POST', '/api/tts', body),
+  /** 挑重点词组（同步，最长约 20 秒）；区间与 TextSpan 同一索引空间。 */
+  highlight: (text: string, maxPhrases?: number) => request<HighlightOut>('POST', '/api/highlight', { text, ...(maxPhrases ? { max_phrases: maxPhrases } : {}) }),
 
   // 素材
   listAssets: (type: AssetType) => request<Asset[]>('GET', `/api/assets?type=${type}`),

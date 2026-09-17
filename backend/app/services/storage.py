@@ -1,7 +1,7 @@
 """Filesystem layout under DATA_DIR (contract §5) and safe file helpers.
 
     {DATA_DIR}/hitgo.db
-    {DATA_DIR}/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg
+    {DATA_DIR}/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg | still.{jpg|png}
     {DATA_DIR}/assets/{asset_id}.{ext} | {asset_id}.poster.jpg | {asset_id}.preview.{webm|mp4}
     {DATA_DIR}/uploads/{upload_id}.png
     {DATA_DIR}/outputs/{job_id}.mp4
@@ -46,6 +46,16 @@ def video_dir(batch_id: str, video_id: str) -> Path:
 
 def source_path(batch_id: str, video_id: str, ext: str = "mp4") -> Path:
     return video_dir(batch_id, video_id) / f"source.{ext}"
+
+
+def still_path(batch_id: str, video_id: str, ext: str) -> Path:
+    """Uploaded still image for a kind=image video; preprocess turns it into source.mp4."""
+    return video_dir(batch_id, video_id) / f"still.{ext}"
+
+
+def find_still(batch_id: str, video_id: str) -> Path | None:
+    """The still.<ext> of a kind=image video (the extension is not stored on the row)."""
+    return next(iter(sorted(video_dir(batch_id, video_id).glob("still.*"))), None)
 
 
 def proxy_path(batch_id: str, video_id: str) -> Path:

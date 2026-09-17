@@ -374,7 +374,11 @@ const BG_WIDTH_MODES: SegOption<'fit' | 'full'>[] = [
   { v: 'full', label: '通栏' },
 ];
 
-function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] | null }) {
+/**
+ * 文字图层的样式分组（字体 / 描边 / 发光 / 阴影 / 背景 / 排版）。大字报面板（HIG-50）也用这一套：
+ * poster 为真时不显示「选中上色」和换行开关——重点词上色在那边有自己的分组，换行宽度跟着滚动框走。
+ */
+export function TextSections({ layer, sel, poster = false }: { layer: TextLayer; sel: [number, number] | null; poster?: boolean }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
   const fonts = assets.filter((a) => a.type === 'font');
@@ -393,7 +397,7 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
 
   return (
     <>
-      <Section title="字体" hint="选中一段文字可单独上色" bodyClass="stack" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
+      <Section title="字体" hint={poster ? undefined : '选中一段文字可单独上色'} bodyClass="stack" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
         <Field label="字体">
           <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })} aria-label="字体">
             {BUILTIN_WEB_FONTS.map((f) => (
@@ -421,24 +425,28 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         <Field label="颜色" title={/^#[0-9a-f]{6}00$/i.test(st.color) ? '透明 · 空心' : undefined}>
           <ColorPicker label="文字颜色" alpha value={st.color} onChange={(c) => patchStyle({ color: c })} />
         </Field>
-        <Field label="选中上色">
-          <ColorPicker label="选中上色" showHex={false} value={spanColor} onChange={setSpanColorState} />
-          <button className="btn sm" disabled={!sel} title={sel ? '给文本框里选中的文字上色' : '先在文本框里选中文字'} onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
-            上色
-          </button>
-          <button className="btn ghost sm" disabled={!sel} title="清除选中文字的颜色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], null, len))}>
-            清除
-          </button>
-        </Field>
-        {spans.length > 0 && (
-          <div className="span-chips">
-            {spans.map((sp) => (
-              <button key={`${sp.start}-${sp.end}`} className="span-chip" title="点击清除这一段的颜色" onClick={() => patchSpans((cur, len) => setSpanColor(cur, sp.start, sp.end, null, len))}>
-                <i style={{ background: sp.color }} />
-                <span className="stext">{layer.text.slice(sp.start, sp.end).replace(/\n/g, ' ')}</span>
+        {!poster && (
+          <>
+            <Field label="选中上色">
+              <ColorPicker label="选中上色" showHex={false} value={spanColor} onChange={setSpanColorState} />
+              <button className="btn sm" disabled={!sel} title={sel ? '给文本框里选中的文字上色' : '先在文本框里选中文字'} onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], spanColor, len))}>
+                上色
               </button>
-            ))}
-          </div>
+              <button className="btn ghost sm" disabled={!sel} title="清除选中文字的颜色" onClick={() => sel && patchSpans((sp, len) => setSpanColor(sp, sel[0], sel[1], null, len))}>
+                清除
+              </button>
+            </Field>
+            {spans.length > 0 && (
+              <div className="span-chips">
+                {spans.map((sp) => (
+                  <button key={`${sp.start}-${sp.end}`} className="span-chip" title="点击清除这一段的颜色" onClick={() => patchSpans((cur, len) => setSpanColor(cur, sp.start, sp.end, null, len))}>
+                    <i style={{ background: sp.color }} />
+                    <span className="stext">{layer.text.slice(sp.start, sp.end).replace(/\n/g, ' ')}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
         <Seg label="文字对齐" options={TEXT_ALIGNS} value={st.align} onChange={(a) => patchStyle({ align: a })} />
       </Section>
@@ -536,14 +544,16 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
           <Num label="字距" value={st.letter_spacing ?? 0} min={-0.5} max={2} step={0.01} scale={1} suffix="em" onChange={(v) => patchStyle({ letter_spacing: v })} />
           <Num label="行高" value={st.line_height} min={0.6} max={3} step={0.05} scale={1} suffix="×" onChange={(v) => patchStyle({ line_height: v })} />
         </div>
-        <div className="g2">
-          <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => patchStyle({ wrap_width: m === 'on' ? DEFAULT_WRAP_WIDTH : null })} />
-          {st.wrap_width ? (
-            <Num label="换行宽度" value={st.wrap_width} min={WRAP_WIDTH_MIN} max={WRAP_WIDTH_MAX} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ wrap_width: clampWrapWidth(v) })} />
-          ) : (
-            <span />
-          )}
-        </div>
+        {!poster && (
+          <div className="g2">
+            <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => patchStyle({ wrap_width: m === 'on' ? DEFAULT_WRAP_WIDTH : null })} />
+            {st.wrap_width ? (
+              <Num label="换行宽度" value={st.wrap_width} min={WRAP_WIDTH_MIN} max={WRAP_WIDTH_MAX} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ wrap_width: clampWrapWidth(v) })} />
+            ) : (
+              <span />
+            )}
+          </div>
+        )}
       </Section>
     </>
   );

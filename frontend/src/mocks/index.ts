@@ -4,7 +4,7 @@
 // 播放器会退回到"合成时钟"模式（见 lib/player.ts）。
 
 import { installMock, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, Batch, BatchDetail, EditSpec, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, SeparationModel, TranscriptCue, VersionCue, Video } from '../types';
+import type { Asset, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightPhrase, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, SeparationModel, TranscriptCue, TtsIn, VersionCue, Video } from '../types';
 
 const now = () => new Date().toISOString();
 let seq = 100;
@@ -48,6 +48,16 @@ function overlayImage(zone: SafeZone): string {
 }
 
 // ---- 生成占位图片 ----
+function solidImage(w: number, h: number, color: string): string {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, w, h);
+  return c.toDataURL('image/png');
+}
+
 function gradientImage(w: number, h: number, hue: number, label: string): string {
   const c = document.createElement('canvas');
   c.width = w;
@@ -177,6 +187,8 @@ const LOCALIZE_OPTIONS: LocalizeOptions = {
     { code: 'ko', label: '韩语' },
   ],
   target_langs: [
+    // 中文放第一位：大字报（HIG-50）朗读缺省取它
+    { code: 'zh', label: '中文', voices: [{ id: 'longanyang', label: '中文女声 安阳' }, { id: 'longxiaochun_v2', label: '中文女声 小春' }] },
     { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: '韩语女声 Kyong' }, { id: 'loongjihun_v3', label: '韩语男声 Jihun' }] },
     { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: '日语女声 Tomoka' }] },
     { code: 'en', label: '英语', voices: [{ id: 'loongstella_v3', label: '英语女声 Stella' }, { id: 'loongbella_v3', label: '英语女声 Bella' }] },
@@ -633,7 +645,14 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     let order = videos.filter((v) => v.batch_id === b.id).length;
     for (const f of files) {
       order += 1;
-      const v = makeVideo(b.id, f.name, order, 20, f);
+      // 图片（HIG-50）：后端转成 5 秒静止源片；mock 里直接把图当海报、时长 5 秒、无音轨
+      const isImage = /\.(jpe?g|png)$/i.test(f.name);
+      const v = makeVideo(b.id, f.name, order, isImage ? 5 : 20, isImage ? undefined : f);
+      if (isImage) {
+        v.kind = 'image';
+        v.has_audio = false;
+        v.poster_url = URL.createObjectURL(f);
+      }
       v.status = 'preparing';
       videos.push(v);
       created.push(v);
@@ -644,6 +663,29 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     }
     recount(b);
     return clone(created);
+  }
+  if ((mm = m(/^\/api\/batches\/([^/]+)\/blank$/))) {
+    // 空白素材（HIG-50）：纯色源片，mock 里用海报色块代替
+    const b = batches.find((x) => x.id === mm![1]);
+    if (!b) throw new ApiError(404, '批次不存在');
+    const { name, color = '#000000', duration = 10, aspect = '9:16' } = (body ?? {}) as BlankVideoIn;
+    if (!(duration > 0 && duration <= 600)) throw new ApiError(400, 'duration 必须在 (0, 600] 秒内');
+    const order = videos.filter((v) => v.batch_id === b.id).length + 1;
+    const v = makeVideo(b.id, name || `空白素材 ${order}`, order, duration);
+    const size = { '9:16': [1080, 1920], '1:1': [1080, 1080], '4:5': [1080, 1350], '16:9': [1920, 1080] }[aspect] ?? [1080, 1920];
+    v.kind = 'blank';
+    v.has_audio = false;
+    v.width = size[0];
+    v.height = size[1];
+    v.poster_url = solidImage(180, Math.round((180 * size[1]) / size[0]), color);
+    v.status = 'preparing';
+    videos.push(v);
+    setTimeout(() => {
+      v.status = 'ready';
+      recount(b);
+    }, 800);
+    recount(b);
+    return clone(v);
   }
   if ((mm = m(/^\/api\/batches\/([^/]+)\/apply$/))) {
     const { source_video_id, target_video_ids, modules, layer_mode } = body as { source_video_id: string; target_video_ids: string[]; modules: string[]; layer_mode?: ApplyLayerMode };
@@ -752,6 +794,35 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return clone(v);
   }
   if (path === '/api/localize/options') return clone(LOCALIZE_OPTIONS);
+  if (path === '/api/tts') {
+    // 朗读（HIG-50）：约每秒 4 个字的一段提示音，先 preparing 再 ready
+    const { text, lang, voice, name } = body as TtsIn;
+    const t = (text ?? '').trim();
+    if (!t) throw new ApiError(400, '文案不能为空');
+    const seconds = Math.max(1, Math.round((t.length / 4) * 10) / 10);
+    const a: Asset = {
+      id: nid('a'), type: 'audio', kind: 'audio', name: name || t.slice(0, 20), url: toneWav(seconds, 330),
+      source: 'derived', status: 'preparing', derived_from: { stem: 'tts', lang, voice, text: t.slice(0, 40) }, created_at: now(),
+    };
+    assets.push(a);
+    setTimeout(() => {
+      a.duration = seconds;
+      a.has_audio = true;
+      a.status = 'ready';
+    }, 1200);
+    return clone(a);
+  }
+  if (path === '/api/highlight') {
+    // 重点词（HIG-50）：mock 只按规则挑日期 / 数字 + 单位 / 金额 / 倍数
+    const { text, max_phrases = 8 } = body as { text: string; max_phrases?: number };
+    const re = /\d+月\d+日(?:至\d+月\d+日)?|\d{4}年|[¥￥$]\d+(?:\.\d+)?|\d+(?:\.\d+)?%|[一二三四五六七八九十两\d]+倍[\u4e00-\u9fff]{0,2}|[一二三四五六七八九十两\d]+(?:天|元|个|次|折|万|亿)/g;
+    const phrases: HighlightPhrase[] = [];
+    for (const mt of text.matchAll(re)) {
+      if (phrases.length >= max_phrases) break;
+      phrases.push({ text: mt[0], start: mt.index ?? 0, end: (mt.index ?? 0) + mt[0].length });
+    }
+    return { phrases };
+  }
   if ((mm = m(/^\/api\/videos\/([^/]+)\/localize$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');

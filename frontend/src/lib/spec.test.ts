@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { countSafeZoneOverlaps, ensureVariants, exportKeys, hasExportChoice, layerAspect, layerName, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from './spec';
-import { emptySpec, type EditSpec, type MaskLayer, type SafeZone } from '../types';
+import { defaultTextStyle, emptySpec, type EditSpec, type MaskLayer, type SafeZone, type TextLayer } from '../types';
 
 describe('toContractSpec · audio', () => {
   it('没有 audio 块、或全是缺省值时不带此字段（保持旧 spec 形状）', () => {
@@ -33,6 +33,24 @@ describe('toContractSpec · audio', () => {
     expect(layers[0]).toHaveProperty('hidden', true);
     expect(layers[1]).not.toHaveProperty('hidden');
     expect(layers[2]).not.toHaveProperty('hidden');
+  });
+});
+
+describe('toContractSpec · 大字报（HIG-50）', () => {
+  const text = (extra: Partial<TextLayer>): TextLayer => ({ id: 't', type: 'text', text: '文案', style: defaultTextStyle(), anchor: 'top-center', margin: [0, 0], width: 0.88, rotate: 0, opacity: 1, t: 'all', ...extra });
+  it('trim.duration 只在正数时发送并取三位小数；null / 0 / 缺省时不带', () => {
+    expect(toContractSpec(emptySpec()).trim).toEqual({ remove: [] });
+    expect(toContractSpec({ ...emptySpec(), trim: { remove: [], duration: null } }).trim).toEqual({ remove: [] });
+    expect(toContractSpec({ ...emptySpec(), trim: { remove: [], duration: 0 } }).trim).toEqual({ remove: [] });
+    expect(toContractSpec({ ...emptySpec(), trim: { remove: [[1, 2]], duration: 12.34567 } }).trim).toEqual({ remove: [[1, 2]], duration: 12.346 });
+  });
+  it('scroll 原样透传，null / 缺省时不发', () => {
+    const scroll = { speed: 0.1, box: { x: 0.06, y: 0.14, w: 0.88, h: 0.6 }, start: 'visible' as const, end: 'stay' as const, hold_start: 1, hold_end: 2 };
+    const spec: EditSpec = { ...emptySpec(), layers: [text({ id: 'a', scroll }), text({ id: 'b', scroll: null }), text({ id: 'c' })] };
+    const layers = toContractSpec(spec).layers;
+    expect(layers[0]).toHaveProperty('scroll', scroll);
+    expect(layers[1]).not.toHaveProperty('scroll');
+    expect(layers[2]).not.toHaveProperty('scroll');
   });
 });
 

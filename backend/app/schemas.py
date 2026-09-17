@@ -229,6 +229,46 @@ class TextAnimation(BaseModel):
         return self.enter is not None or self.exit is not None or self.loop is not None
 
 
+ScrollStart = Literal["enter", "visible"]
+ScrollEnd = Literal["exit", "stay"]
+SCROLL_MAX_HOLD = 60.0
+# Generic portrait safe area (contract §2 scroll.box default): clear of the top status bar and
+# the bottom caption / action strip on the common short-video apps.
+DEFAULT_SCROLL_BOX = {"x": 0.06, "y": 0.14, "w": 0.88, "h": 0.60}
+
+
+class ScrollBox(BaseModel):
+    """Clip rectangle of a scrolling text layer, relative to the canvas (contract §2)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    x: float = Field(ge=0, lt=1)
+    y: float = Field(ge=0, lt=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _inside_canvas(self) -> ScrollBox:
+        if self.x + self.w > 1 + 1e-6:
+            raise ValueError("scroll.box 超出画布右边界（x + w 必须 ≤ 1）")
+        if self.y + self.h > 1 + 1e-6:
+            raise ValueError("scroll.box 超出画布下边界（y + h 必须 ≤ 1）")
+        return self
+
+
+class TextScroll(BaseModel):
+    """Scrolling copy inside a clip box (HIG-50 大字报); curve in services/scroll.py."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    speed: float = Field(default=0.08, gt=0, le=2)  # canvas heights per second
+    box: ScrollBox = Field(default_factory=lambda: ScrollBox(**DEFAULT_SCROLL_BOX))
+    start: ScrollStart = "enter"
+    end: ScrollEnd = "exit"
+    hold_start: float = Field(default=0, ge=0, le=SCROLL_MAX_HOLD)
+    hold_end: float = Field(default=0, ge=0, le=SCROLL_MAX_HOLD)
+
+
 class TextLayer(LayerBase):
     type: Literal["text"]
     text: str = ""
@@ -239,6 +279,13 @@ class TextLayer(LayerBase):
     # Per-output PNGs keyed by variant_key; missing / unresolvable entries fall back to image_url.
     variant_images: dict[str, VariantImage] | None = None
     animation: TextAnimation | None = None  # HIG-40
+    scroll: TextScroll | None = None  # HIG-50
+
+    @model_validator(mode="after")
+    def _scroll_excludes_animation(self) -> TextLayer:
+        if self.scroll is not None and self.animation is not None and self.animation.active:
+            raise ValueError(f"文字图层 {self.id}：滚动（scroll）与动画（animation）不能同时设置")
+        return self
 
     @model_validator(mode="after")
     def _animation_fits_window(self) -> TextLayer:
@@ -383,10 +430,16 @@ class OutputVariant(BaseModel):
         return CANVAS_SIZES[self.aspect]
 
 
+TRIM_DURATION_MAX = 600.0
+
+
 class Trim(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     remove: list[TimeWindow] = Field(default_factory=list)
+    # Output length (HIG-50): None = the post-trim length; longer loops the kept segments,
+    # shorter cuts the output (contract §2).
+    duration: float | None = Field(default=None, gt=0, le=TRIM_DURATION_MAX)
 
     @field_validator("remove")
     @classmethod
@@ -573,6 +626,79 @@ class RenameIn(BaseModel):
 
 class SpecIn(BaseModel):
     edit_spec: dict[str, Any] | None
+
+
+BLANK_DURATION_DEFAULT = 10.0
+
+
+class BlankVideoIn(BaseModel):
+    """POST /api/batches/{id}/blank: a blank source clip (HIG-50, contract §3)."""
+
+    name: str | None = Field(default=None, max_length=255)
+    color: str = "#000000"
+    duration: float = Field(default=BLANK_DURATION_DEFAULT, gt=0, le=TRIM_DURATION_MAX)
+    aspect: Aspect = "9:16"
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @field_validator("color")
+    @classmethod
+    def _color(cls, v: str) -> str:
+        if not _HEX_COLOR_6.match(v):
+            raise ValueError("color 必须是 #RRGGBB")
+        return v.upper()
+
+
+TTS_TEXT_MAX = 5000
+
+
+class TtsIn(BaseModel):
+    """POST /api/tts (HIG-50): read a piece of copy aloud into a derived audio asset."""
+
+    text: str = Field(min_length=1, max_length=TTS_TEXT_MAX)
+    lang: str = Field(min_length=2, max_length=16)
+    voice: str = Field(min_length=1, max_length=64)
+    speech_rate: float = Field(default=1.0, ge=0.5, le=2.0)
+    name: str | None = Field(default=None, max_length=255)
+
+    @field_validator("text")
+    @classmethod
+    def _strip_text(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("文案不能为空")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+
+class HighlightIn(BaseModel):
+    """POST /api/highlight (HIG-50): pick the phrases worth colouring in a piece of copy."""
+
+    text: str = Field(min_length=1, max_length=TTS_TEXT_MAX)
+    max_phrases: int = Field(default=8, ge=1, le=20)
+
+
+class HighlightPhrase(BaseModel):
+    text: str
+    start: int  # UTF-16 offsets into the request text, same index space as TextSpan
+    end: int
+
+
+class HighlightOut(BaseModel):
+    phrases: list[HighlightPhrase]
 
 
 class ApplyIn(BaseModel):
@@ -801,6 +927,7 @@ class VideoOut(BaseModel):
     order: int
     status: str
     error: str | None
+    kind: str = "video"  # video | image | blank (HIG-50)
     width: int | None
     height: int | None
     duration: float | None

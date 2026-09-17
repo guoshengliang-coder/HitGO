@@ -43,6 +43,9 @@ class Settings:
     localize_timeout_seconds: int
     # "ko=loongkyong_v3,ja=loongtomoka_v3": per-language default voice overrides.
     localize_voices: str
+    # Chat model that picks the phrases worth highlighting in poster copy (HIG-50); shares
+    # DASHSCOPE_API_KEY / LOCALIZE_PROVIDER with localization.
+    highlight_model: str
 
     @property
     def is_dev(self) -> bool:
@@ -87,6 +90,7 @@ def load_settings() -> Settings:
         localize_max_tempo=float(_env("LOCALIZE_MAX_TEMPO", "1.3")),
         localize_timeout_seconds=int(_env("LOCALIZE_TIMEOUT_SECONDS", "900")),
         localize_voices=_env("LOCALIZE_VOICES", "").strip(),
+        highlight_model=_env("HIGHLIGHT_MODEL", "qwen-plus").strip(),
     )
 
 
