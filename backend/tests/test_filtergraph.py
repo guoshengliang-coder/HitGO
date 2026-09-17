@@ -1501,6 +1501,16 @@ def test_hidden_fields_default_off_and_leave_the_argv_unchanged():
     assert audio_build(spec).argv == audio_build(explicit).argv
 
 
+def test_track_names_leave_the_argv_unchanged():
+    """HIG-48 names are editor labels only."""
+    spec = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5]}])
+    named = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5], "name": "开场 BGM"}])
+    for layer in named["layers"]:
+        layer["name"] = "图层"
+    named["audio"]["source_name"] = "原声"
+    assert audio_build(spec).argv == audio_build(named).argv
+
+
 def test_hidden_layer_is_left_out_like_it_was_never_there():
     spec = valid_spec()
     spec["layers"][0]["hidden"] = True

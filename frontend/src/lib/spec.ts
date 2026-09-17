@@ -7,8 +7,9 @@ import { getCachedText } from './textImage';
 import { contractAudio } from './audioTracks';
 import { contractCover } from './cover';
 import { contractAnimation } from './textAnimation';
+import { cleanTrackName } from './trackNames';
 
-const LOCAL_LAYER_FIELDS = ['name', 'locked', 'width_manual'] as const;
+const LOCAL_LAYER_FIELDS = ['locked', 'width_manual'] as const;
 
 /** 发送给后端前剔除本地 UI 字段并规范化区间；audio / cover 块只在非缺省时带上，保持旧 spec 形状。 */
 export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
@@ -24,6 +25,10 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       const copy: Record<string, unknown> = { ...l };
       for (const f of LOCAL_LAYER_FIELDS) delete copy[f];
       if (!l.hidden) delete copy.hidden;
+      // 轨道名（HIG-48）是契约字段：只在非空时发送
+      const name = cleanTrackName(l.name);
+      if (name) copy.name = name;
+      else delete copy.name;
       // 没有局部上色时不发 spans，保持旧 spec 形状
       if (l.type === 'text' && !l.spans?.length) delete copy.spans;
       if (l.type === 'text' && !(l.variant_images && Object.keys(l.variant_images).length)) delete copy.variant_images;
@@ -55,7 +60,8 @@ export function newLayerId(): string {
 }
 
 export function layerName(layer: Layer, assets: Asset[]): string {
-  if (layer.name) return layer.name;
+  const own = cleanTrackName(layer.name);
+  if (own) return own;
   if (layer.type === 'text') return layer.text.replace(/\n/g, ' ').slice(0, 12) || '文字';
   if (layer.type === 'mask') return '遮盖';
   const a = assets.find((x) => x.id === layer.asset_id);

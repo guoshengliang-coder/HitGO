@@ -346,6 +346,31 @@ def test_put_spec_keeps_hidden_flags_and_export_ticks(client, ready_video):
     assert got["audio"]["source_hidden"] is True and got["audio"]["tracks"][0]["hidden"] is True
 
 
+def test_put_spec_keeps_track_names(client, ready_video):
+    """HIG-48 layers[].name / audio.tracks[].name / audio.source_name are stored and returned raw."""
+    spec = valid_spec()
+    spec["layers"][0]["name"] = "品牌角标"
+    spec["audio"] = {"source_volume": 1, "source_name": "原声", "tracks": [{"id": "au_1", "asset_id": "a_bgm", "name": "开场 BGM"}]}
+    r = put_spec(client, VIDEO, spec)
+    assert r.status_code == 200, r.text
+    got = client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]
+    assert got["layers"][0]["name"] == "品牌角标"
+    assert got["audio"]["source_name"] == "原声" and got["audio"]["tracks"][0]["name"] == "开场 BGM"
+
+
+def test_put_spec_rejects_overlong_track_names(client, ready_video):
+    long = "长" * 65
+    for patch in (
+        lambda s: s["layers"][0].__setitem__("name", long),
+        lambda s: s.__setitem__("audio", {"source_volume": 1, "source_name": long, "tracks": []}),
+        lambda s: s.__setitem__("audio", {"source_volume": 1, "tracks": [{"id": "au_1", "asset_id": "a_bgm", "name": long}]}),
+    ):
+        spec = valid_spec()
+        patch(spec)
+        r = put_spec(client, VIDEO, spec)
+        assert r.status_code == 400, r.text
+
+
 def test_put_spec_requires_ready_video(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     vid = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"])).json()[0]["id"]

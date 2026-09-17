@@ -1,4 +1,5 @@
-// 双击就地改名（批次名 / 视频名，HIG-27）。交互与图层名一致：Enter / 失焦提交，Esc 取消，清空视为取消。
+// 双击就地改名（批次名 / 视频名，HIG-27；时间线轨道名，HIG-48）。交互与图层名一致：Enter / 失焦提交，Esc 取消；
+// 清空默认视为取消，allowEmpty 时清空会提交空字符串（轨道名据此恢复自动名）。
 
 import { useEffect, useRef, useState } from 'react';
 
@@ -10,6 +11,9 @@ export function InlineName({
   label,
   editRequested,
   onEditEnd,
+  display,
+  allowEmpty = false,
+  maxLength = 255,
 }: {
   value: string;
   /** 返回 false 表示没存上（原因由调用方提示），留在显示态并保持原名 */
@@ -22,6 +26,11 @@ export function InlineName({
   editRequested?: boolean;
   /** 编辑结束（提交或取消）时回调，外部据此清掉 editRequested */
   onEditEnd?: () => void;
+  /** 显示态的文字，缺省 = value（例如名字后面带状态：「原声（已静音）」，编辑的仍是 value） */
+  display?: string;
+  /** 清空后提交空字符串，而不是取消 */
+  allowEmpty?: boolean;
+  maxLength?: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -40,7 +49,7 @@ export function InlineName({
     return (
       <span
         className={className}
-        title={`${value}（双击重命名）`}
+        title={`${display ?? value}（双击重命名）`}
         onDoubleClick={(e) => {
           e.stopPropagation();
           setDraft(value);
@@ -48,7 +57,7 @@ export function InlineName({
           setEditing(true);
         }}
       >
-        {value}
+        {display ?? value}
       </span>
     );
   }
@@ -59,7 +68,7 @@ export function InlineName({
     setEditing(false);
     onEditEnd?.();
     const next = draft.trim();
-    if (save && next && next !== value) void onSave(next);
+    if (save && (next || allowEmpty) && next !== value) void onSave(next);
   };
 
   return (
@@ -67,7 +76,7 @@ export function InlineName({
       className={`input sm ${inputClassName ?? ''}`}
       aria-label={`重命名${label}`}
       autoFocus
-      maxLength={255}
+      maxLength={maxLength}
       value={draft}
       onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => setDraft(e.target.value)}

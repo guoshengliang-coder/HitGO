@@ -6,6 +6,7 @@
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
+// 轨道头的名字双击改名（HIG-48）：视频轨改的是视频名（与左栏同一个），其余存进 spec（lib/trackNames），清空恢复自动名。
 // 拖放加音轨（HIG-33）：音频面板的素材卡片、或系统里的音频文件拖到时间线上，落点为起点，落在口播行加口播，其余加 BGM（lib/timelineDrop）。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
@@ -20,12 +21,14 @@ import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { IconEye, IconLock } from '../ui/Icons';
+import { InlineName } from '../ui/InlineName';
+import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
 import { api } from '../../api';
 import { isFileDrag, rejectedText, splitByAccept } from '../../lib/fileDrop';
 import { dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
 import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { hasAnimation, phaseLengths } from '../../lib/textAnimation';
-import type { Asset, AudioRole, Layer } from '../../types';
+import type { Asset, AudioRole, AudioSpec, Layer } from '../../types';
 
 /** 系统文件拖进来：上传完成、素材探测就绪后才能加轨，先记下落点。 */
 type PendingDrop = { assetId: string; role: AudioRole; start: number; videoId: string };
@@ -49,14 +52,21 @@ function EyeButton({ hidden, onToggle }: { hidden: boolean; onToggle: () => void
   );
 }
 
+/** 轨道头上可双击改名的名字（HIG-48）：清空提交空字符串，由调用方恢复自动名。 */
+function TrackName({ value, display, label, onSave }: { value: string; display?: string; label: string; onSave: (name: string) => Promise<boolean> | boolean | void }) {
+  return <InlineName className="lname" inputClassName="lname-input" value={value} display={display} label={label} allowEmpty maxLength={TRACK_NAME_MAX} onSave={onSave} />;
+}
+
 /** 音频模块的源音轨行：状态（静音 / 音量 / 隐藏）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
-function SourceAudioRow({ hasAudio, volume, hidden, onToggleHidden, width, offset, scrub, selected, onSelect, children }: { hasAudio: boolean; volume: number; hidden: boolean; onToggleHidden: () => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+function SourceAudioRow({ audio, hasAudio, onToggleHidden, onRename, width, offset, scrub, selected, onSelect, children }: { audio: AudioSpec | null | undefined; hasAudio: boolean; onToggleHidden: () => void; onRename: (name: string) => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+  const volume = sourceVolume(audio);
+  const hidden = !!audio?.source_hidden;
   const muted = !hasAudio || volume === 0 || hidden;
-  const label = !hasAudio ? '源音轨（无）' : hidden ? '源音轨（已隐藏）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
+  const label = sourceAudioLabel(audio, hasAudio);
   return (
     <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${hidden ? 'hidden' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
       <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>
-        <span className="lname">{label}</span>
+        <TrackName value={sourceAudioName(audio)} display={label} label="源音轨名" onSave={onRename} />
         {hasAudio && <EyeButton hidden={hidden} onToggle={onToggleHidden} />}
       </div>
       <div className="body" {...scrub}>
@@ -153,6 +163,9 @@ export function Timeline() {
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const renameLayer = (l: Layer, name: string) => {
+    if (cleanTrackName(name) !== cleanTrackName(l.name)) updateLayer(l.id, { name: cleanTrackName(name) });
+  };
   const assets = useEditor((s) => s.assets);
   const coverAsset = useEditor((s) => {
     const cover = s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null;
@@ -164,6 +177,9 @@ export function Timeline() {
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
   const toggleTrackHidden = useEditor((s) => s.toggleTrackHidden);
   const toggleSourceHidden = useEditor((s) => s.toggleSourceHidden);
+  const renameAudioTrack = useEditor((s) => s.renameAudioTrack);
+  const renameSourceAudio = useEditor((s) => s.renameSourceAudio);
+  const renameVideo = useEditor((s) => s.renameVideo);
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
   const setSelectedMute = useEditor((s) => s.setSelectedMute);
   const updateSourceMute = useEditor((s) => s.updateSourceMute);
@@ -513,7 +529,9 @@ export function Timeline() {
           </div>
 
           <div className="tl-row tl-video">
-            <div className="lbl">视频</div>
+            <div className="lbl" title="视频轨：双击改视频名（与左栏同一个名字）">
+              {video ? <TrackName value={video.name} label="视频名" onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}
+            </div>
             <div className="body" {...scrub.handlers}>
               {off > 0 && (
                 <div
@@ -566,10 +584,10 @@ export function Timeline() {
 
           {audioStep && (
             <SourceAudioRow
+              audio={spec?.audio}
               hasAudio={!!video?.has_audio}
-              volume={sourceVolume(spec?.audio)}
-              hidden={!!spec?.audio?.source_hidden}
               onToggleHidden={toggleSourceHidden}
+              onRename={renameSourceAudio}
               width={trackW}
               offset={off}
               scrub={scrub.handlers}
@@ -609,15 +627,14 @@ export function Timeline() {
               const left = off + postToSource(pa, remove) * pps;
               const right = off + postToSource(pb, remove) * pps;
               const sel = selectedTrackId === t.id;
-              const asset = assets.find((a) => a.id === t.asset_id);
-              const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
+              const name = audioTrackName(t, assets);
               const problem = trackAssetProblem(t, assets);
               const hidden = !!t.hidden;
               return (
                 <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
                   <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
-                    <span className="lname">{name}</span>
+                    <TrackName value={name} label="音轨名" onSave={(v) => renameAudioTrack(t.id, v)} />
                     <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
                   </div>
                   <div className="body" {...scrub.handlers}>
@@ -665,7 +682,7 @@ export function Timeline() {
               <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
                 <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改${l.hidden ? '；贴纸图层已隐藏，声音跟着不出' : ''}）`}>
                   <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
-                  <span className="lname">{name}</span>
+                  <TrackName value={name} label="贴纸名" onSave={(v) => renameLayer(l, v)} />
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
@@ -689,7 +706,7 @@ export function Timeline() {
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
-                  <span className="lname">{layerName(l, assets)}</span>
+                  <TrackName value={layerName(l, assets)} label="图层名" onSave={(v) => renameLayer(l, v)} />
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                     <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
                       <IconEye off={hidden} />

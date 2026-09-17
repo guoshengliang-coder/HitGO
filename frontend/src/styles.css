@@ -487,6 +487,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .lbl .tl-acts { position: absolute; right: 2px; top: 0; bottom: 0; display: flex; align-items: center; flex: none; gap: 0; padding-left: 6px; background: linear-gradient(90deg, transparent, var(--s0) 30%); opacity: 0; transition: opacity 0.12s; }
 .tl-row:hover .lbl .tl-acts, .tl-row.selected .lbl .tl-acts, .tl-row .lbl .tl-acts:focus-within { opacity: 0.9; }
 .tl-row .lbl .tl-acts .btn { width: 20px; height: 20px; padding: 0; }
+/* 轨道名就地编辑（HIG-48）：输入框占满标签列，编辑时收起显示 / 锁定按钮 */
+.tl-row .lbl .lname-input { flex: 1; min-width: 0; height: 20px; font-size: 11px; padding: 0 4px; }
+.tl-row .lbl:has(.lname-input) .tl-acts { display: none; }
 .tl-row .lbl .role { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--tk-bgm-bg); color: var(--tk-bgm-fg); flex: none; }
 .tl-row .lbl .role.voice { background: var(--tk-voice-bg); color: var(--tk-voice-fg); }
 .tl-row .lbl .role.sticker { background: var(--tk-sticker-bg); color: var(--tk-sticker-fg); }

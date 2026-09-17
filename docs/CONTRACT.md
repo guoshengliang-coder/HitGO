@@ -227,6 +227,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "opacity": 1,
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
       "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
+      "name": "品牌角标",                     // 可选（HIG-48）：轨道 / 图层显示名，所有图层类型通用；缺省 = 编辑器自动命名，worker 忽略
       "playback": "loop",                    // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
       "mix_audio": false                     // 可选，缺省 false：视频贴纸自带的音轨是否合成进成片
     },
@@ -287,6 +288,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
     "source_mute": [[3.0, 4.5]],             // 可选，缺省 []：源音轨在这些时段静音（剪后时间轴，秒），画面不动（HIG-25）
     "source_hidden": false,                  // 可选，缺省 false：源音轨关掉眼睛，成片不带原声，source_volume 原样保留（HIG-33）
+    "source_name": "原声",                    // 可选（HIG-48）：源音轨的显示名；缺省 = 「源音轨」，worker 忽略
     "tracks": [
       {
         "id": "au_1",
@@ -299,6 +301,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
         "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
+        "name": "开场 BGM",                  // 可选（HIG-48）：音轨显示名；缺省 = 素材文件名，worker 忽略
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
     ]
@@ -390,6 +393,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 素材不存在、不是贴纸素材或还没 `ready` 时，worker 不插封面，在 job.error 里记警告（不失败）。
   - 编辑器预览同样先放封面再接正片；时间线上封面块排在正片之前。
   - 批量套用 `cover` 模块时整块深拷贝；源没有封面时目标的也被清掉。
+- **轨道名 `name` / `source_name`**（可选，HIG-48）：`layers[].name`、`audio.tracks[].name`、`audio.source_name` 是编辑器
+  时间线轨道头上用户改的显示名，最长 64 个字符（超长 400）；缺省（或空）时编辑器按原来的规则自动命名（文字取内容、贴纸取素材名、
+  音轨取素材文件名、源音轨叫「源音轨」）。worker 与渲染回传都忽略它们（只校验长度，原样存取），
+  回传 `audio.tracks[].name` 仍是素材文件名。前端只在非空时发送。拆分音轨时两段都沿用原名；批量套用随所在图层 / `audio`
+  块一起复制（`style_only` 匹配上的目标保留自己的名字）。时间线最上面的视频轨没有单独的名字字段：改的就是 `Video.name`（`PATCH /api/videos/{id}`），与左栏视频名同一个。
+  `audio` 块只设了 `source_name` 时也视为非缺省，照常发送。
 - **改语言标记 `origin` / `lang`**（可选）：`layers[]` 与 `audio.tracks[]` 上的前端标记，`origin = "localize"` 表示这一层 / 轨
   是套用某个语言版本生成的，`lang` 是语言码。worker 忽略这两个字段（`extra = "ignore"` 校验但原样存取），批量套用
   原样复制；前端靠它们在切换版本时替换旧层 / 轨、判断当前套用的是哪个版本。
