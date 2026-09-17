@@ -155,6 +155,8 @@ def run_preprocess(
     kind=image / kind=blank videos, which have no uploaded source.mp4 of their own.
     """
     if source_gen is not None:
+        # A blank clip has no upload that created its video dir; ffmpeg won't create it either.
+        source.parent.mkdir(parents=True, exist_ok=True)
         _run(source_gen, "生成源片")
     try:
         meta = ffprobe.probe(source)
