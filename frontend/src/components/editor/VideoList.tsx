@@ -6,8 +6,10 @@ import { formatSeconds } from '../../lib/time';
 import type { EditSpec, Video } from '../../types';
 import { isDefaultAudio } from '../../lib/audioTracks';
 import { applyCrossVideoWarnings } from '../../lib/localize';
-import { VIDEO_ACCEPT, rejectedText } from '../../lib/fileDrop';
+import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL, rejectedText } from '../../lib/fileDrop';
+import { api } from '../../api';
 import { DropZone } from '../ui/DropZone';
+import { BlankMaterialDialog, NewMaterialButton } from '../ui/NewMaterial';
 import { InlineName } from '../ui/InlineName';
 import { IconPen, IconTrash } from '../ui/Icons';
 import { defaultApplyModules } from '../../lib/steps';
@@ -106,6 +108,8 @@ export function VideoList() {
   const toggleSelected = useEditor((s) => s.toggleSelected);
   const setSelectedAll = useEditor((s) => s.setSelectedAll);
   const batchName = useEditor((s) => s.batch?.name);
+  const batchId = useEditor((s) => s.batch?.id);
+  const refreshVideos = useEditor((s) => s.refreshVideos);
   const step = useEditor((s) => s.step);
   const renameBatch = useEditor((s) => s.renameBatch);
   const renameVideo = useEditor((s) => s.renameVideo);
@@ -114,6 +118,8 @@ export function VideoList() {
   const appendProgress = useEditor((s) => s.appendProgress);
   const setToast = useEditor((s) => s.setToast);
   const [applyOpen, setApplyOpen] = useState(false);
+  // 「新建素材 → 空白素材…」弹窗（HIG-50）
+  const [blankOpen, setBlankOpen] = useState(false);
   // 行操作「重命名」点了哪一条：InlineName 据此进入编辑态（双击改名仍然可用）
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const allOn = videos.length > 0 && selectedIds.length === videos.length;
@@ -135,7 +141,7 @@ export function VideoList() {
       disabled={appendProgress !== null}
       hint="松手追加到本批次"
       onFiles={(accepted, rejected) => {
-        const skipped = rejectedText(rejected, 'mp4 / mov');
+        const skipped = rejectedText(rejected, VIDEO_ACCEPT_LABEL);
         if (skipped) setToast(skipped);
         if (accepted.length) void appendVideos(accepted);
       }}
@@ -169,6 +175,9 @@ export function VideoList() {
                   <InlineName value={v.name} label="视频名" onSave={(name) => renameVideo(v.id, name)} inputClassName="vlist-rename" editRequested={renamingId === v.id} onEditEnd={() => setRenamingId((cur) => (cur === v.id ? null : cur))} />
                 </div>
                 <div className="vmeta mono">
+                  {/* 图片 / 空白素材打个小标，和上传的视频区分开（HIG-50） */}
+                  {v.kind === 'image' && <span className="vkind">图</span>}
+                  {v.kind === 'blank' && <span className="vkind">空白</span>}
                   {formatSeconds(v.duration)} · {v.width}×{v.height}
                 </div>
                 <div className={`vstate ${kind}`}>
@@ -215,8 +224,9 @@ export function VideoList() {
             <div className="muted small">{appendProgress < 1 ? `追加视频上传中 ${Math.round(appendProgress * 100)}%` : '上传完成，正在入库…'}</div>
           </div>
         ) : (
-          <div className="hint small vlist-drop-hint">拖入 mp4 / mov 追加到本批次</div>
+          <div className="hint small vlist-drop-hint">拖入 {VIDEO_ACCEPT_LABEL} 追加到本批次</div>
         )}
+        <NewMaterialButton up disabled={appendProgress !== null} onFiles={(files) => void appendVideos(files)} onBlank={() => setBlankOpen(true)} />
         <button className="btn" disabled={targetCount === 0} onClick={() => setApplyOpen(true)} title="把当前视频的配置深拷贝到勾选的其他视频，弹窗里可选模块">
           {targetCount === 0 ? '先在上方勾选目标视频' : `把当前配置应用到已勾选 ${targetCount} 条`}
         </button>
@@ -227,6 +237,17 @@ export function VideoList() {
         )}
       </div>
       {applyOpen && <ApplyDialog targetIds={selectedIds} defaultModules={defaultApplyModules(step)} onClose={() => setApplyOpen(false)} />}
+      {blankOpen && batchId && (
+        <BlankMaterialDialog
+          onClose={() => setBlankOpen(false)}
+          onSubmit={async (body) => {
+            // 201 回来的是 preparing 的素材，refreshVideos 之后由轮询把它变成 ready
+            await api.createBlankVideo(batchId, body);
+            await refreshVideos();
+            setToast('空白素材已创建，正在生成源片…');
+          }}
+        />
+      )}
     </DropZone>
   );
 }

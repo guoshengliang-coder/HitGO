@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { useEditor } from '../../store/editor';
 import { STEPS, type Step } from '../../lib/steps';
 import { APP_VERSION } from '../../lib/version';
-import { IconCut, IconExport, IconGlobe, IconGrid, IconRedo, IconSticker, IconSubtitle, IconText, IconUndo, IconWave } from '../ui/Icons';
+import { IconCut, IconExport, IconGlobe, IconGrid, IconRedo, IconScroll, IconSticker, IconSubtitle, IconText, IconUndo, IconWave } from '../ui/Icons';
 import { ThemeToggle } from '../ui/ThemeToggle';
 
 const STEP_ICON: Record<Step, () => JSX.Element> = {
@@ -16,6 +16,7 @@ const STEP_ICON: Record<Step, () => JSX.Element> = {
   sticker: IconSticker,
   subtitle: IconSubtitle,
   localize: IconGlobe,
+  poster: IconScroll,
 };
 
 export function TopBar({ onExport }: { onExport: () => void }) {
