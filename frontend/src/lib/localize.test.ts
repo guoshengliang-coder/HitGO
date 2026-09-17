@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   cleanCueText,
+  setLayerWrapWidth,
+  unwrapLegacyCueText,
   LOCALIZE_WRAP_WIDTH,
   appliedVersion,
   applyCrossVideoWarnings,
@@ -343,6 +345,50 @@ describe('cleanCueText', () => {
   });
   it('保留已有换行、去掉空行和首尾空白', () => {
     expect(cleanCueText('  a \n\n b  ')).toBe('a\nb');
+  });
+});
+
+describe('unwrapLegacyCueText / setLayerWrapWidth（旧译文字幕的硬换行）', () => {
+  const layer = (text: string, extra: Partial<TextLayer> = {}): TextLayer => ({
+    id: 'l', type: 'text', t: 'all', anchor: 'bottom-center', margin: [0, 0.12], width: 0.8, rotate: 0, opacity: 1,
+    text, style: defaultTextStyle(), origin: 'localize', lang: 'en', ...extra,
+  }) as TextLayer;
+
+  it('拉丁文按空格接回，中日文直接接', () => {
+    expect(unwrapLegacyCueText('Walk just 1,000\nsteps to receive a\n5-yuan red envelope').text).toBe('Walk just 1,000 steps to receive a 5-yuan red envelope');
+    expect(unwrapLegacyCueText('只需要打开这个开关，\n就能一键扫描').text).toBe('只需要打开这个开关，就能一键扫描');
+    expect(unwrapLegacyCueText('ようこそ\nHitGO へ').text).toBe('ようこそHitGO へ');
+  });
+
+  it('下标映射：换行后的字符前移到接好的位置', () => {
+    const { text, map } = unwrapLegacyCueText('ab\ncd');
+    expect(text).toBe('ab cd');
+    expect(map(0)).toBe(0);
+    expect(map(2)).toBe(2);
+    expect(map(3)).toBe(3);
+    expect(map(5)).toBe(5);
+  });
+
+  it('旧译文字幕第一次开自动换行时并回一段，spans 跟着平移', () => {
+    const l = layer('Hurry—use your\nHuawei phone', { spans: [{ start: 15, end: 21, color: '#FF0000' }] });
+    setLayerWrapWidth(l, 0.6);
+    expect(l.text).toBe('Hurry—use your Huawei phone');
+    expect(l.style.wrap_width).toBe(0.6);
+    expect(l.text.slice(l.spans![0].start, l.spans![0].end)).toBe('Huawei');
+  });
+
+  it('已经开过自动换行、非改语言图层、关闭换行时都不动文字', () => {
+    const wrapped = layer('a\nb', { style: { ...defaultTextStyle(), wrap_width: 0.9 } });
+    setLayerWrapWidth(wrapped, 0.5);
+    expect(wrapped.text).toBe('a\nb');
+    const typed = layer('a\nb', { origin: undefined, lang: undefined });
+    setLayerWrapWidth(typed, 0.5);
+    expect(typed.text).toBe('a\nb');
+    expect(typed.style.wrap_width).toBe(0.5);
+    const off = layer('a\nb');
+    setLayerWrapWidth(off, null);
+    expect(off.text).toBe('a\nb');
+    expect(off.style.wrap_width).toBeNull();
   });
 });
 
