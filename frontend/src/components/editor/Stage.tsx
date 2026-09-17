@@ -21,6 +21,7 @@ import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime }
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layout';
 import { cloneSpec, layerAspect, outputFor } from '../../lib/spec';
+import { blurFillFilter } from '../../lib/blurFill';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
 import { windowContains } from '../../lib/time';
@@ -122,7 +123,7 @@ function SafeZoneOverlay({ url, W, H }: { url: string; W: number; H: number }) {
  * 纯色 = 变体颜色做底；裁切 = 按 outputs[].crop 从当前帧取窗口再 cover（与 worker 顺序一致，
  * <video> 隐藏）。几何全部走 lib/videoBox，与 worker 同一份说法。每帧重绘（跟随 postTime）。
  */
-function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; videoId?: string; posterUrl?: string; W: number; H: number; postTime: number }) {
+function FillBackdrop({ fill, color, crop, blurFilter, videoId, posterUrl, W, H, postTime }: { fill: 'blur' | 'color' | 'crop'; color?: string; crop?: CropRect; blurFilter: string; videoId?: string; posterUrl?: string; W: number; H: number; postTime: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   // 暂停时 store 的 time 可能不变（换素材前后都是 0），帧就绪要单独触发重画，否则会停在旧素材的帧上（HIG-12）
   const [frame, setFrame] = useState(0);
@@ -141,7 +142,7 @@ function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }:
       if (fill === 'blur') {
         const bg = coverBox(sw, sh, cw, ch, 1.05);
         ctx.save();
-        ctx.filter = 'blur(6px) brightness(0.7)';
+        ctx.filter = blurFilter;
         ctx.drawImage(src, bg.x, bg.y, bg.w, bg.h);
         ctx.restore();
       } else {
@@ -157,7 +158,7 @@ function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }:
     return () => {
       alive = false;
     };
-  }, [fill, crop, videoId, posterUrl, W, H, postTime, frame]);
+  }, [fill, crop, blurFilter, videoId, posterUrl, W, H, postTime, frame]);
   if (fill === 'color') return <div className="stage-fill" style={{ background: color ?? '#000000' }} />;
   // 模糊底图半分辨率即可；裁切是前景，按画布尺寸画
   const scale = fill === 'blur' ? 0.5 : 1;
@@ -169,7 +170,7 @@ function FillBackdrop({ fill, color, crop, videoId, posterUrl, W, H, postTime }:
  * 模糊 = 放大模糊做底 + contain；纯色 = 颜色做底 + contain；裁切 = cover 居中（源画面的裁切窗口不作用于封面）。
  * 视频封面用浏览器可播的预览代理，对齐到 time + N，只在播放中出声（封面原声）。
  */
-function CoverPreview({ fill, color, W, H }: { fill: 'blur' | 'color' | 'crop'; color?: string; W: number; H: number }) {
+function CoverPreview({ fill, color, blurFilter, W, H }: { fill: 'blur' | 'color' | 'crop'; color?: string; blurFilter: string; W: number; H: number }) {
   const asset = useEditor((s) => {
     const cover = s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null;
     return cover ? s.assets.find((a) => a.id === cover.asset_id) : undefined;
@@ -229,7 +230,7 @@ function CoverPreview({ fill, color, W, H }: { fill: 'blur' | 'color' | 'crop'; 
     if (fill === 'blur') {
       const bg = coverBox(sw, sh, cw, ch, 1.05);
       ctx.save();
-      ctx.filter = 'blur(12px) brightness(0.7)';
+      ctx.filter = blurFilter;
       ctx.drawImage(src, bg.x, bg.y, bg.w, bg.h);
       ctx.restore();
     }
@@ -725,7 +726,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
       <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
+        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, def.width, def.height, W / 2)} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}
@@ -738,7 +739,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             e.currentTarget.volume = srcVolume;
           }}
         />
-        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} W={W} H={H} />}
+        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, def.width, def.height, W)} W={W} H={H} />}
         <AudioTracks />
         {!coverActive &&
           layers.map((l) => {

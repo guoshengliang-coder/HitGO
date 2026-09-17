@@ -377,18 +377,29 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
 .save-indicator.error { color: var(--st-failed-fg); }
 .save-indicator.error i { background: var(--st-failed-fg); }
 
-.editor-body { display: grid; grid-template-columns: 236px minmax(0, 1fr) 4px var(--right-w, 320px); min-height: 0; }
-/* 面板分隔拖动条：竖条在中栏与右栏之间（占一列），横条在时间线上方 */
+.editor-body { display: grid; grid-template-columns: var(--left-w, 236px) 4px minmax(0, 1fr) 4px var(--right-w, 320px); min-height: 0; }
+/*
+ * 面板分隔拖动条（HIG-53）：竖条在左栏 / 中栏 / 右栏之间（各占 4px 一列），横条贴着画面下沿。
+ * 平时就画出分隔线和中间的小把手，让人看得出能拖；热区 8px（负 margin 抵消，不占布局），
+ * 悬停 / 拖动时线和把手变强调色。分隔线由拖动条画，所以左右栏、QuickBar 不再各画边框。
+ */
 .splitter { position: relative; z-index: 6; background: transparent; touch-action: none; user-select: none; }
-.splitter::after { content: ''; position: absolute; inset: 0; background: var(--accent); opacity: 0; transition: opacity 0.12s; }
-.splitter:hover::after, .splitter.active::after { opacity: 0.6; }
-.splitter-x { cursor: col-resize; width: 4px; margin-left: -2px; margin-right: -2px; }
-.splitter-y { cursor: row-resize; height: 4px; margin-top: -2px; margin-bottom: -2px; flex: none; }
+.splitter::before { content: ''; position: absolute; background: var(--line); transition: background 0.12s; }
+.splitter::after { content: ''; position: absolute; border-radius: 2px; background: var(--hover-line); transition: background 0.12s; }
+.splitter:hover::before, .splitter.active::before, .splitter:hover::after, .splitter.active::after { background: var(--accent); }
+.splitter-x { cursor: col-resize; width: 8px; margin-left: -2px; margin-right: -2px; }
+.splitter-x::before { top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%); }
+.splitter-x:hover::before, .splitter-x.active::before { width: 2px; }
+.splitter-x::after { top: 50%; left: 50%; width: 4px; height: 28px; transform: translate(-50%, -50%); }
+.splitter-y { cursor: row-resize; height: 8px; margin-top: -4px; margin-bottom: -4px; flex: none; }
+.splitter-y::before { left: 0; right: 0; top: 50%; height: 1px; transform: translateY(-50%); }
+.splitter-y:hover::before, .splitter-y.active::before { height: 2px; }
+.splitter-y::after { left: 50%; top: 50%; width: 28px; height: 4px; transform: translate(-50%, -50%); }
 body.is-resizing-x, body.is-resizing-x * { user-select: none; cursor: col-resize !important; }
 body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize !important; }
-.col-left { border-right: 1px solid var(--line); background: var(--s0); display: flex; flex-direction: column; min-height: 0; }
+.col-left { min-width: 0; background: var(--s0); display: flex; flex-direction: column; min-height: 0; }
 .col-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.col-right { min-width: 0; border-left: 1px solid var(--line); background: var(--s0); display: flex; flex-direction: column; min-height: 0; }
+.col-right { min-width: 0; background: var(--s0); display: flex; flex-direction: column; min-height: 0; }
 
 /* 左栏视频列表（docs/DESIGN.md §4.2）：海报 44×78、勾选框常显在海报左上角、当前行 = s1 + 左侧 2px 橙条 */
 .vlist-batch { padding: 10px 12px 2px; font-size: 13px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -452,7 +463,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 }
 .inline-text-editor::selection { background: rgba(217, 72, 31, 0.6); }
 
-.quickbar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-top: 1px solid var(--line-soft); background: var(--s0); flex-wrap: wrap; }
+.quickbar { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: var(--s0); flex-wrap: wrap; }
 .quickbar .btn.on { border-color: var(--hover-line); background: var(--panel-2); }
 .quickbar .qb-sep { width: 1px; height: 18px; background: var(--line-soft); margin: 0 4px; }
 

@@ -1700,6 +1700,10 @@ export const useEditor = create<EditorState>((set, get) => {
           const o = { ...cur, ...patch };
           if (o.fill !== 'color') delete o.color;
           if (o.fill !== 'crop') delete o.crop;
+          if (o.fill !== 'blur') {
+            delete o.blur;
+            delete o.bg_brightness;
+          }
           return o;
         });
       });

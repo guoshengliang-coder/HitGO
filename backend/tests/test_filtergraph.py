@@ -12,6 +12,8 @@ from app.services.filtergraph import (
     ENCODE_PRESETS,
     ImageSource,
     apply_overrides,
+    blur_background_radius,
+    blur_background_steps,
     build_render_command,
     encode_args,
     ffmpeg_color,
@@ -111,10 +113,56 @@ def test_fill_blur_9x16():
     graph = fc(plan)
     assert plan.canvas == (1080, 1920)
     assert "[0:v]split=2[bg][fg]" in graph
-    assert "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:2[bgb]" in graph
+    # 缺省 blur = 60 → 半径 round(1080 · 0.6 · 0.08) = 52；bg_brightness = 50 → 叠 black@0.5
+    assert (
+        "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+        "boxblur=52:2,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.5:t=fill[bgb]" in graph
+    )
     assert "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[fgs]" in graph
     assert "[bgb][fgs]overlay=(W-w)/2:(H-h)/2[c0]" in graph
     assert graph.endswith("[c0]format=yuv420p[vout]")
+
+
+def test_blur_background_radius_scales_with_short_side_and_is_capped():
+    assert blur_background_radius(1080, 1920, 60) == 52
+    assert blur_background_radius(1920, 1080, 100) == 86
+    assert blur_background_radius(1080, 1080, 23) == 20  # HIG-54 之前固定的 20:2
+    assert blur_background_radius(1080, 1920, 0) == 0
+    assert blur_background_radius(1080, 1920, 250) == 86  # 越界先夹到 100
+    assert blur_background_radius(100, 100, 100) == 8
+    assert blur_background_radius(8, 8, 100) == 1  # 色度平面上限 min/4 − 1 = 1
+    assert blur_background_radius(4, 4, 100) == 0
+
+
+def test_blur_background_steps_skip_what_is_off():
+    assert blur_background_steps(1080, 1920, 0, 100) == []
+    assert blur_background_steps(1080, 1920, 100, 100) == ["boxblur=86:2"]
+    assert blur_background_steps(1080, 1920, 0, 20) == ["drawbox=x=0:y=0:w=iw:h=ih:color=black@0.8:t=fill"]
+
+
+def test_fill_blur_uses_variant_strength_and_brightness():
+    spec = valid_spec(
+        trim={"remove": []},
+        layers=[],
+        outputs=[{"variant_key": "w", "aspect": "16:9", "fill": "blur", "blur": 0, "bg_brightness": 100}],
+    )
+    graph = fc(build(spec, variant_key="w"))
+    assert "[bg]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[bgb]" in graph
+    assert "boxblur" not in graph and "drawbox" not in graph
+    spec["outputs"][0].update(blur=80, bg_brightness=35)
+    graph = fc(build(spec, variant_key="w"))
+    assert "crop=1920:1080,boxblur=69:2,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.65:t=fill[bgb]" in graph
+
+
+def test_blur_fields_do_not_touch_other_fills():
+    for fill in ("color", "crop"):
+        spec = valid_spec(
+            trim={"remove": []},
+            layers=[],
+            outputs=[{"variant_key": "k", "aspect": "1:1", "fill": fill, "blur": 90, "bg_brightness": 30}],
+        )
+        graph = fc(build(spec, variant_key="k"))
+        assert "boxblur" not in graph and "drawbox" not in graph
 
 
 def test_fill_color_1x1():
@@ -332,6 +380,42 @@ def test_real_ffmpeg_renders(tmp_path):
     )
     subprocess.run(plan.argv, check=True, capture_output=True)
     assert (tmp_path / "out.mp4").stat().st_size > 0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_blur_background_is_dimmed(tmp_path):
+    # 白色竖版源放进 16:9：左侧模糊底的亮度应随 bg_brightness 下降
+    src = tmp_path / "white.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=white:size=540x960:rate=25:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+    def left_edge_luma(brightness: int) -> float:
+        spec = EditSpec.model_validate(
+            valid_spec(
+                trim={"remove": []},
+                layers=[],
+                outputs=[{"variant_key": "w", "aspect": "16:9", "fill": "blur", "bg_brightness": brightness}],
+            )
+        )
+        out = tmp_path / f"out{brightness}.mp4"
+        plan = build_render_command(
+            spec, {"duration": 1.0, "has_audio": False}, {}, spec.outputs[0],
+            source_path=str(src), output_path=str(out),
+        )  # fmt: skip
+        subprocess.run(plan.argv, check=True, capture_output=True)
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
+             "-vf", "crop=40:40:40:520,format=gray", "-f", "rawvideo", "-"],
+            check=True, capture_output=True,
+        ).stdout  # fmt: skip
+        return sum(raw) / len(raw)
+
+    bright, dim = left_edge_luma(100), left_edge_luma(60)
+    assert bright > 200
+    assert dim == pytest.approx(bright * 0.6 + 16 * 0.4, abs=12)
 
 
 # --- video stickers ---------------------------------------------------------------

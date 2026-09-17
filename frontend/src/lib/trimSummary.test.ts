@@ -30,6 +30,10 @@ describe('frameSummary（成片画面摘要）', () => {
     expect(frameSummary({ ...base, fill: 'crop', quality: 'high' }, 47.5)).toBe('裁切 · 高清 · 约 43 MB');
     expect(frameSummary({ ...base, fill: 'blur', quality: 'standard' }, 10)).toBe('模糊背景 · 标准 · 约 4.9 MB');
   });
+  it('模糊背景调过强度 / 亮度时带上数值', () => {
+    expect(frameSummary({ ...base, fill: 'blur', blur: 60, bg_brightness: 50 }, 10)).toBe('模糊背景 · 标准 · 约 4.9 MB');
+    expect(frameSummary({ ...base, fill: 'blur', blur: 80, bg_brightness: 35 }, 10)).toBe('模糊背景 80/35% · 标准 · 约 4.9 MB');
+  });
   it('quality 缺省按标准', () => {
     expect(frameSummary({ ...base, fill: 'color' }, 10)).toContain('纯色 · 标准');
   });
