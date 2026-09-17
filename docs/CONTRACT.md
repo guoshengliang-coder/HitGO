@@ -442,6 +442,17 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/outputs?limit=100&offset=0&q=` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
   每项额外带上 `batch_name` 与 `video_name`。`limit` 默认 100、上限 500，`offset` 默认 0；越界返回空数组。
   `q` 可选：去掉前后空白后非空时，只返回任务 `name`、批次名或视频名包含它（不区分大小写）的产物；分页作用在过滤之后。
+- `POST /api/outputs/zip`（HIG-47，批量下载）：请求体是**表单**（`application/x-www-form-urlencoded`），字段 `job_ids`
+  可重复，1–500 个；响应 200 `application/zip`，`Content-Disposition: attachment`（`filename*` 为
+  `批次名_产物_YYYYMMDD-HHMM.zip`，跨批次时批次名换成 `HitGO`）。
+  - 用表单而不是 JSON：页面提交隐藏表单，浏览器边收边写盘，不把整个包读进内存。受访问码 Cookie 保护，同其它 `/api`。
+  - 按请求里的顺序打包；重复 id、不存在的 id、`status != done` 的任务、成片文件已不在的任务直接跳过。
+    一个可下载的都没有、`job_ids` 为空或超过 500 个时返回 400。
+  - 包内文件名同单个下载：`导出名称_视频名_规格.mp4`（没有导出名称用批次名，视频名去 `.mp4 / .mov`，
+    `\ / : * ? " < > |` 与控制字符换成 `_`，每段最长 80 字符；全空时用任务 id）；同名（不区分大小写）的第二个起
+    追加 ` (2)`、` (3)`。
+  - 条目不压缩（`STORED`，mp4 本身已压缩），开 zip64，边读边写出：不预先算总大小，所以没有 `Content-Length`，
+    浏览器显示不了剩余时间；包大小约等于所选成片大小之和。
 
 ### 视频
 - `GET /api/videos/{id}` → `Video`

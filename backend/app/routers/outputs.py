@@ -1,8 +1,12 @@
-"""Cross-batch outputs: GET /api/outputs."""
+"""Cross-batch outputs: GET /api/outputs, POST /api/outputs/zip (HIG-47)."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from datetime import datetime
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -10,11 +14,15 @@ from app.db import get_db
 from app.models import JOB_DONE, Batch, Job, Video
 from app.schemas import JobOut
 from app.serializers import job_out
+from app.services import storage
+from app.services.output_zip import ZipEntry, dedupe_names, output_file_name, stream_zip
 
 router = APIRouter(prefix="/api/outputs", tags=["outputs"])
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+# One zip holds at most this many outputs (same as a page of GET /api/outputs).
+MAX_ZIP_JOBS = 500
 
 
 def _escape_like(term: str) -> str:
@@ -72,3 +80,54 @@ def list_outputs(
         job_out(j, batch_name=batch_names.get(j.batch_id), video_name=video_names.get(j.video_id))
         for j in rows
     ]
+
+
+@router.post("/zip")
+def download_outputs_zip(
+    job_ids: list[str] = Form(default_factory=list),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Finished outputs as one zip, streamed (contract §3).
+
+    Form-encoded on purpose: the page submits a hidden form so the browser downloads straight
+    to disk instead of buffering the whole archive into a blob. Ids keep the order they were
+    sent in; duplicates, unknown ids, unfinished jobs and missing files are skipped.
+    """
+    ids = list(dict.fromkeys(i.strip() for i in job_ids if i.strip()))
+    if not ids:
+        raise HTTPException(400, "没有选择要下载的产物")
+    if len(ids) > MAX_ZIP_JOBS:
+        raise HTTPException(400, f"一次最多打包 {MAX_ZIP_JOBS} 个产物")
+    jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_(ids), Job.status == JOB_DONE)).all()}
+    rows = [jobs[i] for i in ids if i in jobs and storage.output_path(i).is_file()]
+    if not rows:
+        raise HTTPException(400, "所选产物都已不存在或还没完成，无法下载")
+    batch_names = dict(db.execute(select(Batch.id, Batch.name).where(Batch.id.in_({j.batch_id for j in rows}))).all())
+    video_names = dict(db.execute(select(Video.id, Video.name).where(Video.id.in_({j.video_id for j in rows}))).all())
+    names = dedupe_names(
+        [
+            output_file_name(j.id, j.variant_key, j.name, batch_names.get(j.batch_id), video_names.get(j.video_id))
+            for j in rows
+        ]
+    )
+    entries = [
+        ZipEntry(name=n, path=storage.output_path(j.id), modified=j.finished_at) for n, j in zip(names, rows, strict=True)
+    ]
+    only_batch = {j.batch_id for j in rows}
+    label = batch_names.get(next(iter(only_batch))) if len(only_batch) == 1 else None
+    filename = _zip_name(label)
+    return StreamingResponse(
+        stream_zip(entries),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"HitGO_outputs.zip\"; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _zip_name(batch_name: str | None) -> str:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    base = output_file_name("", "", None, batch_name, None).removesuffix(".mp4") if batch_name else ""
+    return f"{base or 'HitGO'}_产物_{stamp}.zip"

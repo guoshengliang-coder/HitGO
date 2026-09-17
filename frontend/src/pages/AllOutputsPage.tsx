@@ -3,6 +3,7 @@
 // - ?batch=<id>：只看这一批，多出「回传 JSON」列与「返回编辑」，有任务在跑时自动重拉。
 // 两种视图同一张表、同一种行序，只差筛选与列。
 // - ?q=：按导出名称 / 批次名 / 视频名搜索（HIG-27）；总表交给后端过滤，批次视图在本地过滤。
+// - 批量下载（HIG-47）：勾选已完成的行，打成一个 zip 由后端边打边传（lib/outputSelection、api.downloadOutputsZip）。
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -12,6 +13,7 @@ import { fmtDateOr, fmtSize } from '../lib/datetime';
 import { IconExport } from '../components/ui/Icons';
 import { audioMixSummary, jobWarning, outputFileName, sortByFinishedDesc, versionTags } from '../lib/outputs';
 import { matchesQuery } from '../lib/search';
+import { headState, isDownloadable, MAX_ZIP_JOBS, pruneSelection, selectionSummary, toggleAll, toggleOne } from '../lib/outputSelection';
 import { variantDef, type VariantKey } from '../types';
 
 const PAGE = 100;
@@ -215,6 +217,17 @@ function BatchOutputs({ batchId }: { batchId: string }) {
 
 function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs: Job[] | null; mode: 'all' | 'batch'; batchName?: string; emptyText?: string; emptyAction?: React.ReactNode }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<string[]>([]);
+  const [zipNote, setZipNote] = useState<string | null>(null);
+  const headRef = useRef<HTMLInputElement>(null);
+  // 刷新 / 搜索 / 加载更多之后，去掉已经不在列表里的勾
+  useEffect(() => {
+    if (jobs) setSelected((cur) => pruneSelection(cur, jobs));
+  }, [jobs]);
+  const head = jobs ? headState(selected, jobs) : 'none';
+  useEffect(() => {
+    if (headRef.current) headRef.current.indeterminate = head === 'some';
+  }, [head]);
   if (jobs === null) return <div className="empty">加载中…</div>;
   if (jobs.length === 0) {
     return (
@@ -226,11 +239,35 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
   }
   // 同一视频同一变体重复导出时标出最新那条（HIG-26：旧成片不含后来加的音轨，容易听错）
   const versions = versionTags(jobs);
+  const summary = selectionSummary(selected, jobs);
+  const tooMany = summary.ids.length > MAX_ZIP_JOBS;
+  const downloadZip = () => {
+    setZipNote(null);
+    const ok = api.downloadOutputsZip(summary.ids, (msg) => setZipNote(`打包下载失败：${msg}`));
+    setZipNote(ok ? `正在打包 ${summary.ids.length} 个文件，浏览器会直接开始下载；文件多时要等一会儿。` : '演示模式没有后端，无法打包下载。');
+  };
 
   return (
+    <>
+    <div className="outputs-bulk" role="toolbar" aria-label="批量下载">
+      <span className="mono muted">已勾选 {summary.ids.length}{summary.bytes > 0 ? ` · 约 ${fmtSize(summary.bytes)}` : ''}</span>
+      <button className="btn primary sm" disabled={summary.ids.length === 0 || tooMany} onClick={downloadZip} title={tooMany ? `一次最多打包 ${MAX_ZIP_JOBS} 个` : '打成一个 zip 下载（不压缩，大小约等于所选文件之和）'}>
+        批量下载{summary.ids.length ? ` (${summary.ids.length})` : ''}
+      </button>
+      {summary.ids.length > 0 && (
+        <button className="btn ghost sm" onClick={() => { setSelected([]); setZipNote(null); }}>
+          清空勾选
+        </button>
+      )}
+      {tooMany && <span className="warn-text small">一次最多打包 {MAX_ZIP_JOBS} 个，请少勾一些</span>}
+      {zipNote && <span className="muted small">{zipNote}</span>}
+    </div>
     <table className="table">
       <thead>
         <tr>
+          <th className="col-check">
+            <input ref={headRef} type="checkbox" checked={head === 'all'} onChange={() => setSelected(toggleAll(selected, jobs))} aria-label="全选可下载的产物" disabled={!jobs.some(isDownloadable)} />
+          </th>
           <th>视频</th>
           <th>导出名称</th>
           {mode === 'all' && <th>批次</th>}
@@ -247,7 +284,10 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
         {jobs.map((j) => {
           const vd = variantDef(j.variant_key as VariantKey);
           return (
-            <tr key={j.id}>
+            <tr key={j.id} className={selected.includes(j.id) ? 'picked' : undefined}>
+              <td className="col-check">
+                <input type="checkbox" checked={selected.includes(j.id)} disabled={!isDownloadable(j)} onChange={() => setSelected(toggleOne(selected, j.id))} aria-label={`勾选 ${j.video_name ?? j.id}`} />
+              </td>
               <td>
                 {j.video_name ?? j.video_id}
                 {audioMixSummary(j.output?.audio) && <div className="muted small">{audioMixSummary(j.output?.audio)}</div>}
@@ -294,5 +334,6 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
         })}
       </tbody>
     </table>
+    </>
   );
 }

@@ -311,6 +311,11 @@ table.table { width: 100%; border-collapse: collapse; background: var(--panel); 
 .table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
 .table th { font-weight: 500; color: var(--ink-2); background: var(--panel-2); font-size: 12px; }
 .table tr:last-child td { border-bottom: 0; }
+/* 产物页批量下载（HIG-47）：勾选列 + 表格上方的操作条 */
+.table .col-check { width: 28px; padding-right: 0; }
+.table .col-check input { margin: 2px 0 0; cursor: pointer; }
+.table tr.picked td { background: var(--accent-soft, var(--panel-2)); }
+.outputs-bulk { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; min-height: 28px; }
 pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); padding: 8px; border-radius: 4px; font-size: 11px; max-height: 320px; overflow: auto; margin: 6px 0 0; }
 
 /* ---- 素材库 ---- */
