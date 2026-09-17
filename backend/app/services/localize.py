@@ -43,6 +43,7 @@ from app.models import (
     Video,
 )
 from app.services import storage
+from app.services.highlight import HighlightProvider, RuleHighlight
 
 log = logging.getLogger(__name__)
 
@@ -582,6 +583,8 @@ class Providers:
     asr: AsrProvider
     mt: TranslateProvider
     tts: TtsProvider
+    # Poster highlight picking (HIG-50) rides on the same key / provider switch.
+    highlight: HighlightProvider = field(default_factory=RuleHighlight)
 
 
 @dataclass
@@ -638,7 +641,7 @@ class FakeTts:
 
 
 def fake_providers() -> Providers:
-    return Providers(asr=FakeAsr(), mt=FakeTranslate(), tts=FakeTts())
+    return Providers(asr=FakeAsr(), mt=FakeTranslate(), tts=FakeTts(), highlight=RuleHighlight())
 
 
 def make_providers(cfg: Settings | None = None) -> Providers:

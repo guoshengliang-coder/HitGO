@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.config import settings
 from app.db import init_db
-from app.routers import assets, auth, batches, config, jobs, localize, outputs, presets, render, uploads, videos
+from app.routers import assets, auth, batches, config, jobs, localize, outputs, poster, presets, render, uploads, videos
 from app.routers.auth import access_ok
 from app.services import storage, upload_ticket
 
@@ -222,7 +222,7 @@ def cors_origins() -> list[str]:
 def create_app() -> FastAPI:
     app = FastAPI(title="HitGO", version="0.1.0", lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json")
 
-    for r in (auth, batches, videos, assets, uploads, render, jobs, outputs, config, presets, localize):
+    for r in (auth, batches, videos, assets, uploads, render, jobs, outputs, config, presets, localize, poster):
         app.include_router(r.router)
 
     @app.exception_handler(RequestValidationError)
