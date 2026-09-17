@@ -14,6 +14,9 @@
 // 文字图层的 width 语义：文字图层的宽度跟随其渲染尺寸，即 width = pngWidth / 1080，
 // 除非用户手动缩放过（layer.width_manual = true，本地字段，发送时剔除）。
 // 编辑器预览也用同一函数产出的 canvas 作为 Konva.Image，保证预览与成片一致。
+//
+// 逐字显现（HIG-45）：绘制时顺带量出每个字形在 PNG 里的位置（lines），有背景块时另画一张只有背景块的同尺寸 canvas
+// （background）。导出时有逐字显现的图层据此写 glyph_layout，并上传背景图。
 
 import type { EditSpec, TextLayer, TextSpan, TextStyle, VariantKey } from '../types';
 import { outputFor } from './spec';
@@ -21,6 +24,7 @@ import { resolveLayerBox } from './variantLayout';
 import { api } from '../api';
 import { resolveOverflowPad, resolveTextBox, splitRuns, type TextRun } from './textSpans';
 import { wrapRuns } from './textWrap';
+import { buildGlyphLayout, graphemes, isRtlLine, type MeasuredLine } from './textReveal';
 
 export const TEXT_CANVAS = { W: 1080, H: 1920 };
 
@@ -40,6 +44,10 @@ export interface RenderedText {
   height: number;
   /** 四周为阴影 / 发光预留的透明边距（px）；PNG 宽 = 文字框宽 + 2 × pad。 */
   pad: number;
+  /** 每行字形的像素位置（含描边外扩），按书写顺序；空白行不列。 */
+  lines: MeasuredLine[];
+  /** 只有背景块的 canvas（与 canvas 同尺寸）；没有背景块时为 null。 */
+  background: HTMLCanvasElement | null;
 }
 
 export function fontString(style: TextStyle, px: number): string {
@@ -185,14 +193,32 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
     }
   };
 
+  const paintBackground = (target: Ctx2D) => {
+    if (!style.background) return;
+    if (shadow) {
+      target.shadowColor = shadow.color;
+      target.shadowBlur = shadowBlurPx;
+      target.shadowOffsetX = shadowDx;
+      target.shadowOffsetY = shadowDy;
+    }
+    target.fillStyle = style.background;
+    const r = style.background_radius != null ? Math.max(0, style.background_radius * H) : Math.min(padPx, fontPx * 0.2);
+    roundRect(target, ox + strokePx, oy + strokePx, boxW - strokePx * 2, boxH - strokePx * 2, r);
+    target.fill();
+    target.shadowColor = 'rgba(0,0,0,0)';
+    target.shadowBlur = 0;
+    target.shadowOffsetX = 0;
+    target.shadowOffsetY = 0;
+  };
+
+  let background: HTMLCanvasElement | null = null;
   if (style.background) {
     // 有背景时阴影跟着背景矩形走（文字本身不再单独投影）
-    setShadow(true);
-    ctx.fillStyle = style.background;
-    const r = style.background_radius != null ? Math.max(0, style.background_radius * H) : Math.min(padPx, fontPx * 0.2);
-    roundRect(ctx, ox + strokePx, oy + strokePx, boxW - strokePx * 2, boxH - strokePx * 2, r);
-    ctx.fill();
-    setShadow(false);
+    paintBackground(ctx);
+    background = document.createElement('canvas');
+    background.width = canvas.width;
+    background.height = canvas.height;
+    paintBackground(background.getContext('2d')! as Ctx2D);
   } else if (shadow) {
     // 只画阴影的一遍：用描边 + 填充的轮廓投影，再清掉阴影正常绘制
     setShadow(true);
@@ -235,7 +261,33 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
     drawLine(ctx, line, x, y, spacingPx, native, 'fill', style.color);
   });
 
-  return { canvas, width: canvas.width, height: canvas.height, pad: shadowPad };
+  // 字形位置：同一行按前缀宽度累加（与 drawLine 的排版口径一致），左右各外扩描边宽
+  const measured: MeasuredLine[] = [];
+  lines.forEach((line, i) => {
+    const text = line.map((r) => r.text).join('');
+    if (!text.trim()) return;
+    const gs = graphemes(text);
+    const x = lineX(i);
+    const y = lineY(i);
+    let prefix = '';
+    const glyphs = gs.map((g) => {
+      const left = x + (prefix ? advance(measure, prefix, spacingPx, native) : 0);
+      prefix += g;
+      const right = Math.max(left, x + advance(measure, prefix, spacingPx, native) - spacingPx);
+      return { text: g, left: Math.max(0, left - strokePx), right: Math.min(width, right + strokePx) };
+    });
+    measured.push({ top: y - lineH / 2, bottom: y + lineH / 2, rtl: isRtlLine(text), glyphs: isRtlLine(text) ? mirrorRtl(glyphs, x, measureLine(measure, line, spacingPx, native)) : glyphs });
+  });
+
+  return { canvas, width: canvas.width, height: canvas.height, pad: shadowPad, lines: measured, background };
+}
+
+/**
+ * 纯 RTL 行由 canvas 从 x 起向右排出，但字的逻辑顺序是从右往左：逻辑第 k 个字落在
+ * [x + lineW − 前缀_{k+1}, x + lineW − 前缀_k]。前缀宽度里已含描边外扩，这里只做镜像。
+ */
+function mirrorRtl(glyphs: MeasuredLine['glyphs'], x: number, lineW: number): MeasuredLine['glyphs'] {
+  return glyphs.map((g) => ({ text: g.text, left: x + lineW - (g.right - x), right: x + lineW - (g.left - x) }));
 }
 
 /**
@@ -274,13 +326,16 @@ export async function renderTextImage(layer: TextLayer): Promise<RenderedText> {
   return drawTextImage(layer.text, layer.style, TEXT_CANVAS.H, layer.spans);
 }
 
-/** 渲染并上传 PNG，返回更新后的图层（image_url / image_size / width）。 */
+const toPng = (canvas: HTMLCanvasElement) =>
+  new Promise<Blob>((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG 编码失败'))), 'image/png'));
+
+/**
+ * 渲染并上传 PNG，返回更新后的图层（image_url / image_size / width）。
+ * 有逐字显现（HIG-45）时一并写 glyph_layout，有背景块再上传 background_image；没有时去掉这两个字段。
+ */
 export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
   const rendered = await renderTextImage(layer);
-  const blob = await new Promise<Blob>((resolve, reject) =>
-    rendered.canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG 编码失败'))), 'image/png'),
-  );
-  const up = await api.uploadLayerImage(blob);
+  const up = await api.uploadLayerImage(await toPng(rendered.canvas));
   const next: TextLayer = {
     ...layer,
     image_url: up.url,
@@ -288,6 +343,14 @@ export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
   };
   if (!layer.width_manual || !layer.width) {
     next.width = bakedWidth(rendered.width);
+  }
+  delete next.glyph_layout;
+  delete next.background_image;
+  const reveal = layer.animation?.reveal;
+  const layout = reveal ? buildGlyphLayout(rendered.lines, rendered.width, rendered.height, reveal.unit ?? 'char') : null;
+  if (reveal && layout) {
+    next.glyph_layout = layout;
+    if (rendered.background) next.background_image = (await api.uploadLayerImage(await toPng(rendered.background))).url;
   }
   return next;
 }
@@ -333,9 +396,10 @@ export async function bakeTextLayerVariants(layer: TextLayer, spec: EditSpec, ke
   const images: NonNullable<TextLayer['variant_images']> = {};
   for (const [scale, group] of scales) {
     const rendered = drawTextImage(layer.text, layer.style, TEXT_CANVAS.H * scale, layer.spans);
-    const blob = await new Promise<Blob>((resolve, reject) => rendered.canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG 编码失败'))), 'image/png'));
-    const up = await api.uploadLayerImage(blob);
-    for (const key of group) images[key] = { url: up.url, size: [up.width || rendered.width, up.height || rendered.height] };
+    const up = await api.uploadLayerImage(await toPng(rendered.canvas));
+    // 逐字显现的背景块也按这个画幅重画（字位置是比例，各画幅共用 glyph_layout）
+    const bg = layer.glyph_layout && layer.background_image && rendered.background ? (await api.uploadLayerImage(await toPng(rendered.background))).url : undefined;
+    for (const key of group) images[key] = { url: up.url, size: [up.width || rendered.width, up.height || rendered.height], ...(bg ? { background_url: bg } : {}) };
   }
   next.variant_images = images;
   return next;

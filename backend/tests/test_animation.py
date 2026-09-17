@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.schemas import EditSpec, TextAnimation
-from app.services.animation import expressions, phase_lengths, sample, with_time
+from app.services.animation import SCALE_HEADROOM, expressions, phase_lengths, sample, scale_headroom, with_time
 from app.services.filtergraph import ImageSource, build_render_command
 from tests.conftest import valid_spec
 
@@ -67,6 +67,56 @@ def test_every_phase_starts_at_rest():
         assert before.scale == pytest.approx(after.scale, abs=2e-3)
 
 
+def test_golden_cases_cover_every_easing():
+    seen = {c["animation"][k].get("easing") for c in CASES for k in ("in", "out") if k in c["animation"]}
+    assert {"linear", "ease_in", "ease_out", "ease_in_out", "back", "elastic", "bounce"} <= seen
+
+
+def test_hig44_defaults_write_the_v016_expressions():
+    """Spelling out every default must not change a single character of the ffmpeg expression."""
+    plain = anim(**{"in": {"preset": "pop"}, "out": {"preset": "slide_up"}, "loop": {"preset": "blink"}})
+    spelled = anim(
+        **{
+            "in": {"preset": "pop", "easing": "back", "scale": 0.5, "overshoot": 1.70158, "delay": 0, "distance": 0.05, "fade": True},
+            "out": {"preset": "slide_up", "easing": "ease_in", "distance": 0.05, "fade": True},
+            "loop": {"preset": "blink", "amount": 1},
+        }
+    )
+    assert expressions(plain, 4) == expressions(spelled, 4)
+
+
+def test_every_easing_starts_and_ends_at_rest():
+    for easing in ("linear", "ease_in", "ease_out", "ease_in_out", "back", "elastic", "bounce"):
+        a = anim(**{"in": {"preset": "slide_left", "easing": easing, "distance": 0.2}, "out": {"preset": "slide_up", "easing": easing}})
+        assert sample(a, 0, 4).dx == pytest.approx(0.2, abs=1e-6), easing
+        assert sample(a, 0.5, 4).dx == pytest.approx(0, abs=2e-3), easing
+        assert sample(a, 3.5, 4).dy == pytest.approx(0, abs=2e-3), easing
+        assert sample(a, 4, 4).dy == pytest.approx(-0.05, abs=2e-3), easing
+
+
+def test_delay_holds_the_enter_and_moves_the_loop():
+    a = anim(**{"in": {"preset": "fade", "duration": 0.5, "delay": 1}, "loop": {"preset": "breathe", "period": 1}})
+    assert sample(a, 0.9, 4).opacity == 0
+    assert sample(a, 1.5, 4).opacity == pytest.approx(1)
+    assert sample(a, 1.4, 4).scale == 1  # the loop waits for the enter
+    assert sample(a, 2.0, 4).scale > 1
+    assert phase_lengths(anim(**{"in": {"preset": "fade", "duration": 2, "delay": 3}}), 4) == (1, 0)
+
+
+def test_fade_false_keeps_slides_opaque():
+    a = anim(**{"in": {"preset": "slide_up", "fade": False}, "out": {"preset": "slide_down", "fade": False}})
+    assert expressions(a, 3).opacity is None
+    assert sample(a, 0, 3).dy == pytest.approx(0.05)
+
+
+def test_scale_headroom_grows_with_big_scales_only():
+    assert scale_headroom(anim(**{"in": {"preset": "pop"}}), 3) == SCALE_HEADROOM
+    assert scale_headroom(anim(loop={"preset": "breathe"}), 3) == SCALE_HEADROOM
+    grow = scale_headroom(anim(**{"in": {"preset": "pop", "scale": 2.5, "easing": "ease_out"}}), 3)
+    assert grow >= 2.5
+    assert scale_headroom(anim(loop={"preset": "breathe", "amount": 3}), 3) >= 1.18
+
+
 def test_with_time_shifts_the_local_clock():
     assert with_time("clip(U/0.5,0,1)", "t", 2) == "clip((t-2)/0.5,0,1)"
     assert with_time("clip(U/0.5,0,1)", "T", 0) == "clip(T/0.5,0,1)"
@@ -117,7 +167,8 @@ def test_animated_text_loops_its_png_and_uses_frame_expressions():
     assert "scale=540:130,pad=594:144:27:7:color=0x00000000,perspective=" in g
     assert "((in-1)/25-2)" in g and ":sense=destination:eval=frame" in g
     # opacity: the layer's own 0.8 times the fade, on the output clock shifted to the window
-    assert "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*0.8*" in g and "(T-2)" in g
+    # evaluated once per row: the gain only depends on time
+    assert "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*if(eq(X,0),st(0,0.8*" in g and "(T-2)" in g and "),ld(0))'" in g
     # slide_up exit moves y; x is static; the window still gates the overlay
     assert "overlay=243:" in g and "'+1920*(" not in g
     assert "enable='between(t,2,5)'" in g and "(t-2)" in g
@@ -139,6 +190,19 @@ def test_animation_must_fit_the_window():
         EditSpec.model_validate(text_only_spec({"in": {"preset": "spin"}}))
     with pytest.raises(ValidationError):
         EditSpec.model_validate(text_only_spec({"loop": {"preset": "blink", "period": 0.05}}))
+    with pytest.raises(ValidationError, match="入场延迟"):
+        EditSpec.model_validate(text_only_spec({"in": {"preset": "fade", "duration": 1, "delay": 1}}, t=[0, 1.5]))
+    for bad in ({"easing": "spring"}, {"distance": 0.8}, {"scale": 0}, {"overshoot": 9}, {"delay": -1}):
+        with pytest.raises(ValidationError):
+            EditSpec.model_validate(text_only_spec({"in": {"preset": "slide_up", **bad}}))
+    with pytest.raises(ValidationError):
+        EditSpec.model_validate(text_only_spec({"loop": {"preset": "blink", "amount": 4}}))
+
+
+def test_big_pop_scale_pads_the_frame_enough():
+    g = graph(plan_for(text_only_spec({"in": {"preset": "pop", "duration": 0.5, "scale": 2, "easing": "ease_out"}}, t=[2, 5])))
+    # 540×130 layer; the frame holds the 2× start (headroom = 2.04)
+    assert "scale=540:130,pad=1102:266:" in g
 
 
 # --- real ffmpeg -------------------------------------------------------------------------

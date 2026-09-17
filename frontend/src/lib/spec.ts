@@ -43,6 +43,12 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
         else delete copy.animation;
         // 滚动（HIG-50）原样透传；null / 缺省不发。与 animation 互斥由后端校验（编辑器加滚动时清掉动画）
         if (!l.scroll) delete copy.scroll;
+        // 逐字显现（HIG-45）的字位置 / 背景图只跟着 reveal 走，没有 reveal 时不发，保持旧 spec 形状
+        if (!animation?.reveal || !l.glyph_layout) {
+          delete copy.glyph_layout;
+          delete copy.background_image;
+        }
+        if (!copy.background_image) delete copy.background_image;
       }
       return copy as unknown as Layer;
     }),

@@ -264,15 +264,18 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "image_url": "/media/uploads/u_9k8j.png",   // 前端按输出分辨率渲染好的透明 PNG；worker 只用它
       "image_size": [540, 130],              // 该 PNG 的像素尺寸
       "variant_images": {                    // 可选（HIG-29）：按某个输出重新渲染的 PNG，键为 variant_key，见下方规则
-        "1x1": { "url": "/media/uploads/u_7h6g.png", "size": [304, 73] }
+        "1x1": { "url": "/media/uploads/u_7h6g.png", "size": [304, 73],
+                 "background_url": "/media/uploads/u_7h6b.png" }   // 可选（HIG-45）：该输出的背景块图，见逐字显现规则
       },
       "anchor": "top-center", "margin": [0, 0.06],
       "width": 0.5,                          // 相对画布宽；PNG 按此缩放
       "rotate": 0, "opacity": 1, "t": "all",
-      "animation": {                         // 可选（HIG-40）：入场 / 出场 / 循环动画，三项各自可选，见下方规则
-        "in": { "preset": "pop", "duration": 0.5 },
-        "out": { "preset": "fade", "duration": 0.5 },
-        "loop": { "preset": "breathe", "period": 1.2 }
+      "animation": {                         // 可选（HIG-40）：入场 / 出场 / 循环 / 逐字动画，四项各自可选，见下方规则
+        "in": { "preset": "pop", "duration": 0.5,
+                "easing": "back", "scale": 0.5, "overshoot": 1.70158, "delay": 0 },   // easing 起为可选高级项（HIG-44）
+        "out": { "preset": "slide_down", "duration": 0.5, "distance": 0.1, "fade": true },
+        "loop": { "preset": "breathe", "period": 1.2, "amount": 1 },
+        "reveal": { "preset": "typewriter", "duration": 1.2, "unit": "char", "cursor": true, "easing": "linear" }   // 可选（HIG-45）
       },
       "scroll": {                            // 可选（HIG-50，大字报）：整篇文案在裁切框内向上滚动；与 animation 互斥，见下方规则
         "speed": 0.08,                       // 画布高 / 秒，(0, 2]，缺省 0.08
@@ -281,6 +284,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "end": "exit",                       // exit（缺省）：滚到全部离开框顶边 | stay：末行贴框底边就停
         "hold_start": 0, "hold_end": 0       // 秒，≥ 0，缺省 0：开头停留（只在 start = visible 时生效）/ 结尾停留（只在 end = stay 时生效）
       },
+      "glyph_layout": {                      // 可选（HIG-45）：有 reveal 时前端烤图写入的字位置，见下方规则
+        "lines": [ { "top": 0.08, "bottom": 0.92, "units": [[0.06, 0.2], [0.2, 0.34]] } ]
+      },
+      "background_image": "/media/uploads/u_9k8b.png",   // 可选（HIG-45）：有 reveal 且有背景块时，只画背景块的同尺寸 PNG
       "origin": "localize", "lang": "ko"     // 可选；前端标记：改语言套用出来的译文字幕（见下方规则）
     },
     {
@@ -434,6 +441,36 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     - 出场，`q = clip((u − (L − do))/do, 0, 1)`，`e = q³`：透明度 `1 − e`；`slide_up` `dy = −0.05·e`，`slide_down` `dy = 0.05·e`，`slide_left` `dx = −0.05·e`，
       `slide_right` `dx = 0.05·e`；`pop` `scale = 1 − 0.5·e`；`fade` 只有透明度。
     - 循环（`di ≤ u ≤ L`），`w = 2π·(u − di)/period`：`breathe` `scale × (1 + 0.03·(1 − cos w))`；`float` `dy − 0.008·sin w`；`blink` 透明度 × `(1 − 0.35·(1 − cos w))`。
+  - **高级项**（HIG-44，全部可选，缺省时公式与上面完全一致，老 spec 不变）：
+    - `in / out` 的 `easing` ∈ `linear | ease_in | ease_out | ease_in_out | back | elastic | bounce`，缺省按预设：入场 `ease_out`（`pop` 为 `back`），出场 `ease_in`。
+      上面公式里的 `e` 换成所选曲线：`linear` `p`；`ease_in` `p³`；`ease_out` `1 − (1 − p)³`；`ease_in_out` `p < 0.5 ? 4p³ : 1 − (2 − 2p)³/2`；
+      `back` 入场 `1 + (s+1)(p − 1)³ + s(p − 1)²`、出场 `(s+1)p³ − s·p²`（`s = overshoot`）；`elastic` 入场 `p ≥ 1 ? 1 : 2^(−10p)·sin((10p − 0.75)·2π/3) + 1`、
+      出场 `p ≥ 1 ? 1 : p < 1e-6 ? 0 : −2^(10p − 10)·sin((10p − 10.75)·2π/3)`；`bounce` 入场为标准 easeOutBounce（7.5625 / 2.75 四段），出场 `1 − bounceOut(1 − p)`。
+      曲线越出 [0, 1] 时（`back / elastic / bounce`）淡入淡出的透明度裁到 [0, 1]。`pop` 入场的透明度始终是 `clip(3p, 0, 1)`，不随曲线。
+    - `distance`：滑动类的距离（相对画布高），缺省 0.05，[0, 0.5]，替换公式里的 0.05。`fade`：滑动类是否同时淡入 / 淡出，缺省 true；false 时透明度不变。
+      `fade` 预设始终淡、`pop` 出场始终淡。
+    - `scale`：`pop` 入场起始 / 出场结束的倍数，缺省 0.5，[0.1, 3]（大于 1 = 从大缩回 / 放大消失），替换公式里的 0.5。`overshoot`：`back` 曲线的回弹强度，缺省 1.70158，[0, 5]。
+    - `in.delay`：入场延迟秒，缺省 0，[0, 10]，`out` 上忽略。时段内 `dl = min(delay, L)`，入场占 `[dl, dl + di]`（`p = clip((u − dl)/di, 0, 1)`，`di = min(in.duration, L − dl)`），
+      出场 `do = min(out.duration, L − dl − di)`，循环从 `dl + di` 开始。`t` 为区间时 `delay + in.duration + out.duration` 不能超过 `L`（400）。
+    - `loop.amount`：循环幅度倍数，缺省 1，[0, 3]，乘在 0.03 / 0.008 / 0.35 上；`blink` 的透明度裁到 [0, 1]。
+    - 编辑器新选滑动预设时显式写入 `distance = 0.1`（比缺省明显）；契约缺省不变。
+    - 缩放动画的留白（成片）：按动画实际达到的最大缩放 × 1.02 计算，不小于 1.1。
+  - **逐字显现 `reveal`**（HIG-45，可选）：`{ preset, duration?, unit?, cursor?, easing? }`，`preset` ∈ `typewriter | fade_chars | wipe`，`duration` 秒 (0, 30]，缺省 1；
+    `unit` ∈ `char | word`，缺省 `char`，只决定前端怎么生成 `glyph_layout`，worker 不读；`cursor` 缺省 false，只对 `typewriter` 生效；`easing` ∈ `linear | ease_in | ease_out | ease_in_out`，缺省 `linear`。
+    与 `in / out / loop` 叠加：遮罩只作用在文字 PNG 自身，之后照常缩放、旋转、位移、淡入淡出。
+    - `glyph_layout`（文字图层）：`{ lines: [{ top, bottom, rtl?, units: [[left, right], …] }] }`，都是 PNG 宽 / 高的比例；`lines` 自上而下，`units` 按显现顺序，
+      每个单位是一个字形（`Intl.Segmenter` 字形切分，emoji 不拆）或一个词（词 + 其后的空白 / 标点），`left / right` 为墨迹范围（含描边）。至少一行，每行至少一个单位，总数 ≤ 1000，
+      `0 ≤ left ≤ right ≤ 1`，`top < bottom`。`rtl = true` 的行（纯从右到左文字）擦除从右往左。各画幅的 PNG 共用同一份（比例坐标）。有 `reveal` 但没有 `glyph_layout` 时 worker 跳过逐字并记警告。
+    - 格子：每行的带取上下相邻行 `bottom / top` 的中点（首行从 0、末行到 1）；行内单位按 `left` 排序后，相邻单位之间取 `(right_i + left_{i+1})/2`（首个从 0、末个到 1）。
+    - 时间：`s = dl`（入场延迟，没有入场时为 0），`D = min(duration, L − s)`，`N` = 单位数，`inv` 为 `easing` 的反函数。
+      `typewriter`：`t_k = s + D·inv(k/(N − 1))`（N = 1 时为 s），格子内 `u ≥ t_k` 时透明度 1、否则 0。
+      `fade_chars`：`F = min(0.3, D/2)`，`t_k = s + (D − F)·inv(k/(N − 1))`，透明度 `clip((u − t_k)/F, 0, 1)`。
+      `wipe`：`t_k = s + D·inv(k/N)`（k = 0…N），格子内 `u < t_k` 为 0、`u ≥ t_{k+1}` 为 1，之间 `prog = (u − t_k)/(t_{k+1} − t_k)`，扫描区间 `[s0, s1]` = 墨迹与格子的交集，
+      `f = 0.01`：LTR 透明度 `clip((s0 + (s1 − s0 + f)·prog − x)/f, 0, 1)`，RTL `clip((x − (s1 − (s1 − s0 + f)·prog))/f, 0, 1)`（x 为 PNG 宽比例）。`u ≥ s + D` 后遮罩恒为 1。
+    - `cursor`（打字机）：光标宽 `max(2, round(0.06·行高px))`、高 `max(2, round(0.8·行高px))`（行高取首行），颜色 `style.color` 前 6 位（缺省白）；
+      `u < t_0` 时在第一个单位左侧，之后在最新出现单位的右侧（RTL 行左右互换），间距 0.6 光标宽，裁进画面；从 `s` 到 `s + D` 常亮，之后 1 秒内每秒亮半秒。
+    - 背景块：有 `background_image` 时成片先叠整张背景块图，再叠加遮罩后的文字 PNG，背景一开始完整显示；`variant_images[key].background_url` 优先于 `background_image`。
+      前端只在有 `reveal` 且 `style.background` 非空时上传背景图；没有 `reveal` 时不发 `glyph_layout / background_image`。
   - 前端 `lib/textAnimation.ts` 与后端 `services/animation.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/textAnimationCases.json` 做 golden 测试。
     编辑器画布按同一曲线预览；选中文字且暂停时显示静止状态（方便拖动调整）。批量套用 `style_only` 时随文字一起复制。
 - **成片时长 `trim.duration`**（可选，HIG-50）：缺省 / null 时成片正片时长 = 剪后时长（原行为）。设了以后：短于剪后时长 →
@@ -442,7 +479,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   批量套用 `trim` 模块时随 `remove` 一起复制。编辑器预览按同一规则在源片播完后回到剪后起点接着播。
 - **滚动文字 `scroll`**（文字图层可选，HIG-50 大字报）：整篇文案（可含多行；配合 `style.wrap_width` 自动折行）烘焙成一张
   高 PNG，在裁切框 `box` 内向上滚动，框外不可见。设了 `scroll` 的图层：`anchor / margin / rotate` 被 worker 忽略（仍需合法），
-  PNG 水平居中于框内（宽 = `width × 画布宽`，超过框宽时缩到框宽），`animation` 不能同时设置（400）。
+  PNG 水平居中于框内（宽 = `width × 画布宽`，超过框宽时缩到框宽），`animation` 的 `in / out / loop / reveal` 都不能同时设置（400；空对象不算）。
   - 记 `H` = 画布高，`bh = box.h × H`（框高 px），`h` = PNG 按 `width` 缩放后的高 px，`V = speed × H`（px/s）。
     把 PNG 放进一张上下各留 `bh` 透明边的高图（总高 `h + 2·bh`），裁切窗口高 `bh`，窗口顶边 `y` 从 `y0` 走到 `y1`：
     `y0 = start == "enter" ? 0 : bh`，`y1 = end == "exit" ? h + bh : max(y0, h)`；
@@ -471,7 +508,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
-    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size | variant_images | animation`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
+    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size | variant_images | animation | glyph_layout | background_image`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
 - `GET /api/outputs?limit=100&offset=0&q=` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
@@ -692,8 +729,12 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    - 带 `animation` 的文字图层（第 2 节）：输入改为 `-loop 1 -framerate <fps> -t <b> -i <png>`（从 0 起逐帧，滤镜时间 = 成片时间）；
      链路 `format=rgba,scale=w:h` →（`scale` 动时）`pad` 到 1.1 倍留出余量 + `perspective=x0..y3=中心 ± 半宽/半高·scale((in−1)/fps − a):sense=destination:eval=frame`
      （滤镜链路不能逐帧改尺寸，所以用透视搬角点代替缩放；`in` 从 1 计数）→ `rotate`（同静态）→（`opacity` 动时）
-     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·opacity·anim(T − a)'` 代替 `colorchannelmixer`；`overlay` 的 x / y 在动时写成
+     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·if(eq(X,0), st(0, opacity·anim(T − a)), ld(0))'` 代替 `colorchannelmixer`（增益只随时间变，每行求一次值，逐像素求值在弹跳 / 弹性等长曲线上慢十几倍）；`overlay` 的 x / y 在动时写成
      `x0 + H·dx(t − a)` 表达式，`enable` 照旧。不动的通道保持静态写法；没有 `animation` 的图层命令不变。
+   - 带 `reveal` 的文字图层（HIG-45）：同样逐帧输入；`scale=w:h` 之后、`pad / perspective / rotate` 之前加
+     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·mask'`，`mask` 为 `if(gte(T − a, s + D), 1, …)` 里按 `Y/H` 查行、按 `X/W` 查格子的平衡二叉 `if(lt(…))` 树
+     （每像素比较次数随字数对数增长）。有背景块图时它作为另一路逐帧输入 `format=rgba,scale=w:h`，与遮罩后的文字 `overlay=0:0:format=auto,format=rgba`；
+     有光标时在其上 `overlay` 一路 `color=c=0xRRGGBB:s=cw x ch:r=fps,format=rgba`，x / y 为按 `t` 分段的表达式，`enable` 为常亮 + 闪烁，`shortest=1`。
    - `hidden = true` 的图层 / track 在构图前直接跳过，`source_hidden = true` 按 `source_volume = 0` 处理（第 2 节）。
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
    - 遮盖层（`type = "mask"`）不加 `-i` 输入，直接作用在当前画布 `[c{n−1}]` 上，区域先裁到画布内（x, y, w, h 为整数像素）：

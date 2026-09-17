@@ -300,6 +300,18 @@ def test_style_only_text_animation_follows_text():
     assert "animation" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]
 
 
+def test_style_only_text_reveal_brings_its_glyph_layout_and_background():
+    """HIG-45: glyph_layout and background_image describe the PNG, so they travel with image_url."""
+    src, target = valid_spec(), _target_with_layers()
+    layout = {"lines": [{"top": 0, "bottom": 1, "units": [[0, 1]]}]}
+    src["layers"][1].update(glyph_layout=layout, background_image="/media/uploads/bg.png", animation={"reveal": {"preset": "wipe"}})
+    target["layers"][1]["glyph_layout"] = {"lines": [{"top": 0, "bottom": 1, "units": [[0, 0.5], [0.5, 1]]}]}
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]
+    assert out["glyph_layout"] == layout and out["background_image"] == "/media/uploads/bg.png"
+    del src["layers"][1]["glyph_layout"]
+    assert "glyph_layout" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]
+
+
 # --- HIG-50: trim.duration travels with trim, scroll with the text ------------------
 
 

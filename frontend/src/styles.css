@@ -838,6 +838,20 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 @keyframes ag-breathe { 0%, 100% { transform: none; } 50% { transform: scale(1.18); } }
 @keyframes ag-float { 0%, 100% { transform: none; } 50% { transform: translateY(-4px); } }
 @keyframes ag-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+/* 逐字（HIG-45）卡片与高级项（HIG-44） */
+.anim-glyph.reveal { font-size: 12px; }
+.anim-card:hover .anim-glyph.reveal.typewriter, .anim-card.active .anim-glyph.reveal.typewriter { animation-name: ag-typewriter; animation-timing-function: steps(3, end); }
+.anim-card:hover .anim-glyph.reveal.fade_chars, .anim-card.active .anim-glyph.reveal.fade_chars { animation-name: ag-fade-chars; }
+.anim-card:hover .anim-glyph.reveal.wipe, .anim-card.active .anim-glyph.reveal.wipe { animation-name: ag-wipe; animation-timing-function: linear; }
+@keyframes ag-typewriter { 0% { clip-path: inset(0 100% 0 0); } 60%, 100% { clip-path: inset(0 0 0 0); } }
+@keyframes ag-fade-chars { 0% { opacity: 0; clip-path: inset(0 50% 0 0); } 30% { opacity: 1; clip-path: inset(0 50% 0 0); } 31% { clip-path: inset(0 0 0 0); opacity: 0.4; } 60%, 100% { opacity: 1; clip-path: inset(0 0 0 0); } }
+@keyframes ag-wipe { 0% { clip-path: inset(0 100% 0 0); } 60%, 100% { clip-path: inset(0 0 0 0); } }
+.anim-adv-toggle { align-self: flex-start; }
+.anim-advanced { padding-left: 8px; border-left: 2px solid var(--s1-line); }
+.anim-curve { width: 36px; height: 26px; border-radius: 4px; background: var(--bg); }
+.anim-curve line { stroke: var(--line); stroke-width: 0.6; stroke-dasharray: 1.5 1.5; }
+.anim-curve polyline { fill: none; stroke: var(--ink-2); stroke-width: 1.4; stroke-linejoin: round; }
+.anim-card.active .anim-curve polyline, .anim-card:hover .anim-curve polyline { stroke: var(--accent); }
 
 /* 时间线文字条上的入场 / 出场段 */
 .tl-anim { position: absolute; top: 0; bottom: 0; pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--accent) 35%, transparent) 3px 5px); }

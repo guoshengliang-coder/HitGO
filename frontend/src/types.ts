@@ -456,13 +456,56 @@ export interface Preset {
 export type TextAnimMovePreset = 'fade' | 'slide_up' | 'slide_down' | 'slide_left' | 'slide_right' | 'pop';
 export type TextAnimLoopPreset = 'breathe' | 'float' | 'blink';
 
+/** 速度曲线（HIG-44）：back / elastic / bounce 在入场结尾回弹，出场开头反向蓄力。 */
+export type TextAnimEasing = 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' | 'back' | 'elastic' | 'bounce';
+/** 逐字显现（HIG-45）的曲线只往前走。 */
+export type TextRevealEasing = 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out';
+export type TextRevealPreset = 'typewriter' | 'fade_chars' | 'wipe';
+
+/** 入场 / 出场；duration 之外都是 HIG-44 的高级项，缺省 = v0.16.0 效果。 */
+export interface TextAnimPhase {
+  preset: TextAnimMovePreset;
+  /** 秒，缺省 0.5。 */
+  duration?: number;
+  /** 缺省按预设：入场 ease_out，弹入 back，出场 ease_in。 */
+  easing?: TextAnimEasing;
+  /** 滑动距离，相对画布高，缺省 0.05。 */
+  distance?: number;
+  /** 滑动时是否同时淡入淡出，缺省 true。 */
+  fade?: boolean;
+  /** 弹入起始 / 缩小结束倍数，缺省 0.5。 */
+  scale?: number;
+  /** 回弹强度（easing = back），缺省 1.70158。 */
+  overshoot?: number;
+  /** 入场延迟秒，缺省 0；出场忽略。 */
+  delay?: number;
+}
+
+export interface TextReveal {
+  preset: TextRevealPreset;
+  /** 秒，缺省 1。 */
+  duration?: number;
+  /** 按字 / 按词（前端据此生成 glyph_layout），缺省 char。 */
+  unit?: 'char' | 'word';
+  /** 打字机光标，缺省 false。 */
+  cursor?: boolean;
+  easing?: TextRevealEasing;
+}
+
 export interface TextAnimation {
-  /** 入场：时段开头；duration 秒，缺省 0.5。 */
-  in?: { preset: TextAnimMovePreset; duration?: number };
-  /** 出场：时段结尾；duration 秒，缺省 0.5。 */
-  out?: { preset: TextAnimMovePreset; duration?: number };
-  /** 循环：入场结束到时段结束（与出场叠加）；period 秒，缺省 1.2。 */
-  loop?: { preset: TextAnimLoopPreset; period?: number };
+  /** 入场：时段开头（延迟之后）。 */
+  in?: TextAnimPhase;
+  /** 出场：时段结尾。 */
+  out?: TextAnimPhase;
+  /** 循环：入场结束到时段结束（与出场叠加）；period 秒，缺省 1.2；amount 幅度倍数，缺省 1。 */
+  loop?: { preset: TextAnimLoopPreset; period?: number; amount?: number };
+  /** 逐字显现（HIG-45）：与入场同起点，可与其余三项叠加。 */
+  reveal?: TextReveal;
+}
+
+/** 逐字显现的字位置（HIG-45）：PNG 宽高的比例，units 按显现顺序排列。 */
+export interface GlyphLayout {
+  lines: { top: number; bottom: number; rtl?: boolean; units: [number, number][] }[];
 }
 
 /** 滚动文字的裁切框（契约 §2 scroll.box），相对画布宽 / 高。 */
@@ -501,11 +544,15 @@ export interface TextLayer extends LayerBase {
   image_url?: string | null;
   image_size?: [number, number] | null;
   /** 可选（HIG-29）：按输出画幅重新渲染的 PNG，键为 variant_key；worker 优先用它，找不到时回落 image_url。导出时重新生成。 */
-  variant_images?: Record<string, { url: string; size: [number, number] }> | null;
+  variant_images?: Record<string, { url: string; size: [number, number]; background_url?: string }> | null;
   /** 可选（HIG-40）：入场 / 出场 / 循环动画；空对象等于没有，发送时省略。 */
   animation?: TextAnimation;
   /** 可选（HIG-50）：整篇文案在裁切框内滚动；与 animation 互斥（后端 400）。null / 缺省 = 不滚动，发送时省略。 */
   scroll?: TextScroll | null;
+  /** 可选（HIG-45）：有逐字显现时导出前生成的字位置。 */
+  glyph_layout?: GlyphLayout | null;
+  /** 可选（HIG-45）：有逐字显现且有背景块时，只画背景块的 PNG（与 image_url 同尺寸）。 */
+  background_image?: string | null;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */
   width_manual?: boolean;
 }

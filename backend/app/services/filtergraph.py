@@ -9,7 +9,8 @@ Filter graph order:
            → canvas fill (blur | color | crop; crop honours an optional source window first)
            → one overlay per layer (enable='between(t,a,b)' for timed layers; an animated text
              layer, HIG-40, loops its PNG and moves through perspective / geq / overlay
-             expressions, see services/animation.py); mask layers
+             expressions, see services/animation.py; a reveal, HIG-45, masks the PNG's alpha
+             before that, see services/reveal.py); mask layers
              (contract §2 type "mask") take no input: a split + crop + boxblur + overlay, or a
              drawbox, over the running canvas
            → format=yuv420p
@@ -39,7 +40,8 @@ from app.schemas import (
     StickerLayer,
     TextLayer,
 )
-from app.services.animation import SCALE_HEADROOM, AnimExpr, expressions, with_time
+from app.services import reveal as reveal_mask
+from app.services.animation import AnimExpr, enter_delay, expressions, scale_headroom, with_time
 from app.services.scroll import scroll_path, y_expression
 from app.services.layout import (
     Box,
@@ -538,12 +540,23 @@ def build_render_command(
                 options += ["-c:v", image.decoder]
 
         # Text animation (HIG-40): None-valued channels stay static; no animation = the old argv.
-        anim = (
-            expressions(layer.animation, t_end - t_start)
-            if isinstance(layer, TextLayer) and not image.is_video
-            else AnimExpr()
-        )
-        animated = any((anim.opacity, anim.dx, anim.dy, anim.scale))
+        is_text = isinstance(layer, TextLayer) and not image.is_video
+        window_len = t_end - t_start
+        anim = expressions(layer.animation, window_len) if is_text else AnimExpr()
+        # Reveal (HIG-45): an alpha mask over the PNG plane, plus the background block and cursor.
+        mask: str | None = None
+        cursor: reveal_mask.Cursor | None = None
+        background: ImageSource | None = None
+        if is_text and layer.animation is not None and layer.animation.reveal is not None:
+            if layer.glyph_layout is None:
+                warnings.append(f"图层 {layer.id}：没有 glyph_layout，逐字动画已跳过")
+            else:
+                delay = enter_delay(layer.animation, window_len)
+                mask = reveal_mask.mask_expression(layer.glyph_layout, layer.animation.reveal, window_len, delay)
+                if mask is not None:
+                    cursor = reveal_mask.cursor(layer.glyph_layout, layer.animation.reveal, window_len, delay, w, h)
+                    background = _resolve_text_background(layer, resolve_image_url, variant.variant_key)
+        animated = any((anim.opacity, anim.dx, anim.dy, anim.scale, mask))
         fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
 
         input_index = len(inputs)
@@ -557,12 +570,32 @@ def build_render_command(
         lbl = f"[l{layer_index}]"
 
         steps = [f"[{input_index}:v]format=rgba", f"scale={w}:{h}"]
+        if mask is not None:
+            # In the PNG plane, before padding / rotation move its pixels around.
+            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{with_time(mask, 'T', t_start)}'")
+            if background is not None:
+                bg_index = len(inputs)
+                inputs.append(["-loop", "1", "-framerate", fps, "-t", _fmt(t_end), "-i", background.path])
+                chains.append(",".join(steps) + f"[rv{layer_index}]")
+                chains.append(f"[{bg_index}:v]format=rgba,scale={w}:{h}[rb{layer_index}]")
+                steps = [f"[rb{layer_index}][rv{layer_index}]overlay=0:0:format=auto", "format=rgba"]
+            if cursor is not None:
+                color = _cursor_color(layer)
+                chains.append(",".join(steps) + f"[rt{layer_index}]")
+                chains.append(f"color=c={color}:s={cursor.width}x{cursor.height}:r={fps},format=rgba[rc{layer_index}]")
+                steps = [
+                    f"[rt{layer_index}][rc{layer_index}]overlay=x='{with_time(cursor.x, 't', t_start)}'"
+                    f":y='{with_time(cursor.y, 't', t_start)}':enable='{with_time(cursor.enable, 't', t_start)}'"
+                    ":shortest=1:format=auto",
+                    "format=rgba",
+                ]
         frame = box  # the rectangle the layer's frame occupies before rotation
         if anim.scale:
             # Scale around the centre inside a fixed, padded frame: filter links cannot change
             # size per frame, so perspective moves the corners instead of resizing.
-            pw = 2 * math.ceil(w * SCALE_HEADROOM / 2)
-            ph = 2 * math.ceil(h * SCALE_HEADROOM / 2)
+            headroom = scale_headroom(layer.animation, window_len)
+            pw = 2 * math.ceil(w * headroom / 2)
+            ph = 2 * math.ceil(h * headroom / 2)
             steps.append(f"pad={pw}:{ph}:{(pw - w) // 2}:{(ph - h) // 2}:color=0x00000000")
             # perspective's frame counter `in` starts at 1, and it has no time variable
             s = with_time(anim.scale, f"(in-1)/{fps}", t_start)
@@ -588,7 +621,9 @@ def build_render_command(
         if anim.opacity:
             fade = with_time(anim.opacity, "T", t_start)
             gain = fade if opacity >= 1 else f"{_fmt(opacity)}*{fade}"
-            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{gain}'")
+            # The gain only depends on time: evaluate it once per row (st / ld) instead of per pixel.
+            # Long curves (bounce, elastic) on a padded, rotated frame are otherwise ~15× slower.
+            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*if(eq(X,0),st(0,{gain}),ld(0))'")
         elif opacity < 1:
             steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
         if image.is_video:
@@ -845,6 +880,28 @@ def build_render_command(
             "skipped": skipped_tracks,
         },
     )
+
+
+def _resolve_text_background(
+    layer: TextLayer,
+    resolve_image_url: Callable[[str], ImageSource | None] | None,
+    variant_key: str | None,
+) -> ImageSource | None:
+    """The background-block-only PNG of a revealing text layer (HIG-45); None = no background."""
+    if resolve_image_url is None:
+        return None
+    variant_image = (layer.variant_images or {}).get(variant_key) if variant_key else None
+    for url in (variant_image.background_url if variant_image else None, layer.background_image):
+        if url:
+            found = resolve_image_url(url)
+            if found is not None:
+                return found
+    return None
+
+
+def _cursor_color(layer: TextLayer) -> str:
+    color = (layer.style.color if layer.style else None) or "#FFFFFF"
+    return "0x" + color[1:7] if color.startswith("#") and len(color) >= 7 else "0xFFFFFF"
 
 
 def _resolve_layer_image(

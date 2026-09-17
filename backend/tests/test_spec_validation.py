@@ -494,6 +494,9 @@ def test_text_scroll_excludes_animation():
     layer["animation"] = {"in": {"preset": "fade", "duration": 0.5}}
     spec["layers"].append(layer)
     assert "不能同时设置" in errors_of(spec)
+    # HIG-45: a reveal is an animation too
+    layer["animation"] = {"reveal": {"preset": "typewriter"}}
+    assert "不能同时设置" in errors_of(spec)
     # An empty animation object is "no animation" and is allowed alongside scroll.
     layer["animation"] = {}
     validate(spec)
