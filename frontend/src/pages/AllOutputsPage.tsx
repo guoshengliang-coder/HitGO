@@ -4,6 +4,7 @@
 // 两种视图同一张表、同一种行序，只差筛选与列。
 // - ?q=：按导出名称 / 批次名 / 视频名搜索（HIG-27）；总表交给后端过滤，批次视图在本地过滤。
 // - 批量下载（HIG-47）：勾选已完成的行，打成一个 zip 由后端边打边传（lib/outputSelection、api.downloadOutputsZip）。
+// - 播放（HIG-52）：已完成的行点「播放」，弹窗里直接放成片（OutputPlayerModal）。
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -15,6 +16,7 @@ import { audioMixSummary, jobWarning, outputFileName, sortByFinishedDesc, versio
 import { matchesQuery } from '../lib/search';
 import { headState, isDownloadable, MAX_ZIP_JOBS, pruneSelection, selectionSummary, toggleAll, toggleOne } from '../lib/outputSelection';
 import { variantDef, type VariantKey } from '../types';
+import { OutputPlayerModal } from '../components/OutputPlayerModal';
 
 const PAGE = 100;
 /** 批次视图还有任务在跑时的重拉间隔。进度弹窗用 1.5s，这里是看板，慢一点够用。 */
@@ -219,6 +221,7 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string[]>([]);
   const [zipNote, setZipNote] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<Job | null>(null);
   const headRef = useRef<HTMLInputElement>(null);
   // 刷新 / 搜索 / 加载更多之后，去掉已经不在列表里的勾
   useEffect(() => {
@@ -313,10 +316,17 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
               </td>
               <td>
                 {j.output_url ? (
-                  // /media 与页面同源，download 属性里的文件名会生效（HIG-27）
-                  <a href={j.output_url} download={outputFileName(j, { batchName })} target="_blank" rel="noreferrer">
-                    下载
-                  </a>
+                  <span className="output-actions">
+                    {isDownloadable(j) && (
+                      <button className="btn sm" onClick={() => setPlaying(j)} title="在浏览器里直接播放这个成片">
+                        播放
+                      </button>
+                    )}
+                    {/* /media 与页面同源，download 属性里的文件名会生效（HIG-27） */}
+                    <a href={j.output_url} download={outputFileName(j, { batchName })} target="_blank" rel="noreferrer">
+                      下载
+                    </a>
+                  </span>
                 ) : (
                   '—'
                 )}
@@ -334,6 +344,7 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
         })}
       </tbody>
     </table>
+    {playing && <OutputPlayerModal job={playing} fileName={outputFileName(playing, { batchName })} onClose={() => setPlaying(null)} />}
     </>
   );
 }
