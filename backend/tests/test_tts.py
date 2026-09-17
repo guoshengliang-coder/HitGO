@@ -151,3 +151,36 @@ def test_run_tts_really_produces_an_m4a_of_the_summed_length(db, monkeypatch):
     dst = storage.asset_path(ASSET, "m4a")
     assert dst.is_file() and ffprobe.probe_audio(dst)["codec"] == "aac"
     assert not tts.tts_tmp_dir(ASSET).exists()
+
+
+# --- voice preview (HIG-42) ---------------------------------------------------------
+
+
+def test_preview_wav_synthesizes_once_and_caches_per_voice_and_model():
+    fake = localize.FakeTts(seconds=2.0)
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake)
+    shutil.rmtree(storage.data_dir() / tts.PREVIEW_DIR, ignore_errors=True)
+    path = tts.preview_wav("zh", "longcheng_v3", providers)
+    assert path == tts.preview_path("zh", "longcheng_v3", "cosyvoice-v3-flash") and path.is_file()
+    assert path.parent == storage.data_dir() / tts.PREVIEW_DIR and path.name.startswith("zh-longcheng_v3-")
+    assert localize.wav_duration(path) == pytest.approx(2.0, abs=1e-3)
+    assert fake.calls == [(tts.PREVIEW_TEXT["zh"], "longcheng_v3")] and fake.models == ["cosyvoice-v3-flash"]
+    assert not list(path.parent.glob("*.part"))
+    # second call: cache hit, the provider is not asked again
+    assert tts.preview_wav("zh", "longcheng_v3", providers) == path and len(fake.calls) == 1
+    # a qwen3 voice: its own model in the hash, language passed through; unknown-language text falls back to English
+    es = tts.preview_wav("es", "Cherry", providers)
+    assert es != path and fake.models[-1] == "qwen3-tts-flash" and fake.calls[-1] == (tts.PREVIEW_TEXT["es"], "Cherry")
+    assert tts.preview_text("xx") == tts.PREVIEW_TEXT["en"]
+    # the same voice under another model is a different cache file
+    assert tts.preview_path("zh", "longcheng_v3", "cosyvoice-v3-plus") != path
+
+
+def test_preview_wav_fails_loudly_and_leaves_no_file():
+    fake = localize.FakeTts(fail_voices={"longcheng_v3"})
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake)
+    path = tts.preview_path("zh", "longcheng_v3", "cosyvoice-v3-flash")
+    path.unlink(missing_ok=True)
+    with pytest.raises(localize.LocalizeError):
+        tts.preview_wav("zh", "longcheng_v3", providers)
+    assert not path.exists()

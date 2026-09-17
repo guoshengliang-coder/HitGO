@@ -1118,7 +1118,10 @@ class LangOut(BaseModel):
 
 class VoiceOut(BaseModel):
     id: str
-    label: str
+    label: str  # 名字（龙小淳 / Abby）
+    gender: Literal["female", "male", "neutral"] | None = None  # 分组用；neutral = 童声 / 角色音；env 加的音色为 None
+    style: str | None = None  # 一句话风格（知性积极 / 美式）
+    speech_rate: bool = True  # 该音色的模型是否接受 speech_rate（qwen3-tts 不接受，前端禁用语速）
 
 
 class TargetLangOut(LangOut):

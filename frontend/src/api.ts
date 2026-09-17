@@ -56,6 +56,23 @@ async function request<T>(method: Method, url: string, body?: unknown): Promise<
   return (await res.json()) as T;
 }
 
+/** GET 一段音频并给出能播的 URL：mock 直接回 data URL；真实后端把 wav 读成 blob 转 object URL，错误按 JSON detail 报。 */
+async function requestAudioUrl(url: string): Promise<string> {
+  if (MOCK && mockHandler) return (await mockHandler('GET', url)) as string;
+  const res = await fetch(url);
+  if (!res.ok) {
+    let detail = `请求失败（${res.status}）`;
+    try {
+      const j = await res.json();
+      if (j && typeof j.detail === 'string') detail = j.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 /** 带上传进度的 multipart 上传（XMLHttpRequest）。 */
 export function uploadWithProgress<T>(
   url: string,
@@ -192,6 +209,8 @@ export const api = {
   // 大字报（契约 §3，HIG-50）
   /** 朗读文案：202 + preparing 的音频素材，之后轮询 GET /api/assets/{id} 直到 ready / failed。lang / voice 取自 getLocalizeOptions。 */
   synthesizeTts: (body: TtsIn) => request<Asset>('POST', '/api/tts', body),
+  /** 音色试听（HIG-42）：一句固定文案的 wav，服务端按音色缓存；返回可直接交给 Audio 的 URL（object URL / mock 的 data URL）。 */
+  ttsPreview: (lang: string, voice: string) => requestAudioUrl(`/api/tts/preview/${encodeURIComponent(lang)}/${encodeURIComponent(voice)}`),
   /** 挑重点词组（同步，最长约 20 秒）；区间与 TextSpan 同一索引空间。 */
   highlight: (text: string, maxPhrases?: number) => request<HighlightOut>('POST', '/api/highlight', { text, ...(maxPhrases ? { max_phrases: maxPhrases } : {}) }),
 

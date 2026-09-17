@@ -142,10 +142,25 @@ export interface LangOption {
   label: string;
 }
 
+/** 音色分组：female / male / neutral（童声 / 角色音，界面上叫「特色」）；LOCALIZE_VOICES 加的音色没有。 */
+export type VoiceGender = 'female' | 'male' | 'neutral';
+
+/** GET /api/localize/options 里的一个音色（HIG-42）。 */
+export interface VoiceOption {
+  id: string;
+  /** 名字（龙小淳 / Abby）。 */
+  label: string;
+  gender?: VoiceGender | null;
+  /** 一句话风格（知性积极 / 美式）。 */
+  style?: string | null;
+  /** 缺省 true；false = 该音色的模型不接受语速（qwen3-tts），前端禁用语速。 */
+  speech_rate?: boolean;
+}
+
 export interface TargetLangOption extends LangOption {
   /** 可选，缺省 false：从右到左书写（阿拉伯语等）。 */
   rtl?: boolean;
-  voices: { id: string; label: string }[];
+  voices: VoiceOption[];
 }
 
 /** GET /api/localize/options：语言与音色都由后端下发，前端不写死。enabled = false 表示没配 key。 */
