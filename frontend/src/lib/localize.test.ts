@@ -264,6 +264,18 @@ describe('canApplyVersion', () => {
 });
 
 describe('applyLocalizationToSpec', () => {
+  it('拼接后重新套用配音只静音原片；导出原版不改插入片段的音量', () => {
+    const v = video();
+    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [
+      { id: 'insert', video_id: 'other', in: 0, out: 3, source_volume: 0.7 },
+      { id: 'owner', video_id: v.id, in: 0, out: 3, source_volume: 0.3 },
+    ] }, audio: { source_volume: 1, tracks: [] } };
+    applyLocalizationToSpec(spec, 'ko', ctx(v));
+    expect(spec.audio?.source_volume).toBe(1);
+    expect(spec.sequence?.clips.map(c => c.source_volume)).toEqual([0.7, 0]);
+    stripLocalization(spec, v.id);
+    expect(spec.sequence?.clips.map(c => c.source_volume)).toEqual([0.7, 1]);
+  });
   const userText: TextLayer = { id: 'user', type: 'text', text: '用户的标题', style: defaultTextStyle(), anchor: 'top-center', margin: [0, 0.1], width: 0.5, rotate: 0, opacity: 1, t: 'all' };
   const base = (): EditSpec => ({ ...emptySpec(), trim: { remove: [[3, 6]] }, layers: [userText], audio: { source_volume: 0.8, tracks: [{ id: 'bgm_user', asset_id: 'a_up', role: 'bgm', t: 'all' }] } });
 

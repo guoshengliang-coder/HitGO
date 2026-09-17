@@ -422,10 +422,22 @@ def build_render_command(
     source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
     if audio_spec is not None and audio_spec.source_hidden:
         source_volume = 0.0
+    # v0.22.1 and earlier applied the owner's mute to every inserted source.
+    # Migrate that interpretation at render time too, for old queued/saved specs.
+    legacy_clip_audio = bool(sequence_sources) and all(c.clip.source_volume is None for c in sequence_sources)
+    clip_gains = [
+        (source_volume if c.clip.video_id == video_meta.get("video_id") else 1.0)
+        if legacy_clip_audio else (c.clip.source_volume if c.clip.source_volume is not None else 1.0)
+        for c in sequence_sources
+    ]
+    if legacy_clip_audio:
+        source_volume = 1.0
     # A muted source (audio.source_volume = 0) must not be decoded into the trim/concat
     # graph at all: a concat output nobody consumes makes ffmpeg reject the whole graph
     # ("Filter 'concat' has output 0 (at) unconnected").
-    source_heard = has_audio and source_volume > 0
+    source_heard = has_audio and source_volume > 0 and (
+        not sequence_sources or any(c.has_audio and gain > 0 for c, gain in zip(sequence_sources, clip_gains))
+    )
 
     warnings: list[str] = []
     # One argv group per input: video stickers need per-input options (-stream_loop, -c:v).
@@ -454,10 +466,10 @@ def build_render_command(
             )
             chains.append(f"{filled}format=yuv420p,setsar=1[seqv{i}]")
             if source_heard:
-                if src.has_audio:
+                if src.has_audio and clip_gains[i] > 0:
                     chains.append(
                         f"[{i}:a]atrim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
-                        f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},apad,atrim=end={_fmt(length)}[seqa{i}]"
+                        f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},volume={_fmt(clip_gains[i])},apad,atrim=end={_fmt(length)}[seqa{i}]"
                     )
                 else:
                     chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(length)}[seqa{i}]")
@@ -901,7 +913,7 @@ def build_render_command(
         if a < expected_duration
     ]
     mutes = [(a, b) for a, b in mutes if b - a > MIN_SEGMENT] if source_heard else []
-    graph_audio = bool(overlays) or source_volume != 1 or bool(mutes)
+    graph_audio = bool(overlays) or source_volume != 1 or bool(mutes) or bool(sequence_sources)
     audio_map: list[str]
     if graph_audio:
         if source_heard:

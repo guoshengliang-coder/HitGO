@@ -699,6 +699,8 @@ class SequenceClip(BaseModel):
     video_id: str = Field(min_length=1)
     source_in: float = Field(alias="in", ge=0)
     source_out: float = Field(alias="out", gt=0)
+    # None distinguishes legacy sequences whose owner gain was stored as master gain.
+    source_volume: float | None = Field(default=None, ge=0, le=1)
     transition: ClipTransition | None = None
 
     @model_validator(mode="after")

@@ -15,7 +15,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
-import { clipDisplayGroups, insertClip, moveClipGroup, sequenceDuration, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
+import { clipDisplayGroups, insertClip, moveClipGroup, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
 import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
@@ -761,7 +761,15 @@ export function Timeline() {
                   </div>
                   <div className="body" {...scrub.handlers}>
                     <CoverGap width={off} />
-                    <div
+                    {sequence && video && r.align === 'source' ? sequenceTrackWindows(sequence, video.id, [pa, pb]).map(([start, end]) => (
+                      <div key={start} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
+                        style={{ left: off + start * pps, width: Math.max(4, (end - start) * pps), cursor: all ? 'default' : 'grab' }}
+                        title="只随原视频片段播放；插入的其他视频期间不播放这条配音"
+                        onPointerDown={(e) => { setSelectedTrack(t.id); if (all) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
+                        随原片 · {start.toFixed(1)}s–{end.toFixed(1)}s
+                        {!all && <><div className="edge l" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} /><div className="edge r" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} /></>}
+                      </div>
+                    )) : <div
                       className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 || hidden ? 'muted' : ''} ${hidden ? 'hidden' : ''}`}
                       style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
@@ -783,7 +791,7 @@ export function Timeline() {
                           <div className="edge r" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} />
                         </>
                       )}
-                    </div>
+                    </div>}
                   </div>
                 </div>
               );

@@ -714,6 +714,8 @@ export interface SequenceClip {
   video_id: string;
   in: number;
   out: number;
+  /** 本片段原声音量；缺省 1。旧序列全部未设置时由 normalizeSequenceAudio 迁移。 */
+  source_volume?: number | null;
   /** 当前片段与前一段之间的转场；首段不设。 */
   transition?: ClipTransition | null;
 }

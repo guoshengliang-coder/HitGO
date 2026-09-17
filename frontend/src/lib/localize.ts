@@ -9,6 +9,7 @@ import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
 import { cuesToTextLayers, type SrtCue } from './srt';
 import { postTrimDuration, sourceRangeToPost, type Range } from './time';
+import { normalizeSequenceAudio, setOwnerSourceGain } from './sequence';
 
 export const LOCALIZE_ORIGIN = 'localize' as const;
 
@@ -413,7 +414,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   spec.audio.tracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN);
 
   // 2. 源音轨静音 + 配音轨
-  spec.audio.source_volume = 0;
+  setOwnerSourceGain(spec, video.id, 0);
   spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
 
   // 3. 伴奏
@@ -462,12 +463,15 @@ export function appliedVersion(spec: EditSpec | null | undefined, loc: Localizat
  * 去掉改语言套用出来的层 / 轨（原地修改），给多语言导出里的「原版」用（HIG-43）。
  * 套用时把源音轨静了音、spec 里没记原来的音量：删掉过配音轨且源音量为 0 时恢复成 1（默认值）。
  */
-export function stripLocalization(spec: EditSpec): void {
+export function stripLocalization(spec: EditSpec, ownerId?: string): void {
+  if (ownerId) Object.assign(spec, normalizeSequenceAudio(spec, ownerId));
   spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
   if (!spec.audio) return;
   const hadVoice = spec.audio.tracks.some((t) => t.origin === LOCALIZE_ORIGIN && t.role === 'voice');
   spec.audio.tracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN);
-  if (hadVoice && spec.audio.source_volume === 0) spec.audio.source_volume = 1;
+  if (hadVoice && spec.sequence && ownerId) {
+    for (const clip of spec.sequence.clips) if (clip.video_id === ownerId && clip.source_volume === 0) clip.source_volume = 1;
+  } else if (hadVoice && spec.audio.source_volume === 0) spec.audio.source_volume = 1;
 }
 
 /** 批量套用对话框的提示：对齐源时间轴的音轨 / 改语言生成的字幕都是按这条视频算的，套到别的视频会错位。 */

@@ -22,7 +22,7 @@ export interface ExportDialogRequest {
   langs?: string[];
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
-import { sequenceDuration } from '../lib/sequence';
+import { normalizeSequenceAudio, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
@@ -717,7 +717,7 @@ export const useEditor = create<EditorState>((set, get) => {
             continue;
           }
           const draft = cloneSpec(v.edit_spec);
-          specs[v.id] = normalizeOutputs(draft);
+          specs[v.id] = normalizeSequenceAudio(normalizeOutputs(draft), v.id);
           if (specs[v.id] !== draft && v.status === 'ready') collapsed.push(v.id);
         }
         const currentVideoId = batch.videos[0]?.id ?? null;
@@ -774,7 +774,7 @@ export const useEditor = create<EditorState>((set, get) => {
         set((s) => ({
           batch: fresh,
           videos: fresh.videos,
-          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? normalizeOutputs(cloneSpec(v.edit_spec)) : emptySpec())])),
+          specs: Object.fromEntries(fresh.videos.map((v) => [v.id, s.specs[v.id] ?? (v.edit_spec ? normalizeSequenceAudio(normalizeOutputs(cloneSpec(v.edit_spec)), v.id) : emptySpec())])),
           selectedIds: s.selectedIds.filter((id) => fresh.videos.some((v) => v.id === id)),
           currentVideoId: nextCurrentAfterDelete(s.videos, s.currentVideoId, s.videos.filter((v) => !fresh.videos.some((f) => f.id === v.id)).map((v) => v.id)) ?? fresh.videos[0]?.id ?? null,
         }));
@@ -1066,7 +1066,7 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!s.videos.some((v) => v.id === videoId)) return;
       const prev = s.specs[videoId] ?? emptySpec();
       // 后端要求 outputs 至少一个：null 用空 spec 代替
-      const next = spec ? cloneSpec(spec) : emptySpec();
+      const next = spec ? normalizeSequenceAudio(cloneSpec(spec), videoId) : emptySpec();
       const history = { ...s.history };
       if (opts?.history) {
         const h = { ...ensureHistory(history, videoId) };
@@ -1283,8 +1283,8 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!isAssetReady(asset)) return null;
       const id = newTrackId();
       get().updateSpec((spec) => {
+        setOwnerSourceGain(spec, video.id, 0); // 只替代原片的源音轨，保留插入片段原声
         const audio = ensureAudio(spec);
-        audio.source_volume = 0; // 分离结果替代源音轨：源音轨静音，否则叠加后等于没分
         audio.tracks.push({ id, asset_id: assetId, role: stem === 'vocals' ? 'voice' : 'bgm', align: 'source', t: 'all', volume: 1, loop: false });
       });
       set({ selectedTrackId: id });
@@ -1809,7 +1809,7 @@ export const useEditor = create<EditorState>((set, get) => {
           const lastApply: LastApply = { targetIds: updated.map((u) => u.id), prevSpecs };
           return {
             videos: st.videos.map((v) => updated.find((u) => u.id === v.id) ?? v),
-            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? normalizeOutputs(cloneSpec(u.edit_spec)) : emptySpec()])) },
+            specs: { ...st.specs, ...Object.fromEntries(updated.map((u) => [u.id, u.edit_spec ? normalizeSequenceAudio(normalizeOutputs(cloneSpec(u.edit_spec)), u.id) : emptySpec()])) },
             history,
             lastApply,
             toast: `已应用到 ${updated.length} 条视频`,
@@ -1880,7 +1880,7 @@ export const useEditor = create<EditorState>((set, get) => {
           for (const it of plan.items) {
             const video = targets.find((v) => v.id === it.video_id)!;
             const spec = cloneSpec(baked[it.video_id]);
-            if (it.lang === null) stripLocalization(spec);
+            if (it.lang === null) stripLocalization(spec, video.id);
             else {
               applyLocalizationToSpec(spec, it.lang, { video, assets, langLabel: langLabel(get().localizeOptions, it.lang), newLayerId, newTrackId });
               for (let i = 0; i < spec.layers.length; i++) {
