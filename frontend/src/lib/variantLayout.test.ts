@@ -40,6 +40,18 @@ const mask: MaskLayer = { id: 'm', type: 'mask', mode: 'solid', anchor: 'bottom-
 const sticker: StickerLayer = { id: 's', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0.1, 0.1], width: 0.3, rotate: 15, opacity: 0.8, t: 'all' };
 
 describe('variantLayout · resolveLayerBox', () => {
+  it('自定义尺寸用于图层几何和覆盖写回', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [sticker], outputs: [
+      { variant_key: '9x16', aspect: '9:16', fill: 'blur' },
+      { variant_key: 'custom', aspect: 'custom', width: 1000, height: 1400, fill: 'blur', layer_fit: 'canvas' },
+    ] };
+    const custom = spec.outputs[1];
+    const box = resolveLayerBox(spec, sticker, custom, 2, 1080, 1920);
+    expect(box.w).toBe(300);
+    const override = overrideFromBox(sticker, { x: 100, y: 140, w: 300, h: 150 }, 'top-left', 'custom', undefined, custom);
+    expect(override.margin).toEqual([0.1, 0.1]);
+    expect(placementOfBox({ x: 100, y: 140, w: 300, h: 150 }, 'top-left', 'custom', custom).canvas).toEqual({ W: 1000, H: 1400 });
+  });
   it('跟随视频：1:1 blur 上遮盖按 0.5625 缩放并平移', () => {
     const spec = specWith({ key: '1x1', aspect: '1:1', fill: 'blur' }, [mask]);
     const b = resolveLayerBox(spec, mask, spec.outputs[1], 1, 1080, 1920);

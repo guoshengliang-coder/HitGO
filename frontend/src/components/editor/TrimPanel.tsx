@@ -2,7 +2,7 @@
 // 已删除区间 / 封面 / 成片画面 / 时长各自成一个可折叠分组，收起时标题行留一句摘要；
 // 原先常驻在面板底部的那大段说明按语义拆进各分组标题旁的「?」里。
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
@@ -17,11 +17,22 @@ import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
-import { VARIANT_DEFS, variantDef, type FillMode, type OutputQuality, type VariantKey } from '../../types';
+import { VARIANT_DEFS, outputSize, variantDef, type FillMode, type OutputQuality, type VariantKey } from '../../types';
 
 const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
 const FRAME_HELP = '每个画幅单独设置；页签左边的勾表示导出时出这个画幅，勾选跟着视频保存，「导出」弹窗默认就按它来。填充决定源画面放不满画幅时怎么补，模糊背景可以调模糊强度和背景亮度（越暗越不抢主体）；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
 const DURATION_HELP = '文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。';
+
+function canvasDimension(raw: string): number | null {
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 2 && n % 2 === 0 ? n : null;
+}
+
+function evenDimension(n: number): number | null {
+  const rounded = Math.max(2, Math.round(n / 2) * 2);
+  return Number.isSafeInteger(rounded) ? rounded : null;
+}
 
 /** 成片画面：按画幅页签设置填充方式、裁切范围、清晰度（HIG-8 搬到这里，HIG-29 恢复多画幅）。页签与画布预览联动。 */
 function FrameSection() {
@@ -41,6 +52,10 @@ function FrameSection() {
   const batchId = useEditor((s) => s.batch?.id);
   const postDuration = usePostDuration();
   const preroll = useCoverDuration();
+  const [locked, setLocked] = useState(false);
+  const [widthInput, setWidthInput] = useState('1080');
+  const [heightInput, setHeightInput] = useState('1350');
+  const lockRatio = useRef(1080 / 1350);
 
   // 按本批次已完成任务的实际码率校准大小估算
   useEffect(() => {
@@ -48,9 +63,16 @@ function FrameSection() {
   }, [batchId, loadOutputCalibration]);
 
   const def = variantDef(previewKey);
-  const aspect = def.width / def.height;
   const out = spec ? outputFor(spec, previewKey) : null;
+  const size = out ? outputSize(out) : def;
+  const customSize = spec ? outputSize(outputFor(spec, 'custom')) : variantDef('custom');
+  const aspect = size.width / size.height;
   const isRef = previewKey === '9x16';
+  useEffect(() => {
+    setWidthInput(String(size.width));
+    setHeightInput(String(size.height));
+  }, [video?.id, size.width, size.height]);
+  useEffect(() => { setLocked(false); }, [video?.id]);
   if (!video || !out) return null;
   const sameAspect = Math.abs(video.width / video.height - aspect) < 0.01;
   const landscape = video.width > video.height;
@@ -65,6 +87,22 @@ function FrameSection() {
     // 切到裁切时先写入缺省（居中 cover）窗口，画布与成片从一开始就一致
     patchOutput({ fill, ...(fill === 'color' ? { color: out.color ?? '#000000' } : {}), ...(fill === 'crop' && !out.crop ? { crop: defaultCropRect(video.width, video.height, aspect) } : {}) });
     if (fill !== 'crop' && cropEditing) setCropEditing(false);
+  };
+
+  const changeSize = (axis: 'width' | 'height', raw: string) => {
+    if (axis === 'width') setWidthInput(raw);
+    else setHeightInput(raw);
+    const n = canvasDimension(raw);
+    if (n === null) return;
+    const other = locked ? evenDimension(axis === 'width' ? n / lockRatio.current : n * lockRatio.current) : null;
+    if (locked && other === null) return;
+    if (axis === 'width') {
+      patchOutput({ width: n, ...(other !== null ? { height: other } : {}) });
+      if (other !== null) setHeightInput(String(other));
+    } else {
+      patchOutput({ height: n, ...(other !== null ? { width: other } : {}) });
+      if (other !== null) setWidthInput(String(other));
+    }
   };
 
   // 收起来之后摘要就是这块设置唯一的可见信息，所以安全区有重叠时也要在这一行看得见
@@ -89,10 +127,10 @@ function FrameSection() {
                 aria-checked={on}
                 aria-label={`导出 ${d.label}`}
                 className={`vt-check ${on ? 'on' : ''}`}
-                title={on ? (exported.length > 1 ? `导出时出 ${d.label}（点击取消勾选）` : '至少导出一个画幅') : `勾选：导出时也出 ${d.label}（${d.width}×${d.height}）`}
+                title={on ? (exported.length > 1 ? `导出时出 ${d.label}（点击取消勾选）` : '至少导出一个画幅') : `勾选：导出时也出 ${d.label}（${d.key === 'custom' ? `${customSize.width}×${customSize.height}` : `${d.width}×${d.height}`}）`}
                 onClick={() => setExportVariants(toggleExportVariant(exported, d.key))}
               />
-              <button type="button" role="tab" aria-selected={previewKey === d.key} className="vt-label" title={`预览并设置 ${d.label}：${d.width}×${d.height} · ${d.note}${configured ? ' · 已有设置' : ''}`} onClick={() => setPreviewVariant(d.key)}>
+              <button type="button" role="tab" aria-selected={previewKey === d.key} className="vt-label" title={`预览并设置 ${d.label}：${d.key === 'custom' ? `${customSize.width}×${customSize.height}` : `${d.width}×${d.height}`} · ${d.note}${configured ? ' · 已有设置' : ''}`} onClick={() => setPreviewVariant(d.key)}>
                 {d.label}
                 {configured && <span className="vt-dot" aria-hidden />}
               </button>
@@ -100,8 +138,21 @@ function FrameSection() {
           );
         })}
       </div>
+      {previewKey === 'custom' && (
+        <div className="stack">
+          <div className="g2">
+            <Field label="宽度（像素）"><input className="input mono" aria-label="自定义宽度" inputMode="numeric" value={widthInput} onChange={(e) => changeSize('width', e.target.value)} /></Field>
+            <Field label="高度（像素）"><input className="input mono" aria-label="自定义高度" inputMode="numeric" value={heightInput} onChange={(e) => changeSize('height', e.target.value)} /></Field>
+          </div>
+          <button type="button" className={`btn sm ${locked ? 'on' : ''}`} aria-pressed={locked} onClick={() => { lockRatio.current = size.width / size.height; setLocked(!locked); }}>
+            {locked ? '宽高比已锁定' : '锁定宽高比'}
+          </button>
+          {(canvasDimension(widthInput) === null || canvasDimension(heightInput) === null) && <div className="hint" style={{ color: 'var(--st-failed-fg)' }}>宽高须为不小于 2 的偶整数；当前输入尚未应用到画布。</div>}
+          {size.width * size.height > 3840 * 2160 && <div className="hint">较大尺寸可能降低预览、处理和导出速度。</div>}
+        </div>
+      )}
       <div className="hint">
-        {def.width}×{def.height}
+        {size.width}×{size.height}
         {exported.includes(previewKey) ? ' · 导出时会出这个画幅' : ' · 未勾选，导出时不出这个画幅'}
         {!isRef && '；画布正在预览它，图层默认跟着视频画面走，在画布上拖动只改这个画幅'}
       </div>

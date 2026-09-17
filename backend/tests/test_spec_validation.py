@@ -31,6 +31,15 @@ def test_canvas_sizes():
     assert CANVAS_SIZES == {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350), "16:9": (1920, 1080)}
 
 
+def test_custom_canvas_size_and_validation():
+    output = {"variant_key": "custom", "aspect": "custom", "width": 1080, "height": 1350}
+    assert validate(valid_spec(outputs=[output])).outputs[0].canvas == (1080, 1350)
+    assert "width 和 height" in errors_of(valid_spec(outputs=[{**output, "height": None}]))
+    assert "偶数像素" in errors_of(valid_spec(outputs=[{**output, "width": 1081}]))
+    assert "custom" in errors_of(valid_spec(outputs=[{**output, "variant_key": "wrong"}]))
+    assert "只有自定义画幅" in errors_of(valid_spec(outputs=[{"variant_key": "9x16", "aspect": "9:16", "width": 1080}]))
+
+
 def test_defaults_fill_in():
     spec = validate({"outputs": [{"variant_key": "9x16", "aspect": "9:16"}]})
     assert spec.trim.remove == [] and spec.layers == []

@@ -37,6 +37,7 @@ Anchor = Literal[
 ANCHORS: tuple[str, ...] = Anchor.__args__  # type: ignore[attr-defined]
 
 Aspect = Literal["9:16", "1:1", "4:5", "16:9"]
+OutputAspect = Literal["9:16", "1:1", "4:5", "16:9", "custom"]
 Fill = Literal["blur", "color", "crop"]
 # Video sticker shorter than its time window: loop it, hold the last frame, or let it end.
 Playback = Literal["loop", "freeze", "once"]
@@ -491,7 +492,9 @@ class OutputVariant(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     variant_key: str
-    aspect: Aspect
+    aspect: OutputAspect
+    width: int | None = Field(default=None, ge=2)
+    height: int | None = Field(default=None, ge=2)
     fill: Fill = "blur"
     color: str = "#000000"
     quality: Quality = "standard"
@@ -520,8 +523,26 @@ class OutputVariant(BaseModel):
             raise ValueError("color 必须是 #RRGGBB 形式")
         return v
 
+    @model_validator(mode="after")
+    def _validate_canvas(self) -> "OutputVariant":
+        if self.aspect == "custom":
+            if self.variant_key != "custom":
+                raise ValueError("自定义画幅的 variant_key 必须是 custom")
+            if self.width is None or self.height is None:
+                raise ValueError("自定义画幅必须同时提供 width 和 height")
+            if self.width % 2 or self.height % 2:
+                raise ValueError("自定义画幅的宽高必须是偶数像素（H.264 编码要求）")
+        elif self.width is not None or self.height is not None:
+            raise ValueError("只有自定义画幅可以指定 width 和 height")
+        elif self.variant_key == "custom":
+            raise ValueError("custom 输出的 aspect 必须是 custom")
+        return self
+
     @property
     def canvas(self) -> tuple[int, int]:
+        if self.aspect == "custom":
+            assert self.width is not None and self.height is not None
+            return self.width, self.height
         return CANVAS_SIZES[self.aspect]
 
 

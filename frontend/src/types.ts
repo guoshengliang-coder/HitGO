@@ -583,7 +583,8 @@ export interface MaskLayer extends LayerBase {
 export type Layer = StickerLayer | TextLayer | MaskLayer;
 
 export type AspectKey = '9:16' | '1:1' | '4:5' | '16:9';
-export type VariantKey = '9x16' | '1x1' | '4x5' | '16x9';
+export type OutputAspectKey = AspectKey | 'custom';
+export type VariantKey = '9x16' | '1x1' | '4x5' | '16x9' | 'custom';
 export type FillMode = 'blur' | 'color' | 'crop';
 /** 输出编码档位：standard（默认，省略即 standard）| high。 */
 export type OutputQuality = 'standard' | 'high';
@@ -601,7 +602,10 @@ export interface CropRect {
 
 export interface OutputVariant {
   variant_key: VariantKey;
-  aspect: AspectKey;
+  aspect: OutputAspectKey;
+  /** 仅 custom 输出使用；H.264 yuv420p 要求两者为正偶数。 */
+  width?: number;
+  height?: number;
   fill: FillMode;
   color?: string;
   quality?: OutputQuality;
@@ -685,15 +689,23 @@ export interface EditSpec {
   cover?: CoverSpec | null;
 }
 
-export const VARIANT_DEFS: { key: VariantKey; aspect: AspectKey; width: number; height: number; label: string; note: string }[] = [
+export const VARIANT_DEFS: { key: VariantKey; aspect: OutputAspectKey; width: number; height: number; label: string; note: string }[] = [
   { key: '9x16', aspect: '9:16', width: 1080, height: 1920, label: '9:16', note: '默认 · 替换原素材' },
   { key: '1x1', aspect: '1:1', width: 1080, height: 1080, label: '1:1', note: '派生新素材' },
   { key: '4x5', aspect: '4:5', width: 1080, height: 1350, label: '4:5', note: '派生新素材' },
   { key: '16x9', aspect: '16:9', width: 1920, height: 1080, label: '16:9', note: '派生新素材' },
+  { key: 'custom', aspect: 'custom', width: 1080, height: 1350, label: '自定义', note: '派生新素材 · 自定宽高' },
 ];
 
 export function variantDef(key: VariantKey) {
   return VARIANT_DEFS.find((v) => v.key === key)!;
+}
+
+/** 当前输出的真实像素尺寸；固定画幅沿用预设尺寸。 */
+export function outputSize(output: OutputVariant): { width: number; height: number } {
+  if (output.variant_key === 'custom' && output.width && output.height) return { width: output.width, height: output.height };
+  const { width, height } = variantDef(output.variant_key);
+  return { width, height };
 }
 
 export function emptySpec(): EditSpec {

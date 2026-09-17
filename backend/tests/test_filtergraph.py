@@ -179,6 +179,41 @@ def test_fill_color_1x1():
     )
 
 
+def test_custom_canvas_is_used_by_render_graph():
+    spec = valid_spec(trim={"remove": []}, layers=[], outputs=[
+        {"variant_key": "custom", "aspect": "custom", "width": 1000, "height": 1400, "fill": "color", "color": "#112233"}
+    ])
+    plan = build(spec, variant_key="custom")
+    assert plan.canvas == (1000, 1400)
+    assert "scale=1000:1400:force_original_aspect_ratio=decrease,pad=1000:1400" in fc(plan)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg/ffprobe not installed")
+@pytest.mark.parametrize("width,height", [(200, 300), (2, 2)])
+def test_real_ffmpeg_custom_canvas_has_requested_dimensions(tmp_path, width, height):
+    src = tmp_path / "src.mp4"
+    out = tmp_path / "custom.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=0.5",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )
+    spec = EditSpec.model_validate(valid_spec(trim={"remove": []}, layers=[], outputs=[
+        {"variant_key": "custom", "aspect": "custom", "width": width, "height": height, "fill": "blur"}
+    ]))
+    plan = build_render_command(
+        spec, {"duration": 0.5, "has_audio": False, "width": 160, "height": 90}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+         "-of", "csv=p=0", str(out)],
+        check=True, capture_output=True, text=True,
+    )
+    assert probe.stdout.strip() == f"{width},{height}"
+
+
 def test_fill_crop_16x9_and_4x5():
     for key, aspect, size in (("w", "16:9", "1920:1080"), ("p", "4:5", "1080:1350")):
         spec = valid_spec(

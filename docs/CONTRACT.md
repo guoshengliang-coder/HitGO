@@ -310,7 +310,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "layer_fit": "video",                  // 可选，缺省 "canvas"：图层相对该画布 | "video"：跟着视频画面走，见下方规则
       "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
     { "variant_key": "4x5",  "aspect": "4:5",  "fill": "crop",
-      "crop": { "x": 0.3418, "y": 0, "w": 0.3164, "h": 1 } }   // 可选：源画面上的裁切窗口，见下方规则
+      "crop": { "x": 0.3418, "y": 0, "w": 0.3164, "h": 1 } },  // 可选：源画面上的裁切窗口，见下方规则
+    { "variant_key": "custom", "aspect": "custom", "width": 1080, "height": 1350,
+      "fill": "blur", "layer_fit": "video", "export": false } // 可选自定义输出（HIG-41）
   ],
   "audio": {                                 // 可选；缺省 = 源音轨原样保留（即此前的行为）
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
@@ -349,15 +351,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - y：top → `margin.y·H`；center → `(H−h)/2 + margin.y·H`；bottom → `H − h − margin.y·H`
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
 - **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在文本 / 贴纸模块里对落在已删区间外的图层给提示。
-- **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
+- **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`custom` 输出用可选的 `width`、`height` 指定像素宽高，两个字段必须同时存在，且为不小于 2 的偶整数（H.264 `yuv420p` 编码限制）；其它画幅不使用这两个字段。旧 spec 不含自定义输出时语义不变。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
 - **模糊背景的强度与亮度**（HIG-54，可选，**只在 `fill = "blur"` 时生效**，其它 fill 忽略）：
-  - `blur`：整数 0–100，缺省 60。boxblur 半径 `r = round(min(W, H) · blur / 100 · 0.08)`，收到 `min(W, H) / 4 − 1`（色度平面的上限）以内，power 固定 2；`r = 0` 时不模糊。所有画幅短边都是 1080，所以缺省半径 52（HIG-54 之前固定为 20，约等于 `blur = 23`）。
+  - `blur`：整数 0–100，缺省 60。boxblur 半径 `r = round(min(W, H) · blur / 100 · 0.08)`，收到 `min(W, H) / 4 − 1`（色度平面的上限）以内，power 固定 2；`r = 0` 时不模糊。固定画幅短边都是 1080，缺省半径 52；自定义画幅按实际短边计算。
   - `bg_brightness`：整数 20–100，缺省 50，模糊底的亮度百分比；模糊后叠一层 `black@(1 − bg_brightness/100)`，100 = 不压暗（HIG-54 之前的成片不压暗）。
   - 旧 spec 没有这两个字段时按缺省值渲染，重新导出会比以前更糊更暗。前端预览用同一公式：CSS `blur()` 的 σ ≈ `0.8 · r` 按舞台尺寸缩放，`brightness(bg_brightness/100)`——是近似，成片以 worker 为准。
   - 封面沿用所在画幅的这两个值。批量套用 `outputs` 模块时原样复制。
 - **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
-- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。勾选结果写进各输出的 `export`（HIG-35，可选布尔；缺省时 `9x16` 视为勾选、其余视为不勾），「成片画面」画幅页签上的勾与导出对话框是同一份，随视频保存；worker 不读 `export`，这次出哪些文件仍只由 `variant_keys` 决定。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
+- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9 / custom` 排；每条视频至多配置一个 `custom` 画幅，缺省尺寸为 1080×1350。导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。勾选结果写进各输出的 `export`（HIG-35，可选布尔；缺省时 `9x16` 视为勾选、其余视为不勾），「成片画面」画幅页签上的勾与导出对话框是同一份，随视频保存；worker 不读 `export`，这次出哪些文件仍只由 `variant_keys` 决定。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
 - **`layer_fit`**（可选，缺省 `"canvas"`）：非 `9x16` 输出上图层怎么摆。`"canvas"` = 上面的公式直接套该输出的画布（此前的行为）；`"video"` = 图层跟着视频画面走：
   - **参考画布**：spec 里 `variant_key = "9x16"` 的输出（没有时按 `9:16` + `blur`）。图层的 `anchor / margin / width / height` 都按参考画布理解。参考输出自身、以及源视频宽高未知时忽略此字段，按 `"canvas"` 处理。
   - **映射**：分别算出源画面在参考画布与目标画布上的位置（`blur` / `color`：contain 居中；`crop`：先取裁切窗口再 cover 居中），得到「参考画布像素 → 源像素 → 目标画布像素」的等比映射 `p' = offset + p·k`。

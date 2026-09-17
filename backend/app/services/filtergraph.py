@@ -411,7 +411,7 @@ def build_render_command(
     """
     duration = float(video_meta["duration"])
     has_audio = bool(video_meta.get("has_audio", False))
-    canvas_w, canvas_h = CANVAS_SIZES[variant.aspect]
+    canvas_w, canvas_h = variant.canvas
     audio_spec = spec.audio
     source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
     if audio_spec is not None and audio_spec.source_hidden:

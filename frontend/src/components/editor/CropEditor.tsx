@@ -9,7 +9,7 @@ import { player } from '../../lib/player';
 import { isDue, previewIntervalMs } from '../../lib/previewClock';
 import { loadImage } from '../../lib/useImage';
 import { clampCropRect, cropRectFromPixels, cropRectToPixels, defaultCropRect, describeCrop, type PixelBox } from '../../lib/crop';
-import { variantDef } from '../../types';
+import { outputSize, variantDef } from '../../types';
 import { outputFor } from '../../lib/spec';
 import { useFitSize } from './Stage';
 
@@ -30,12 +30,13 @@ export function CropEditor() {
 
   const previewKey = useEditor((s) => s.previewVariantKey);
   const def = variantDef(previewKey);
-  const aspect = def.width / def.height;
+  const variant = spec ? outputFor(spec, previewKey) : undefined;
+  const size = variant ? outputSize(variant) : { width: 1080, height: 1920 };
+  const aspect = size.width / size.height;
   const srcW = video?.width || 16;
   const srcH = video?.height || 9;
   const { W, H } = useFitSize(wrapRef, srcW / srcH);
 
-  const variant = spec ? outputFor(spec, previewKey) : undefined;
   const rect = variant?.crop ?? defaultCropRect(srcW, srcH, aspect);
   const px = cropRectToPixels(rect, W, H);
   // 拖动 / 缩放过程中的实时框（遮罩跟着走），松手后以 store 为准

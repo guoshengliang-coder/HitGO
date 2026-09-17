@@ -1694,7 +1694,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const anchor = effectiveGeometry(layer, variant).anchor;
       const next = fn({ box, anchor });
       const prev = variant.layer_overrides?.[id];
-      const o = overrideFromBox(layer, next.box, next.anchor ?? anchor, key, next.rotate);
+      const o = overrideFromBox(layer, next.box, next.anchor ?? anchor, key, next.rotate, variant);
       // 旋转 / 不透明度的已有覆盖保留
       if (next.rotate === undefined && prev?.rotate !== undefined) o.rotate = prev.rotate;
       if (prev?.opacity !== undefined) o.opacity = prev.opacity;

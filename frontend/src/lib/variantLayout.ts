@@ -4,7 +4,7 @@
 // 与 backend/app/services/layout.py、filtergraph.variant_fit_map 同一套规则，
 // 两端共用 fixtures/variantLayoutCases.json 做 golden 测试，改规则时两边一起改。
 
-import { variantDef, type CropRect, type EditSpec, type FillMode, type Layer, type LayerOverride, type OutputVariant } from '../types';
+import { outputSize, variantDef, type CropRect, type EditSpec, type FillMode, type Layer, type LayerOverride, type OutputVariant } from '../types';
 import { marginFromBox, placeLayer, round4, type Canvas, type LayerBox, type Placement } from './layout';
 
 export interface FrameSpec {
@@ -106,7 +106,7 @@ export function referenceOutput(spec: EditSpec): OutputVariant | undefined {
 
 function frameOf(o: OutputVariant | undefined): FrameSpec {
   if (!o) return { fill: 'blur', W: 1080, H: 1920 };
-  const d = variantDef(o.variant_key);
+  const d = outputSize(o);
   return { fill: o.fill, crop: o.crop ?? null, W: d.width, H: d.height };
 }
 
@@ -148,7 +148,7 @@ export function layerFollows(spec: EditSpec, layer: Layer, variant: OutputVarian
  * aspect 是素材宽高比（宽 / 高），遮盖层忽略它、用 height。
  */
 export function resolveLayerBox(spec: EditSpec, layer: Layer, variant: OutputVariant, aspect: number, srcW: number, srcH: number): LayerBox & { rotate: number; opacity: number } {
-  const d = variantDef(variant.variant_key);
+  const d = outputSize(variant);
   const canvas: Canvas = { W: d.width, H: d.height };
   const own = effectiveGeometry(layer, variant);
   const m = variantFitMap(spec, variant, srcW, srcH);
@@ -171,8 +171,8 @@ export function resolveLayerBox(spec: EditSpec, layer: Layer, variant: OutputVar
  * 把某个输出画布上的像素框（未旋转）写成该输出的覆盖：anchor / margin / width（遮盖加 height）一起写，
  * 于是这个图层在该画幅上脱离跟随（画布上拖动 / 缩放 / 对齐 / 微移都走这里）。rotate 只在给出时写。
  */
-export function overrideFromBox(layer: Layer, box: LayerBox, anchor: Layer['anchor'], key: OutputVariant['variant_key'], rotate?: number): LayerOverride {
-  const d = variantDef(key);
+export function overrideFromBox(layer: Layer, box: LayerBox, anchor: Layer['anchor'], key: OutputVariant['variant_key'], rotate?: number, output?: OutputVariant): LayerOverride {
+  const d = output ? outputSize(output) : variantDef(key);
   const c: Canvas = { W: d.width, H: d.height };
   const m = marginFromBox(box, anchor, c);
   const o: LayerOverride = { anchor, margin: [round4(m[0]), round4(m[1])], width: round4(Math.max(1, box.w) / c.W) };
@@ -182,8 +182,8 @@ export function overrideFromBox(layer: Layer, box: LayerBox, anchor: Layer['anch
 }
 
 /** 输出画布上的像素框 → 对齐 / 换锚点用的 Placement（相对该画布）与宽高比。 */
-export function placementOfBox(box: LayerBox, anchor: Layer['anchor'], key: OutputVariant['variant_key']): { placement: Placement; aspect: number; canvas: Canvas } {
-  const d = variantDef(key);
+export function placementOfBox(box: LayerBox, anchor: Layer['anchor'], key: OutputVariant['variant_key'], output?: OutputVariant): { placement: Placement; aspect: number; canvas: Canvas } {
+  const d = output ? outputSize(output) : variantDef(key);
   const canvas: Canvas = { W: d.width, H: d.height };
   return { placement: { anchor, margin: marginFromBox(box, anchor, canvas), width: box.w / canvas.W }, aspect: box.h > 0 ? box.w / box.h : 1, canvas };
 }

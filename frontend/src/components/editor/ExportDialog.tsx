@@ -10,7 +10,7 @@ import { loadExportVariants, resolveExportTargets, toggleExportVariant, type Exp
 import { exportableLangs, ORIGINAL_LANG, planLanguageExport } from '../../lib/langExport';
 import { langLabel } from '../../lib/localize';
 import { exportKeys, hasExportChoice } from '../../lib/spec';
-import { VARIANT_DEFS, type VariantKey } from '../../types';
+import { VARIANT_DEFS, outputSize, type VariantKey } from '../../types';
 import { Modal } from '../ui/Modal';
 
 export function ExportDialog({ request, onClose }: { request?: ExportDialogRequest; onClose: () => void }) {
@@ -100,10 +100,12 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
         <div className="chips export-variants" role="group" aria-label="导出画幅">
           {VARIANT_DEFS.map((d) => {
             const on = variantKeys.includes(d.key);
+            const configured = currentSpec?.outputs.find((o) => o.variant_key === d.key);
+            const dimensions = configured ? outputSize(configured) : d;
             return (
               <button key={d.key} type="button" role="checkbox" aria-checked={on} className={`chip export-variant ${on ? 'active' : ''}`} title={d.note} onClick={() => toggleVariant(d.key)}>
                 {d.label}
-                <span className="mono small muted">{d.width}×{d.height}</span>
+                <span className="mono small muted">{dimensions.width}×{dimensions.height}</span>
               </button>
             );
           })}
