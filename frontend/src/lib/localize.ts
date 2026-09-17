@@ -199,6 +199,55 @@ export function cleanCueText(text: string): string {
     .join('\n');
 }
 
+/** 行首 / 行尾是这些文字时，合并行不加空格（中日文、泰文本来就不以空格分词）。 */
+const NO_SPACE_JOIN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}\u3000-\u303F\uFF00-\uFFEF]/u;
+
+/**
+ * 把 v0.18.0 之前套用时 wrapCueText 硬插的换行并回一段（HIG-51）：拉丁 / 韩文 / 阿拉伯文等用空格接，
+ * 接缝两边任一是中日文 / 泰文 / 全角标点时直接接。返回新文本和旧下标 → 新下标的映射（给 spans 平移用）。
+ */
+export function unwrapLegacyCueText(text: string): { text: string; map: (i: number) => number } {
+  const lines = text.split('\n');
+  let out = '';
+  const starts: number[] = []; // 每行在新文本里的起点
+  const oldStarts: number[] = [];
+  let oldOff = 0;
+  lines.forEach((line, k) => {
+    if (k > 0 && out && line) {
+      const joinNoSpace = NO_SPACE_JOIN.test(out[out.length - 1]) || NO_SPACE_JOIN.test(line[0]) || /\s$/.test(out) || /^\s/.test(line);
+      if (!joinNoSpace) out += ' ';
+    }
+    starts.push(out.length);
+    oldStarts.push(oldOff);
+    out += line;
+    oldOff += line.length + 1;
+  });
+  const map = (i: number) => {
+    let k = oldStarts.length - 1;
+    while (k > 0 && oldStarts[k] > i) k -= 1;
+    return Math.min(out.length, starts[k] + Math.min(i - oldStarts[k], lines[k].length));
+  };
+  return { text: out, map };
+}
+
+/**
+ * 设置文字图层的自动换行宽度（原地修改，给 updateLayer 的回调用）。
+ * 改语言套用出来、还没开过自动换行的旧译文字幕（style 里没有 wrap_width）第一次开启时，
+ * 先把旧版硬插的换行并回一段，否则自动换行只会拆长行、并不回短行，拖宽拖窄都看不出变化。
+ */
+export function setLayerWrapWidth(layer: TextLayer, wrap: number | null): void {
+  if (wrap && layer.origin === LOCALIZE_ORIGIN && layer.style.wrap_width === undefined && layer.text.includes('\n')) {
+    const { text, map } = unwrapLegacyCueText(layer.text);
+    if (layer.spans?.length) {
+      const spans = layer.spans.map((sp) => ({ ...sp, start: map(sp.start), end: map(sp.end) })).filter((sp) => sp.end > sp.start);
+      if (spans.length) layer.spans = spans;
+      else delete layer.spans;
+    }
+    layer.text = text;
+  }
+  layer.style = { ...layer.style, wrap_width: wrap };
+}
+
 /**
  * 译文 → 文字图层：复用 SRT 导入的 cuesToTextLayers，再打上 origin / lang 标记。
  * 译文为空的句子和整句落在删除区里的句子不生成图层。

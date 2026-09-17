@@ -28,6 +28,7 @@ import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
 import { clampWrapWidth } from '../../lib/textWrap';
+import { setLayerWrapWidth } from '../../lib/localize';
 import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
@@ -446,7 +447,7 @@ function LayerNode({
       layer.id,
       (l) => {
         if (l.type !== 'text') return;
-        l.style = { ...l.style, wrap_width: wrap };
+        setLayerWrapWidth(l, wrap);
         if (onCommitVariant) return;
         const m = marginFromBox(nb, l.anchor, { W, H });
         l.margin = [round4(m[0]), round4(m[1])];

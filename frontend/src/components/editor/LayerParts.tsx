@@ -16,6 +16,7 @@ import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
 import { clampWrapWidth, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
+import { setLayerWrapWidth } from '../../lib/localize';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
@@ -546,7 +547,7 @@ export function TextSections({ layer, sel, poster = false }: { layer: TextLayer;
         </div>
         {!poster && (
           <div className="g2">
-            <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => patchStyle({ wrap_width: m === 'on' ? DEFAULT_WRAP_WIDTH : null })} />
+            <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => updateLayer(layer.id, (l) => { if (l.type === 'text') setLayerWrapWidth(l, m === 'on' ? DEFAULT_WRAP_WIDTH : null); })} />
             {st.wrap_width ? (
               <Num label="换行宽度" value={st.wrap_width} min={WRAP_WIDTH_MIN} max={WRAP_WIDTH_MAX} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ wrap_width: clampWrapWidth(v) })} />
             ) : (
