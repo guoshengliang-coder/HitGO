@@ -3,7 +3,7 @@
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算基于 lib/time.sourceRangeToPost：
 // 模板句子在源时间轴上，字幕层的 t 在剪后时间轴上。
 
-import type { Asset, AudioTrack, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video } from '../types';
+import type { Asset, AudioTrack, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
 import { defaultTextStyle, isAssetReady } from '../types';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
@@ -45,6 +45,47 @@ export function langLabel(options: LocalizeOptions | null | undefined, code: str
 export function voiceLabel(options: LocalizeOptions | null | undefined, lang: string, voiceId: string | null | undefined): string {
   if (!voiceId) return '默认音色';
   return options?.target_langs.find((l) => l.code === lang)?.voices.find((v) => v.id === voiceId)?.label ?? voiceId;
+}
+
+// ---- 音色（HIG-42）----
+
+/** 下拉里一个音色的文字：「龙小淳 · 知性积极」；没有风格就只有名字。 */
+export function voiceOptionLabel(v: Pick<VoiceOption, 'label' | 'style'>): string {
+  return v.style ? `${v.label} · ${v.style}` : v.label;
+}
+
+export interface VoiceGroup {
+  key: VoiceGender | 'all';
+  /** optgroup 标题；'all' 时为空串（不分组）。 */
+  label: string;
+  voices: VoiceOption[];
+}
+
+const GENDER_LABEL: Record<VoiceGender, string> = { female: '女声', male: '男声', neutral: '特色' };
+const GENDER_ORDER: VoiceGender[] = ['female', 'male', 'neutral'];
+
+/**
+ * 按性别把音色分成 optgroup：女声 / 男声 / 特色，组内保持后端顺序，空组不出。
+ * 没有任何音色带 gender（旧后端 / 全是 env 加的）时只有一组 'all'，不分组；
+ * 部分没有 gender 的（LOCALIZE_VOICES 加的）排在最前面单独一组 'all'，别把它们藏进某个性别里。
+ */
+export function groupVoices(voices: VoiceOption[]): VoiceGroup[] {
+  const tagged = voices.filter((v) => !!v.gender);
+  if (!tagged.length) return voices.length ? [{ key: 'all', label: '', voices }] : [];
+  const out: VoiceGroup[] = [];
+  const untagged = voices.filter((v) => !v.gender);
+  if (untagged.length) out.push({ key: 'all', label: '', voices: untagged });
+  for (const g of GENDER_ORDER) {
+    const vs = tagged.filter((v) => v.gender === g);
+    if (vs.length) out.push({ key: g, label: GENDER_LABEL[g], voices: vs });
+  }
+  return out;
+}
+
+/** 该音色能不能调语速：后端没标（旧后端）按能算。 */
+export function voiceSupportsRate(options: LocalizeOptions | null | undefined, lang: string, voiceId: string | null | undefined): boolean {
+  const v = options?.target_langs.find((l) => l.code === lang)?.voices.find((x) => x.id === voiceId);
+  return v?.speech_rate !== false;
 }
 
 // ---- 状态 ----

@@ -11,6 +11,7 @@ import { loadFeaturePrefs, saveFeaturePrefs } from '../../lib/featurePrefs';
 import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
+import { VoiceSelect } from './VoiceSelect';
 import type { Localization, LocalizationVersion, LocalizeIn, LocalizeOptions, Video } from '../../types';
 
 const TRANSCRIPT_HELP = '听写只做一次，结果是所有语言版本的模板：先在这里把识别错的句子改对，再翻译，译文质量最好。时间点击可跳播放头；播放时当前句高亮。保存修正不会自动重译，已有版本会标「需重译」。';
@@ -201,11 +202,7 @@ function DubSection({ loc, options, blocked, voices, setVoices }: SectionProps &
                   <input type="checkbox" checked={isOn(lang, dubbed)} disabled={blocked} onChange={(e) => setPicked((p) => ({ ...p, [lang]: e.target.checked }))} />
                   <span className="dub-lang">{label}</span>
                 </label>
-                <select className="select sm" value={pickVoice(lang, voices, loc, options)} disabled={blocked || !t?.voices.length} aria-label={`${label}音色`} onChange={(e) => setVoices((m) => ({ ...m, [lang]: e.target.value }))}>
-                  {t?.voices.map((o) => (
-                    <option key={o.id} value={o.id}>{o.label}</option>
-                  ))}
-                </select>
+                <VoiceSelect lang={lang} voices={t?.voices ?? []} value={pickVoice(lang, voices, loc, options)} onChange={(id) => setVoices((m) => ({ ...m, [lang]: id }))} disabled={blocked} ariaLabel={`${label}音色`} />
                 <span className={`small ${dubbed ? 'muted' : 'warn-text'}`}>{dubbed ? '已有口播' : v.voice_stale ? '待更新' : '无口播'}</span>
               </div>
             );
@@ -303,12 +300,7 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
             </div>
           )}
           <Field label="音色">
-            <select className="select sm" value={voice} disabled={blocked || !voiceOpts.length} aria-label={`${label}音色`} onChange={(e) => setVoice(e.target.value)}>
-              {!voiceOpts.some((o) => o.id === voice) && <option value={voice}>{voice || '默认音色'}</option>}
-              {voiceOpts.map((o) => (
-                <option key={o.id} value={o.id}>{o.label}</option>
-              ))}
-            </select>
+            <VoiceSelect lang={lang} voices={voiceOpts} value={voice} onChange={setVoice} disabled={blocked} ariaLabel={`${label}音色`} keepUnknown />
           </Field>
           <div className="inline">
             <button className="btn sm" disabled={blocked || !hasTranslation || (!changed.length && !voiceChanged)} onClick={resynth} title="只重新生成口播，不重新翻译；只传改过的句子">

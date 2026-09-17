@@ -11,11 +11,13 @@ import { splitByPunctuation } from '../../lib/posterSplit';
 import { loadFeaturePrefs, saveFeaturePrefs, type FeaturePrefs, type PunctMode } from '../../lib/featurePrefs';
 import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL } from '../../lib/fileDrop';
 import { formatSeconds } from '../../lib/time';
+import { voiceSupportsRate } from '../../lib/localize';
 import type { Asset, AudioTrack, EditSpec, ScrollBox, TextLayer, Video } from '../../types';
 import { IconSpinner, IconTrash } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field, Num } from '../ui/Num';
 import { TextSections } from './LayerParts';
+import { VoiceSelect } from './VoiceSelect';
 
 const COPY_HELP = '整篇文案烘焙成一张高图，按框宽自动折行（手动换行保留），在框里向上滚过。改字后成片时长会跟着滚动全程重新算；文案越长滚得越久。打开「粘贴时按标点分行」后，粘进来的文案在，。！？；、：等标点后自动换行，行尾标点按右边的设置保留或去掉；已经在框里的文案可以点「按标点重新分行」。';
 const BACKGROUND_HELP = '一条文案配多个背景一起出片：在这里勾选本批次里的其它素材（或直接上传多个视频 / 图片，上传完自动勾上），点「应用到所选背景」把当前这条的滚动文字、成片时长、画面和朗读轨复制过去，再「导出」把当前这条和所选背景一次提交。勾选和左栏的勾选是同一份。';
@@ -250,13 +252,15 @@ function VoiceSection({ layer, voice }: { layer: TextLayer; voice: { track: Audi
   const failed = lastAsset?.status === 'failed' && !pending ? lastAsset : null;
 
   const enabled = !!options?.enabled;
+  // qwen3-tts 的音色没有语速参数（HIG-42）：下拉禁掉、请求按 1.0 发，而不是让后端静默丢掉
+  const rateOk = voiceSupportsRate(options, lang, voiceId);
   const readyAsset = voice?.asset && (voice.asset.status ?? 'ready') === 'ready' && typeof voice.asset.duration === 'number' && voice.asset.duration > 0 ? voice.asset : null;
   const voiceSeconds = readyAsset?.duration ?? null;
   const ready = voiceSeconds !== null;
   const busy = !!pending;
   const canGenerate = enabled && !busy && !!layer.text.trim() && !!lang && !!voiceId;
   const generate = async () => {
-    const id = await generateVoice(layer.text, lang, voiceId, rate);
+    const id = await generateVoice(layer.text, lang, voiceId, rateOk ? rate : 1.0);
     if (id) setLastId(id);
   };
   const summary = busy ? '合成中…' : readyAsset ? `${readyAsset.name} · ${fmt1(voiceSeconds!)}` : failed ? '合成失败' : '未生成';
@@ -276,14 +280,10 @@ function VoiceSection({ layer, voice }: { layer: TextLayer; voice: { track: Audi
         </select>
       </Field>
       <Field label="音色">
-        <select className="select sm" value={voiceId} disabled={!enabled || busy || !cur} aria-label="音色" onChange={(e) => setVoiceId(e.target.value)}>
-          {cur?.voices.map((v) => (
-            <option key={v.id} value={v.id}>{v.label}</option>
-          ))}
-        </select>
+        <VoiceSelect lang={lang} voices={cur?.voices ?? []} value={voiceId} onChange={setVoiceId} disabled={!enabled || busy || !cur} ariaLabel="音色" />
       </Field>
-      <Field label="语速">
-        <select className="select sm" value={String(rate)} disabled={!enabled || busy} aria-label="语速" onChange={(e) => setRate(parseFloat(e.target.value))}>
+      <Field label="语速" title={rateOk ? undefined : '这个音色不支持调语速'}>
+        <select className="select sm" value={rateOk ? String(rate) : '1'} disabled={!enabled || busy || !rateOk} aria-label="语速" onChange={(e) => setRate(parseFloat(e.target.value))}>
           {RATES.map((r) => (
             <option key={r} value={String(r)}>{r.toFixed(1)}×</option>
           ))}

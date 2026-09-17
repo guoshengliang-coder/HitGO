@@ -738,6 +738,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tile.field .v { flex-wrap: wrap; row-gap: 4px; }
 .tile.field .v > * { min-width: 0; }
 .tile.field .v > .btn.sm, .tile.field .v > .sw { flex: none; }
+.tile.field .v > .select + .btn.icon { flex: none; }
 .tile.field .v > .segt.inner { flex: 1; }
 .tile.field .v > .input { flex: 1; width: 100%; height: 24px; border: 0; background: transparent; padding: 0; text-align: right; font-size: 12.5px; color: var(--ink); outline: none; }
 .sec .tile.field .v > .input { background: transparent; }
@@ -818,7 +819,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .bg-meta { white-space: nowrap; }
 /* 生成口播（HIG-56）：每种语言一行 勾选 + 音色 + 状态；窄栏时状态换到下一行 */
 .dub-list { display: flex; flex-direction: column; gap: 6px; }
-.dub-row { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.dub-row { display: grid; grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto auto; align-items: center; gap: 6px; }
 .dub-row .select { min-width: 0; width: 100%; }
 .dub-check { min-width: 0; }
 .dub-lang { white-space: nowrap; }

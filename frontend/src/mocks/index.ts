@@ -188,11 +188,24 @@ const LOCALIZE_OPTIONS: LocalizeOptions = {
     { code: 'ko', label: '韩语' },
   ],
   target_langs: [
-    // 中文放第一位：大字报（HIG-50）朗读缺省取它
-    { code: 'zh', label: '中文', voices: [{ id: 'longanyang', label: '中文女声 安阳' }, { id: 'longxiaochun_v2', label: '中文女声 小春' }] },
-    { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: '韩语女声 Kyong' }, { id: 'loongjihun_v3', label: '韩语男声 Jihun' }] },
-    { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: '日语女声 Tomoka' }] },
-    { code: 'en', label: '英语', voices: [{ id: 'loongstella_v3', label: '英语女声 Stella' }, { id: 'loongbella_v3', label: '英语女声 Bella' }] },
+    // 中文放第一位：大字报（HIG-50）朗读缺省取它。id / 标签与后端 DEFAULT_VOICES 一致（HIG-42），带性别 / 风格 / 语速标识
+    {
+      code: 'zh',
+      label: '中文',
+      voices: [
+        { id: 'longxiaochun_v3', label: '龙小淳', gender: 'female', style: '知性积极', speech_rate: true },
+        { id: 'longcheng_v3', label: '龙橙', gender: 'male', style: '智慧青年', speech_rate: true },
+        { id: 'loongbella_v3', label: 'Bella', gender: 'female', style: '精准干练', speech_rate: true },
+        { id: 'longanran_v3', label: '龙安燃', gender: 'female', style: '活泼质感·直播', speech_rate: true },
+        { id: 'longfei_v3', label: '龙飞', gender: 'male', style: '热血磁性', speech_rate: true },
+        { id: 'longjiqi_v3', label: '龙机器', gender: 'neutral', style: '呆萌机器人', speech_rate: true },
+      ],
+    },
+    { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: 'Kyong', gender: 'female', style: '韩语', speech_rate: true }, { id: 'loongjihun_v3', label: 'Jihun', gender: 'male', style: '韩语', speech_rate: true }] },
+    { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: 'Tomoka', gender: 'female', style: '日语', speech_rate: true }] },
+    { code: 'en', label: '英语', voices: [{ id: 'loongabby_v3', label: 'Abby', gender: 'female', style: '美式', speech_rate: true }, { id: 'loongandy_v3', label: 'Andy', gender: 'male', style: '美式', speech_rate: true }] },
+    // qwen3-tts 音色：没有语速
+    { code: 'es', label: '西班牙语', voices: [{ id: 'Cherry', label: 'Cherry', gender: 'female', style: '亲切', speech_rate: false }, { id: 'Ethan', label: 'Ethan', gender: 'male', style: '阳光', speech_rate: false }] },
   ],
 };
 
@@ -801,6 +814,16 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return clone(v);
   }
   if (path === '/api/localize/options') return clone(LOCALIZE_OPTIONS);
+  if ((mm = m(/^\/api\/tts\/preview\/([^/]+)\/([^/]+)$/))) {
+    // 音色试听（HIG-42）：每个音色一个不同音高的 1.5 秒提示音，听得出换了
+    const lang = decodeURIComponent(mm[1]);
+    const voice = decodeURIComponent(mm[2]);
+    const t = LOCALIZE_OPTIONS.target_langs.find((x) => x.code === lang);
+    const idx = t?.voices.findIndex((v) => v.id === voice) ?? -1;
+    if (idx < 0) throw new ApiError(400, '不支持的语言或音色');
+    await new Promise((r) => setTimeout(r, 600));
+    return toneWav(1.5, 220 + idx * 60);
+  }
   if (path === '/api/tts') {
     // 朗读（HIG-50）：约每秒 4 个字的一段提示音，先 preparing 再 ready
     const { text, lang, voice, name } = body as TtsIn;

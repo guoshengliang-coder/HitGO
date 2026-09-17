@@ -123,7 +123,8 @@ def test_voice_models_and_env_overrides_with_model():
     assert table["ar"][0] == {"id": "loongmary", "label": "loongmary", "model": "qwen-audio-3.0-tts-flash"}
     assert localize.voice_model("ar", "loongmary", table, cfg) == "qwen-audio-3.0-tts-flash"
     ar = next(t for t in localize.target_langs(cfg) if t["code"] == "ar")
-    assert ar["rtl"] is True and ar["voices"] == [{"id": "loongmary", "label": "loongmary"}]  # model stays internal
+    # model stays internal; an env-added voice has no gender / style; qwen-audio goes through tts_v2 → speech_rate ok
+    assert ar["rtl"] is True and ar["voices"] == [{"id": "loongmary", "label": "loongmary", "gender": None, "style": None, "speech_rate": True}]
     assert localize.tts_api_for("qwen3-tts-flash") == "qwen3" and localize.tts_api_for("cosyvoice-v3-flash") == "tts_v2"
     assert localize.supports_speech_rate("qwen-audio-3.0-tts-flash") and not localize.supports_speech_rate("qwen3-tts-flash")
     assert localize.language_type_for("es") == "Spanish" and localize.language_type_for("ar") == "Auto"
@@ -254,6 +255,27 @@ def test_voice_names_and_previous_asset_ids():
     loc = {"versions": {"ko": {"voice_asset_id": "a_k"}, "ja": {"voice_asset_id": None}, "zh": {"voice_asset_id": "a_z"}}}
     assert localize.previous_voice_asset_ids(loc) == ["a_k", "a_z"]
     assert localize.previous_voice_asset_ids(loc, ["ja", "zh"]) == ["a_z"]
+
+
+def test_default_voice_table_is_well_formed_and_keeps_its_defaults():
+    """HIG-42: every built-in voice carries gender / style, ids are unique per language, defaults unchanged."""
+    table = localize.voice_table(settings)
+    assert len(table["zh"]) >= 30 and len(table["en"]) >= 14
+    for lang, voices in table.items():
+        ids = [v["id"] for v in voices]
+        assert len(ids) == len(set(ids)), lang
+        for v in voices:
+            assert v["gender"] in localize.GENDERS and v["style"], (lang, v)
+    assert [table[lang][0]["id"] for lang in ("zh", "en", "ja", "ko", "yue", "id", "es")] == [
+        "longxiaochun_v3", "loongabby_v3", "loongtomoka_v3", KO_VOICE, "longjiaxin_v3", "loongindah_v3", "Cherry"
+    ]  # fmt: skip
+    assert {v["gender"] for v in table["zh"]} == set(localize.GENDERS)
+    out = {t["code"]: t for t in localize.target_langs(settings)}
+    zh = out["zh"]["voices"][0]
+    assert zh == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True}
+    assert all(v["speech_rate"] is False for v in out["es"]["voices"])  # qwen3-tts has no speech_rate
+    assert all(v["speech_rate"] is True for v in out["zh"]["voices"])
+    assert set(out["zh"]["voices"][0]) == {"id", "label", "gender", "style", "speech_rate"}  # model stays internal
 
 
 def test_voice_table_and_resolve_voice(monkeypatch):
@@ -582,7 +604,7 @@ def test_options_lists_languages_and_voices(client, monkeypatch):
     assert body["source_langs"][0] == {"code": "auto", "label": "自动识别"}
     assert {s["code"] for s in body["source_langs"]} == {"auto", "zh", "en", "ja", "ko", "yue", "de", "fr", "ru"}
     ko = next(t for t in body["target_langs"] if t["code"] == "ko")
-    assert ko["label"] == "韩语" and ko["voices"][0] == {"id": KO_VOICE, "label": "Kyong（韩语女）"}
+    assert ko["label"] == "韩语" and ko["voices"][0] == {"id": KO_VOICE, "label": "Kyong", "gender": "female", "style": "韩语", "speech_rate": True}
     assert all(t["voices"] for t in body["target_langs"])
     monkeypatch.setattr(settings, "localize_provider", "dashscope")
     monkeypatch.setattr(settings, "dashscope_api_key", "")

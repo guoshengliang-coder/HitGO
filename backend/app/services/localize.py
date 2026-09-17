@@ -113,45 +113,102 @@ def supports_speech_rate(model: str) -> bool:
 def language_type_for(lang: str) -> str:
     return QWEN3_TTS_LANGUAGE_TYPES.get(lang, "Auto")
 
-# cosyvoice-v3-flash voices per language (help.aliyun.com/zh/model-studio/cosyvoice-voice-list,
-# checked 2026-09-16). The first entry is the default. Languages without a confirmed voice
-# (de / fr / ru / pt / th / vi / es) are not offered as targets until LOCALIZE_VOICES adds one.
+GENDERS = ("female", "male", "neutral")
+
+
+def _v(id_: str, label: str, gender: str, style: str, model: str | None = None) -> dict[str, str]:
+    """One voice-table entry: ``{id, label, gender, style[, model]}``."""
+    entry = {"id": id_, "label": label, "gender": gender, "style": style}
+    if model:
+        entry["model"] = model
+    return entry
+
+
+# cosyvoice-v3-flash voices per language (help.aliyun.com/zh/model-studio/cosyvoice-voice-list;
+# ids and 特质 checked against the page on 2026-09-17, HIG-42). The first entry is the default and
+# must stay put: existing videos synthesize with it when no voice is stored. ``label`` is the name,
+# ``style`` the vendor's one-line character, ``gender`` groups the picker (``neutral`` = child /
+# character voices, shown as 特色). Chinese is a curated ad-copy set, not the vendor's full 60+.
+# Languages without a confirmed voice (th / vi / ar) are not offered until LOCALIZE_VOICES adds one.
 DEFAULT_VOICES: dict[str, list[dict[str, str]]] = {
     "zh": [
-        {"id": "longxiaochun_v3", "label": "龙小淳（知性女）"},
-        {"id": "longcheng_v3", "label": "龙橙（青年男）"},
-        {"id": "loongbella_v3", "label": "Bella（干练女）"},
+        _v("longxiaochun_v3", "龙小淳", "female", "知性积极"),
+        _v("longcheng_v3", "龙橙", "male", "智慧青年"),
+        _v("loongbella_v3", "Bella", "female", "精准干练"),
+        _v("longxiaoxia_v3", "龙小夏", "female", "沉稳权威"),
+        _v("longanran_v3", "龙安燃", "female", "活泼质感·直播"),
+        _v("longanxuan_v3", "龙安宣", "female", "经典直播"),
+        _v("longyingxiao_v3", "龙应笑", "female", "清甜推销"),
+        _v("longanwen_v3", "龙安温", "female", "优雅知性"),
+        _v("longanli_v3", "龙安莉", "female", "利落从容"),
+        _v("longyingmu_v3", "龙应沐", "female", "优雅知性"),
+        _v("longyumi_v3", "YUMI", "female", "正经青年"),
+        _v("longanhuan_v3", "龙安欢", "female", "欢脱元气"),
+        _v("longhua_v3", "龙华", "female", "元气甜美"),
+        _v("longwan_v3", "龙婉", "female", "细腻柔声"),
+        _v("longyue_v3", "龙悦", "female", "温暖磁性"),
+        _v("longyuan_v3", "龙媛", "female", "温暖治愈"),
+        _v("longmiao_v3", "龙妙", "female", "抑扬顿挫·有声书"),
+        _v("longanrou_v3", "龙安柔", "female", "温柔闺蜜"),
+        _v("longanya_v3", "龙安雅", "female", "高雅气质"),
+        _v("longanqin_v3", "龙安亲", "female", "亲和活泼"),
+        _v("longfei_v3", "龙飞", "male", "热血磁性"),
+        _v("longshuo_v3", "龙硕", "male", "博才干练·新闻"),
+        _v("longshu_v3", "龙书", "male", "沉稳青年·新闻"),
+        _v("longanlang_v3", "龙安朗", "male", "清爽利落"),
+        _v("longanyun_v3", "龙安昀", "male", "居家暖男"),
+        _v("longanzhi_v3", "龙安智", "male", "睿智轻熟"),
+        _v("longze_v3", "龙泽", "male", "温暖元气"),
+        _v("longtian_v3", "龙天", "male", "磁性理智"),
+        _v("longsanshu_v3", "龙三叔", "male", "沉稳质感·有声书"),
+        _v("longyichen_v3", "龙逸尘", "male", "洒脱活力"),
+        _v("longlaotie_v3", "龙老铁", "male", "东北直率"),
+        _v("longjielidou_v3", "龙杰力豆", "neutral", "阳光顽皮男童"),
+        _v("longhouge_v3", "龙猴哥", "neutral", "经典猴哥"),
+        _v("longjiqi_v3", "龙机器", "neutral", "呆萌机器人"),
     ],
     "en": [
-        {"id": "loongabby_v3", "label": "Abby（美式女）"},
-        {"id": "loongandy_v3", "label": "Andy（美式男）"},
-        {"id": "loongemily_v3", "label": "Emily（英式女）"},
-        {"id": "loongeric_v3", "label": "Eric（英式男）"},
+        _v("loongabby_v3", "Abby", "female", "美式"),
+        _v("loongandy_v3", "Andy", "male", "美式"),
+        _v("loongemily_v3", "Emily", "female", "英式"),
+        _v("loongeric_v3", "Eric", "male", "英式"),
+        _v("loongannie_v3", "Annie", "female", "美式"),
+        _v("loongava_v3", "Ava", "female", "美式"),
+        _v("loongbeth_v3", "Beth", "female", "美式"),
+        _v("loongbetty_v3", "Betty", "female", "美式"),
+        _v("loongcally_v3", "Cally", "female", "美式"),
+        _v("loongcindy_v3", "Cindy", "female", "美式"),
+        _v("loongdonna_v3", "Donna", "female", "美式"),
+        _v("loongdavid_v3", "David", "male", "美式"),
+        _v("loongluna_v3", "Luna", "female", "英式"),
+        _v("loongluca_v3", "Luca", "male", "英式"),
     ],
     "ja": [
-        {"id": "loongtomoka_v3", "label": "Tomoka（日语女）"},
-        {"id": "loongtomoya_v3", "label": "Tomoya（日语男）"},
-        {"id": "loongyuuna_v3", "label": "Yuuna（日语女·年轻）"},
-        {"id": "loongyuuma_v3", "label": "Yuuma（日语男·年轻）"},
+        _v("loongtomoka_v3", "Tomoka", "female", "日语"),
+        _v("loongtomoya_v3", "Tomoya", "male", "日语"),
+        _v("loongyuuna_v3", "Yuuna", "female", "年轻"),
+        _v("loongyuuma_v3", "Yuuma", "male", "年轻"),
+        _v("loongriko_v3", "Riko", "female", "二次元"),
     ],
     "ko": [
-        {"id": "loongkyong_v3", "label": "Kyong（韩语女）"},
-        {"id": "loongjihun_v3", "label": "Jihun（韩语男）"},
+        _v("loongkyong_v3", "Kyong", "female", "韩语"),
+        _v("loongjihun_v3", "Jihun", "male", "韩语"),
     ],
     "yue": [
-        {"id": "longjiaxin_v3", "label": "龙嘉欣（粤语女）"},
-        {"id": "longanyue_v3", "label": "龙安粤（粤语男）"},
+        _v("longjiaxin_v3", "龙嘉欣", "female", "优雅"),
+        _v("longanyue_v3", "龙安粤", "male", "欢脱"),
+        _v("longjiayi_v3", "龙嘉怡", "female", "知性"),
     ],
     "id": [
-        {"id": "loongindah_v3", "label": "Indah（印尼女）"},
+        _v("loongindah_v3", "Indah", "female", "印尼"),
     ],
     # Spanish / Portuguese / French (and German / Italian / Russian) have no CosyVoice system
     # voice; Qwen3-TTS-Flash's voices speak all ten of its languages (voice list page, 2026-09-16).
     **{
         lang: [
-            {"id": "Cherry", "label": "Cherry（女·亲切）", "model": "qwen3-tts-flash"},
-            {"id": "Serena", "label": "Serena（女·温柔）", "model": "qwen3-tts-flash"},
-            {"id": "Ethan", "label": "Ethan（男·阳光）", "model": "qwen3-tts-flash"},
+            _v("Cherry", "Cherry", "female", "亲切", "qwen3-tts-flash"),
+            _v("Serena", "Serena", "female", "温柔", "qwen3-tts-flash"),
+            _v("Ethan", "Ethan", "male", "阳光", "qwen3-tts-flash"),
         ]
         for lang in ("es", "pt", "fr", "de", "it", "ru")
     },
@@ -187,7 +244,8 @@ def parse_voice_overrides(raw: str) -> dict[str, dict[str, str]]:
 def voice_table(cfg: Settings | None = None) -> dict[str, list[dict[str, str]]]:
     """Voices per target language: defaults with the env override moved to (or added at) the front.
 
-    Each entry is ``{id, label[, model]}``; no ``model`` = the configured default TTS model.
+    Each entry is ``{id, label[, gender, style, model]}``; no ``model`` = the configured default TTS
+    model. Env-added voices carry no gender / style (the picker lists them ungrouped).
     """
     cfg = cfg or settings
     table = {lang: list(voices) for lang, voices in DEFAULT_VOICES.items()}
@@ -210,9 +268,23 @@ def voice_model(lang: str, voice: str, table: dict[str, list[dict[str, str]]] | 
     return str((entry or {}).get("model") or cfg.localize_tts_model)
 
 
+def voice_out(lang: str, voice: dict[str, str], cfg: Settings | None = None) -> dict[str, Any]:
+    """One ``voices[]`` element of ``GET /api/localize/options`` (contract §3): id, label, gender,
+    style and whether its model honours ``speech_rate`` (cosyvoice yes, qwen3-tts no)."""
+    cfg = cfg or settings
+    model = str(voice.get("model") or cfg.localize_tts_model)
+    return {
+        "id": voice["id"],
+        "label": voice["label"],
+        "gender": voice.get("gender"),
+        "style": voice.get("style"),
+        "speech_rate": supports_speech_rate(model),
+    }
+
+
 def target_langs(cfg: Settings | None = None) -> list[dict[str, Any]]:
     return [
-        {"code": lang, "label": LANGS[lang]["label"], "rtl": bool(LANGS[lang].get("rtl")), "voices": [{"id": v["id"], "label": v["label"]} for v in voices]}
+        {"code": lang, "label": LANGS[lang]["label"], "rtl": bool(LANGS[lang].get("rtl")), "voices": [voice_out(lang, v, cfg) for v in voices]}
         for lang, voices in voice_table(cfg).items()
     ]
 

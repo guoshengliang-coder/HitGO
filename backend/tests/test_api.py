@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 from datetime import timedelta
 
 import pytest
@@ -14,7 +15,7 @@ from app.config import settings
 from app.db import SessionLocal, utcnow
 from app.main import app
 from app.models import Asset, Batch, Job, Video
-from app.services import storage
+from app.services import localize, storage
 from tests.conftest import make_png, valid_spec
 
 BATCH = "b_test000001"
@@ -1679,6 +1680,41 @@ def test_tts_endpoint_is_503_without_a_key_or_a_queue(client, monkeypatch, db):
     monkeypatch.setattr(worker, "enqueue", down)
     assert client.post("/api/tts", json=body).status_code == 503
     assert db.query(Asset).count() == 0  # the row was rolled back
+
+
+def test_tts_preview_endpoint_returns_cached_wav(client, monkeypatch):
+    from app.services import tts as tts_service
+
+    fake = localize.FakeTts(seconds=1.0)
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake)
+    monkeypatch.setattr(localize, "make_providers", lambda cfg=None: providers)
+    shutil.rmtree(storage.data_dir() / tts_service.PREVIEW_DIR, ignore_errors=True)
+    r = client.get("/api/tts/preview/zh/longcheng_v3")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("audio/wav") and r.headers["cache-control"] == "public, max-age=86400"
+    assert r.content[:4] == b"RIFF" and len(fake.calls) == 1
+    assert client.get("/api/tts/preview/zh/longcheng_v3").content == r.content and len(fake.calls) == 1  # cached
+    # validation mirrors POST /api/tts
+    assert client.get("/api/tts/preview/zh/loongabby_v3").status_code == 400  # an English voice
+    assert client.get("/api/tts/preview/xx/longcheng_v3").status_code == 400
+    # vendor failure → 502 with the reason
+    fake.fail_voices.add("longfei_v3")
+    r = client.get("/api/tts/preview/zh/longfei_v3")
+    assert r.status_code == 502 and "longfei_v3" in r.json()["detail"]
+    # no key → 503
+    monkeypatch.setattr(settings, "localize_provider", "dashscope")
+    monkeypatch.setattr(settings, "dashscope_api_key", "")
+    assert client.get("/api/tts/preview/zh/longcheng_v3").status_code == 503
+
+
+def test_localize_options_carry_voice_tags(client):
+    r = client.get("/api/localize/options")
+    assert r.status_code == 200
+    zh = next(t for t in r.json()["target_langs"] if t["code"] == "zh")
+    assert len(zh["voices"]) >= 30
+    assert zh["voices"][0] == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True}
+    es = next(t for t in r.json()["target_langs"] if t["code"] == "es")
+    assert es["voices"][0]["speech_rate"] is False
 
 
 def test_highlight_endpoint_returns_utf16_ranges(client, monkeypatch):

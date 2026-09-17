@@ -26,8 +26,11 @@ import {
   transcriptStatusText,
   versionStatusText,
   voiceLabel,
+  voiceOptionLabel,
+  groupVoices,
+  voiceSupportsRate,
 } from './localize';
-import { defaultTextStyle, emptySpec, type Asset, type EditSpec, type Localization, type LocalizationVersion, type LocalizeOptions, type TextLayer, type Transcript, type Video } from '../types';
+import { defaultTextStyle, emptySpec, type Asset, type EditSpec, type Localization, type LocalizationVersion, type LocalizeOptions, type TextLayer, type Transcript, type Video, type VoiceOption } from '../types';
 
 const OPTIONS: LocalizeOptions = {
   enabled: true,
@@ -457,5 +460,47 @@ describe('stripLocalization（HIG-43 导出原版）', () => {
     const bare = emptySpec();
     stripLocalization(bare);
     expect(bare).toEqual(emptySpec());
+  });
+});
+
+describe('音色（HIG-42）', () => {
+  const V: VoiceOption[] = [
+    { id: 'env', label: 'env' },
+    { id: 'a', label: '龙小淳', gender: 'female', style: '知性积极', speech_rate: true },
+    { id: 'b', label: '龙橙', gender: 'male', style: '智慧青年', speech_rate: true },
+    { id: 'c', label: 'Bella', gender: 'female', style: '精准干练' },
+    { id: 'd', label: '龙机器', gender: 'neutral', style: '呆萌机器人' },
+    { id: 'e', label: 'Cherry', gender: 'female', style: null, speech_rate: false },
+  ];
+
+  it('voiceOptionLabel：名字 · 风格，没有风格只有名字', () => {
+    expect(voiceOptionLabel(V[1])).toBe('龙小淳 · 知性积极');
+    expect(voiceOptionLabel(V[0])).toBe('env');
+    expect(voiceOptionLabel(V[5])).toBe('Cherry');
+  });
+
+  it('groupVoices：女声 / 男声 / 特色，组内保持顺序，没 gender 的单独排最前', () => {
+    const groups = groupVoices(V);
+    expect(groups.map((g) => [g.key, g.label, g.voices.map((v) => v.id)])).toEqual([
+      ['all', '', ['env']],
+      ['female', '女声', ['a', 'c', 'e']],
+      ['male', '男声', ['b']],
+      ['neutral', '特色', ['d']],
+    ]);
+    expect(groupVoices(V.slice(1, 3)).map((g) => g.key)).toEqual(['female', 'male']); // 空组不出
+  });
+
+  it('groupVoices：全都没有 gender 时不分组；空列表没有组', () => {
+    expect(groupVoices([{ id: 'x', label: 'x' }, { id: 'y', label: 'y' }])).toEqual([{ key: 'all', label: '', voices: [{ id: 'x', label: 'x' }, { id: 'y', label: 'y' }] }]);
+    expect(groupVoices([])).toEqual([]);
+  });
+
+  it('voiceSupportsRate：只有明确 false 才算不支持', () => {
+    const options: LocalizeOptions = { enabled: true, source_langs: [], target_langs: [{ code: 'zh', label: '中文', voices: V }] };
+    expect(voiceSupportsRate(options, 'zh', 'a')).toBe(true);
+    expect(voiceSupportsRate(options, 'zh', 'c')).toBe(true); // 没标
+    expect(voiceSupportsRate(options, 'zh', 'e')).toBe(false);
+    expect(voiceSupportsRate(options, 'zh', 'nope')).toBe(true);
+    expect(voiceSupportsRate(null, 'zh', 'e')).toBe(true);
   });
 });

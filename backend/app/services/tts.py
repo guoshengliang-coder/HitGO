@@ -9,7 +9,9 @@ over a silent bed → ``{asset_id}.m4a``. The asset row carries the full copy in
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -32,6 +34,55 @@ _SOFT_BREAK = re.compile(r"[，,、\s]")
 def tts_tmp_dir(asset_id: str) -> Path:
     """Scratch dir for one synthesis run (per-chunk wav); removed after (contract §5)."""
     return storage.tmp_dir() / f"{asset_id}.{STEM_TTS}"
+
+
+# --- voice preview (GET /api/tts/preview/{lang}/{voice}, HIG-42) ---------------------
+
+# One fixed sentence per language so a preview is the same for every user and can be cached per
+# voice; anything not listed falls back to English (the qwen3 voices speak all their languages).
+PREVIEW_TEXT: dict[str, str] = {
+    "zh": "你好，我是这条视频的配音，欢迎试听我的声音。",
+    "yue": "你好，我係呢條片嘅配音，歡迎試聽我把聲。",
+    "en": "Hi there, this is how I sound reading your video.",
+    "ja": "こんにちは、この動画のナレーションを担当します。",
+    "ko": "안녕하세요, 이 영상의 내레이션을 맡았습니다.",
+    "id": "Halo, beginilah suara saya saat membacakan video Anda.",
+    "es": "Hola, así sueno leyendo tu vídeo.",
+    "pt": "Olá, é assim que eu soo lendo o seu vídeo.",
+    "fr": "Bonjour, voici ma voix pour lire votre vidéo.",
+    "de": "Hallo, so klinge ich, wenn ich Ihr Video vorlese.",
+    "it": "Ciao, ecco come suono leggendo il tuo video.",
+    "ru": "Здравствуйте, вот как звучит мой голос в вашем видео.",
+}
+PREVIEW_DIR = "tts-preview"
+
+
+def preview_text(lang: str) -> str:
+    return PREVIEW_TEXT.get(lang) or PREVIEW_TEXT["en"]
+
+
+def preview_path(lang: str, voice: str, model: str) -> Path:
+    """Cache file under ``data/tts-preview/`` (contract §5); the hash ties it to model + sentence,
+    so changing either simply produces a new file and the old one becomes dead weight to clean."""
+    digest = hashlib.sha1(f"{model}\n{preview_text(lang)}".encode()).hexdigest()[:8]  # noqa: S324 - cache key, not security
+    return storage.data_dir() / PREVIEW_DIR / f"{lang}-{voice}-{digest}.wav"
+
+
+def preview_wav(lang: str, voice: str, providers: localize.Providers) -> Path:
+    """The cached preview wav for one voice, synthesizing it on first use. Raises on vendor failure."""
+    model = localize.voice_model(lang, voice)
+    dst = preview_path(lang, voice, model)
+    if dst.is_file() and dst.stat().st_size > 0:
+        return dst
+    data = providers.tts.synthesize(preview_text(lang), voice, 1.0, model=model, lang=lang)
+    if not data:
+        raise localize.LocalizeError(f"合成失败（音色 {voice}）：音频为空")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    # Write beside then rename: a second request for the same voice never sees a half-written file.
+    part = dst.with_name(f"{dst.name}.{os.getpid()}.part")
+    part.write_bytes(data)
+    os.replace(part, dst)
+    return dst
 
 
 def _hard_split(run: str, max_chars: int) -> list[str]:
