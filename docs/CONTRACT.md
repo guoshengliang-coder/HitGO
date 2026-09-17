@@ -35,6 +35,7 @@
   "order": 1,
   "status": "ready",              // preparing | ready | failed（预处理状态）
   "error": null,
+  "kind": "video",                // 可选，缺省 "video"（HIG-50）：素材来源 video（上传的视频）| image（上传的图片）| blank（空白素材）
   "width": 1080, "height": 1920, "duration": 24.6, "fps": 30, "has_audio": true,
   "source_url": "/media/batches/b_x1y2z3/v_a1b2c3/source.mp4",
   "proxy_url":  "/media/batches/b_x1y2z3/v_a1b2c3/proxy.mp4",
@@ -53,6 +54,11 @@
   "updated_at": "2026-09-14T10:05:00Z"
 }
 ```
+
+**素材来源 `kind`**（HIG-50）：批次里的一条「视频」不一定来自上传的视频文件。`image` 是上传的 jpg / png，worker 把它
+转成一段 5 秒的静止 `source.mp4`（原图保留为 `still.<ext>`）；`blank` 是空白素材（`POST /api/batches/{id}/blank`，
+指定颜色 / 时长 / 画幅），worker 生成一段纯色 `source.mp4`。三种来源之后完全同构——都是「源片 + `edit_spec`」，
+预处理、编辑、套用、渲染一律相同；成片时长想脱离源片时用第 2 节的 `trim.duration`。
 
 **人声 / 伴奏分离 `separation`**（可选，缺省 null）：对源视频的音轨跑一次 AI 音源分离（Demucs），产出两个
 `type = "audio"`、`source = "derived"` 的素材，直接用在第 2 节 `audio.tracks[]` 里（配合 `align = "source"`）：
@@ -121,7 +127,7 @@
   "preview_url": "/media/assets/a_s1t2u3.preview.webm?v=1757923200", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
   "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）| derived（系统从某条视频分离出来的）
-  "derived_from": null,           // 可选；source = derived 才有：{ "video_id", "video_name", "stem": "vocals" | "instrumental" | "dubbed", "lang"? }（lang 只在 dubbed 时有，如 "ko"）
+  "derived_from": null,           // 可选；source = derived 才有：{ "video_id"?, "video_name"?, "stem": "vocals" | "instrumental" | "dubbed" | "tts", "lang"?, "voice"?, "text"? }（lang 在 dubbed / tts 时有；video_id / video_name 只在从某条视频分离 / 配音时有；tts 另带 voice 与文案前 40 字 text）
   "created_at": "..."
 }
 ```
@@ -147,6 +153,10 @@
 **配音**（`source = "derived"`，`derived_from.stem = "dubbed"`）：由改语言产生，每个语言版本一条（`derived_from.lang`
 是语言码），`type = audio`、`kind = audio`、`status = ready`，时长等于源视频，内容是按源时间轴铺好的合成人声（其余
 静音）。重新合成同一语言会换新 id 并删掉旧素材（连文件）；`DELETE …/localize/versions/{lang}` 也会删掉它。
+
+**朗读**（`source = "derived"`，`derived_from.stem = "tts"`，HIG-50）：由 `POST /api/tts` 产生，不属于任何视频：`type = audio`、
+`kind = audio`，先以 `status = preparing` 返回，worker 合成完转 `ready` 并带 `duration`（失败 `failed` + `error`）。
+文件 `{asset_id}.m4a`（aac 192k，44.1 kHz 立体声）。和上传的音频一样可用在任何视频的 `audio.tracks[]` 里（大字报用 `role = "voice"`），可删除。
 
 **透明通道**：`mp4`（H.264）没有 alpha 通道，只能作为不透明矩形叠加；`mov`（ProRes 4444 /
 QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明。前端按 `has_alpha` 给出提示。
@@ -213,7 +223,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 {
   "spec_version": 1,
   "trim": {
-    "remove": [[3.2, 5.8], [17.0, 18.4]]     // 秒，基于源视频时间轴，互不重叠、升序
+    "remove": [[3.2, 5.8], [17.0, 18.4]],    // 秒，基于源视频时间轴，互不重叠、升序
+    "duration": null                         // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
   },
   "layers": [
     {
@@ -262,6 +273,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "in": { "preset": "pop", "duration": 0.5 },
         "out": { "preset": "fade", "duration": 0.5 },
         "loop": { "preset": "breathe", "period": 1.2 }
+      },
+      "scroll": {                            // 可选（HIG-50，大字报）：整篇文案在裁切框内向上滚动；与 animation 互斥，见下方规则
+        "speed": 0.08,                       // 画布高 / 秒，(0, 2]，缺省 0.08
+        "box": { "x": 0.06, "y": 0.14, "w": 0.88, "h": 0.60 },   // 裁切框，相对画布宽 / 高；缺省 = 通用竖版安全区
+        "start": "enter",                    // enter（缺省）：从框底边滚入 | visible：开头就有字，首行贴框顶边
+        "end": "exit",                       // exit（缺省）：滚到全部离开框顶边 | stay：末行贴框底边就停
+        "hold_start": 0, "hold_end": 0       // 秒，≥ 0，缺省 0：开头停留（只在 start = visible 时生效）/ 结尾停留（只在 end = stay 时生效）
       },
       "origin": "localize", "lang": "ko"     // 可选；前端标记：改语言套用出来的译文字幕（见下方规则）
     },
@@ -418,6 +436,19 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     - 循环（`di ≤ u ≤ L`），`w = 2π·(u − di)/period`：`breathe` `scale × (1 + 0.03·(1 − cos w))`；`float` `dy − 0.008·sin w`；`blink` 透明度 × `(1 − 0.35·(1 − cos w))`。
   - 前端 `lib/textAnimation.ts` 与后端 `services/animation.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/textAnimationCases.json` 做 golden 测试。
     编辑器画布按同一曲线预览；选中文字且暂停时显示静止状态（方便拖动调整）。批量套用 `style_only` 时随文字一起复制。
+- **成片时长 `trim.duration`**（可选，HIG-50）：缺省 / null 时成片正片时长 = 剪后时长（原行为）。设了以后：短于剪后时长 →
+  正片截到这里；长于 → 剪后的保留段**循环补足**（源片放完从头再放；静止图 / 空白素材看起来就是定格），直到该时长。
+  `layers[].t`、`audio.tracks[].t` 仍基于剪后时间轴（0 起），超出成片时长的部分照旧裁掉；`t = "all"` 覆盖整个成片时长。
+  批量套用 `trim` 模块时随 `remove` 一起复制。编辑器预览按同一规则在源片播完后回到剪后起点接着播。
+- **滚动文字 `scroll`**（文字图层可选，HIG-50 大字报）：整篇文案（可含多行；配合 `style.wrap_width` 自动折行）烘焙成一张
+  高 PNG，在裁切框 `box` 内向上滚动，框外不可见。设了 `scroll` 的图层：`anchor / margin / rotate` 被 worker 忽略（仍需合法），
+  PNG 水平居中于框内（宽 = `width × 画布宽`，超过框宽时缩到框宽），`animation` 不能同时设置（400）。
+  - 记 `H` = 画布高，`bh = box.h × H`（框高 px），`h` = PNG 按 `width` 缩放后的高 px，`V = speed × H`（px/s）。
+    把 PNG 放进一张上下各留 `bh` 透明边的高图（总高 `h + 2·bh`），裁切窗口高 `bh`，窗口顶边 `y` 从 `y0` 走到 `y1`：
+    `y0 = start == "enter" ? 0 : bh`，`y1 = end == "exit" ? h + bh : max(y0, h)`；
+    `y(t) = clip(y0 + (t − a − hold_start) × V, y0, y1)`（`a` = 图层出现时段起点）。滚动全程时长 = `hold_start + (y1 − y0) / V + hold_end`。
+  - 前端 `lib/poster.ts` 与后端 `services/scroll.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/scrollCases.json` 做 golden 测试；
+    编辑器画布按同一曲线裁切预览。批量套用 `style_only` 时随文字一起复制。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius`、`wrap_width`（HIG-51，自动换行框宽；断行按 1080×1920 基准字号算，各画幅的 `variant_images` 断在同样位置）以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -432,8 +463,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/batches/{id}` → `Batch & { videos: Video[] }`
 - `PATCH /api/batches/{id}` `{ name }` → `Batch`（改名；`name` 去掉前后空白后 1–255 字符，否则 400；不存在 404）
 - `DELETE /api/batches/{id}` → 204（删除视频、任务、文件）
-- `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov）→ `Video[]`，每条立即入队预处理。
-  已有视频的批次也可以再调用来追加，新视频排在末尾（`order_index` 接着现有数量）。
+- `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov，或 jpg / jpeg / png（HIG-50，单文件 ≤ 20 MiB））→ `Video[]`，每条立即入队预处理。
+  已有视频的批次也可以再调用来追加，新视频排在末尾（`order_index` 接着现有数量）。图片以 `kind = "image"` 入库，worker 转成 5 秒静止源片（第 6 节）。
+- `POST /api/batches/{id}/blank` `{ name?, color?: "#000000", duration?: 10, aspect?: "9:16" }` → 201 `Video`（`kind = "blank"`，HIG-50）。
+  `color` 为 `#RRGGBB`（缺省黑），`duration` 秒 (0, 600]（缺省 10），`aspect` ∈ `9:16 | 1:1 | 4:5 | 16:9`（缺省 `9:16`，决定源片分辨率，同第 2 节画幅尺寸），
+  `name` 规则同批次改名（缺省「空白素材 N」）。立即入队预处理，worker 生成纯色源片；队列不可用 503（记录回滚）。
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
@@ -503,6 +537,16 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 ### 文字图层 PNG
 - `POST /api/uploads/layer-image` multipart：`file`（png）→ `{ url, width, height }`
 
+### 大字报（HIG-50）
+- `POST /api/tts` `{ text, lang: "zh", voice, speech_rate?: 1.0, name? }` → 202 `Asset`（`type = audio`、`source = derived`、
+  `derived_from.stem = "tts"`、`status = preparing`）。`text` 去掉前后空白后 1–5000 字符；`lang` / `voice` 必须在
+  `GET /api/localize/options` 的 `target_langs` 及其 `voices` 里；`speech_rate` [0.5, 2.0]；`name` 缺省取文案前 20 字。
+  没配 `DASHSCOPE_API_KEY` 503，参数不合法 400，队列不可用 503（素材记录回滚）。前端轮询 `GET /api/assets/{id}`。
+- `POST /api/highlight` `{ text, max_phrases?: 8 }` → 200 `{ phrases: [{ text, start, end }] }`（同步，最长约 20 秒）。
+  挑出文案里值得高亮的重点词组，`start / end` 是 `text` 的 UTF-16 区间 `[start, end)`（与第 2 节 `spans` 同一索引空间），
+  升序、互不重叠、最多 `max_phrases`（1–20）个。`text` 1–5000 字符；没配 key 503。`LOCALIZE_PROVIDER = fake` 时按规则挑
+  （日期、数字 + 单位、金额、百分比），只给测试 / 演示。
+
 ### 渲染
 - `POST /api/render` `{ video_ids: [], name?: string, variant_keys?: string[] }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。每个视频按其 spec 的 `outputs` 生成任务；`variant_keys`（HIG-29，可选，非空）只为这些输出建任务，某个视频的 spec 里没有其中某个 key 时整单 400，缺省 = 全部输出。已有 queued / running 任务的同一 video+variant 不重复建（409 列出冲突，只检查本次要建的 key）。
 - `GET /api/jobs/{id}` → `Job`
@@ -563,6 +607,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 ```
 /data/hitgo.db                               SQLite（DATABASE_URL 可换 PostgreSQL）
 /data/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg
+/data/batches/{batch_id}/{video_id}/still.{jpg|png}   kind = image 的原图（source.mp4 由它生成）
 /data/assets/{asset_id}.{ext}
 /data/assets/{asset_id}.poster.jpg            视频贴纸：首帧
 /data/assets/{asset_id}.preview.{webm|mp4}    视频贴纸：浏览器可播的预览代理
@@ -571,6 +616,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 /data/outputs/{job_id}.mp4
 /data/tmp/                                    worker 临时文件
 /data/tmp/{video_id}.loc/                     改语言运行中的临时目录（16 kHz wav、逐句配音片段），结束即删
+/data/tmp/{asset_id}.tts/                     朗读合成中的临时目录（分段 wav），结束即删
 ```
 `/media` 直接映射到 `DATA_DIR`（`hitgo.db` 和 `tmp/` 不对外）。
 
@@ -617,7 +663,14 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      `stale = false`，上一次这个语言的配音素材连文件一起删掉。
 3. 临时目录 `tmp/{video_id}.loc/` 结束即删；`LOCALIZE_PROVIDER = fake` 时三步都用假实现（静音配音），只给测试 / 演示。
 
+### 朗读（`POST /api/tts` 之后，普通 worker，HIG-50）
+任务 `hitgo.synthesize_tts`，软超时同改语言。文案按句读切成 ≤ 500 字的段，每段用改语言同一套 TTS（音色决定模型，`speech_rate`
+只对 cosyvoice 生效）出 wav 到 `tmp/{asset_id}.tts/`，按顺序首尾相接（`adelay` + `amix`，同改语言的 mix）→ `{asset_id}.m4a`
+（aac 192k，44.1 kHz 立体声），`ffprobe` 时长写回素材并转 `ready`；任何一步失败转 `failed` 并写 `error`，临时目录结束即删。
+
 ### 预处理（每条视频入库后）
+0. `kind = image`（HIG-50）：先 `-loop 1 -framerate 30 -t 5 -i still.<ext> -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p" -c:v libx264 -preset veryfast -crf 18 -movflags +faststart` 生成 `source.mp4`；
+   `kind = blank`：`-f lavfi -i "color=c=<color>:s=<W>x<H>:r=30:d=<duration>" -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -movflags +faststart` 生成 `source.mp4`。之后与视频相同。
 1. `ffprobe -v error -print_format json -show_format -show_streams`
 2. 代理：`-vf "scale='if(gt(iw,ih),960,-2)':'if(gt(iw,ih),-2,960)'" -c:v libx264 -preset veryfast -crf 28 -profile:v baseline -level 3.1 -pix_fmt yuv420p -c:a aac -b:a 96k -movflags +faststart`
 3. 雪碧图：`-vf "fps=1,scale=90:-2,tile=10x{rows}"`，rows = ceil(duration / 10)，记录 count/tile 尺寸
@@ -627,6 +680,14 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 1. 解析 spec，取输出画幅 W×H，读取图层素材 / PNG。
 2. `filter_complex` 顺序：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
+   - `trim.duration`（第 2 节，HIG-50）长于剪后时长时：源输入前置 `-stream_loop -1`，保留段按 `k × 源时长` 平移复制
+     `ceil(duration / 剪后时长)` 遍（`trim=start=a+k·D:end=b+k·D` / `atrim` 同），走同一条 `concat`；随后所有「剪后时长」
+     （`enable`、`t = "all"`、`anullsrc` 长度、封面的 `trim=end`、输出端 `-t`）都换成 `trim.duration`。短于剪后时长时只是
+     输出端一定带 `-t <duration>`。没设时命令与此前完全一致。
+   - 带 `scroll` 的文字图层（第 2 节，HIG-50）：输入同动画文字层 `-loop 1 -framerate <fps> -t <b> -i <png>`；链路
+     `format=rgba,scale=w:h[,colorchannelmixer=aa=opacity],pad=w:h+2·bh:0:bh:color=0x00000000,crop=cw:bh:(iw-ow)/2:'clip(y0+(t-a-hs)*V,y0,y1)'`
+     （`cw = min(w, 框宽)`；`y0 / y1 / hs / V` 由 Python 按第 2 节公式算成常数），`overlay=bx+(bw-cw)/2:by:eof_action=repeat[:enable]`。
+     不做 `rotate`，不叠 `animation`。
    - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
    - 带 `animation` 的文字图层（第 2 节）：输入改为 `-loop 1 -framerate <fps> -t <b> -i <png>`（从 0 起逐帧，滤镜时间 = 成片时间）；
      链路 `format=rgba,scale=w:h` →（`scale` 动时）`pad` 到 1.1 倍留出余量 + `perspective=x0..y3=中心 ± 半宽/半高·scale((in−1)/fps − a):sense=destination:eval=frame`
@@ -681,5 +742,6 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 
 - 本地开发：`backend/` 用 `uv run uvicorn app.main:app --reload`（端口 8000），`frontend/` 用 `npm run dev`（Vite，`/api` 与 `/media` 代理到 8000）。
 - 容器：单一镜像 `hitgo`（多阶段：node 构建前端 → python:3.12-slim + apt ffmpeg + uv），`api` 与 `worker` 两个服务共用；`redis:7-alpine`。API 同时托管前端静态文件（`/` → `frontend/dist`，SPA fallback）。
-- 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）、`UPLOAD_BASE_URL`（可选，上传子域名，如 `https://hitgo-upload.mrlgs.net`；空 = 不启用）。
+- 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）、`UPLOAD_BASE_URL`（可选，上传子域名，如 `https://hitgo-upload.mrlgs.net`；空 = 不启用）、
+  `HIGHLIGHT_MODEL`（HIG-50 重点词挑选用的百炼对话模型，默认 `qwen-plus`；`DASHSCOPE_API_KEY` / `LOCALIZE_PROVIDER` 与改语言共用）。
 - 服务器：`docker compose` 监听 `127.0.0.1:8790`，nginx `hitgo.mrlgs.net` 反代，见 `docs/DEPLOY.md`。
