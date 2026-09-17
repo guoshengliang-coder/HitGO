@@ -247,7 +247,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "glow": { "color": "#FF7A1ACC", "blur": 0.014 },   // 可选；blur 相对画布高；null = 无发光
         "letter_spacing": 0.02,              // 可选，em 单位，可为负
         "background_width": null,            // 可选；背景块宽度，相对画布宽 (0,1]，1 = 通栏；null / 缺省 = 紧贴文字，文字按 align 在块内排
-        "background_radius": null            // 可选；背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）
+        "background_radius": null,           // 可选；背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）
+        "wrap_width": null                   // 可选（HIG-51）；自动换行的文字框宽，相对画布宽 (0,1]：文字按实际宽度折行，PNG 宽固定为该宽（背景块仍按 background_width 规则，按 align 放在框内）；null / 缺省 = 不自动换行，只按 \n 分行
       },
       "image_url": "/media/uploads/u_9k8j.png",   // 前端按输出分辨率渲染好的透明 PNG；worker 只用它
       "image_size": [540, 130],              // 该 PNG 的像素尺寸
@@ -417,7 +418,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     - 循环（`di ≤ u ≤ L`），`w = 2π·(u − di)/period`：`breathe` `scale × (1 + 0.03·(1 − cos w))`；`float` `dy − 0.008·sin w`；`blink` 透明度 × `(1 − 0.35·(1 − cos w))`。
   - 前端 `lib/textAnimation.ts` 与后端 `services/animation.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/textAnimationCases.json` 做 golden 测试。
     编辑器画布按同一曲线预览；选中文字且暂停时显示静止状态（方便拖动调整）。批量套用 `style_only` 时随文字一起复制。
-- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
+- **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius`、`wrap_width`（HIG-51，自动换行框宽；断行按 1080×1920 基准字号算，各画幅的 `variant_images` 断在同样位置）以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
 

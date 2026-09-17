@@ -379,6 +379,8 @@ export interface TextStyle {
   background_width?: number | null;
   /** 可选：背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）。 */
   background_radius?: number | null;
+  /** 可选（HIG-51）：自动换行的文字框宽，相对画布宽 (0,1]；文字按此宽度折行、PNG 宽固定为此宽。null / 缺省 = 不自动换行。 */
+  wrap_width?: number | null;
 }
 
 /** 局部上色：text 的 UTF-16 字符区间 [start, end) 用 color 填充。 */

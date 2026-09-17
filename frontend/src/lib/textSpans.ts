@@ -120,6 +120,28 @@ export function resolveBackgroundBox(o: { contentW: number; padPx: number; strok
 }
 
 /**
+ * 自动换行（HIG-51）时的文字框：框宽固定为 wrapWidth × 画布宽（不小于背景块），背景块仍按 resolveBackgroundBox
+ * 贴合文字（或拉到 background_width），并按对齐方式放在框里；没有 wrapWidth 时框就是背景块，与旧行为一致。
+ * 返回框宽 outerW、背景块的左边 bgX 与宽 bgW、文字对齐用的内容区宽 alignW（相对背景块）。
+ */
+export function resolveTextBox(o: {
+  contentW: number;
+  padPx: number;
+  strokePx: number;
+  backgroundWidth: number | null | undefined;
+  wrapWidth: number | null | undefined;
+  canvasW: number;
+  align: 'left' | 'center' | 'right';
+}): { outerW: number; bgX: number; bgW: number; alignW: number } {
+  const { boxW, alignW } = resolveBackgroundBox(o);
+  const wrapPx = o.wrapWidth && o.wrapWidth > 0 ? Math.round(o.wrapWidth * o.canvasW) : 0;
+  const outerW = Math.max(boxW, wrapPx);
+  const slack = outerW - boxW;
+  const bgX = o.align === 'center' ? Math.round(slack / 2) : o.align === 'right' ? slack : 0;
+  return { outerW, bgX, bgW: boxW, alignW };
+}
+
+/**
  * 文字框四周需要预留的溢出边距（px）：阴影要 blur + |offset|，发光是无偏移的光晕，
  * 模糊半径按 1.5 倍留（多遍叠画后光晕拖尾比 shadowBlur 名义值更长），取两者较大值。
  */

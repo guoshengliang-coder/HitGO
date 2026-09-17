@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  wrapCueText,
+  cleanCueText,
+  LOCALIZE_WRAP_WIDTH,
   appliedVersion,
   applyCrossVideoWarnings,
   applyLocalizationToSpec,
@@ -182,6 +183,14 @@ describe('localizedCuesToLayers', () => {
     expect(layers[0].t).toEqual([0.4, 2.4]);
     expect(layers[0].style.font_family).toBe('Noto Sans KR');
     expect(layers[0].anchor).toBe('bottom-center');
+    expect(layers[0].style.wrap_width).toBe(LOCALIZE_WRAP_WIDTH);
+  });
+  it('自动换行宽度：样式里调过的沿用，关掉（null）的保持关闭', () => {
+    const one = cues.slice(0, 1);
+    const tuned = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 0, style: { ...defaultTextStyle(), wrap_width: 0.6 }, newId: ids });
+    expect(tuned[0].style.wrap_width).toBe(0.6);
+    const off = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 0, style: { ...defaultTextStyle(), wrap_width: null }, newId: ids });
+    expect(off[0].style.wrap_width).toBeNull();
   });
   it('跨删除区的句子缩短；超出剪后时长的裁掉；沿用给定样式与位置', () => {
     const style = { ...defaultTextStyle(), color: '#FF0000' };
@@ -251,6 +260,7 @@ describe('applyLocalizationToSpec', () => {
     applyLocalizationToSpec(spec, 'ko', ctx(video()));
     const koLayer = spec.layers.find((l) => l.origin === 'localize') as TextLayer;
     koLayer.style.color = '#00FF00';
+    koLayer.style.wrap_width = 0.7;
     koLayer.anchor = 'center';
     koLayer.margin = [0.1, 0.2];
     const before = spec.layers.length;
@@ -263,6 +273,7 @@ describe('applyLocalizationToSpec', () => {
     expect(jaLayers[0].text).toBe('ようこそ。');
     expect(jaLayers[0].name).toBe('日语字幕 1');
     expect(jaLayers[0].style.color).toBe('#00FF00');
+    expect(jaLayers[0].style.wrap_width).toBe(0.7);
     expect(jaLayers[0].style.font_family).toBe('Noto Sans JP');
     expect(jaLayers[0].anchor).toBe('center');
     expect(jaLayers[0].margin).toEqual([0.1, 0.2]);
@@ -325,25 +336,13 @@ describe('applyCrossVideoWarnings', () => {
   });
 });
 
-describe('wrapCueText', () => {
-  it('短句不折行', () => {
-    expect(wrapCueText('Hi there', 'en', 0.05)).toBe('Hi there');
+describe('cleanCueText', () => {
+  it('不再插硬换行：长句保持一行，交给 style.wrap_width 自动折', () => {
+    const long = 'Welcome to HitGO the fastest way to localize your video ads in minutes and export';
+    expect(cleanCueText(long)).toBe(long);
   });
-  it('拉丁文按空格折，每行不超过估算字数', () => {
-    const s = wrapCueText('Welcome to HitGO the fastest way to localize your video ads in minutes and export', 'en', 0.05);
-    const lines = s.split('\n');
-    expect(lines.length).toBeGreaterThan(1);
-    for (const l of lines) expect(l.length).toBeLessThanOrEqual(19);
-  });
-  it('韩文按字数折，优先在标点后断', () => {
-    const s = wrapCueText('히트 고에 오신 것을 환영합니다. 몇 분 만에 동영상 광고를 현지화하세요.', 'ko', 0.05);
-    const lines = s.split('\n');
-    expect(lines.length).toBeGreaterThan(1);
-    expect(lines[0].endsWith('.') || lines[0].endsWith('다.') || lines[0].length <= 10).toBe(true);
-    for (const l of lines) expect(l.length).toBeLessThanOrEqual(10);
-  });
-  it('保留已有换行、去掉空行', () => {
-    expect(wrapCueText('a\n\nb', 'en', 0.05)).toBe('a\nb');
+  it('保留已有换行、去掉空行和首尾空白', () => {
+    expect(cleanCueText('  a \n\n b  ')).toBe('a\nb');
   });
 });
 
@@ -351,9 +350,5 @@ describe('新增语言', () => {
   it('阿拉伯语用 Noto Sans Arabic，西葡法用内置字体', () => {
     expect(fontForLang('ar')).toBe('Noto Sans Arabic');
     expect(fontForLang('es')).toBe(fontForLang('fr'));
-  });
-  it('阿拉伯语译文按空格折行', () => {
-    const s = wrapCueText('مرحبا بكم في هيت جو أسرع طريقة لترجمة إعلانات الفيديو الخاصة بك في دقائق', 'ar', 0.05);
-    expect(s.split('\n').length).toBeGreaterThan(1);
   });
 });

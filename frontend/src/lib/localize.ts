@@ -187,72 +187,34 @@ export interface LocalizedLayersOptions {
   newId: () => string;
 }
 
+/** 译文字幕默认的自动换行框宽（相对画布宽，HIG-51）；折行交给 drawTextImage 按实际字宽算。 */
+export const LOCALIZE_WRAP_WIDTH = 0.9;
+
+/** 译文清理：每行去首尾空白、去掉空行；已有换行保留（自动换行只在行内再折）。 */
+export function cleanCueText(text: string): string {
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 /**
  * 译文 → 文字图层：复用 SRT 导入的 cuesToTextLayers，再打上 origin / lang 标记。
  * 译文为空的句子和整句落在删除区里的句子不生成图层。
+ * 样式没写过 wrap_width（新套用、或 HIG-51 之前套用的旧样式）时开自动换行；用户关掉过（null）就不再打开。
  */
-/** 每种文字大致的字宽 / 字高比：CJK 与韩文接近 1，拉丁字母约 0.55，泰文约 0.7。 */
-function charWidthFactor(lang: string): number {
-  if (lang === 'th') return 0.7;
-  if (lang === 'ar') return 0.6;
-  if (['zh', 'ja', 'ko', 'yue'].includes(lang)) return 1;
-  return 0.55;
-}
-
-/**
- * 把一条译文按估算的每行字数折行（文字层不会自动换行，超宽只会被等比缩小到看不清）。
- * 拉丁文在空格处断，CJK / 韩文按字断并尽量在标点后断；已有换行保留。
- */
-export function wrapCueText(text: string, lang: string, fontSize: number, widthRel = 0.9, canvasW = 1080, canvasH = 1920): string {
-  const charPx = Math.max(1, fontSize * canvasH * charWidthFactor(lang));
-  const perLine = Math.max(4, Math.floor((widthRel * canvasW) / charPx));
-  const out: string[] = [];
-  for (const para of text.split('\n')) {
-    const p = para.trim();
-    if (!p) continue;
-    if (p.length <= perLine) {
-      out.push(p);
-      continue;
-    }
-    if (/\s/.test(p) && charWidthFactor(lang) < 1) {
-      let line = '';
-      for (const word of p.split(/\s+/)) {
-        if (line && (line + ' ' + word).length > perLine) {
-          out.push(line);
-          line = word;
-        } else line = line ? line + ' ' + word : word;
-      }
-      if (line) out.push(line);
-    } else {
-      let rest = p;
-      while (rest.length > perLine) {
-        let cut = perLine;
-        for (let k = perLine; k >= Math.floor(perLine * 0.6); k -= 1) {
-          if (/[，。！？、；：,.!?;: ]/.test(rest[k - 1])) {
-            cut = k;
-            break;
-          }
-        }
-        out.push(rest.slice(0, cut).trim());
-        rest = rest.slice(cut).trim();
-      }
-      if (rest) out.push(rest);
-    }
-  }
-  return out.join('\n');
-}
-
 export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOptions): TextLayer[] {
   const srtCues: SrtCue[] = [];
-  const fontSize = (opts.style ?? localizeTextStyle(opts.lang)).font_size;
   for (const c of cues) {
-    const text = wrapCueText(c.translated, opts.lang, fontSize);
+    const text = cleanCueText(c.translated);
     if (!text) continue;
     const r = sourceRangeToPost([c.start, c.end], opts.remove);
     if (!r) continue;
     srtCues.push({ index: srtCues.length + 1, start: round3(r[0]), end: round3(r[1]), text });
   }
-  const style = opts.style ?? localizeTextStyle(opts.lang);
+  const base = opts.style ?? localizeTextStyle(opts.lang);
+  const style = base.wrap_width === undefined ? { ...base, wrap_width: LOCALIZE_WRAP_WIDTH } : base;
   const layers = cuesToTextLayers(srtCues, { style, newId: opts.newId, maxEnd: opts.postDuration > 0 ? opts.postDuration : undefined });
   layers.forEach((l, k) => {
     l.origin = LOCALIZE_ORIGIN;

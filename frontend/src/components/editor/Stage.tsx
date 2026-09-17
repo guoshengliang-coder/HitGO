@@ -8,6 +8,7 @@
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 // 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
 // 拉伸不锁比例、没有旋转把手。
+// 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），拖动中实时重新折行，高度跟着行数变。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
 // 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
 
@@ -17,12 +18,13 @@ import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect,
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layout';
-import { layerAspect, outputFor } from '../../lib/spec';
+import { cloneSpec, layerAspect, outputFor } from '../../lib/spec';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
 import { sourceToPost, windowContains } from '../../lib/time';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
-import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS } from '../../lib/textImage';
+import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
+import { clampWrapWidth } from '../../lib/textWrap';
 import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
@@ -35,11 +37,13 @@ import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
-import { isVideoAsset, variantDef, type CropRect, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
+import { isVideoAsset, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
-// Transformer 把手：文字 / 贴纸锁比例只留四角；遮盖不锁比例，八向都能拉
+// Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、左右边改换行宽度（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
-const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', 'middle-left', 'middle-right', 'bottom-center'];
+const EDGE_ANCHORS = ['middle-left', 'middle-right'];
+const TEXT_ANCHORS = [...CORNER_ANCHORS, ...EDGE_ANCHORS];
+const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', ...EDGE_ANCHORS, 'bottom-center'];
 
 export function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number) {
   const [size, setSize] = useState({ W: 270, H: 480 });
@@ -240,6 +244,7 @@ function LayerNode({
   registerNode,
   geom,
   onCommitVariant,
+  activeAnchor,
 }: {
   layer: Layer;
   W: number;
@@ -256,10 +261,13 @@ function LayerNode({
   /** 预览非 9:16 画幅时由 Stage 算好的舞台框 / 旋转 / 不透明度（HIG-29）。 */
   geom?: StageGeom;
   /** 预览非 9:16 画幅时松手写回该画幅的覆盖。 */
-  onCommitVariant?: (box: LayerBox, rotate?: number) => void;
+  onCommitVariant?: (box: LayerBox, rotate?: number, history?: boolean) => void;
+  /** 正在拖的 Transformer 把手名（middle-left 等），没有时 null。 */
+  activeAnchor: () => string | null;
 }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const postDuration = usePostDuration();
   const postTime = usePostTime();
   const playing = useEditor((s) => s.playing);
@@ -333,13 +341,19 @@ function LayerNode({
     };
   }, [textKey, widthManual]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 改了文字 / 样式、新 PNG 还没渲染好时先沿用上一张：拖边改换行宽度时节点不会中途消失
+  const lastText = useRef<RenderedText | undefined>(undefined);
+  const textRendered = layer.type === 'text' ? getCachedText(layer as TextLayer) : undefined;
+  if (textRendered) lastText.current = textRendered;
   let image: CanvasImageSource | undefined;
-  if (layer.type !== 'sticker') image = getCachedText(layer as TextLayer)?.canvas;
+  if (layer.type !== 'sticker') image = lastText.current?.canvas;
   else if (!stickerIsVideo) image = stickerImg;
   else image = videoReady ? stickerVideo : stickerPoster;
+  // 拖边改换行宽度：开始时的 spec 快照（松手时压一条历史）、舞台像素 / PNG 像素的比例、节流用的 rAF
+  const edge = useRef<{ snapshot: EditSpec | null; ratio: number; startW: number; moved: boolean; raf: number } | null>(null);
   if (!image) return null;
 
-  const aspect = layerAspect(layer, assets);
+  const aspect = layer.type === 'text' && lastText.current ? lastText.current.width / lastText.current.height : layerAspect(layer, assets);
   const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
   const draggable = selectable && !layer.locked;
   // 文字动画（HIG-40）：按成片同一套曲线采样，只叠加在显示上。选中且暂停时显示静止状态，
@@ -376,6 +390,36 @@ function LayerNode({
     });
   };
 
+  // 左右边把手（文字）：Konva 把拉伸放在 scaleX 上，这里换成节点宽度（图片先横向拉伸），再节流写回 wrap_width
+  const isEdgeDrag = () => layer.type === 'text' && EDGE_ANCHORS.includes(activeAnchor() ?? '');
+  const applyEdge = (node: Konva.Image, history: boolean) => {
+    const e = edge.current;
+    const r = lastText.current;
+    if (!e || !r) return;
+    const newW = node.width();
+    // 只点了一下把手没拖：不写 spec、不记历史
+    if (!e.moved && Math.abs(newW - e.startW) < 0.5) return;
+    e.moved = true;
+    const wrap = clampWrapWidth((newW / e.ratio - 2 * r.pad) / TEXT_CANVAS.W);
+    const cx = node.x() - anim.dx * H;
+    const cy = node.y() - anim.dy * H;
+    const nb = { x: cx - newW / 2, y: cy - node.height() / 2, w: newW, h: node.height() };
+    updateLayer(
+      layer.id,
+      (l) => {
+        if (l.type !== 'text') return;
+        l.style = { ...l.style, wrap_width: wrap };
+        if (onCommitVariant) return;
+        const m = marginFromBox(nb, l.anchor, { W, H });
+        l.margin = [round4(m[0]), round4(m[1])];
+        l.width = round4(newW / W);
+      },
+      false,
+    );
+    onCommitVariant?.(nb, undefined, false);
+    if (history && e.snapshot) pushHistorySnapshot(e.snapshot);
+  };
+
   // 拖动中：外接矩形（考虑旋转）的左 / 中 / 右、上 / 中 / 下 吸附到参考线（stageSnap，与遮盖共用）
   const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => snapDraggedNode(e.target, e.evt, guides, onGuides);
 
@@ -406,9 +450,35 @@ function LayerNode({
         onGuides(NO_GUIDES);
         commitBox(e.target as Konva.Image, box.w);
       }}
+      onTransformStart={() => {
+        if (!isEdgeDrag() || !lastText.current) return;
+        const spec = useEditor.getState().currentSpec();
+        edge.current = { snapshot: spec ? cloneSpec(spec) : null, ratio: box.w / lastText.current.width, startW: box.w, moved: false, raf: 0 };
+      }}
+      onTransform={(e) => {
+        const ed = edge.current;
+        if (!ed) return;
+        const node = e.target as Konva.Image;
+        const newW = Math.max(8, node.width() * (node.scaleX() / anim.scale));
+        // 保持左 / 右边不动：offset 跟着宽度走，scale 复原
+        node.setAttrs({ width: newW, offsetX: newW / 2, scaleX: anim.scale });
+        if (!ed.raf) {
+          ed.raf = requestAnimationFrame(() => {
+            ed.raf = 0;
+            if (edge.current === ed) applyEdge(node, false);
+          });
+        }
+      }}
       onTransformEnd={(e) => {
         onGuides(NO_GUIDES);
         const node = e.target as Konva.Image;
+        const ed = edge.current;
+        if (ed) {
+          if (ed.raf) cancelAnimationFrame(ed.raf);
+          applyEdge(node, true);
+          edge.current = null;
+          return;
+        }
         const newW = Math.max(8, (node.width() * node.scaleX()) / anim.scale);
         node.scaleX(anim.scale);
         node.scaleY(anim.scale);
@@ -447,8 +517,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const commitOnVariant = (l: Layer) =>
     isRef
       ? undefined
-      : (b: LayerBox, rotate?: number) => {
-          editLayerOnPreview(l.id, () => ({ box: { x: b.x / stageScale, y: b.y / stageScale, w: b.w / stageScale, h: b.h / stageScale }, rotate }));
+      : (b: LayerBox, rotate?: number, history = true) => {
+          editLayerOnPreview(l.id, () => ({ box: { x: b.x / stageScale, y: b.y / stageScale, w: b.w / stageScale, h: b.h / stageScale }, rotate }), history);
         };
   const fill = variant?.fill ?? 'blur';
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
@@ -571,7 +641,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   const layers = spec?.layers ?? [];
   const editingLayer = layerTypes.includes('text') && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
-  const selectedIsMask = !!selectedLayerId && layers.some((l) => l.id === selectedLayerId && l.type === 'mask');
+  const selectedType = selectedLayerId ? layers.find((l) => l.id === selectedLayerId)?.type : undefined;
+  const selectedIsMask = selectedType === 'mask';
+  const activeAnchor = useCallback(() => trRef.current?.getActiveAnchor() ?? null, []);
   const hasSrc = !!video?.proxy_url;
   const overlayUrl = isRef && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
   const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
@@ -649,6 +721,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     }}
                     geom={geomOf(l)}
                     onCommitVariant={commitOnVariant(l)}
+                    activeAnchor={activeAnchor}
                   />
                 );
               })}
@@ -656,7 +729,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                 <Transformer
                   ref={trRef}
                   keepRatio={!selectedIsMask}
-                  enabledAnchors={selectedIsMask ? ALL_ANCHORS : CORNER_ANCHORS}
+                  enabledAnchors={selectedIsMask ? ALL_ANCHORS : selectedType === 'text' ? TEXT_ANCHORS : CORNER_ANCHORS}
                   rotateEnabled={!selectedIsMask}
                   anchorSize={8}
                   anchorStroke={GUIDE_COLOR}

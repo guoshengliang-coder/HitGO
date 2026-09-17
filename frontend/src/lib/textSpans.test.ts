@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, setSpanColor, splitRuns } from './textSpans';
+import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, resolveTextBox, setSpanColor, splitRuns } from './textSpans';
 
 const RED = '#E3312B';
 const BLUE = '#0000FF';
@@ -100,6 +100,21 @@ describe('resolveBackgroundBox', () => {
   });
   it('指定宽度小于紧贴宽时不裁文字', () => {
     expect(resolveBackgroundBox({ contentW: 900, padPx: 10, strokePx: 0, backgroundWidth: 0.5, canvasW: 1080 })).toEqual({ boxW: 920, alignW: 900 });
+  });
+});
+
+describe('resolveTextBox', () => {
+  const base = { contentW: 300, padPx: 10, strokePx: 0, backgroundWidth: null, canvasW: 1080 };
+  it('没有 wrapWidth 时框就是背景块（旧行为）', () => {
+    expect(resolveTextBox({ ...base, wrapWidth: null, align: 'center' })).toEqual({ outerW: 320, bgX: 0, bgW: 320, alignW: 300 });
+  });
+  it('wrapWidth 固定框宽，背景块按对齐放在框里', () => {
+    expect(resolveTextBox({ ...base, wrapWidth: 0.5, align: 'center' })).toEqual({ outerW: 540, bgX: 110, bgW: 320, alignW: 300 });
+    expect(resolveTextBox({ ...base, wrapWidth: 0.5, align: 'left' }).bgX).toBe(0);
+    expect(resolveTextBox({ ...base, wrapWidth: 0.5, align: 'right' }).bgX).toBe(220);
+  });
+  it('背景块比换行框宽时取背景块', () => {
+    expect(resolveTextBox({ ...base, backgroundWidth: 1, wrapWidth: 0.5, align: 'center' })).toEqual({ outerW: 1080, bgX: 0, bgW: 1080, alignW: 1060 });
   });
 });
 

@@ -15,6 +15,7 @@ import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage } from '../../lib/textImage';
+import { clampWrapWidth, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
@@ -37,7 +38,7 @@ export function presetThumb(preset: TextStylePreset): string {
   if (hit) return hit;
   let url = '';
   try {
-    const style: TextStyle = { ...defaultTextStyle(), ...preset.style, font_size: 0.075, align: 'center', background_width: null };
+    const style: TextStyle = { ...defaultTextStyle(), ...preset.style, font_size: 0.075, align: 'center', background_width: null, wrap_width: null };
     url = drawTextImage('花字', style, THUMB_H).canvas.toDataURL('image/png');
   } catch {
     /* 非浏览器环境 / canvas 不可用 */
@@ -361,6 +362,13 @@ const TEXT_ALIGNS: SegOption<'left' | 'center' | 'right'>[] = [
   { v: 'center', label: <IconCenterH />, title: '居中' },
   { v: 'right', label: <IconAlignRight />, title: '右对齐' },
 ];
+/** 自动换行（HIG-51）：开启时默认按画布宽 90% 折行，画布上拖文字框左右边也能调。 */
+const WRAP_MODES: SegOption<'off' | 'on'>[] = [
+  { v: 'off', label: '不换行' },
+  { v: 'on', label: '自动换行' },
+];
+const DEFAULT_WRAP_WIDTH = 0.9;
+
 const BG_WIDTH_MODES: SegOption<'fit' | 'full'>[] = [
   { v: 'fit', label: '贴合' },
   { v: 'full', label: '通栏' },
@@ -527,6 +535,14 @@ function TextSections({ layer, sel }: { layer: TextLayer; sel: [number, number] 
         <div className="g2">
           <Num label="字距" value={st.letter_spacing ?? 0} min={-0.5} max={2} step={0.01} scale={1} suffix="em" onChange={(v) => patchStyle({ letter_spacing: v })} />
           <Num label="行高" value={st.line_height} min={0.6} max={3} step={0.05} scale={1} suffix="×" onChange={(v) => patchStyle({ line_height: v })} />
+        </div>
+        <div className="g2">
+          <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => patchStyle({ wrap_width: m === 'on' ? DEFAULT_WRAP_WIDTH : null })} />
+          {st.wrap_width ? (
+            <Num label="换行宽度" value={st.wrap_width} min={WRAP_WIDTH_MIN} max={WRAP_WIDTH_MAX} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ wrap_width: clampWrapWidth(v) })} />
+          ) : (
+            <span />
+          )}
         </div>
       </Section>
     </>

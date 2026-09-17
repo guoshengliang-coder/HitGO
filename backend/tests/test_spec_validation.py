@@ -139,6 +139,20 @@ def test_text_spans_and_background_fields():
     assert "background_radius" in errors_of(spec)
 
 
+def test_text_wrap_width():
+    # HIG-51: optional auto-wrap box width, relative to canvas width (0, 1]; absent / null = no wrap
+    spec = valid_spec()
+    assert validate(spec).layers[1].style.wrap_width is None
+    style = spec["layers"][1]["style"]
+    style["wrap_width"] = 0.9
+    assert validate(spec).layers[1].style.wrap_width == 0.9
+    style["wrap_width"] = None
+    assert validate(spec).layers[1].style.wrap_width is None
+    for bad in (0, -0.1, 1.2):
+        style["wrap_width"] = bad
+        assert "wrap_width" in errors_of(spec)
+
+
 def test_aspect_and_fill_enums():
     assert "aspect" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "3:4"}]))
     assert "fill" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "stretch"}]))

@@ -8,6 +8,8 @@
 // 阴影（shadow）与发光（glow）都用 canvas 的 shadow* 画：发光是无偏移的光晕，叠画多遍才够亮，
 // 画在描边 / 填充之前，所以文字本体不会被光晕盖住。
 // 局部上色（layer.spans）由 textSpans.splitRuns 拆成片段，填充时逐段换色，描边全线同色。
+// 自动换行（HIG-51）：style.wrap_width（相对画布宽）指定时 PNG 宽固定为该宽度，文字按实际测量宽度折行（lib/textWrap）；
+// 断行位置一律按 1080×1920 基准字号算，各画幅重新渲染（variant_images）时断在同样的地方。
 //
 // 文字图层的 width 语义：文字图层的宽度跟随其渲染尺寸，即 width = pngWidth / 1080，
 // 除非用户手动缩放过（layer.width_manual = true，本地字段，发送时剔除）。
@@ -17,7 +19,8 @@ import type { EditSpec, TextLayer, TextSpan, TextStyle, VariantKey } from '../ty
 import { outputFor } from './spec';
 import { resolveLayerBox } from './variantLayout';
 import { api } from '../api';
-import { resolveBackgroundBox, resolveOverflowPad, splitRuns, type TextRun } from './textSpans';
+import { resolveOverflowPad, resolveTextBox, splitRuns, type TextRun } from './textSpans';
+import { wrapRuns } from './textWrap';
 
 export const TEXT_CANVAS = { W: 1080, H: 1920 };
 
@@ -28,6 +31,8 @@ export interface RenderedText {
   canvas: HTMLCanvasElement;
   width: number;
   height: number;
+  /** 四周为阴影 / 发光预留的透明边距（px）；PNG 宽 = 文字框宽 + 2 × pad。 */
+  pad: number;
 }
 
 export function fontString(style: TextStyle, px: number): string {
@@ -118,19 +123,22 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   const glowBlurPx = glow ? Math.max(0, glow.blur * H) : 0;
   // 阴影 / 发光可能溢出文字框：四周留足边距（阴影 blur + |offset|，发光 1.5 × blur）
   const shadowPad = resolveOverflowPad({ shadowBlurPx, shadowDx, shadowDy, glowBlurPx });
-  const lines = splitRuns(text || ' ', spans);
-
   const measure = document.createElement('canvas').getContext('2d')! as Ctx2D;
   measure.font = fontString(style, fontPx);
   const native = supportsLetterSpacing(measure);
   if (native) measure.letterSpacing = `${spacingPx}px`;
+  const wrapWidth = style.wrap_width && style.wrap_width > 0 ? style.wrap_width : null;
+  let lines = splitRuns(text || ' ', spans);
+  if (wrapWidth) lines = wrapTextLines(lines, style, wrapWidth);
   const lineWidths = lines.map((l) => measureLine(measure, l, spacingPx, native));
   const contentW = Math.max(1, ...lineWidths);
   const contentH = lines.length * lineH;
 
-  const { boxW, alignW } = resolveBackgroundBox({ contentW, padPx, strokePx, backgroundWidth: style.background ? style.background_width : null, canvasW });
+  const { outerW, bgX, bgW: boxW, alignW } = resolveTextBox({
+    contentW, padPx, strokePx, backgroundWidth: style.background ? style.background_width : null, wrapWidth, canvasW, align: style.align,
+  });
   const boxH = Math.ceil(contentH + padPx * 2 + strokePx * 2);
-  const width = boxW + shadowPad * 2;
+  const width = outerW + shadowPad * 2;
   const height = boxH + shadowPad * 2;
 
   const canvas = document.createElement('canvas');
@@ -144,7 +152,7 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
 
-  const ox = shadowPad;
+  const ox = shadowPad + bgX;
   const oy = shadowPad;
   const left = ox + strokePx + padPx;
   const lineX = (i: number) => {
@@ -219,7 +227,23 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
     drawLine(ctx, line, x, y, spacingPx, native, 'fill', style.color);
   });
 
-  return { canvas, width: canvas.width, height: canvas.height };
+  return { canvas, width: canvas.width, height: canvas.height, pad: shadowPad };
+}
+
+/**
+ * 按基准画布（1080×1920）上的字号、字距、内边距、描边把行折到 wrap_width 以内。
+ * 不随渲染高度 H 变化：各画幅按倍率重新渲染时断行位置不变，只是整体缩放。
+ */
+function wrapTextLines(lines: TextRun[][], style: TextStyle, wrapWidth: number): TextRun[][] {
+  const H = TEXT_CANVAS.H;
+  const fontPx = Math.max(4, style.font_size * H);
+  const spacingPx = (style.letter_spacing || 0) * fontPx;
+  const inner = wrapWidth * TEXT_CANVAS.W - 2 * Math.max(0, style.padding * H) - 2 * Math.max(0, style.stroke_width * H);
+  const ctx = document.createElement('canvas').getContext('2d')! as Ctx2D;
+  ctx.font = fontString(style, fontPx);
+  const native = supportsLetterSpacing(ctx);
+  if (native) ctx.letterSpacing = `${spacingPx}px`;
+  return wrapRuns(lines, Math.max(1, inner), (s) => measureLine(ctx, [{ text: s }], spacingPx, native));
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -308,7 +332,7 @@ export async function bakeTextLayerVariants(layer: TextLayer, spec: EditSpec, ke
 }
 
 /**
- * 烤好的 PNG 在画布上的相对宽度。文字不自动换行，一条长字幕（SRT 导入、改语言的译文）会比画布还宽，
+ * 烤好的 PNG 在画布上的相对宽度。没开自动换行（style.wrap_width）时，一条长字幕（例如 SRT 导入）会比画布还宽，
  * 契约要求 width ≤ 1，超出就按画布宽缩放（整段等比缩小，仍是一行）。
  */
 export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W): number {
