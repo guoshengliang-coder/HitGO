@@ -488,24 +488,10 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .sequence-list, .sequence-picker-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
 .sequence-row, .sequence-pick { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--s1); color: var(--ink); text-align: left; cursor: pointer; }
 .sequence-row.selected { border-color: var(--accent); background: var(--s2); }
+.sequence-subrow { margin: 3px 0 3px 12px; width: calc(100% - 12px); font-size: 11px; }
 .sequence-row span, .sequence-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sequence-row small, .sequence-pick small { color: var(--ink-3); flex: none; }
 .sequence-pick:disabled { opacity: .5; cursor: not-allowed; }
-.sequence-timeline { padding: 8px 12px; gap: 8px; overflow-y: auto; }
-.sequence-axis { display: flex; justify-content: space-between; color: var(--ink-3); font-size: 11px; cursor: crosshair; }
-.sequence-track-scroll { display: flex; overflow-x: auto; min-height: 70px; }
-.sequence-cover { flex: none; padding: 18px 8px; background: var(--s2); border: 1px solid var(--line); font-size: 11px; cursor: pointer; }
-.sequence-track { display: flex; flex: 1; position: relative; min-height: 64px; background: var(--s1); cursor: crosshair; }
-.sequence-clip { display: flex; flex-direction: column; justify-content: center; min-width: 0; padding: 7px 8px; border: 2px solid var(--line); background: var(--s2); color: var(--ink); position: relative; cursor: grab; }
-.sequence-clip:nth-child(even) { background: var(--panel-2); }
-.sequence-clip.selected { border-color: var(--accent); }
-.sequence-clip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.sequence-clip small { color: var(--ink-3); }
-.sequence-transition { position: absolute; left: -7px; top: 0; bottom: 0; width: 14px; display: grid; place-items: center; background: var(--accent); color: white; z-index: 2; }
-.sequence-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 100; pointer-events: none; }
-.sequence-mini-tracks { display: grid; gap: 4px; }
-.sequence-mini-tracks > div { display: flex; justify-content: space-between; padding: 5px 8px; background: var(--s1); border-radius: 4px; color: var(--ink-3); font-size: 11px; }
-.sequence-hint { color: var(--ink-3); font-size: 11px; }
 .tl-head { display: flex; align-items: center; gap: 8px; height: 24px; padding: 0 8px; border-bottom: 1px solid var(--line-soft); font-size: 11px; color: var(--ink-3); background: var(--s0); }
 .tl-head input[type='range'] { width: 120px; height: 14px; accent-color: var(--accent); margin: 0; }
 .tl-head .btn { height: 20px; padding: 0 6px; font-size: 11px; }
@@ -544,6 +530,11 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-layer { height: 30px; }
 .tl-layer.selected .lbl { color: var(--accent-ink); font-weight: 500; }
 .tl-sprite { position: absolute; top: 0; bottom: 0; background-repeat: no-repeat; }
+.tl-sequence-clip { position: absolute; top: 3px; bottom: 3px; display: flex; align-items: center; overflow: hidden; padding: 0 5px; border: 1px solid var(--line); border-radius: 3px; background: var(--s2); color: var(--ink); font-size: 11px; cursor: grab; }
+.tl-sequence-clip.selected { border-color: var(--accent); background: var(--accent-soft); }
+.tl-sequence-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-sequence-join { position: absolute; left: 0; top: 0; bottom: 0; z-index: 2; width: 8px; background: var(--accent); color: white; text-align: center; line-height: 56px; }
+.tl-sequence-inner-cut { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--accent); pointer-events: none; }
 .tl-cut {
   position: absolute; top: 0; bottom: 0;
   background: repeating-linear-gradient(135deg, rgba(217,72,31,0.35) 0 4px, rgba(217,72,31,0.08) 4px 8px);

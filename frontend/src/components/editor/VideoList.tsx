@@ -14,7 +14,7 @@ import { InlineName } from '../ui/InlineName';
 import { IconPen, IconTrash } from '../ui/Icons';
 import { defaultApplyModules } from '../../lib/steps';
 import { isDefaultBlurFill } from '../../lib/blurFill';
-import { VIDEO_DRAG } from './SequenceTimeline';
+import { VIDEO_DRAG } from '../../lib/sequence';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },

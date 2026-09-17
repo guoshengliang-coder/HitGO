@@ -15,6 +15,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
+import { clipDisplayGroups, insertClip, moveClipGroup, sequenceDuration, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
 import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
@@ -203,15 +204,22 @@ export function Timeline() {
   const setToast = useEditor((s) => s.setToast);
   const loadAssets = useEditor((s) => s.loadAssets);
   const currentVideoId = useEditor((s) => s.currentVideoId);
+  const videos = useEditor((s) => s.videos);
+  const selectedClipId = useEditor((s) => s.selectedClipId);
+  const setSelectedClip = useEditor((s) => s.setSelectedClip);
+  const replaceSpec = useEditor((s) => s.replaceSpec);
   const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
+  const [sequenceDropAt, setSequenceDropAt] = useState<number | null>(null);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
-  const duration = Math.max(0.1, video?.duration ?? 0);
-  const remove = spec?.trim.remove ?? [];
+  const sequence = spec?.sequence;
+  const sequenceGroups = sequence && video ? clipDisplayGroups(sequence, video.id) : [];
+  const duration = Math.max(0.1, sequence ? sequenceDuration(sequence) : video?.duration ?? 0);
+  const remove = sequence ? [] : spec?.trim.remove ?? [];
   const postLen = postTrimDuration(duration, remove);
   // 成片时长（trim.duration，HIG-50）：比剪后长的部分接在源片右边（循环补足块），横轴按它延长；图层 / 音轨的时段上限也是它
   const postDuration = Math.max(outputLen, 0);
-  const extra = Math.max(0, postDuration - postLen);
+  const extra = sequence ? 0 : Math.max(0, postDuration - postLen);
   const axisLen = duration + extra;
   const fitPps = Math.max(1, containerW - LABEL_W - 2) / (axisLen + preroll);
   const pps = clamp(timelinePps ?? fitPps, MIN_PPS, MAX_PPS);
@@ -219,19 +227,22 @@ export function Timeline() {
   // 封面块宽度：正片各行的横坐标都要加上它
   const off = preroll * pps;
   /** 横轴时刻（源时间，超过 duration 的部分是循环补足段）→ 成片时刻。 */
-  const axisToPost = (t: number) => (t <= duration ? sourceToPost(t, remove) : postLen + (t - duration));
+  const axisToPost = (t: number) => (sequence ? t : t <= duration ? sourceToPost(t, remove) : postLen + (t - duration));
   // 播放头在横轴上的位置：第 0 遍就是源时刻，之后的遍数落在循环补足段里
-  const axisTime = lap === 0 ? time : duration + Math.max(0, postTime - postLen);
+  const axisTime = sequence || lap === 0 ? time : duration + Math.max(0, postTime - postLen);
   const headX = timelineX(axisTime, preroll, pps);
   const trimStep = step === 'trim';
-  const audioStep = step === 'audio';
+  // In a composed movie the trim workspace is the shared editing surface:
+  // keep every timed row visible instead of replacing it with a count-only summary.
+  const audioStep = step === 'audio' || (!!sequence && step === 'trim');
   const tracks = spec?.audio?.tracks ?? [];
   const mutes = spec?.audio?.source_mute ?? [];
   const stickerAudio = audioStep ? stickerAudioLayers(spec?.layers ?? [], assets) : [];
   const layerTypes = layerTypesForStep(step);
   const layerType = layerTypes[0] ?? null;
   // 本模块管理的图层行；保留在 spec.layers 里的下标，拖动时按它写回
-  const layerRows = layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => layerTypes.includes(r.l.type)) : [];
+  const allSequenceLayers = !!sequence && step === 'trim';
+  const layerRows = allSequenceLayers || layerType ? (spec?.layers ?? []).map((l, i) => ({ l, i })).filter((r) => allSequenceLayers || layerTypes.includes(r.l.type)) : [];
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
   const prerollRef = useRef(preroll);
@@ -326,6 +337,7 @@ export function Timeline() {
   /** 定位播放头：源片段里是第 0 遍；循环补足段里换算成第几遍 + 遍内源时刻（HIG-50）。 */
   const seekAt = (clientX: number) => {
     const t = xToTime(clientX);
+    if (sequence) { player.seek(t); return; }
     if (t <= duration) {
       player.seek(t, 0);
       return;
@@ -349,6 +361,12 @@ export function Timeline() {
     return true;
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => {
+    if (sequence && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = e.dataTransfer.types.includes(CLIP_DRAG) ? 'move' : 'copy';
+      setSequenceDropAt(Math.max(0, Math.min(duration, xToTime(e.clientX))));
+      return;
+    }
     if (!video || !spec || (!isAssetDrag(e.dataTransfer.types) && !isFileDrag(e.dataTransfer.types))) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
@@ -356,11 +374,33 @@ export function Timeline() {
     setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role && h.kind === p.kind ? h : p));
   };
   const onDragLeave = (e: React.DragEvent<HTMLElement>) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(null);
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropHint(null); setSequenceDropAt(null); }
   };
   const onDrop = (e: React.DragEvent<HTMLElement>) => {
     setDropHint(null);
+    setSequenceDropAt(null);
     if (!video || !spec) return;
+    if (sequence) {
+      const at = Math.max(0, Math.min(duration, xToTime(e.clientX)));
+      const moving = e.dataTransfer.getData(CLIP_DRAG);
+      if (moving) {
+        e.preventDefault();
+        const index = sequenceGroups.findIndex((g) => at < (g.start + g.end) / 2);
+        replaceSpec(video.id, moveClipGroup(spec, video.id, moving, index < 0 ? sequenceGroups.length - 1 : index), { history: true });
+        setSelectedClip(moving);
+        return;
+      }
+      const sourceId = e.dataTransfer.getData(VIDEO_DRAG);
+      const source = videos.find((v) => v.id === sourceId && v.status === 'ready' && (v.kind ?? 'video') === 'video');
+      if (source) {
+        e.preventDefault();
+        const inserted = insertClip(spec, video.id, video.duration, source.id, source.duration, at);
+        replaceSpec(video.id, inserted.spec, { history: true });
+        setSelectedClip(inserted.clipId);
+        player.seek(at);
+        return;
+      }
+    }
     const card = parseAssetDrag(e.dataTransfer.getData(ASSET_DRAG_MIME));
     const files = isFileDrag(e.dataTransfer.types) ? Array.from(e.dataTransfer.files) : [];
     if (!card && !files.length) return;
@@ -557,7 +597,7 @@ export function Timeline() {
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
         <div className="tl-inner" style={{ width: off + trackW + LABEL_W }}>
           <div className="tl-row" style={{ height: 20 }}>
-            <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
+            <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{sequence ? '拼接时间' : trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
               {off > 0 && <div className="tl-cover-mark" style={{ width: off }}>封面</div>}
               {ticks.map((k) => (
@@ -582,7 +622,24 @@ export function Timeline() {
                   <span>封面 {preroll.toFixed(1)}s</span>
                 </div>
               )}
-              {sprite &&
+              {sequenceGroups.map((group, index) => {
+                const source = videos.find((v) => v.id === group.clips[0].clip.video_id);
+                return <div
+                  key={group.key}
+                  className={`tl-sequence-clip ${group.clips.some((w) => w.clip.id === selectedClipId) ? 'selected' : ''}`}
+                  style={{ left: off + group.start * pps, width: Math.max(4, (group.end - group.start) * pps), zIndex: index + 1 }}
+                  title={`${source?.name ?? '源视频已缺失'} · ${group.clips.length} 个内部区间 · ${group.start.toFixed(2)}–${group.end.toFixed(2)}s`}
+                  draggable={trimStep}
+                  onDragStart={(e) => { e.dataTransfer.setData(CLIP_DRAG, group.key); e.dataTransfer.effectAllowed = 'move'; }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); setSelectedClip(group.clips[0].clip.id); player.seek(group.start); }}
+                >
+                  {index > 0 && <span className="tl-sequence-join" title={group.clips[0].clip.transition?.type ?? '硬切'}>{group.clips[0].clip.transition && group.clips[0].clip.transition.type !== 'cut' ? '◇' : '│'}</span>}
+                  <span className="tl-sequence-name">{source?.name ?? '源片缺失'}{group.clips.length > 1 ? ` · 已剪辑 ${group.clips.length} 段` : ''}</span>
+                  {group.clips.slice(1).map((w) => <span key={w.clip.id} className="tl-sequence-inner-cut" style={{ left: (w.start - group.start) * pps }} title="原有剪辑切点" />)}
+                </div>;
+              })}
+              {!sequence && sprite &&
                 tiles.map((i) => (
                   <div
                     key={i}
@@ -650,7 +707,7 @@ export function Timeline() {
           {audioStep && (
             <SourceAudioRow
               audio={spec?.audio}
-              hasAudio={!!video?.has_audio}
+              hasAudio={sequence ? sequence.clips.some((c) => videos.find((v) => v.id === c.video_id)?.has_audio) : !!video?.has_audio}
               onToggleHidden={toggleSourceHidden}
               onRename={renameSourceAudio}
               width={trackW}
@@ -842,6 +899,7 @@ export function Timeline() {
               </span>
             </div>
           )}
+          {sequenceDropAt !== null && <div className="tl-snap" style={{ left: LABEL_W + off + sequenceDropAt * pps }} />}
           <div className="tl-playhead" style={{ left: LABEL_W + headX }}>
             <div className="grip" {...scrub.handlers} title="拖动定位" />
           </div>

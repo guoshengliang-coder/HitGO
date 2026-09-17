@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type SequenceClip } from '../types';
-import { clipAt, clipWindows, duplicateClip, insertClip, materializeSequence, moveClip, removeClip, sequenceDuration, updateClip } from './sequence';
+import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeSequence, moveClip, moveClipGroup, removeClip, removeClipGroup, sequenceDuration, updateClip } from './sequence';
 
 const clip = (id: string, videoId: string, start: number, end: number): SequenceClip => ({ id, video_id: videoId, in: start, out: end });
 const withSequence = (...clips: SequenceClip[]): EditSpec => ({ ...emptySpec(), sequence: { clips } });
@@ -35,6 +35,36 @@ describe('HIG-39 composed timeline', () => {
     expect(result.audio?.source_mute).toEqual([[4, 5], [9, 10]]);
     expect(sequenceDuration(result.sequence!)).toBe(14);
     expect(spec.layers).toHaveLength(2);
+  });
+
+  it('shows adjacent keep-ranges of the original as one expandable source row', () => {
+    const spec = withSequence(
+      clip('owner-a', 'owner', 0, 1.4),
+      clip('inserted', 'new', 0, 23.5),
+      clip('owner-b', 'owner', 2, 2.6),
+      clip('owner-c', 'owner', 4, 30),
+    );
+    const groups = clipDisplayGroups(spec.sequence!, 'owner');
+    expect(groups.map((g) => g.clips.map((w) => w.clip.id))).toEqual([['owner-a'], ['inserted'], ['owner-b', 'owner-c']]);
+    expect(groups[2].end - groups[2].start).toBeCloseTo(26.6);
+    const moved = moveClipGroup(spec, 'owner', 'owner-b', 0);
+    expect(moved.sequence?.clips.map((c) => c.id)).toEqual(['owner-b', 'owner-c', 'owner-a', 'inserted']);
+    const removed = removeClipGroup(spec, 'owner', 'owner-b');
+    expect(removed?.sequence?.clips.map((c) => c.id)).toEqual(['owner-a', 'inserted']);
+    expect(removeClipGroup(withSequence(clip('only', 'owner', 0, 4)), 'owner', 'only')).toBeNull();
+  });
+
+  it('deleting a displayed block drops its local overlays and retimes the remaining ones', () => {
+    const spec: EditSpec = {
+      ...withSequence(clip('owner-a', 'owner', 0, 2), clip('new', 'new', 0, 3), clip('owner-b', 'owner', 4, 6), clip('owner-c', 'owner', 8, 10)),
+      layers: [
+        { id: 'gone', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: [5.5, 6.5] },
+        { id: 'kept', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: [2.5, 3.5] },
+      ],
+    };
+    const next = removeClipGroup(spec, 'owner', 'owner-b')!;
+    expect(next.sequence?.clips.map((c) => c.id)).toEqual(['owner-a', 'new']);
+    expect(next.layers.map((l) => [l.id, l.t])).toEqual([['kept', [2.5, 3.5]]]);
   });
 
   it('computes overlap windows and chooses the entering clip for hard-cut preview', () => {
