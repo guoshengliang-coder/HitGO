@@ -40,6 +40,7 @@ from app.schemas import (
     TextLayer,
 )
 from app.services.animation import SCALE_HEADROOM, AnimExpr, expressions, with_time
+from app.services.scroll import scroll_path, y_expression
 from app.services.layout import (
     Box,
     FitMap,
@@ -405,6 +406,21 @@ def build_render_command(
         raise ValueError("剪辑后没有保留任何片段")
     expected_duration = sum(b - a for a, b in segments)
     trimmed = bool(spec.trim.remove) and segments != [(0.0, duration)]
+    # Tracks on the source timeline (align = "source") follow the source, not its loops.
+    source_segments = segments
+
+    # Output length decoupled from the source (HIG-50, contract §2 trim.duration): longer
+    # loops the kept segments — the source input repeats forever and the trim windows
+    # are shifted one source length per pass, so the usual trim + concat chain does the
+    # rest; shorter only needs the output -t below.
+    target = spec.trim.duration
+    if target is not None and target > expected_duration + MIN_SEGMENT:
+        passes = math.ceil(target / expected_duration)
+        segments = [(a + k * duration, b + k * duration) for k in range(passes) for a, b in segments]
+        inputs[0] = ["-stream_loop", "-1", *inputs[0]]
+        trimmed = True
+    if target is not None:
+        expected_duration = float(target)
 
     if trimmed:
         labels: list[str] = []
@@ -474,6 +490,38 @@ def build_render_command(
             continue
 
         geo = apply_overrides(layer, variant)
+
+        if isinstance(layer, TextLayer) and layer.scroll is not None and not image.is_video:
+            # Scrolling copy (HIG-50): the tall PNG is padded by one box height above and
+            # below, and a box-sized crop window slides down it with time; anchor / margin
+            # do not apply, the window sits in the clip box. Frames count from the
+            # output's t = 0 (same input shape as animated text).
+            fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
+            input_index = len(inputs)
+            inputs.append(["-loop", "1", "-framerate", fps, "-t", _fmt(t_end), "-i", image.path])
+            layer_index += 1
+            lbl = f"[l{layer_index}]"
+            sb = layer.scroll.box
+            bx, by = round(sb.x * W), round(sb.y * H)
+            bw, bh = max(2, round(sb.w * W)), max(2, round(sb.h * H))
+            w = min(bw, max(1, round(float(geo["width"]) * W)))
+            h = max(1, round(w * image.height / image.width))
+            steps = [f"[{input_index}:v]format=rgba", f"scale={w}:{h}"]
+            opacity = float(geo["opacity"])
+            if opacity < 1:
+                steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
+            steps.append(f"pad={w}:{h + 2 * bh}:0:{bh}:color=0x00000000")
+            path = scroll_path(layer.scroll, h / H)
+            steps.append(f"crop={w}:{bh}:0:'{y_expression(path, H, 't', t_start)}'")
+            chains.append(",".join(steps) + lbl)
+            overlay = f"{current}{lbl}overlay={bx + (bw - w) // 2}:{by}:eof_action=repeat"
+            if layer.t != "all":
+                overlay += f":enable='between(t,{_fmt(t_start)},{_fmt(t_end)})'"
+            out = f"[c{layer_index}]"
+            chains.append(overlay + out)
+            current = out
+            continue
+
         box = image_layer_box(spec, layer, variant, fmap, image.width, image.height)
         x, y, w, h = box.rounded()
         w, h = max(1, w), max(1, h)
@@ -633,7 +681,7 @@ def build_render_command(
             head = f"[{input_index}:a]"
             if trimmed:
                 seg_labels: list[str] = []
-                for k, (a, b) in enumerate(segments):
+                for k, (a, b) in enumerate(source_segments):
                     seg = f"[tk{n_track}s{k}]"
                     chains.append(
                         f"{head}atrim=start={_fmt(a)}:end={_fmt(b)},asetpts=PTS-STARTPTS{seg}"
@@ -773,10 +821,12 @@ def build_render_command(
     # is only ever heard through the [aout] mix above.
     argv += audio_map
     argv += encode_args(getattr(variant, "quality", "standard"))
-    if has_video_layer or track_audio:
+    if has_video_layer or track_audio or spec.trim.duration is not None:
         # Belt and braces: overlay takes the longest input, so a sticker (or a looped
         # audio track) could otherwise stretch the output. Only added when such an
-        # input exists, so still-image renders keep their exact argv.
+        # input exists, so still-image renders keep their exact argv. A trim.duration
+        # always gets it: a looped source has no end of its own, and a shorter target
+        # is cut here.
         argv += ["-t", _fmt(expected_duration)]
     argv += ["-progress", "pipe:1", output_path]
 

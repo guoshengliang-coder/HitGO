@@ -31,7 +31,7 @@ LAYER_MODES = ("replace", "style_only")
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "sticker": ("asset_id", "playback", "mix_audio"),
-    "text": ("text", "spans", "style", "image_url", "image_size", "variant_images", "animation"),
+    "text": ("text", "spans", "style", "image_url", "image_size", "variant_images", "animation", "scroll"),
     "mask": ("mode", "color", "blur", "height"),
 }
 
@@ -118,8 +118,12 @@ def apply_modules(
         if module not in MODULES:
             raise ValueError(f"未知模块：{module}")
         if module == "trim":
-            source_remove = (source_spec.get("trim") or {}).get("remove") or []
-            result["trim"] = {"remove": clamp_remove_ranges(source_remove, target_duration)}
+            source_trim = source_spec.get("trim") or {}
+            result["trim"] = {"remove": clamp_remove_ranges(source_trim.get("remove") or [], target_duration)}
+            # Output length (HIG-50) travels with the trim; it is not clamped to the target,
+            # a shorter target simply loops more.
+            if source_trim.get("duration") is not None:
+                result["trim"]["duration"] = source_trim["duration"]
         elif module == "layers":
             source_layers = source_spec.get("layers") or []
             if layer_mode == "style_only":

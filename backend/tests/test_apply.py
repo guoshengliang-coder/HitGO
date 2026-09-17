@@ -298,3 +298,26 @@ def test_style_only_text_animation_follows_text():
     assert out["layers"][1]["animation"] == {"in": {"preset": "pop", "duration": 0.4}}
     del src["layers"][1]["animation"]
     assert "animation" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]
+
+
+# --- HIG-50: trim.duration travels with trim, scroll with the text ------------------
+
+
+def test_apply_trim_copies_duration_without_clamping_it():
+    src = valid_spec()
+    src["trim"]["duration"] = 42
+    out = apply_modules(src, None, ["trim"], 10.0)
+    assert out["trim"] == {"remove": [[3.2, 5.8]], "duration": 42}
+    del src["trim"]["duration"]
+    out = apply_modules(src, None, ["trim"], 10.0)
+    assert "duration" not in out["trim"]
+
+
+def test_style_only_copies_scroll_with_the_text():
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][1]["scroll"] = {"speed": 0.1, "start": "visible"}
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][1]["scroll"] == {"speed": 0.1, "start": "visible"}
+    del src["layers"][1]["scroll"]
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert "scroll" not in out["layers"][1]
