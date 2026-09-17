@@ -538,7 +538,8 @@ export const useEditor = create<EditorState>((set, get) => {
     if (!v || !spec) return null;
     const remove = spec.trim.remove;
     // 成片时刻跨遍累加（HIG-50 循环补足）；时长按成片时长，音轨可以排到循环补足的那段里
-    return { spec, p: postTimeOf(get().lap, postTrimDuration(v.duration, remove), sourceToPost(Math.max(0, get().time), remove)), postDuration: outputDuration(v.duration, spec.trim) };
+    const duration = selectSourceDuration(get());
+    return { spec, p: postTimeOf(get().lap, postTrimDuration(duration, remove), sourceToPost(Math.max(0, get().time), remove)), postDuration: outputDuration(duration, spec.trim) };
   };
   const splitAt = (id: string) => {
     const ctx = playheadPost();
@@ -1002,20 +1003,21 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       const t = get().time;
       if (!v || t < 0.05) return false;
-      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], v.duration);
+      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], selectSourceDuration(get()));
     },
     canRemoveAfter: () => {
       const v = get().currentVideo();
       const t = get().time;
-      if (!v || t < 0 || v.duration - t < 0.05) return false;
-      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration);
+      const duration = selectSourceDuration(get());
+      if (!v || t < 0 || duration - t < 0.05) return false;
+      return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, duration], duration);
     },
     removeBefore: () => {
       const v = get().currentVideo();
       if (!v) return;
       const t = get().time;
       if (t < 0.05) return;
-      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], v.duration)) {
+      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], selectSourceDuration(get()))) {
         set({ toast: '不能删除整条视频', toastAction: null });
         return;
       }
@@ -1026,13 +1028,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       if (!v) return;
       const t = get().time;
-      if (t < 0 || v.duration - t < 0.05) return;
-      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, v.duration], v.duration)) {
+      const duration = selectSourceDuration(get());
+      if (t < 0 || duration - t < 0.05) return;
+      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, duration], duration)) {
         set({ toast: '不能删除整条视频', toastAction: null });
         return;
       }
-      get().addRemoveRange(t, v.duration);
-      set({ inPoint: null, toast: `已删除播放头右侧 ${(v.duration - t).toFixed(2)}s`, toastAction: { label: '撤销', run: () => get().undo() } });
+      get().addRemoveRange(t, duration);
+      set({ inPoint: null, toast: `已删除播放头右侧 ${(duration - t).toFixed(2)}s`, toastAction: { label: '撤销', run: () => get().undo() } });
     },
 
     currentSpec: () => {
@@ -1125,8 +1128,12 @@ export const useEditor = create<EditorState>((set, get) => {
       const lo = Math.min(a, b);
       const hi = Math.max(a, b);
       if (hi - lo < 0.05) return;
+      if (wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [lo, hi], selectSourceDuration(get()))) {
+        get().setToast('不能删除整条视频');
+        return;
+      }
       get().updateSpec((spec) => {
-        spec.trim.remove = normalizeRanges([...spec.trim.remove, [lo, hi]], v.duration);
+        spec.trim.remove = normalizeRanges([...spec.trim.remove, [lo, hi]], selectSourceDuration(get()));
       });
       const idx = get().currentSpec()?.trim.remove.findIndex(([x, y]) => x <= lo + 1e-6 && y >= hi - 1e-6) ?? -1;
       set({ selectedRangeIndex: idx >= 0 ? idx : null });
@@ -1136,7 +1143,8 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!v) return;
       get().updateSpec((spec) => {
         const rs = spec.trim.remove.map((r, i) => (i === index ? ([Math.min(a, b), Math.max(a, b)] as [number, number]) : r));
-        spec.trim.remove = normalizeRanges(rs, v.duration);
+        if (postTrimDuration(selectSourceDuration(get()), rs) < 0.1) return;
+        spec.trim.remove = normalizeRanges(rs, selectSourceDuration(get()));
       });
     },
     deleteRemoveRange: (index) => {
@@ -1234,7 +1242,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
-      const postDuration = outputDuration(v.duration, spec.trim);
+      const postDuration = outputDuration(selectSourceDuration(get()), spec.trim);
       const lo = Math.min(a, b);
       const hi = Math.max(a, b);
       if (hi - lo < 0.05) return;
@@ -1249,7 +1257,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
-      const postDuration = outputDuration(v.duration, spec.trim);
+      const postDuration = outputDuration(selectSourceDuration(get()), spec.trim);
       get().updateSpec((sp) => {
         const audio = ensureAudio(sp);
         const rest = (audio.source_mute ?? []).filter((_, i) => i !== index);
@@ -1940,13 +1948,17 @@ export const useEditor = create<EditorState>((set, get) => {
 });
 
 // ---- 派生选择器 ----
+/** A composition is a single virtual source for every editing tool. */
+export function selectSourceDuration(s: EditorState): number {
+  const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
+  return spec?.sequence ? sequenceDuration(spec.sequence) : s.videos.find(v => v.id === s.currentVideoId)?.duration ?? 0;
+}
 /** 成片正片时长：trim.duration（HIG-50）优先，否则剪后时长。图层 / 音轨的时段可以排到这么长。 */
 export function selectPostDuration(s: EditorState): number {
   const v = s.videos.find((x) => x.id === s.currentVideoId);
   const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
   if (!v) return 0;
-  if (spec?.sequence) return sequenceDuration(spec.sequence);
-  return outputDuration(v.duration, spec?.trim ?? { remove: [] });
+  return outputDuration(selectSourceDuration(s), spec?.trim ?? { remove: [] });
 }
 export function usePostDuration(): number {
   return useEditor(selectPostDuration);
@@ -1964,11 +1976,9 @@ export function useInCover(): boolean {
 
 /** 播放头的成片时刻（剪后时间轴）：循环补足（HIG-50）时跨遍累加。 */
 export function selectPostTime(s: EditorState): number {
-  const v = s.videos.find((x) => x.id === s.currentVideoId);
   const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
   const remove = spec?.trim.remove ?? [];
-  if (spec?.sequence) return Math.max(0, s.time);
-  return postTimeOf(s.lap, postTrimDuration(v?.duration ?? 0, remove), sourceToPost(s.time, remove));
+  return postTimeOf(s.lap, postTrimDuration(selectSourceDuration(s), remove), sourceToPost(s.time, remove));
 }
 export function usePostTime(): number {
   return useEditor(selectPostTime);

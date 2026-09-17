@@ -40,6 +40,29 @@ afterEach(() => {
 });
 
 describe('pushHistorySnapshot', () => {
+  it('HIG-39 合成后 I/O、删左/右、拖动删除区间与撤销都使用完整合成时长', () => {
+    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: '1', video_id: 'v1', in: 0, out: 10 }, { id: '2', video_id: 'v2', in: 0, out: 20 }] } };
+    const state = () => useEditor.getState();
+    state().replaceSpec('v1', spec);
+    state().setInPoint(12);
+    state().setOutPoint(18);
+    expect(state().currentSpec()?.trim.remove).toEqual([[12, 18]]);
+    expect(selectPostDuration(state())).toBe(24);
+    state().updateRemoveRange(0, 11, 19);
+    expect(state().currentSpec()?.trim.remove).toEqual([[11, 19]]);
+    state().undo();
+    expect(state().currentSpec()?.trim.remove).toEqual([[12, 18]]);
+    state().deleteRemoveRange(0);
+    expect(selectPostDuration(state())).toBe(30);
+    state().setPlayhead(22, false, 0);
+    state().removeAfter();
+    expect(state().currentSpec()?.trim.remove).toEqual([[22, 30]]);
+    state().undo();
+    state().removeBefore();
+    expect(state().currentSpec()?.trim.remove).toEqual([[0, 22]]);
+    state().addRemoveRange(22, 30);
+    expect(state().currentSpec()?.trim.remove).toEqual([[0, 22]]);
+  });
   it('提交时压入编辑前的快照，undo 回到原文、redo 重新应用', () => {
     const s = useEditor.getState();
     expect(s.canUndo()).toBe(false);

@@ -1,6 +1,6 @@
-/** Multi-source main track: time is always on the composed (post-cut) movie. */
+/** Multi-source virtual source; trim.remove cuts its composed clock, overlays use post-cut time. */
 import type { AudioTrack, EditSpec, Layer, SequenceClip, SequenceSpec } from '../types';
-import { keepSegments, postTrimDuration } from './time';
+import { keepSegments, normalizeRanges, postToSource, postTrimDuration, sourceToPost } from './time';
 import { cloneSpec } from './spec';
 
 const MIN_CLIP = 0.1;
@@ -89,7 +89,8 @@ export function sequenceTrackWindows(sequence: SequenceSpec, ownerId: string, ra
 export function sequenceSourceGain(spec: EditSpec, ownerId: string, time: number): number {
   if (!spec.sequence || time < 0 || time >= sequenceDuration(spec.sequence)) return 0;
   const clip = clipAt(spec.sequence, time)?.clip;
-  if (!clip || spec.audio?.source_mute?.some(([a, b]) => time >= a && time < b)) return 0;
+  const postTime = sourceToPost(time, spec.trim.remove);
+  if (!clip || spec.audio?.source_mute?.some(([a, b]) => postTime >= a && postTime < b)) return 0;
   const master = spec.audio?.source_hidden ? 0 : spec.audio?.source_volume ?? 1;
   const legacy = spec.sequence.clips.every((c) => c.source_volume == null);
   return legacy ? clip.video_id === ownerId ? master : 1 : master * (clip.source_volume ?? 1);
@@ -168,10 +169,12 @@ export function insertClip(spec: EditSpec, ownerId: string, ownerDuration: numbe
     original.out = cut;
     sequence.clips.splice(index + 1, 0, clip, tail);
   }
-  next.layers = insertWindows(next.layers as (Layer & { t: [number, number] | 'all' })[], position, sourceDuration, 'l');
+  const postPosition = sourceToPost(position, next.trim.remove);
+  next.trim.remove = insertMutes(next.trim.remove, position, sourceDuration);
+  next.layers = insertWindows(next.layers as (Layer & { t: [number, number] | 'all' })[], postPosition, sourceDuration, 'l');
   if (next.audio) {
-    next.audio.tracks = insertWindows(next.audio.tracks as (AudioTrack & { t: [number, number] | 'all' })[], position, sourceDuration, 'au');
-    next.audio.source_mute = insertMutes(next.audio.source_mute ?? [], position, sourceDuration);
+    next.audio.tracks = insertWindows(next.audio.tracks as (AudioTrack & { t: [number, number] | 'all' })[], postPosition, sourceDuration, 'au');
+    next.audio.source_mute = insertMutes(next.audio.source_mute ?? [], postPosition, sourceDuration);
   }
   return { spec: next, clipId: clip.id };
 }
@@ -190,7 +193,7 @@ function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
   const oldWindows = clipWindows(before.sequence);
   const newWindows = new Map(clipWindows(after.sequence).map((w) => [w.clip.id, w]));
   const oldVisible = oldWindows.map((w, i) => ({ clip: w.clip, start: w.start, end: oldWindows[i + 1]?.start ?? w.end }));
-  const mapRange = ([a, b]: [number, number]): [number, number][] => oldVisible.flatMap((old) => {
+  const mapRawRange = ([a, b]: [number, number]): [number, number][] => oldVisible.flatMap((old) => {
     const next = newWindows.get(old.clip.id);
     if (!next) return [];
     const lo = Math.max(a, old.start);
@@ -203,6 +206,13 @@ function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
     const mappedA = next.start + Math.max(sourceLo, next.clip.in) - next.clip.in;
     const mappedB = next.start + Math.min(sourceHi, next.clip.out) - next.clip.in;
     return mappedB - mappedA >= 0.01 ? [[mappedA, mappedB]] : [];
+  });
+  after.trim.remove = normalizeRanges(before.trim.remove.flatMap(mapRawRange), sequenceDuration(after.sequence));
+  const keeps = keepSegments(sequenceDuration(before.sequence), before.trim.remove);
+  const mapRange = ([a, b]: [number, number]): [number, number][] => keeps.flatMap(([start, end]) => {
+    const lo = Math.max(start, postToSource(a, before.trim.remove));
+    const hi = Math.min(end, postToSource(b, before.trim.remove));
+    return hi > lo ? mapRawRange([lo, hi]).map(([x, y]): [number, number] => [sourceToPost(x, after.trim.remove), sourceToPost(y, after.trim.remove)]).filter(([x, y]) => y - x >= 0.01) : [];
   });
   const mapItems = <T extends { id: string; t: [number, number] | 'all' }>(items: T[], prefix: string): T[] => items.flatMap((item) => {
     if (item.t === 'all') return [item];

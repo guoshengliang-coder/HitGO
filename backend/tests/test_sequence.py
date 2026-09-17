@@ -44,8 +44,24 @@ def test_sequence_schema_rejects_invalid_clips():
         EditSpec.model_validate(sequence_spec(clip("c1", "v1"), clip("c1", "v2")))
     with pytest.raises(ValueError, match="转场时长"):
         EditSpec.model_validate(sequence_spec(clip("c1", "v1", end=0.2), clip("c2", "v2", transition={"type": "fade", "duration": 0.2})))
-    with pytest.raises(ValueError, match="旧的 trim"):
-        EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 0.2]]}})
+    assert EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 0.2]]}}).trim.remove == [(0, 0.2)]
+    with pytest.raises(ValueError, match="整条视频"):
+        EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 1]]}})
+    with pytest.raises(ValueError, match="超出视频时长"):
+        EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 2]]}})
+
+
+def test_composed_trim_persists_and_renders_beyond_owner_duration(client, ready_video):
+    spec = sequence_spec(clip('a', ready_video.id, end=24), clip('b', ready_video.id, end=24))
+    spec['trim']['remove'] = [[30, 35]]
+    saved = client.put(f'/api/videos/{ready_video.id}/spec', json={'edit_spec': spec})
+    assert saved.status_code == 200, saved.text
+    reopened = client.get(f'/api/videos/{ready_video.id}').json()['edit_spec']
+    assert reopened['trim']['remove'] == [[30, 35]]
+    rendered = client.post('/api/render', json={'video_ids': [ready_video.id]})
+    assert rendered.status_code == 201, rendered.text
+    spec['trim']['remove'] = [[47, 49]]
+    assert client.put(f'/api/videos/{ready_video.id}/spec', json={'edit_spec': spec}).status_code == 400
 
 
 def test_sequence_sources_must_be_ready_and_same_batch(client, ready_video, db):
@@ -74,7 +90,8 @@ def test_sequence_sources_must_be_ready_and_same_batch(client, ready_video, db):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
-def test_real_multiclip_render_with_fade_and_wipe(tmp_path):
+@pytest.mark.parametrize("cut", [False, True])
+def test_real_multiclip_render_with_fade_and_wipe(tmp_path, cut):
     first = tmp_path / "first.mp4"
     second = tmp_path / "second.mp4"
     third = tmp_path / "third.mp4"
@@ -94,22 +111,25 @@ def test_real_multiclip_render_with_fade_and_wipe(tmp_path):
         ClipSource(spec.sequence.clips[1], str(second), 128, 128, 25, False),
         ClipSource(spec.sequence.clips[2], str(third), 128, 128, 25, True),
     ]
+    if cut:
+        spec.trim.remove = [(0.8, 1.4)]
     plan = build_render_command(
         spec, {"video_id": "v1", "duration": 1.2, "width": 128, "height": 128, "fps": 25, "has_audio": True},
         {}, spec.outputs[0], source_path=str(first), output_path=str(output), sequence_sources=sources,
     )
-    assert plan.expected_duration == pytest.approx(2.5)
+    assert plan.expected_duration == pytest.approx(1.9 if cut else 2.5)
     assert "xfade=transition=fade" in plan.filter_complex
     assert "xfade=transition=wiperight" in plan.filter_complex
     subprocess.run(plan.argv, check=True, capture_output=True)
     info = ffprobe.probe(output)
-    assert info["duration"] == pytest.approx(2.5, abs=0.12)
+    assert info["duration"] == pytest.approx(1.9 if cut else 2.5, abs=0.12)
     assert info["has_audio"]
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
 @pytest.mark.parametrize("legacy", [True, False])
-def test_inserted_audio_and_owner_dubbing_have_distinct_correct_signals(tmp_path, legacy):
+@pytest.mark.parametrize("cut", [False, True])
+def test_inserted_audio_and_owner_dubbing_have_distinct_correct_signals(tmp_path, legacy, cut):
     """880 Hz insertion, then 660/990 Hz owner dub after a source cut; never 440 Hz owner raw."""
     owner, inserted, dubbed, output = (tmp_path / name for name in ('owner.mp4', 'inserted.mp4', 'dub.wav', 'result.mp4'))
     for path, frequency in ((owner, 440), (inserted, 880)):
@@ -125,6 +145,8 @@ def test_inserted_audio_and_owner_dubbing_have_distinct_correct_signals(tmp_path
     ], check=True, capture_output=True)
     data = sequence_spec(clip('new', 'inserted'), clip('a', 'owner'), clip('b', 'owner', 2, 3))
     data['audio'] = {'source_volume': 0 if legacy else 1, 'tracks': [{'id': 'dub', 'asset_id': 'dub', 'align': 'source', 't': 'all'}]}
+    if cut:
+        data['trim']['remove'] = [[0.5, 1.5]]
     if not legacy:
         for c in data['sequence']['clips']:
             c['source_volume'] = 1 if c['video_id'] == 'inserted' else 0
@@ -132,8 +154,8 @@ def test_inserted_audio_and_owner_dubbing_have_distinct_correct_signals(tmp_path
     sources = [ClipSource(c, str(inserted if c.video_id == 'inserted' else owner), 128, 128, 25, True) for c in spec.sequence.clips]
     plan = build_render_command(spec, {'video_id': 'owner', 'duration': 4, 'width': 128, 'height': 128, 'fps': 25, 'has_audio': True}, {}, spec.outputs[0], source_path=str(owner), output_path=str(output), sequence_sources=sources, audio_assets={'dub': AudioSource(str(dubbed), 4)})
     subprocess.run(plan.argv, check=True, capture_output=True, timeout=60)
-    assert ffprobe.probe(output)['duration'] == pytest.approx(3, abs=0.12)
-    for start, expected in ((0.3, 880), (1.3, 660), (2.3, 990)):
+    assert ffprobe.probe(output)['duration'] == pytest.approx(2 if cut else 3, abs=0.12)
+    for start, expected in (((0.2, 880), (0.7, 660), (1.3, 990)) if cut else ((0.3, 880), (1.3, 660), (2.3, 990))):
         decoded = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(start), '-i', str(output), '-t', '0.2', '-ac', '1', '-ar', '8000', '-f', 'f32le', 'pipe:1'], check=True, capture_output=True).stdout
         samples = array.array('f')
         samples.frombytes(decoded)

@@ -7,6 +7,13 @@ const clip = (id: string, videoId: string, start: number, end: number): Sequence
 const withSequence = (...clips: SequenceClip[]): EditSpec => ({ ...emptySpec(), sequence: { clips } });
 
 describe('HIG-39 composed timeline', () => {
+  it('adding and reordering sources preserves recoverable cuts on the composed source', () => {
+    const spec: EditSpec = { ...withSequence(clip('a', 'owner', 0, 5), clip('b', 'other', 0, 5)), trim: { remove: [[2, 3], [7, 8]] } };
+    const inserted = insertClip(spec, 'owner', 5, 'new', 2, 4).spec;
+    expect(inserted.trim.remove).toEqual([[2, 3], [9, 10]]);
+    const moved = moveClip(spec, 'b', 0);
+    expect(moved.trim.remove).toEqual([[2, 3], [7, 8]]);
+  });
   it.each([0, 4, 8])('inserting at %s preserves owner mute but keeps the inserted original audio', (at) => {
     const spec: EditSpec = { ...emptySpec(), audio: { source_volume: 0, tracks: [{ id: 'dub', asset_id: 'a', align: 'source', t: 'all' }] } };
     const next = insertClip(spec, 'owner', 8, 'inserted', 3, at).spec;

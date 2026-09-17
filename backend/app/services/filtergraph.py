@@ -391,6 +391,28 @@ def _mask_chains(
 # ---------------------------------------------------------------------------
 
 
+def cut_composed(chains: list[str], label: str, segments: list[tuple[float, float]], tag: str, audio: bool = False) -> str:
+    """Trim a joined stream, preserving transitions before the cut; labels need splitting."""
+    count = len(segments)
+    split = 'asplit' if audio else 'split'
+    trim, pts = ('atrim', 'asetpts') if audio else ('trim', 'setpts')
+    inputs = [f'[{tag}in{i}]' for i in range(count)]
+    if count > 1:
+        chains.append(f'{label}{split}={count}{"".join(inputs)}')
+    else:
+        inputs = [label]
+    outputs = []
+    for i, (a, b) in enumerate(segments):
+        out = f'[{tag}{i}]'
+        chains.append(f'{inputs[i]}{trim}=start={_fmt(a)}:end={_fmt(b)},{pts}=PTS-STARTPTS{out}')
+        outputs.append(out)
+    if count == 1:
+        return outputs[0]
+    result = f'[{tag}joined]'
+    chains.append(f'{"".join(outputs)}concat=n={count}:v={0 if audio else 1}:a={1 if audio else 0}{result}')
+    return result
+
+
 def build_render_command(
     spec: EditSpec,
     video_meta: Mapping[str, Any],
@@ -499,6 +521,14 @@ def build_render_command(
                 chains.append(f"{video_label}[seqv{i}]concat=n=2:v=1:a=0{next_video}")
             video_label, audio_label = next_video, next_audio
             elapsed += length - overlap
+        source_segments = keep_segments(spec.trim.remove, duration)
+        if not source_segments:
+            raise ValueError("剪辑后没有保留任何片段")
+        expected_duration = sum(b - a for a, b in source_segments)
+        if spec.trim.remove:
+            video_label = cut_composed(chains, video_label, source_segments, 'seqcutv')
+            if source_heard:
+                audio_label = cut_composed(chains, audio_label, source_segments, 'seqcuta', audio=True)
     else:
         segments = keep_segments(spec.trim.remove, duration)
         if not segments:
@@ -843,15 +873,17 @@ def build_render_command(
                 joined = f"[tk{n_track}c]"
                 if pieces:
                     chains.append(
-                        f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}[tk{n_track}bed]"
+                        f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(duration)}[tk{n_track}bed]"
                     )
                     chains.append(
                         f"[tk{n_track}bed]{''.join(pieces)}amix=inputs={len(pieces) + 1}:"
                         f"duration=first:normalize=0:dropout_transition=0{joined}"
                     )
                 else:
-                    chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}{joined}")
+                    chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(duration)}{joined}")
                 head = joined
+                if spec.trim.remove:
+                    head = cut_composed(chains, head, source_segments, f'tk{n_track}cut', audio=True)
             elif trimmed:
                 seg_labels: list[str] = []
                 for k, (a, b) in enumerate(source_segments):
