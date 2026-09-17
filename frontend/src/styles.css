@@ -235,8 +235,10 @@ input[type='checkbox'] { accent-color: var(--accent); }
 }
 [data-tip]:hover::after, [data-tip]:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); transition-delay: 0.25s; }
 /* 长文案气泡：默认的 nowrap + 居中在 320px 宽的右栏里会溢出，改成定宽换行并靠右对齐 */
-.tip-wide[data-tip]::after { white-space: normal; width: 240px; left: auto; right: -4px; transform: translateY(2px); text-align: left; }
+.tip-wide[data-tip]::after { white-space: normal; width: min(240px, calc(var(--right-w, 320px) - 28px)); left: auto; right: -4px; transform: translateY(2px); text-align: left; }
 .tip-wide[data-tip]:hover::after, .tip-wide[data-tip]:focus-visible::after { transform: translateY(0); }
+/* 上方放不下（面板第一个分组的「?」离滚动容器顶只有十几 px，气泡会被裁成一条，HIG-57）：HelpTip 算好后翻到下方 */
+.tip-wide[data-tip][data-tip-side='bottom']::after { bottom: auto; top: calc(100% + 6px); transform: translateY(-2px); }
 
 kbd {
   display: inline-block; min-width: 20px; padding: 1px 6px; margin: 0 1px;
@@ -731,21 +733,29 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tile.disabled { opacity: 0.5; cursor: default; }
 .tile.compact { width: 76px; flex: none; padding: 0 6px; }
 .tile.field .v { display: inline-flex; justify-content: flex-end; align-items: center; gap: 6px; }
+/* 窄栏（HIG-57）：块高度随内容长、控件可以换到下一行；子项都能收缩，放不下时不再往左盖住标签 */
+.tile.field { height: auto; min-height: 30px; padding-top: 3px; padding-bottom: 3px; }
+.tile.field .v { flex-wrap: wrap; row-gap: 4px; }
+.tile.field .v > * { min-width: 0; }
 .tile.field .v > .btn.sm, .tile.field .v > .sw { flex: none; }
 .tile.field .v > .segt.inner { flex: 1; }
+.tile.field .v > .input { flex: 1; width: 100%; height: 24px; border: 0; background: transparent; padding: 0; text-align: right; font-size: 12.5px; color: var(--ink); outline: none; }
+.sec .tile.field .v > .input { background: transparent; }
+.tile.field:focus-within { border-color: var(--focus); }
 .tile.field .select { flex: 1; min-width: 0; height: 24px; border: 0; background: transparent; padding: 0 2px; font-size: 12.5px; color: var(--ink); text-align: right; }
 .tile.field .cp-wrap { justify-content: flex-end; }
 .tile.field .cp-trigger { width: 20px; height: 20px; border-radius: 4px; }
 .tile.field .segt.inner { height: 24px; padding: 2px; border: 0; background: var(--s1); }
-.tile.field .segt.inner button { padding: 0 8px; }
+.tile.field .segt.inner button { padding: 0 6px; }
 .tile.field .segt.inner button.active { background: var(--s2); }
-.g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+/* 最多 2 / 3 列，每列放不下最小宽度时自动少一列（HIG-57：右栏拖窄后两列块互相挤压重叠） */
+.g2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(130px, calc((100% - 6px) / 2)), 1fr)); gap: 6px; }
+.g3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(76px, calc((100% - 12px) / 3)), 1fr)); gap: 6px; }
 .stack-2 { display: flex; flex-direction: column; gap: 6px; }
 .tile-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .tile-row > .tile { flex: 1; }
-.segt { display: flex; height: 30px; padding: 3px; gap: 2px; border-radius: 6px; background: var(--s2); border: 1px solid var(--s1-line); }
-.segt button { flex: 1; min-width: 0; padding: 0 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink-2); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
+.segt { display: flex; min-width: 0; height: 30px; padding: 3px; gap: 2px; border-radius: 6px; background: var(--s2); border: 1px solid var(--s1-line); }
+.segt button { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 6px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--ink-2); font-size: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
 .segt button:hover:not(:disabled) { color: var(--ink); }
 .segt button.active { background: var(--s1); border-color: var(--line); color: var(--ink); font-weight: 500; }
 .segt button.active svg { color: var(--accent); }
@@ -845,7 +855,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .variant-tab .vt-check { flex: none; width: 13px; height: 13px; padding: 0; border-radius: 3px; border: 1px solid var(--ink-3); background: transparent; position: relative; cursor: pointer; }
 .variant-tab .vt-check.on { background: var(--accent); border-color: var(--accent); }
 .variant-tab .vt-check.on::after { content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 7px; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
-.variant-tab .vt-label { flex: 1; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; padding: 0 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
+.variant-tab .vt-label { flex: 1; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; padding: 0 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; white-space: nowrap; }
+/* 画幅页签按内容宽度排、放不下整格换行，不再把「自定义」挤成竖排（HIG-57） */
+.chips.variant-tabs .chip.variant-tab { flex: 1 0 auto; }
 .variant-tab .vt-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
 .chip.export-variant { display: inline-flex; align-items: center; gap: 6px; }
 
