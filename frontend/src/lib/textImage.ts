@@ -24,7 +24,7 @@ import { outputFor } from './spec';
 import { resolveLayerBox } from './variantLayout';
 import { api } from '../api';
 import { resolveOverflowPad, resolveTextBox, resolveTextBoxHeight, splitRuns, type TextRun } from './textSpans';
-import { wrapRuns } from './textWrap';
+import { TEXT_WIDTH_MAX, wrapRuns } from './textWrap';
 import { buildGlyphLayout, graphemes, isRtlLine, type MeasuredLine } from './textReveal';
 
 export const TEXT_CANVAS = { W: 1080, H: 1920 };
@@ -35,6 +35,9 @@ export const TEXT_CANVAS = { W: 1080, H: 1920 };
  */
 export const TEXT_CANVAS_MAX_H = 16000;
 export const TEXT_TOO_LONG = '文案过长，请拆成几段';
+/** PNG 宽度上限（px），理由同上：文字框可宽于画布（HIG-37），在大尺寸自定义画幅上按倍率重渲染时可能撞上。 */
+export const TEXT_CANVAS_MAX_W = 16000;
+export const TEXT_TOO_WIDE = '文字框过宽，请把换行宽度调窄一些';
 
 /** 发光叠画遍数：canvas 的 shadowBlur 单遍太淡，叠 3 遍才有剪映「发光」的亮度。 */
 const GLOW_PASSES = 3;
@@ -157,6 +160,7 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   const width = outerW + shadowPad * 2;
   const height = boxH + shadowPad * 2;
   if (height > TEXT_CANVAS_MAX_H) throw new Error(TEXT_TOO_LONG);
+  if (width > TEXT_CANVAS_MAX_W) throw new Error(TEXT_TOO_WIDE);
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, width);
@@ -343,7 +347,7 @@ export async function bakeTextLayer(layer: TextLayer): Promise<TextLayer> {
     image_size: [up.width || rendered.width, up.height || rendered.height],
   };
   if (!layer.width_manual || !layer.width) {
-    next.width = bakedWidth(rendered.width);
+    next.width = bakedWidth(rendered.width, TEXT_CANVAS.W, layer.style.wrap_width ? TEXT_WIDTH_MAX : 1);
   }
   delete next.glyph_layout;
   delete next.background_image;
@@ -407,12 +411,13 @@ export async function bakeTextLayerVariants(layer: TextLayer, spec: EditSpec, ke
 }
 
 /**
- * 烤好的 PNG 在画布上的相对宽度。没开自动换行（style.wrap_width）时，一条长字幕（例如 SRT 导入）会比画布还宽，
- * 契约要求 width ≤ 1，超出就按画布宽缩放（整段等比缩小，仍是一行）。
+ * 烤好的 PNG 在画布上的相对宽度，不超过 max。没开自动换行（style.wrap_width）时，一条长字幕（例如 SRT 导入）会比画布还宽，
+ * 调用方传 max = 1：超出就按画布宽缩放（整段等比缩小，仍是一行）。开了自动换行时框宽是用户定的，
+ * 可以宽于画布（HIG-37），传 TEXT_WIDTH_MAX。
  */
-export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W): number {
-  if (!(renderedPx > 0) || !(canvasW > 0)) return 1;
-  return Math.min(1, renderedPx / canvasW);
+export function bakedWidth(renderedPx: number, canvasW: number = TEXT_CANVAS.W, max = 1): number {
+  if (!(renderedPx > 0) || !(canvasW > 0)) return Math.min(1, max);
+  return Math.min(max, renderedPx / canvasW);
 }
 
 // ---- 预览缓存：同一文字 + 样式 + 上色只渲染一次 ----

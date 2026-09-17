@@ -15,7 +15,7 @@ import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
-import { clampWrapWidth, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
+import { clampWrapWidth, TEXT_WIDTH_MAX, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { setLayerWrapWidth } from '../../lib/localize';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
@@ -254,7 +254,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
       </div>
       <div className="g2">
         <div className="tile-row">
-          <Num label="宽度" value={layer.width} min={0.01} max={2} onChange={(v) => updateLayer(layer.id, (l) => { l.width = v; if (l.type === 'text') l.width_manual = true; })} />
+          <Num label="宽度" value={layer.width} min={0.01} max={layer.type === 'text' ? TEXT_WIDTH_MAX : 1} onChange={(v) => updateLayer(layer.id, (l) => { l.width = v; if (l.type === 'text') l.width_manual = true; })} />
           {layer.type === 'text' && layer.width_manual && (
             <button className="btn ghost sm" onClick={() => updateLayer(layer.id, (l) => { if (l.type === 'text') l.width_manual = false; })} title="宽度重新跟随文字渲染尺寸">
               自动

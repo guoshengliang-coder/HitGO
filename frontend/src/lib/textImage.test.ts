@@ -9,6 +9,10 @@ describe('bakedWidth', () => {
   it('比画布还宽的长字幕收到 1（契约 width ≤ 1，否则保存 400）', () => {
     expect(bakedWidth(1300, 1080)).toBe(1);
   });
+  it('开了自动换行的框可以宽于画布，收到给定上限（HIG-37）', () => {
+    expect(bakedWidth(2160, 1080, 3)).toBe(2);
+    expect(bakedWidth(3400, 1080, 3)).toBe(3);
+  });
   it('非法输入回退 1', () => {
     expect(bakedWidth(0, 1080)).toBe(1);
     expect(bakedWidth(NaN, 1080)).toBe(1);

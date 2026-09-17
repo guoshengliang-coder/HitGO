@@ -313,7 +313,10 @@ def image_layer_box(
     """Sticker / text rectangle on ``variant``'s canvas (follow the video or canvas-relative)."""
     if _follows(layer, variant, fmap):
         ref = _reference_geometry(spec, layer)
-        return follow_layer_box(ref["anchor"], ref["margin"], ref["width"], image_w, image_h, fmap)  # type: ignore[arg-type]
+        return follow_layer_box(
+            ref["anchor"], ref["margin"], ref["width"], image_w, image_h, fmap,  # type: ignore[arg-type]
+            clamp=not isinstance(layer, TextLayer),  # HIG-37: text off the frame is cropped, not pushed back
+        )
     geo = apply_overrides(layer, variant)
     W, H = variant.canvas
     return layer_box(geo["anchor"], geo["margin"], geo["width"], W, H, image_w, image_h)

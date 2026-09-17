@@ -32,6 +32,7 @@ import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
 import { boxHeightFromStage, edgeOfAnchor, keepOppositeEdge, wrapWidthFromStage } from '../../lib/textBoxDrag';
 import { setLayerWrapWidth } from '../../lib/localize';
+import { clampTextWidth } from '../../lib/textWrap';
 import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
@@ -455,7 +456,7 @@ function LayerNode({
     }
     const margin = marginFromBox(nb, layer.anchor, { W, H });
     const m: [number, number] = [round4(margin[0]), round4(margin[1])];
-    const w = round4(newW / W);
+    const w = layer.type === 'text' ? clampTextWidth(newW / W) : round4(newW / W);
     const r = rotate !== undefined ? Math.round(rotate * 10) / 10 : undefined;
     updateLayer(layer.id, (l) => {
       l.margin = m;
@@ -487,7 +488,7 @@ function LayerNode({
         if (onCommitVariant) return;
         const m = marginFromBox(nb, l.anchor, { W, H });
         l.margin = [round4(m[0]), round4(m[1])];
-        l.width = round4(newW / W);
+        l.width = clampTextWidth(newW / W);
       },
       false,
     );

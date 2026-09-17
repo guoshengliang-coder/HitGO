@@ -6,9 +6,12 @@ describe('wrapWidthFromStage', () => {
     // 舞台 0.25 px / PNG px：270 舞台 px = 1080 PNG px，扣 2×20 = 1040 → 0.963
     expect(wrapWidthFromStage(270, 0.25, 20)).toBe(0.963);
   });
-  it('夹在合法范围里', () => {
-    expect(wrapWidthFromStage(1, 0.25, 0)).toBe(0.05);
-    expect(wrapWidthFromStage(1000, 0.25, 0)).toBe(1);
+  it('可以拖得比画布宽（HIG-37）：540 舞台 px = 2160 PNG px → 2 倍画布宽', () => {
+    expect(wrapWidthFromStage(540, 0.25, 0)).toBe(2);
+  });
+  it('夹在合法范围里（只防 0 宽和超过 3 倍画布宽）', () => {
+    expect(wrapWidthFromStage(1, 0.25, 0)).toBe(0.005);
+    expect(wrapWidthFromStage(1000, 0.25, 0)).toBe(3);
   });
 });
 
