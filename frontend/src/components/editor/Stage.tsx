@@ -34,7 +34,8 @@ import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
-import { REST, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
+import { REST, enterDelay, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
+import { CURSOR_TAIL, buildGlyphLayout, paintReveal, revealTiming, unitCount } from '../../lib/textReveal';
 import { InlineTextEditor } from './InlineTextEditor';
 import { useCanvasImageDrop } from './useCanvasImageDrop';
 import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
@@ -48,6 +49,15 @@ const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const EDGE_ANCHORS = ['middle-left', 'middle-right'];
 const TEXT_ANCHORS = [...CORNER_ANCHORS, ...EDGE_ANCHORS];
 const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', ...EDGE_ANCHORS, 'bottom-center'];
+
+/** 预览用的 glyph_layout 按渲染结果 + 单位缓存（渲染结果本身已按文字 / 样式缓存）。 */
+const layoutCache = new WeakMap<object, Map<string, ReturnType<typeof buildGlyphLayout>>>();
+function cachedLayout(rendered: { lines: Parameters<typeof buildGlyphLayout>[0]; width: number; height: number }, unit: 'char' | 'word') {
+  let byUnit = layoutCache.get(rendered);
+  if (!byUnit) layoutCache.set(rendered, (byUnit = new Map()));
+  if (!byUnit.has(unit)) byUnit.set(unit, buildGlyphLayout(rendered.lines, rendered.width, rendered.height, unit));
+  return byUnit.get(unit) ?? null;
+}
 
 export function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number) {
   const [size, setSize] = useState({ W: 270, H: 480 });
@@ -286,6 +296,8 @@ function LayerNode({
   // 视频还没就绪时先画首帧，避免画布上突然空一块
   const stickerPoster = useImage(stickerIsVideo && !videoReady ? sticker?.poster_url : undefined);
   const [, bump] = useState(0);
+  // 逐字显现（HIG-45）的合成画布：每帧按遮罩把文字 PNG 画进来，复用同一块
+  const revealCanvas = useRef<HTMLCanvasElement | null>(null);
 
   // 把贴纸视频的播放位置对齐到播放头。播放中的每帧重绘由 player 的 rAF → setTime →
   // React 重渲染带出来；这里补的是暂停 / 拖进度条后 seek 完成的那一次重绘。
@@ -399,9 +411,29 @@ function LayerNode({
   // 否则停在入场开头（透明）时既看不见也没法调；拖动 / 变换写回时把动画偏移扣掉。
   const animation = layer.type === 'text' ? (layer as TextLayer).animation : undefined;
   let anim = REST;
+  let revealKey: number | undefined;
   if (hasAnimation(animation) && !(selected && !playing)) {
     const [a, b] = windowRange(layer.t, postDuration);
     anim = sampleAnimation(animation, postTime - a, b - a);
+    const rendered = animation.reveal ? getCachedText(layer as TextLayer) : undefined;
+    if (animation.reveal && rendered) {
+      // 逐字显现：字位置与导出时 bakeTextLayer 写进 glyph_layout 的同一份
+      const layout = cachedLayout(rendered, animation.reveal.unit ?? 'char');
+      const u = postTime - a;
+      const delay = enterDelay(animation, b - a);
+      const timing = layout ? revealTiming(animation.reveal, unitCount(layout), b - a, delay) : null;
+      if (layout && timing && u < timing.end + CURSOR_TAIL) {
+        const canvas = (revealCanvas.current ??= document.createElement('canvas'));
+        if (canvas.width !== rendered.width || canvas.height !== rendered.height) {
+          canvas.width = rendered.width;
+          canvas.height = rendered.height;
+        }
+        const color = (layer as TextLayer).style.color || '#FFFFFF';
+        paintReveal(canvas.getContext('2d')!, rendered.canvas, rendered.background, layout, animation.reveal, b - a, delay, u, rendered.width, rendered.height, color.slice(0, 7));
+        image = canvas;
+        revealKey = Math.round(u * 1000); // 同一块画布内容变了：换个属性值让 Konva 重画
+      }
+    }
   }
   const onDblClick = () => {
     onSelect();
@@ -476,6 +508,7 @@ function LayerNode({
       scaleY={anim.scale}
       rotation={geom?.rotate ?? layer.rotate}
       opacity={(geom?.opacity ?? layer.opacity) * anim.opacity}
+      revealKey={revealKey}
       visible={!hidden}
       draggable={draggable}
       listening={selectable}

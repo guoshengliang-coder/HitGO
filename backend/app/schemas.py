@@ -179,11 +179,17 @@ class VariantImage(BaseModel):
 
     url: str
     size: tuple[int, int]
+    background_url: str | None = None  # HIG-45: this output's background-only PNG, same size
 
     @field_validator("url")
     @classmethod
     def _validate_url(cls, v: str) -> str:
         return _media_url(v)
+
+    @field_validator("background_url")
+    @classmethod
+    def _validate_background_url(cls, v: str | None) -> str | None:
+        return _media_url(v) if v else None
 
     @field_validator("size")
     @classmethod
@@ -195,16 +201,33 @@ class VariantImage(BaseModel):
 
 AnimMovePreset = Literal["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop"]
 AnimLoopPreset = Literal["breathe", "float", "blink"]
+# Speed curves (HIG-44). back / elastic / bounce settle at the end of an enter and start the
+# exit with the mirrored motion; see services/animation.py.
+AnimEasing = Literal["linear", "ease_in", "ease_out", "ease_in_out", "back", "elastic", "bounce"]
+# Reveal curves only move forwards (HIG-45): the glyph times come from the inverse curve.
+RevealEasing = Literal["linear", "ease_in", "ease_out", "ease_in_out"]
+RevealPreset = Literal["typewriter", "fade_chars", "wipe"]
 ANIM_MAX_SECONDS = 10.0
+REVEAL_MAX_SECONDS = 30.0
+GLYPH_LAYOUT_MAX_UNITS = 1000
 
 
 class TextAnimPhase(BaseModel):
-    """Enter / exit animation of a text layer (HIG-40); curves in services/animation.py."""
+    """Enter / exit animation of a text layer (HIG-40); curves in services/animation.py.
+
+    Everything past ``duration`` is optional (HIG-44) and defaults to the v0.16.0 motion.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     preset: AnimMovePreset
     duration: float = Field(default=0.5, gt=0, le=ANIM_MAX_SECONDS)
+    easing: AnimEasing | None = None  # None = the preset's own curve
+    distance: float = Field(default=0.05, ge=0, le=0.5)  # slides; fraction of the canvas height
+    fade: bool = True  # slides also fade
+    scale: float = Field(default=0.5, ge=0.1, le=3)  # pop: enter starts at / exit ends at this scale
+    overshoot: float = Field(default=1.70158, ge=0, le=5)  # easing "back" only
+    delay: float = Field(default=0.0, ge=0, le=ANIM_MAX_SECONDS)  # enter only; ignored on the exit
 
 
 class TextAnimLoop(BaseModel):
@@ -214,6 +237,19 @@ class TextAnimLoop(BaseModel):
 
     preset: AnimLoopPreset
     period: float = Field(default=1.2, ge=0.2, le=ANIM_MAX_SECONDS)
+    amount: float = Field(default=1.0, ge=0, le=3)  # HIG-44: multiplies the preset's amplitude
+
+
+class TextReveal(BaseModel):
+    """Glyph-by-glyph reveal (HIG-45), drawn from ``TextLayer.glyph_layout``; see services/reveal.py."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    preset: RevealPreset
+    duration: float = Field(default=1.0, gt=0, le=REVEAL_MAX_SECONDS)
+    unit: Literal["char", "word"] = "char"  # frontend only: how glyph_layout was grouped
+    cursor: bool = False  # typewriter only
+    easing: RevealEasing = "linear"
 
 
 class TextAnimation(BaseModel):
@@ -223,10 +259,56 @@ class TextAnimation(BaseModel):
     enter: TextAnimPhase | None = Field(default=None, alias="in")
     exit: TextAnimPhase | None = Field(default=None, alias="out")
     loop: TextAnimLoop | None = None
+    reveal: TextReveal | None = None  # HIG-45
 
     @property
     def active(self) -> bool:
         return self.enter is not None or self.exit is not None or self.loop is not None
+
+    @property
+    def delay(self) -> float:
+        return self.enter.delay if self.enter else 0.0
+
+
+class GlyphLine(BaseModel):
+    """One line of the text PNG: its box and the ink box of each unit, as fractions of the PNG."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    top: float = Field(ge=0, le=1)
+    bottom: float = Field(ge=0, le=1)
+    rtl: bool = False
+    units: list[tuple[float, float]] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check(self) -> GlyphLine:
+        if self.bottom <= self.top:
+            raise ValueError("glyph_layout 行的 bottom 必须大于 top")
+        for left, right in self.units:
+            if not (0 <= left <= right <= 1):
+                raise ValueError("glyph_layout 字位置必须满足 0 ≤ left ≤ right ≤ 1")
+        return self
+
+
+class GlyphLayout(BaseModel):
+    """Where each reveal unit sits in the text PNG (HIG-45). Units are listed in reveal order."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    lines: list[GlyphLine] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check(self) -> GlyphLayout:
+        if sum(len(line.units) for line in self.lines) > GLYPH_LAYOUT_MAX_UNITS:
+            raise ValueError(f"glyph_layout 最多 {GLYPH_LAYOUT_MAX_UNITS} 个字")
+        for prev, cur in zip(self.lines, self.lines[1:]):
+            if cur.top < prev.top:
+                raise ValueError("glyph_layout 的行必须自上而下排列")
+        return self
+
+    @property
+    def count(self) -> int:
+        return sum(len(line.units) for line in self.lines)
 
 
 ScrollStart = Literal["enter", "visible"]
@@ -280,10 +362,13 @@ class TextLayer(LayerBase):
     variant_images: dict[str, VariantImage] | None = None
     animation: TextAnimation | None = None  # HIG-40
     scroll: TextScroll | None = None  # HIG-50
+    # HIG-45 reveal: unit positions in the PNG, and the background block alone (same size as the PNG).
+    glyph_layout: GlyphLayout | None = None
+    background_image: str | None = None
 
     @model_validator(mode="after")
     def _scroll_excludes_animation(self) -> TextLayer:
-        if self.scroll is not None and self.animation is not None and self.animation.active:
+        if self.scroll is not None and self.animation is not None and (self.animation.active or self.animation.reveal is not None):
             raise ValueError(f"文字图层 {self.id}：滚动（scroll）与动画（animation）不能同时设置")
         return self
 
@@ -292,10 +377,16 @@ class TextLayer(LayerBase):
         anim = self.animation
         if anim is None or self.t == "all":
             return self
-        total = (anim.enter.duration if anim.enter else 0.0) + (anim.exit.duration if anim.exit else 0.0)
+        enter = (anim.enter.delay + anim.enter.duration) if anim.enter else 0.0
+        total = enter + (anim.exit.duration if anim.exit else 0.0)
         if total > (self.t[1] - self.t[0]) + 1e-6:
-            raise ValueError(f"文字图层 {self.id}：入场加出场动画时长不能超过出现时段长度")
+            raise ValueError(f"文字图层 {self.id}：入场延迟、入场加出场动画时长不能超过出现时段长度")
         return self
+
+    @field_validator("background_image")
+    @classmethod
+    def _validate_background_image(cls, v: str | None) -> str | None:
+        return _media_url(v) if v else None
 
     @field_validator("variant_images")
     @classmethod

@@ -31,7 +31,10 @@ LAYER_MODES = ("replace", "style_only")
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
     "sticker": ("asset_id", "playback", "mix_audio"),
-    "text": ("text", "spans", "style", "image_url", "image_size", "variant_images", "animation", "scroll"),
+    "text": (
+        "text", "spans", "style", "image_url", "image_size", "variant_images", "animation", "scroll",
+        "glyph_layout", "background_image",  # HIG-45: belong to the PNG, like image_url
+    ),  # fmt: skip
     "mask": ("mode", "color", "blur", "height"),
 }
 

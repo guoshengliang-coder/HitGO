@@ -32,7 +32,7 @@ import { dropKind, dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG
 import { IMAGE_ACCEPT, IMAGE_ACCEPT_TEXT, timelineDropWindow } from '../../lib/imageDrop';
 import { addStickerLayers, dropImages } from './stickerDrop';
 import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
-import { hasAnimation, phaseLengths } from '../../lib/textAnimation';
+import { enterDelay, hasAnimation, phaseLengths } from '../../lib/textAnimation';
 import type { Asset, AudioRole, AudioSpec, Layer } from '../../types';
 
 /** 系统文件拖进来：上传完成、素材探测就绪后才能加轨，先记下落点。 */
@@ -796,12 +796,13 @@ export function Timeline() {
                     }}
                   >
                     {l.type === 'text' && hasAnimation(l.animation) && (() => {
-                      // 入场 / 出场段（HIG-40）：按剪后时长近似画宽，时段里有删除区间时略有偏差
+                      // 入场 / 出场段（HIG-40）：按剪后时长近似画宽，时段里有删除区间时略有偏差；入场延迟（HIG-44）让入场段右移
                       const [di, dout] = phaseLengths(l.animation, pb - pa);
+                      const dl = enterDelay(l.animation, pb - pa);
                       const px = Math.max(4, right - left) / Math.max(1e-6, pb - pa);
                       return (
                         <>
-                          {di > 0 && <span className="tl-anim in" style={{ width: di * px }} title={`入场 ${di.toFixed(2)}s`} />}
+                          {di > 0 && <span className="tl-anim in" style={{ left: dl * px, width: di * px }} title={dl > 0 ? `入场 ${di.toFixed(2)}s（延迟 ${dl.toFixed(2)}s）` : `入场 ${di.toFixed(2)}s`} />}
                           {dout > 0 && <span className="tl-anim out" style={{ width: dout * px }} title={`出场 ${dout.toFixed(2)}s`} />}
                         </>
                       );
