@@ -90,6 +90,11 @@ class Video(Base):
     has_audio: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     codec: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_ext: Mapped[str] = mapped_column(String(8), default="mp4", nullable=False)
+    # Where the source came from (contract §1): "video" = uploaded clip, "image" = a still
+    # (still.<ext> next to it) turned into a 5 s clip, "blank" = a solid-colour clip generated
+    # from ``blank_params`` ({color, duration, aspect}). Downstream code only ever sees source.mp4.
+    kind: Mapped[str] = mapped_column(String(8), default="video", nullable=False)
+    blank_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     sprite: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     edit_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
