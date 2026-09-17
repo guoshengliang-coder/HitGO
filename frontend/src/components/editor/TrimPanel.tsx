@@ -17,6 +17,7 @@ import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
+import { SequenceSection } from './SequenceSection';
 import { VARIANT_DEFS, outputSize, variantDef, type FillMode, type OutputQuality, type VariantKey } from '../../types';
 
 const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
@@ -278,13 +279,14 @@ function DurationSection() {
 /** 剪辑面板只放"看"的东西：区间列表、封面、成片画面、时长。剪的动作（入出点 / 删左右 / 删除）都在画布下方的工具条里（§8.1 A2）。 */
 export function TrimPanel() {
   const inPoint = useEditor((s) => s.inPoint);
+  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const setInPoint = useEditor((s) => s.setInPoint);
 
   return (
     <div className="panel">
       <div className="panel-head">剪辑</div>
       <div className="panel-body inspector">
-        {inPoint !== null && (
+        {!hasSequence && inPoint !== null && (
           <div className="hint">
             入点已设在 <span className="mono">{formatTime(inPoint)}</span>（源时间），移动播放头后按 O 设出点。
             <button className="btn ghost sm" onClick={() => setInPoint(null)} style={{ marginLeft: 6 }}>
@@ -293,7 +295,8 @@ export function TrimPanel() {
           </div>
         )}
 
-        <RangesSection />
+        <SequenceSection />
+        {!hasSequence && <RangesSection />}
         <CoverSection />
         <FrameSection />
         <DurationSection />

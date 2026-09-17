@@ -26,6 +26,7 @@ import { blurFillFilter } from '../../lib/blurFill';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
 import { windowContains } from '../../lib/time';
+import { clipAt, clipWindows } from '../../lib/sequence';
 import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
@@ -597,6 +598,12 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const isRef = previewKey === '9x16';
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const activeSource = useEditor((s) => {
+    const sequence = s.currentVideoId ? s.specs[s.currentVideoId]?.sequence : null;
+    const clip = sequence ? clipAt(sequence, Math.max(0, s.time))?.clip : null;
+    return clip ? s.videos.find((v) => v.id === clip.video_id) ?? null : null;
+  });
+  const frameVideo = activeSource ?? video;
   const variant = spec ? outputFor(spec, previewKey) : undefined;
   const { width: outputW, height: outputH } = variant ? outputSize(variant) : variantDef(previewKey);
   const { W, H } = useFitSize(wrapRef, outputW / outputH);
@@ -606,7 +613,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const stageScale = W / outputW;
   const geomOf = (l: Layer): StageGeom | undefined => {
     if (isRef || !spec || !variant || !video) return undefined;
-    const r = resolveLayerBox(spec, l, variant, layerAspect(l, assets), video.width, video.height);
+    const r = resolveLayerBox(spec, l, variant, layerAspect(l, assets), frameVideo?.width ?? video.width, frameVideo?.height ?? video.height);
     return { box: { x: r.x * stageScale, y: r.y * stageScale, w: r.w * stageScale, h: r.h * stageScale }, rotate: r.rotate, opacity: r.opacity };
   };
   const commitOnVariant = (l: Layer) =>
@@ -617,7 +624,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         };
   const fill = variant?.fill ?? 'blur';
   // 源画面与画布比例不一致时才需要填充背景（9:16 素材放到 9:16 画布上铺满，不画）
-  const needsFill = !!video && Math.abs(video.width / video.height - outputW / outputH) > 0.01;
+  const needsFill = !!frameVideo && Math.abs(frameVideo.width / frameVideo.height - outputW / outputH) > 0.01;
   const step = useEditor((s) => s.step);
   const layerTypes = layerTypesForStep(step);
   const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
@@ -685,6 +692,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   // 播放器挂载
   useEffect(() => {
     const el = videoRef.current;
+    player.setSequence(null);
     player.attach(el);
     player.duration = video?.duration ?? 0;
     player.seek(-player.preroll, 0);
@@ -698,8 +706,26 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, [video?.id, video?.duration, setPlayhead]);
 
   useEffect(() => {
-    player.remove = spec?.trim.remove ?? [];
-  }, [spec?.trim.remove]);
+    const el = videoRef.current;
+    if (!spec?.sequence || !video) {
+      player.setSequence(null);
+      if (el && video?.proxy_url && el.getAttribute('src') !== video.proxy_url) {
+        el.setAttribute('src', video.proxy_url);
+        el.load();
+      }
+      player.duration = video?.duration ?? 0;
+      return;
+    }
+    const clips = clipWindows(spec.sequence).map(({ clip, start, end }) => {
+      const source = useEditor.getState().videos.find((v) => v.id === clip.video_id);
+      return { id: clip.id, src: source?.proxy_url ?? '', sourceIn: clip.in, sourceOut: clip.out, start, end };
+    });
+    player.setSequence(clips);
+  }, [spec?.sequence, video?.id, video?.duration]);
+
+  useEffect(() => {
+    player.remove = spec?.sequence ? [] : spec?.trim.remove ?? [];
+  }, [spec?.trim.remove, spec?.sequence]);
 
   // Transformer 绑定
   useEffect(() => {
@@ -748,7 +774,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
       <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
+        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}

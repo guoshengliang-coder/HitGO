@@ -53,6 +53,7 @@ from app.services.layout import (
     mask_box,
     rotated_overlay_position,
 )
+from app.services.sequence import ClipSource
 
 _AUDIO_ARGS: list[str] = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
 
@@ -399,6 +400,7 @@ def build_render_command(
     ffmpeg_bin: str = "ffmpeg",
     audio_assets: Mapping[str, AudioSource] | None = None,
     cover: CoverSource | None = None,
+    sequence_sources: list[ClipSource] | None = None,
 ) -> RenderPlan:
     """Return the ffmpeg argv, expected output duration and any layer warnings.
 
@@ -409,8 +411,9 @@ def build_render_command(
     the resolved ``spec.cover`` asset; when the spec has a cover the caller could not
     resolve, the render goes on without it and says so in the warnings.
     """
-    duration = float(video_meta["duration"])
-    has_audio = bool(video_meta.get("has_audio", False))
+    sequence_sources = sequence_sources or []
+    duration = spec.sequence.duration if spec.sequence else float(video_meta["duration"])
+    has_audio = any(c.has_audio for c in sequence_sources) if sequence_sources else bool(video_meta.get("has_audio", False))
     canvas_w, canvas_h = variant.canvas
     audio_spec = spec.audio
     source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
@@ -423,64 +426,126 @@ def build_render_command(
 
     warnings: list[str] = []
     # One argv group per input: video stickers need per-input options (-stream_loop, -c:v).
-    inputs: list[list[str]] = [["-i", source_path]]
+    inputs: list[list[str]] = [["-i", c.path] for c in sequence_sources] if sequence_sources else [["-i", source_path]]
     chains: list[str] = []
 
     # ---- 1. trim / concat ---------------------------------------------------
-    segments = keep_segments(spec.trim.remove, duration)
-    if not segments:
-        raise ValueError("剪辑后没有保留任何片段")
-    expected_duration = sum(b - a for a, b in segments)
-    trimmed = bool(spec.trim.remove) and segments != [(0.0, duration)]
-    # Tracks on the source timeline (align = "source") follow the source, not its loops.
-    source_segments = segments
-
-    # Output length decoupled from the source (HIG-50, contract §2 trim.duration): longer
-    # loops the kept segments — the source input repeats forever and the trim windows
-    # are shifted one source length per pass, so the usual trim + concat chain does the
-    # rest; shorter only needs the output -t below.
-    target = spec.trim.duration
-    if target is not None and target > expected_duration + MIN_SEGMENT:
-        passes = math.ceil(target / expected_duration)
-        segments = [(a + k * duration, b + k * duration) for k in range(passes) for a, b in segments]
-        inputs[0] = ["-stream_loop", "-1", *inputs[0]]
+    if sequence_sources:
+        expected_duration = duration
         trimmed = True
-    if target is not None:
-        expected_duration = float(target)
-
-    if trimmed:
-        labels: list[str] = []
-        for i, (a, b) in enumerate(segments):
-            chains.append(f"[0:v]trim=start={_fmt(a)}:end={_fmt(b)},setpts=PTS-STARTPTS[v{i}]")
-            labels.append(f"[v{i}]")
+        source_segments: list[tuple[float, float]] = []
+        fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
+        elapsed = 0.0
+        for i, src in enumerate(sequence_sources):
+            clip = src.clip
+            length = clip.source_out - clip.source_in
+            raw = f"[seqraw{i}]"
+            chains.append(
+                f"[{i}:v]trim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
+                f"setpts=PTS-STARTPTS,fps={fps},setsar=1{raw}"
+            )
+            filled = f"[seqfill{i}]"
+            chains += fill_chains(
+                raw, variant.fill, variant.color, variant.crop, canvas_w, canvas_h, filled,
+                tag=f"_seq{i}", blur=variant.blur, brightness=variant.bg_brightness,
+            )
+            chains.append(f"{filled}format=yuv420p,setsar=1[seqv{i}]")
             if source_heard:
+                if src.has_audio:
+                    chains.append(
+                        f"[{i}:a]atrim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
+                        f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},apad,atrim=end={_fmt(length)}[seqa{i}]"
+                    )
+                else:
+                    chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(length)}[seqa{i}]")
+            if i == 0:
+                video_label = "[seqv0]"
+                audio_label = "[seqa0]" if source_heard else None
+                elapsed = length
+                continue
+            transition = clip.transition
+            overlap = transition.duration if transition else 0.0
+            next_video = f"[seqjoinedv{i}]"
+            next_audio = f"[seqjoineda{i}]" if source_heard else None
+            if overlap > 0:
+                names = {
+                    "fade": "fade", "slide_left": "slideleft", "slide_right": "slideright",
+                    "wipe_left": "wipeleft", "wipe_right": "wiperight",
+                }
                 chains.append(
-                    f"[0:a]atrim=start={_fmt(a)}:end={_fmt(b)},asetpts=PTS-STARTPTS[a{i}]"
+                    f"{video_label}[seqv{i}]xfade=transition={names[transition.type]}:"
+                    f"duration={_fmt(overlap)}:offset={_fmt(elapsed - overlap)}{next_video}"
                 )
-                labels.append(f"[a{i}]")
-        if len(segments) == 1:
-            video_label, audio_label = "[v0]", "[a0]" if source_heard else None
-        else:
-            n = len(segments)
-            if source_heard:
-                chains.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vt][at]")
-                video_label, audio_label = "[vt]", "[at]"
+                if source_heard:
+                    chains.append(f"{audio_label}[seqa{i}]acrossfade=d={_fmt(overlap)}{next_audio}")
+            elif source_heard:
+                chains.append(f"{video_label}{audio_label}[seqv{i}][seqa{i}]concat=n=2:v=1:a=1{next_video}{next_audio}")
             else:
-                chains.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vt]")
-                video_label, audio_label = "[vt]", None
+                chains.append(f"{video_label}[seqv{i}]concat=n=2:v=1:a=0{next_video}")
+            video_label, audio_label = next_video, next_audio
+            elapsed += length - overlap
     else:
-        video_label, audio_label = "[0:v]", None  # audio mapped straight from input
+        segments = keep_segments(spec.trim.remove, duration)
+        if not segments:
+            raise ValueError("剪辑后没有保留任何片段")
+        expected_duration = sum(b - a for a, b in segments)
+        trimmed = bool(spec.trim.remove) and segments != [(0.0, duration)]
+        # Tracks on the source timeline (align = "source") follow the source, not its loops.
+        source_segments = segments
+
+        # Output length decoupled from the source (HIG-50, contract §2 trim.duration): longer
+        # loops the kept segments — the source input repeats forever and the trim windows
+        # are shifted one source length per pass, so the usual trim + concat chain does the
+        # rest; shorter only needs the output -t below.
+        target = spec.trim.duration
+        if target is not None and target > expected_duration + MIN_SEGMENT:
+            passes = math.ceil(target / expected_duration)
+            segments = [(a + k * duration, b + k * duration) for k in range(passes) for a, b in segments]
+            inputs[0] = ["-stream_loop", "-1", *inputs[0]]
+            trimmed = True
+        if target is not None:
+            expected_duration = float(target)
+
+        if trimmed:
+            labels: list[str] = []
+            for i, (a, b) in enumerate(segments):
+                chains.append(f"[0:v]trim=start={_fmt(a)}:end={_fmt(b)},setpts=PTS-STARTPTS[v{i}]")
+                labels.append(f"[v{i}]")
+                if source_heard:
+                    chains.append(
+                        f"[0:a]atrim=start={_fmt(a)}:end={_fmt(b)},asetpts=PTS-STARTPTS[a{i}]"
+                    )
+                    labels.append(f"[a{i}]")
+            if len(segments) == 1:
+                video_label, audio_label = "[v0]", "[a0]" if source_heard else None
+            else:
+                n = len(segments)
+                if source_heard:
+                    chains.append(f"{''.join(labels)}concat=n={n}:v=1:a=1[vt][at]")
+                    video_label, audio_label = "[vt]", "[at]"
+                else:
+                    chains.append(f"{''.join(labels)}concat=n={n}:v=1:a=0[vt]")
+                    video_label, audio_label = "[vt]", None
+        else:
+            video_label, audio_label = "[0:v]", None  # audio mapped straight from input
 
     # ---- 2. canvas fill -----------------------------------------------------
     W, H = canvas_w, canvas_h
-    chains += fill_chains(
-        video_label, variant.fill, variant.color, variant.crop, W, H, "[c0]",
-        blur=variant.blur, brightness=variant.bg_brightness,
-    )
+    if sequence_sources:
+        chains.append(f"{video_label}setpts=PTS-STARTPTS[c0]")
+    else:
+        chains += fill_chains(
+            video_label, variant.fill, variant.color, variant.crop, W, H, "[c0]",
+            blur=variant.blur, brightness=variant.bg_brightness,
+        )
     current = "[c0]"
 
     # ---- 3. layers ----------------------------------------------------------
-    fmap = variant_fit_map(spec, variant, float(video_meta.get("width") or 0), float(video_meta.get("height") or 0))
+    fmap = variant_fit_map(
+        spec, variant,
+        float(W if sequence_sources else (video_meta.get("width") or 0)),
+        float(H if sequence_sources else (video_meta.get("height") or 0)),
+    )
     layer_index = 0
     has_video_layer = False
     sticker_audio: list[str] = []  # labels of sticker audio chains to mix in
@@ -741,7 +806,38 @@ def build_render_command(
             input_index = len(inputs)
             inputs.append(["-i", source.path])
             head = f"[{input_index}:a]"
-            if trimmed:
+            if sequence_sources:
+                # A source-aligned stem belongs to the edited (owner) video's raw frames.
+                # Inserted clips have no matching stem; keep silence there while retaining
+                # each original span at its new position on the composed timeline.
+                pieces: list[str] = []
+                position = 0.0
+                for k, segment in enumerate(sequence_sources):
+                    c = segment.clip
+                    position -= c.transition.duration if c.transition else 0.0
+                    length = c.source_out - c.source_in
+                    if c.video_id == video_meta.get("video_id"):
+                        label = f"[tk{n_track}s{k}]"
+                        delay = round(position * 1000)
+                        chains.append(
+                            f"{head}atrim=start={_fmt(c.source_in)}:end={_fmt(c.source_out)},"
+                            f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},adelay={delay}:all=1{label}"
+                        )
+                        pieces.append(label)
+                    position += length
+                joined = f"[tk{n_track}c]"
+                if pieces:
+                    chains.append(
+                        f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}[tk{n_track}bed]"
+                    )
+                    chains.append(
+                        f"[tk{n_track}bed]{''.join(pieces)}amix=inputs={len(pieces) + 1}:"
+                        f"duration=first:normalize=0:dropout_transition=0{joined}"
+                    )
+                else:
+                    chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(expected_duration)}{joined}")
+                head = joined
+            elif trimmed:
                 seg_labels: list[str] = []
                 for k, (a, b) in enumerate(source_segments):
                     seg = f"[tk{n_track}s{k}]"
@@ -884,7 +980,7 @@ def build_render_command(
     # is only ever heard through the [aout] mix above.
     argv += audio_map
     argv += encode_args(getattr(variant, "quality", "standard"))
-    if has_video_layer or track_audio or spec.trim.duration is not None:
+    if has_video_layer or track_audio or spec.trim.duration is not None or sequence_sources:
         # Belt and braces: overlay takes the longest input, so a sticker (or a looped
         # audio track) could otherwise stretch the output. Only added when such an
         # input exists, so still-image renders keep their exact argv. A trim.duration

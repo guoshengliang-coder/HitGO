@@ -12,6 +12,7 @@ import { lapsFor, postTimeOf, postToSource, postTrimDuration, removedRangeAt, sk
 
 type Listener = (t: number, playing: boolean, lap: number) => void;
 type FrameListener = () => void;
+export interface SequencePlaybackClip { id: string; src: string; sourceIn: number; sourceOut: number; start: number; end: number }
 
 export class Player {
   private video: HTMLVideoElement | null = null;
@@ -33,12 +34,20 @@ export class Player {
   private lapValue = 0;
   /** 换遍后让 <video> 回到开头的 seek 还没完成：元素这时仍报片尾，读了会连跳好几遍。 */
   private lapSeekPending = false;
+  private sequence: SequencePlaybackClip[] | null = null;
+  private sequenceSignature = '';
+  private pendingMediaTime: number | null = null;
 
   private onLoadedMetadata = () => {
     const v = this.video;
     if (v && Number.isFinite(v.duration) && v.duration > 0) {
       this.synthetic = false;
-      this.duration = v.duration;
+      if (!this.sequence) this.duration = v.duration;
+      if (this.pendingMediaTime !== null) {
+        v.currentTime = this.pendingMediaTime;
+        this.pendingMediaTime = null;
+        if (this.playing && this.rateValue > 0) this.playVideo();
+      }
     }
     this.emit();
   };
@@ -51,6 +60,13 @@ export class Player {
   /** <video> 自己播到尾：还有下一遍就接着放，否则停。rAF 那边也会检查，这里先到就先处理。 */
   private onEnded = () => {
     if (!this.playing || this.rateValue < 0) return;
+    if (this.sequence) {
+      const current = this.sequenceClipAt(this.time);
+      const next = this.sequence[this.sequence.findIndex((clip) => clip.id === current?.id) + 1];
+      if (next) this.seek(next.start);
+      else this.pause();
+      return;
+    }
     if (!this.advanceLap()) this.pause();
   };
 
@@ -83,6 +99,45 @@ export class Player {
       video.addEventListener('ended', this.onEnded);
       video.addEventListener('loadeddata', this.onFrameReady);
       video.addEventListener('seeked', this.onFrameReady);
+      if (this.sequence) this.syncSequenceMedia();
+    }
+  }
+
+  /** Virtual composed timeline; null restores the historical single-source clock. */
+  setSequence(clips: SequencePlaybackClip[] | null) {
+    const signature = JSON.stringify(clips);
+    if (signature === this.sequenceSignature) return;
+    this.sequenceSignature = signature;
+    this.sequence = clips?.length ? clips : null;
+    if (this.sequence) {
+      this.duration = this.sequence[this.sequence.length - 1].end;
+      this.remove = [];
+      this.lapValue = 0;
+      this.outputSec = null;
+      this.time = Math.max(-this.prerollSec, Math.min(this.duration, this.time));
+      this.syncSequenceMedia();
+    }
+    this.emit();
+  }
+
+  private sequenceClipAt(t: number): SequencePlaybackClip | null {
+    if (!this.sequence?.length) return null;
+    return [...this.sequence].reverse().find((clip) => t >= clip.start - 1e-6) ?? this.sequence[0];
+  }
+
+  private syncSequenceMedia() {
+    const video = this.video;
+    const clip = this.sequenceClipAt(Math.max(0, this.time));
+    if (!video || !clip) return;
+    const mediaTime = Math.min(clip.sourceOut, clip.sourceIn + Math.max(0, this.time - clip.start));
+    if (video.getAttribute('src') !== clip.src) {
+      video.pause();
+      this.synthetic = true;
+      this.pendingMediaTime = mediaTime;
+      video.setAttribute('src', clip.src);
+      video.load();
+    } else if (Math.abs(video.currentTime - mediaTime) > 0.08) {
+      try { video.currentTime = mediaTime; } catch { /* metadata not loaded yet */ }
     }
   }
 
@@ -242,6 +297,12 @@ export class Player {
     this.lapSeekPending = false;
     if (lap !== undefined) this.lapValue = Math.max(0, Math.min(this.laps - 1, Math.floor(lap)));
     if (clamped < 0) this.lapValue = 0;
+    if (this.sequence) {
+      if (clamped < 0 && this.video) this.video.pause();
+      else this.syncSequenceMedia();
+      this.emit();
+      return;
+    }
     if (this.video && !this.synthetic) {
       // 封面段里正片停在第 0 帧，等播放头走到 0 再接上
       if (clamped < 0 && this.playing) this.video.pause();
@@ -266,6 +327,15 @@ export class Player {
     if (this.playing) return;
     this.rateValue = rate;
     this.applyRate();
+    if (this.sequence) {
+      if (this.time >= this.duration - 0.01) this.seek(this.prerollSec > 0 ? -this.prerollSec : 0);
+      this.playing = true;
+      if (this.time >= 0 && rate > 0) this.playVideo();
+      this.lastTs = performance.now();
+      this.loop();
+      this.emit();
+      return;
+    }
     if (rate > 0) {
       const start = skipRemoved(this.time, this.remove);
       // 播到头再按播放：从成片开头（有封面就从封面）重来；源片到尾但还有下一遍就接着放下一遍
@@ -303,6 +373,22 @@ export class Player {
     this.lastTs = now;
     if (this.rateValue < 0) {
       this.reverseStep(dt);
+      return;
+    }
+    if (this.sequence) {
+      if (this.time < 0) {
+        this.time += dt * this.rateValue;
+        if (this.time >= 0) { this.time = 0; this.syncSequenceMedia(); this.playVideo(); }
+      } else {
+        const clip = this.sequenceClipAt(this.time);
+        if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn);
+        else this.time += dt * this.rateValue;
+        const next = this.sequence.find((c) => c.start > (clip?.start ?? 0) + 1e-6 && c.start <= this.time + 1e-3);
+        if (next) { this.time = next.start; this.syncSequenceMedia(); this.playVideo(); }
+      }
+      if (this.time >= this.duration - 0.01) { this.time = this.duration; this.pause(); return; }
+      this.emit();
+      this.raf = requestAnimationFrame(this.loop);
       return;
     }
     if (this.time < 0) {
@@ -364,6 +450,14 @@ export class Player {
   private reverseStep(dt: number) {
     const lo = this.prerollSec > 0 ? -this.prerollSec : 0;
     let t = this.time + dt * this.rateValue;
+    if (this.sequence) {
+      if (t <= lo) { this.seek(lo); this.pause(); return; }
+      this.time = t;
+      this.syncSequenceMedia();
+      this.emit();
+      this.raf = requestAnimationFrame(this.loop);
+      return;
+    }
     if (t <= 0 && this.lapValue > 0) {
       this.lapValue -= 1;
       t = this.duration - 1e-3;

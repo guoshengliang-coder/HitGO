@@ -15,6 +15,7 @@ from app.routers._common import enqueue_or_503, get_video_or_404, jobs_for_video
 from app.schemas import EditSpec, RenameIn, SeparateIn, SpecIn, VideoOut
 from app.serializers import video_out
 from app.services import storage
+from app.services.sequence import active_jobs_referencing, referencing_videos, resolve_sequence
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
@@ -55,7 +56,8 @@ def put_spec(video_id: str, body: SpecIn, db: Session = Depends(get_db)):
         if video.status != VIDEO_READY:
             raise HTTPException(400, "视频尚未预处理完成，暂时不能保存编辑参数")
         try:
-            EditSpec.model_validate(body.edit_spec, context={"duration": video.duration})
+            spec = EditSpec.model_validate(body.edit_spec, context={"duration": video.duration})
+            resolve_sequence(db, video, spec)
         except ValidationError as exc:
             errors = format_validation_errors(exc)
             summary = "；".join(f"{e['field']}: {e['message']}" for e in errors[:5])
@@ -63,6 +65,8 @@ def put_spec(video_id: str, body: SpecIn, db: Session = Depends(get_db)):
                 status_code=400,
                 content={"detail": f"编辑参数校验失败：{summary}", "errors": errors},
             )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
         # Store the raw (validated) spec so frontend-only extra fields survive round trips.
         video.edit_spec = body.edit_spec
     video.updated_at = utcnow()
@@ -96,6 +100,11 @@ def separate_video(video_id: str, body: SeparateIn | None = None, db: Session = 
 @router.delete("/{video_id}", status_code=204)
 def delete_video(video_id: str, db: Session = Depends(get_db)) -> None:
     video = get_video_or_404(db, video_id)
+    references = referencing_videos(db, video)
+    if references:
+        raise HTTPException(409, f"视频被 {', '.join(v.name for v in references)} 的拼接片段引用，请先移除这些片段")
+    if active_jobs_referencing(db, video):
+        raise HTTPException(409, "视频正被进行中的拼接渲染任务引用，等任务结束后再删除")
     active = db.scalars(select(Job.id).where(Job.video_id == video_id, Job.status.in_(JOB_ACTIVE))).first()
     if active:
         # The worker would keep writing into the directory we are about to remove.

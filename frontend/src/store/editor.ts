@@ -21,6 +21,7 @@ export interface ExportDialogRequest {
   langs?: string[];
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
+import { sequenceDuration } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
@@ -108,6 +109,7 @@ export interface EditorState {
   specs: Record<string, EditSpec>;
   history: Record<string, History>;
   selectedLayerId: string | null;
+  selectedClipId: string | null;
   time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
   /** 播放到第几遍（0 起，HIG-50 循环补足）；镜像 player.lap。成片时刻 = lap × 剪后时长 + 剪后时刻，见 usePostTime。 */
@@ -173,6 +175,7 @@ export interface EditorState {
   setStep: (s: Step) => void;
   setSafeZoneKey: (k: string) => void;
   setSelectedLayer: (id: string | null) => void;
+  setSelectedClip: (id: string | null) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
@@ -377,6 +380,7 @@ const PER_BATCH_INITIAL = {
   specs: {},
   history: {},
   selectedLayerId: null,
+  selectedClipId: null,
   selectedRangeIndex: null,
   selectedTrackId: null,
   selectedMuteIndex: null,
@@ -920,7 +924,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedClipId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -932,6 +936,7 @@ export const useEditor = create<EditorState>((set, get) => {
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
+    setSelectedClip: (selectedClipId) => set({ selectedClipId }),
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
     setPlayhead: (time, playing, lap) => set({ time, playing, lap }),
@@ -1906,6 +1911,7 @@ export function selectPostDuration(s: EditorState): number {
   const v = s.videos.find((x) => x.id === s.currentVideoId);
   const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
   if (!v) return 0;
+  if (spec?.sequence) return sequenceDuration(spec.sequence);
   return outputDuration(v.duration, spec?.trim ?? { remove: [] });
 }
 export function usePostDuration(): number {
@@ -1927,6 +1933,7 @@ export function selectPostTime(s: EditorState): number {
   const v = s.videos.find((x) => x.id === s.currentVideoId);
   const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
   const remove = spec?.trim.remove ?? [];
+  if (spec?.sequence) return Math.max(0, s.time);
   return postTimeOf(s.lap, postTrimDuration(v?.duration ?? 0, remove), sourceToPost(s.time, remove));
 }
 export function usePostTime(): number {

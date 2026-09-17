@@ -672,6 +672,63 @@ class CoverSpec(BaseModel):
     duration: float = Field(default=1.0, ge=COVER_MIN_DURATION, le=COVER_MAX_DURATION)
 
 
+class ClipTransition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["cut", "fade", "slide_left", "slide_right", "wipe_left", "wipe_right"] = "cut"
+    duration: float = Field(default=0, ge=0, le=1.5)
+
+    @model_validator(mode="after")
+    def _check_duration(self) -> ClipTransition:
+        if self.type == "cut" and self.duration != 0:
+            raise ValueError("硬切的转场时长必须为 0")
+        if self.type != "cut" and self.duration < 0.1:
+            raise ValueError("视觉转场时长至少为 0.1 秒")
+        return self
+
+
+class SequenceClip(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(min_length=1, max_length=64)
+    video_id: str = Field(min_length=1)
+    source_in: float = Field(alias="in", ge=0)
+    source_out: float = Field(alias="out", gt=0)
+    transition: ClipTransition | None = None
+
+    @model_validator(mode="after")
+    def _check_range(self) -> SequenceClip:
+        if self.source_out - self.source_in < 0.1 - 1e-6:
+            raise ValueError("片段时长至少为 0.1 秒")
+        return self
+
+
+class SequenceSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    clips: list[SequenceClip] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_clips(self) -> SequenceSpec:
+        ids = [clip.id for clip in self.clips]
+        if len(ids) != len(set(ids)):
+            raise ValueError("片段 id 不能重复")
+        if self.clips[0].transition is not None:
+            raise ValueError("第一段不能设置入场转场")
+        for previous, clip in zip(self.clips, self.clips[1:]):
+            transition = clip.transition
+            if transition and transition.duration >= min(
+                previous.source_out - previous.source_in,
+                clip.source_out - clip.source_in,
+            ) - 1e-6:
+                raise ValueError("转场时长必须小于相邻片段时长")
+        return self
+
+    @property
+    def duration(self) -> float:
+        return sum(c.source_out - c.source_in - (c.transition.duration if c.transition else 0) for c in self.clips)
+
+
 class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -681,9 +738,12 @@ class EditSpec(BaseModel):
     outputs: list[OutputVariant] = Field(min_length=1)
     audio: AudioSpec | None = None  # None = keep the source track as-is (pre-audio behaviour)
     cover: CoverSpec | None = None  # None = no cover (pre-cover behaviour)
+    sequence: SequenceSpec | None = None  # HIG-39: ordered raw source clips on this video's timeline
 
     @model_validator(mode="after")
     def _cross_checks(self) -> EditSpec:
+        if self.sequence is not None and (self.trim.remove or self.trim.duration is not None):
+            raise ValueError("多片段序列启用后，旧的 trim 删除区间和成片时长必须先转换为片段")
         keys = [o.variant_key for o in self.outputs]
         dupes = sorted({k for k in keys if keys.count(k) > 1})
         if dupes:

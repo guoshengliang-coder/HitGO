@@ -220,6 +220,38 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 
 保存在 Video 上，前端产出，worker 消费。
 
+**多片段剪辑（HIG-39）**：`sequence` 是可选字段；不存在时仍按该 Video 的单一源片、
+`trim.remove` 和 `trim.duration` 执行，旧数据与旧导出语义不变。用户第一次在「剪辑」里插入
+片段时，编辑器把原视频的保留区间（含 `trim.duration` 形成的循环/截断）展开成有序片段，
+并把 `trim` 归零；此后时间轴、图层 `t`、音轨 `t` 与源音轨静音区间均基于拼接后的正片时间。
+封面仍位于正片之前，不计入这些时段。
+
+```jsonc
+"sequence": {
+  "clips": [
+    { "id": "c_1", "video_id": "v_a1b2c3", "in": 0, "out": 4.2 },
+    { "id": "c_2", "video_id": "v_d4e5f6", "in": 1, "out": 5.5,
+      "transition": { "type": "fade", "duration": 0.4 } }
+  ]
+}
+```
+
+- `video_id` 指向同批次已就绪视频的**原始源片**；来源视频的 `edit_spec` 不会嵌套套用。
+  当前视频也可重复引用。`in` / `out` 是该源片的秒数，`0 ≤ in < out ≤ 源片时长`；
+  `id` 在序列中唯一。至少一个片段，每段不少于 0.1 秒。
+- 每段的 `transition` 表示**该段进入时**与前一段的转场；首段不设。`type` 为
+  `cut | fade | slide_left | slide_right | wipe_left | wipe_right`；`cut` 时 `duration = 0`，
+  其它效果的时长为 0.1–1.5 秒且小于相邻片段时长。拼接总时长等于各片段时长之和减去转场重叠时长。
+- 音频默认保留每个源片自己的声音；硬切处直接切换，视觉转场期间两段源音交叉淡化。
+  `audio.source_volume / source_hidden / source_mute` 作用于拼接后的源音轨；BGM、配音等
+  `audio.tracks[]` 作用于拼接后的正片时轴。`align = "source"` 的既有音轨只跟随当前视频
+  的原始片段，在插入片段期间静音，以免错位。
+- 插入片段时，原视频上已有的定时图层、静音区间和音轨跟随原画面后移；跨插入点的局部
+  时段拆成前后两段，`"all"` 保持全程。用户随后可把新字幕、配音或 BGM 加在整个拼接时间轴上。
+- 保存 `edit_spec` 与开始渲染时都校验片段的归属、状态、源文件、时长与转场参数。
+  被其它视频的序列引用的源视频不可删除，需先从这些序列移除。批次删除仍整体级联。
+  渲染任务保存该次 `edit_spec` 快照，之后编辑时间轴不会改变已入队任务的配置。
+
 ```jsonc
 {
   "spec_version": 1,
