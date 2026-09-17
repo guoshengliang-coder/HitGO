@@ -18,6 +18,7 @@ import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
+import { TextAnimationSection } from './TextAnimationSection';
 import { ColorPicker } from '../ui/ColorPicker';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
@@ -592,6 +593,7 @@ export function LayerProps({ layer }: { layer: Layer }) {
       {layer.type === 'mask' && <MaskSection layer={layer} />}
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />
+      {layer.type === 'text' && <TextAnimationSection layer={layer} />}
       <TimeSection layer={layer} />
       {layer.type === 'text' && <div className="hint">文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
       {layer.type === 'mask' && <div className="hint">遮盖只是把这块区域模糊或盖色，不是无痕擦除；画布上的模糊是近似预览，成片以导出为准。遮盖总在字幕之下。</div>}
@@ -705,7 +707,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
           {[...layers].reverse().map((l) => (
             <div
               key={l.id}
-              className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
+              className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.hidden ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
               onClick={() => setSelected(l.id)}
               role="button"
               tabIndex={0}
@@ -723,7 +725,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
               <span className="muted">{layerIcon(l.type)}</span>
               <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
               <span className="acts" onClick={(e) => e.stopPropagation()}>
-                <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
+                <button className="btn ghost icon" title={l.hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={l.hidden ? '显示' : '隐藏'} aria-pressed={!!l.hidden} onClick={() => updateLayer(l.id, { hidden: !l.hidden })}><IconEye off={!!l.hidden} /></button>
                 <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !l.locked }, false)}><IconLock open={!l.locked} /></button>
                 <button className="btn ghost icon" title={`${hintFor('layer-up')}（${hintFor('layer-top')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'top') : moveLayer(l.id, 1))}><IconUp /></button>
                 <button className="btn ghost icon" title={`${hintFor('layer-down')}（${hintFor('layer-bottom')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'bottom') : moveLayer(l.id, -1))}><IconDown /></button>

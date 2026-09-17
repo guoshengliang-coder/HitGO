@@ -1487,3 +1487,58 @@ def test_text_variant_image_is_preferred_and_falls_back_quietly():
     assert "/data/uploads/u_text16x9.png" in plan.argv and TEXT_PNG.path not in plan.argv
     plan = build(spec, variant_key="9x16", resolve=resolve)
     assert TEXT_PNG.path in plan.argv and plan.warnings == []
+
+
+# --- hidden layers / tracks / source (HIG-33) -------------------------------------------
+
+
+def test_hidden_fields_default_off_and_leave_the_argv_unchanged():
+    spec = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5]}])
+    explicit = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5], "hidden": False}])
+    for layer in explicit["layers"]:
+        layer["hidden"] = False
+    explicit["audio"]["source_hidden"] = False
+    assert audio_build(spec).argv == audio_build(explicit).argv
+
+
+def test_hidden_layer_is_left_out_like_it_was_never_there():
+    spec = valid_spec()
+    spec["layers"][0]["hidden"] = True
+    without = valid_spec(layers=[valid_spec()["layers"][1]])
+    assert build(spec).argv == build(without).argv
+    assert STICKER.path not in build(spec).argv
+
+
+def test_hidden_mask_is_left_out():
+    mask = {"id": "m_1", "type": "mask", "anchor": "bottom-center", "margin": [0, 0.1], "width": 0.9, "hidden": True}
+    spec = valid_spec(layers=[mask])
+    assert build(spec).argv == build(valid_spec(layers=[])).argv
+
+
+def test_hidden_video_sticker_takes_its_mixed_audio_with_it():
+    spec = mixing_spec(hidden=True)
+    plan = video_build(spec, source=VOCAL_STICKER)
+    assert "amix" not in fc(plan) and "[sa1]" not in fc(plan)
+    assert VOCAL_STICKER.path not in plan.argv
+
+
+def test_hidden_track_is_not_mixed_and_not_reported_as_skipped():
+    tracks = [
+        {"id": "au_hide", "asset_id": "a_bgm00001", "t": "all", "hidden": True},
+        {"id": "au_v", "asset_id": "a_voice0001", "role": "voice", "t": [1, 3]},
+    ]
+    plan = audio_build(audio_spec(tracks=tracks))
+    assert BGM.path not in plan.argv and "[tk2]" not in fc(plan)
+    assert plan.warnings == []
+    assert [t["id"] for t in plan.audio["tracks"]] == ["au_v"]
+    assert plan.audio["skipped"] == []
+
+
+def test_hidden_source_is_silenced_but_keeps_its_volume_in_the_spec():
+    spec = audio_spec(source_volume=0.4)
+    spec["audio"]["source_hidden"] = True
+    parsed = EditSpec.model_validate(spec)
+    assert parsed.audio.source_volume == pytest.approx(0.4)
+    plan = audio_build(spec)
+    assert audio_build(audio_spec(source_volume=0)).argv == plan.argv
+    assert "-an" in plan.argv and plan.audio["source_volume"] == 0.0

@@ -30,7 +30,8 @@ export function resolveExportTargets(
   return { ids, skipped };
 }
 
-// ---- 导出画幅（HIG-29）：勾选这次出哪些画幅，存本机，下次打开沿用 ----
+// ---- 导出画幅（HIG-29）：勾选这次出哪些画幅 ----
+// HIG-35 起勾选存在当前视频 spec 的 outputs[].export；这里读本机的旧记录只给没写过勾选的老 spec 兜底，不再写入。
 
 const VARIANTS_KEY = 'hitgo.exportVariants';
 const ALL_KEYS: VariantKey[] = VARIANT_DEFS.map((d) => d.key);
@@ -48,14 +49,6 @@ export function loadExportVariants(storage: Pick<Storage, 'getItem'> | null = ty
     return cleanExportVariants(raw ? JSON.parse(raw) : null);
   } catch {
     return ['9x16'];
-  }
-}
-
-export function saveExportVariants(list: VariantKey[], storage: Pick<Storage, 'setItem'> | null = typeof localStorage !== 'undefined' ? localStorage : null): void {
-  try {
-    storage?.setItem(VARIANTS_KEY, JSON.stringify(cleanExportVariants(list)));
-  } catch {
-    /* 隐私模式等：忽略 */
   }
 }
 

@@ -7,6 +7,7 @@ import { IconTrash } from '../components/ui/Icons';
 import { Seg } from '../components/ui/Seg';
 import { DropZone } from '../components/ui/DropZone';
 import { rejectedText } from '../lib/fileDrop';
+import { ASSET_DRAG_MIME, encodeAssetDrag } from '../lib/timelineDrop';
 
 /** 音频素材的 accept 与空态文案；剪辑步骤的音轨选择器也用。 */
 /** 贴纸 / 封面素材可上传的格式（契约 §3）；jpg 没有透明通道，主要给封面用（HIG-9）。 */
@@ -24,15 +25,32 @@ export function assetMeta(a: Asset): string {
   return parts.join(' · ');
 }
 
-export function AssetCard({ asset, onDelete, onPick }: { asset: Asset; onDelete?: () => void; onPick?: () => void }) {
+/** draggable：就绪的卡片可以拖到编辑器时间线上（HIG-33，目前只有音频用）。 */
+export function AssetCard({ asset, onDelete, onPick, draggable }: { asset: Asset; onDelete?: () => void; onPick?: () => void; draggable?: boolean }) {
   const [fontReady, setFontReady] = useState(false);
   useEffect(() => {
     if (asset.type === 'font') void ensureFontLoaded(asset).then(() => setFontReady(true));
   }, [asset]);
   const video = isVideoAsset(asset);
   const status = asset.status ?? 'ready';
+  const canDrag = !!draggable && status === 'ready';
   return (
-    <div className={`asset-card ${onPick ? 'pick' : ''}`} onClick={onPick} role={onPick ? 'button' : undefined} tabIndex={onPick ? 0 : undefined} onKeyDown={(e) => onPick && e.key === 'Enter' && onPick()}>
+    <div
+      className={`asset-card ${onPick ? 'pick' : ''} ${canDrag ? 'drag' : ''}`}
+      onClick={onPick}
+      role={onPick ? 'button' : undefined}
+      tabIndex={onPick ? 0 : undefined}
+      onKeyDown={(e) => onPick && e.key === 'Enter' && onPick()}
+      draggable={canDrag || undefined}
+      onDragStart={
+        canDrag
+          ? (e) => {
+              e.dataTransfer.setData(ASSET_DRAG_MIME, encodeAssetDrag({ id: asset.id, type: asset.type }));
+              e.dataTransfer.effectAllowed = 'copy';
+            }
+          : undefined
+      }
+    >
       {isAudioAsset(asset) ? (
         <div className="thumb audio">
           {status === 'ready' ? (

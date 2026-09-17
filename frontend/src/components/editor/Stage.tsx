@@ -26,7 +26,8 @@ import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
-import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
+import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
+import { REST, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
 import { InlineTextEditor } from './InlineTextEditor';
 import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
@@ -258,6 +259,8 @@ function LayerNode({
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
   const postDuration = usePostDuration();
+  const postTime = usePostTime();
+  const playing = useEditor((s) => s.playing);
   const sticker = layer.type === 'sticker' ? assets.find((a) => a.id === layer.asset_id) : undefined;
   const stickerIsVideo = isVideoAsset(sticker);
   // 静态图走 useImage；视频贴纸优先用浏览器可播的预览代理（MOV/ProRes 直接放会是空白）
@@ -337,6 +340,14 @@ function LayerNode({
   const aspect = layerAspect(layer, assets);
   const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
   const draggable = selectable && !layer.locked;
+  // 文字动画（HIG-40）：按成片同一套曲线采样，只叠加在显示上。选中且暂停时显示静止状态，
+  // 否则停在入场开头（透明）时既看不见也没法调；拖动 / 变换写回时把动画偏移扣掉。
+  const animation = layer.type === 'text' ? (layer as TextLayer).animation : undefined;
+  let anim = REST;
+  if (hasAnimation(animation) && !(selected && !playing)) {
+    const [a, b] = windowRange(layer.t, postDuration);
+    anim = sampleAnimation(animation, postTime - a, b - a);
+  }
   const onDblClick = () => {
     onSelect();
     if (layer.type === 'text' && selectable && !layer.locked) onEdit();
@@ -344,8 +355,8 @@ function LayerNode({
 
   const commitBox = (node: Konva.Image, newW: number, rotate?: number) => {
     const h = newW / aspect;
-    const cx = node.x();
-    const cy = node.y();
+    const cx = node.x() - anim.dx * H;
+    const cy = node.y() - anim.dy * H;
     const nb = { x: cx - newW / 2, y: cy - h / 2, w: newW, h };
     if (onCommitVariant) {
       onCommitVariant(nb, rotate);
@@ -370,14 +381,16 @@ function LayerNode({
     <KImage
       ref={registerNode}
       image={image}
-      x={box.x + box.w / 2}
-      y={box.y + box.h / 2}
+      x={box.x + box.w / 2 + anim.dx * H}
+      y={box.y + box.h / 2 + anim.dy * H}
       width={box.w}
       height={box.h}
       offsetX={box.w / 2}
       offsetY={box.h / 2}
+      scaleX={anim.scale}
+      scaleY={anim.scale}
       rotation={geom?.rotate ?? layer.rotate}
-      opacity={geom?.opacity ?? layer.opacity}
+      opacity={(geom?.opacity ?? layer.opacity) * anim.opacity}
       visible={!hidden}
       draggable={draggable}
       listening={selectable}
@@ -394,9 +407,9 @@ function LayerNode({
       onTransformEnd={(e) => {
         onGuides(NO_GUIDES);
         const node = e.target as Konva.Image;
-        const newW = Math.max(8, node.width() * node.scaleX());
-        node.scaleX(1);
-        node.scaleY(1);
+        const newW = Math.max(8, (node.width() * node.scaleX()) / anim.scale);
+        node.scaleX(anim.scale);
+        node.scaleY(anim.scale);
         commitBox(node, newW, node.rotation());
       }}
       stroke={selected ? GUIDE_COLOR : undefined}
@@ -472,13 +485,14 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上；
   // 有原声静音区间（source_mute，HIG-25）时跟着播放头逐帧取增益，落进区间就是 0。
-  const srcVolume = sourceVolume(spec?.audio);
+  // 源音轨关掉眼睛（HIG-33）：预览同样听不到原声
+  const srcVolume = spec?.audio?.source_hidden ? 0 : sourceVolume(spec?.audio);
   const srcAudio = spec?.audio;
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
     el.volume = srcVolume;
-    if (!srcAudio?.source_mute?.length) return;
+    if (!srcAudio?.source_mute?.length || srcAudio.source_hidden) return;
     const apply = (t: number) => {
       const v = videoRef.current;
       if (v) v.volume = sourceGainAt(srcAudio, sourceToPost(Math.max(0, t), player.remove));
@@ -577,7 +591,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         <AudioTracks />
         {!coverActive &&
           layers.map((l) => {
-            if (l.type !== 'mask' || l.visible === false || !windowContains(l.t, postTime)) return null;
+            if (l.type !== 'mask' || l.hidden || !windowContains(l.t, postTime)) return null;
             const g = geomOf(l);
             const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
             return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
@@ -587,7 +601,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
             <KLayer>
               {layers.map((l) => {
-                if (l.visible === false || coverActive) return null;
+                if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
                 const selectable = layerTypes.includes(l.type);
                 if (l.type === 'mask') {

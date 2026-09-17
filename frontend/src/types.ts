@@ -317,9 +317,10 @@ export interface LayerBase {
   origin?: 'localize';
   /** 可选；与 origin 配套：这层译文字幕属于哪个目标语言。 */
   lang?: string;
+  /** 可选（HIG-33）：时间线上关掉眼睛。留在 spec 里，成片不渲染（视频贴纸的声音一起去掉）；缺省 false，false 时不发。 */
+  hidden?: boolean;
   // 前端本地字段（不发送给后端语义无影响；后端 schema 允许附加字段则透传）
   name?: string;
-  visible?: boolean;
   locked?: boolean;
 }
 
@@ -404,6 +405,19 @@ export interface Preset {
   created_at: string;
 }
 
+/** 文字动画预设（HIG-40，契约 §2 layers[type=text].animation）；曲线见 lib/textAnimation。 */
+export type TextAnimMovePreset = 'fade' | 'slide_up' | 'slide_down' | 'slide_left' | 'slide_right' | 'pop';
+export type TextAnimLoopPreset = 'breathe' | 'float' | 'blink';
+
+export interface TextAnimation {
+  /** 入场：时段开头；duration 秒，缺省 0.5。 */
+  in?: { preset: TextAnimMovePreset; duration?: number };
+  /** 出场：时段结尾；duration 秒，缺省 0.5。 */
+  out?: { preset: TextAnimMovePreset; duration?: number };
+  /** 循环：入场结束到时段结束（与出场叠加）；period 秒，缺省 1.2。 */
+  loop?: { preset: TextAnimLoopPreset; period?: number };
+}
+
 export interface TextLayer extends LayerBase {
   type: 'text';
   text: string;
@@ -414,6 +428,8 @@ export interface TextLayer extends LayerBase {
   image_size?: [number, number] | null;
   /** 可选（HIG-29）：按输出画幅重新渲染的 PNG，键为 variant_key；worker 优先用它，找不到时回落 image_url。导出时重新生成。 */
   variant_images?: Record<string, { url: string; size: [number, number] }> | null;
+  /** 可选（HIG-40）：入场 / 出场 / 循环动画；空对象等于没有，发送时省略。 */
+  animation?: TextAnimation;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */
   width_manual?: boolean;
 }
@@ -468,6 +484,8 @@ export interface OutputVariant {
   /** 非 9x16 输出上图层怎么摆（HIG-29）：canvas = 相对该画布（缺省）；video = 跟着视频画面走（lib/variantLayout）。 */
   layer_fit?: 'canvas' | 'video';
   layer_overrides?: Record<string, LayerOverride>;
+  /** 可选（HIG-35）：导出时是否勾选这个画幅。缺省：9x16 视为勾选，其余视为不勾。只记用户偏好，出哪些文件仍以 render 的 variant_keys 为准。 */
+  export?: boolean;
 }
 
 /** 音轨角色，只给界面分类（契约 §2 audio.tracks[].role）；worker 不区分。 */
@@ -495,6 +513,8 @@ export interface AudioTrack {
   /** 可选；改语言模块加的配音 / 伴奏轨打 'localize'（契约 §2），与 layers[].origin 同义。 */
   origin?: 'localize';
   lang?: string;
+  /** 可选（HIG-33）：关掉眼睛，不混进成片也不算跳过；缺省 false，false 时不发。 */
+  hidden?: boolean;
 }
 
 /** 契约 §2 audio：源音轨音量 + 叠加音轨。缺省（无此块）= 源音轨原样保留。 */
@@ -504,6 +524,8 @@ export interface AudioSpec {
   /** 可选（HIG-25）：源音轨在这些剪后时段静音，画面不动。升序、不重叠。 */
   source_mute?: [number, number][];
   tracks: AudioTrack[];
+  /** 可选（HIG-33）：源音轨关掉眼睛，成片不带原声；source_volume 原样保留，打开眼睛即恢复。 */
+  source_hidden?: boolean;
 }
 
 /** 契约 §2 cover（HIG-9）：成片最前面的封面。缺省（无此块）= 没有封面。 */

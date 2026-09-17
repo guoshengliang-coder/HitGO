@@ -287,3 +287,14 @@ def test_style_only_variant_images_follow_text():
     assert out["layers"][1]["variant_images"] == {"16x9": {"url": "/media/uploads/u_v.png", "size": [300, 72]}}
     del src["layers"][1]["variant_images"]
     assert "variant_images" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]
+
+
+def test_style_only_text_animation_follows_text():
+    """HIG-40: the animation is part of a text layer's look, like its style."""
+    src, target = valid_spec(), _target_with_layers()
+    src["layers"][1]["animation"] = {"in": {"preset": "pop", "duration": 0.4}}
+    target["layers"][1]["animation"] = {"loop": {"preset": "blink", "period": 1}}
+    out = apply_modules(src, target, ["layers"], 24.6, "style_only")
+    assert out["layers"][1]["animation"] == {"in": {"preset": "pop", "duration": 0.4}}
+    del src["layers"][1]["animation"]
+    assert "animation" not in apply_modules(src, target, ["layers"], 24.6, "style_only")["layers"][1]

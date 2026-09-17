@@ -84,6 +84,8 @@ class LayerBase(BaseModel):
     rotate: float = Field(default=0.0, ge=-360, le=360)
     opacity: float = Field(default=1.0, ge=0, le=1)
     t: Literal["all"] | TimeWindow = "all"
+    # Eye switched off in the editor (HIG-33): kept in the spec, left out of the output.
+    hidden: bool = False
 
     @field_validator("t")
     @classmethod
@@ -184,6 +186,42 @@ class VariantImage(BaseModel):
         return v
 
 
+AnimMovePreset = Literal["fade", "slide_up", "slide_down", "slide_left", "slide_right", "pop"]
+AnimLoopPreset = Literal["breathe", "float", "blink"]
+ANIM_MAX_SECONDS = 10.0
+
+
+class TextAnimPhase(BaseModel):
+    """Enter / exit animation of a text layer (HIG-40); curves in services/animation.py."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    preset: AnimMovePreset
+    duration: float = Field(default=0.5, gt=0, le=ANIM_MAX_SECONDS)
+
+
+class TextAnimLoop(BaseModel):
+    """Loop animation between the end of the enter and the start of the exit (HIG-40)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    preset: AnimLoopPreset
+    period: float = Field(default=1.2, ge=0.2, le=ANIM_MAX_SECONDS)
+
+
+class TextAnimation(BaseModel):
+    # "in" is a Python keyword, hence the aliases; the contract field names are in / out / loop.
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    enter: TextAnimPhase | None = Field(default=None, alias="in")
+    exit: TextAnimPhase | None = Field(default=None, alias="out")
+    loop: TextAnimLoop | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.enter is not None or self.exit is not None or self.loop is not None
+
+
 class TextLayer(LayerBase):
     type: Literal["text"]
     text: str = ""
@@ -193,6 +231,17 @@ class TextLayer(LayerBase):
     image_size: tuple[int, int] | None = None
     # Per-output PNGs keyed by variant_key; missing / unresolvable entries fall back to image_url.
     variant_images: dict[str, VariantImage] | None = None
+    animation: TextAnimation | None = None  # HIG-40
+
+    @model_validator(mode="after")
+    def _animation_fits_window(self) -> TextLayer:
+        anim = self.animation
+        if anim is None or self.t == "all":
+            return self
+        total = (anim.enter.duration if anim.enter else 0.0) + (anim.exit.duration if anim.exit else 0.0)
+        if total > (self.t[1] - self.t[0]) + 1e-6:
+            raise ValueError(f"文字图层 {self.id}：入场加出场动画时长不能超过出现时段长度")
+        return self
 
     @field_validator("variant_images")
     @classmethod
@@ -304,6 +353,9 @@ class OutputVariant(BaseModel):
     crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
     layer_fit: LayerFit = "canvas"
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
+    # Editor preference (HIG-35): is this output ticked for export? None = only 9x16 is.
+    # The worker ignores it; POST /api/render's variant_keys decides what gets rendered.
+    export: bool | None = None
 
     @field_validator("variant_key")
     @classmethod
@@ -374,6 +426,7 @@ class AudioTrack(BaseModel):
     loop: bool = False
     fade_in: float = Field(default=0.0, ge=0)
     fade_out: float = Field(default=0.0, ge=0)
+    hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
 
     @field_validator("t")
     @classmethod
@@ -398,6 +451,8 @@ class AudioSpec(BaseModel):
     # Post-trim spans where the source audio is silenced, picture untouched (HIG-25).
     source_mute: list[TimeWindow] = Field(default_factory=list)
     tracks: list[AudioTrack] = Field(default_factory=list)
+    # Eye off on the source track (HIG-33): no source audio in the output, source_volume kept.
+    source_hidden: bool = False
 
     @field_validator("source_mute")
     @classmethod

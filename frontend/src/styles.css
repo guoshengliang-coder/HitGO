@@ -763,3 +763,76 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .version-item .warn-list { margin: 0; padding-left: 16px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
 .badge-stale { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-edited-bg); color: var(--st-edited-fg); flex: none; }
 .badge-ok { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-done-bg); color: var(--st-done-fg); flex: none; }
+
+/* HIG-33：关掉眼睛的轨道——眼睛常显（一眼看出哪条被隐藏），名字划线，条变淡 */
+.tl-row.hidden .lbl .tl-acts { opacity: 0.9; }
+.tl-audio.hidden .lbl .lname { color: var(--ink-3); text-decoration: line-through; }
+.tl-audio.hidden .lbl .role { opacity: 0.5; }
+.tl-bar.audio.hidden { opacity: 0.35; }
+.tl-layer.hidden .tl-bar { opacity: 0.4; }
+.track-item.hidden .tname { color: var(--ink-3); text-decoration: line-through; }
+
+/* HIG-33：拖音频到时间线——落点竖线 + 提示 */
+.tl-scroll.drop-over { box-shadow: inset 0 0 0 1px var(--focus); }
+.tl-drop { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--focus); z-index: 6; pointer-events: none; }
+.tl-drop-tip { position: absolute; top: 2px; left: 4px; font-size: 10.5px; white-space: nowrap; padding: 1px 6px; border-radius: 4px; background: var(--focus); color: #fff; }
+.asset-card.drag { cursor: grab; }
+
+/* HIG-35：画幅页签 = 导出勾 + 预览页签，两处分开点 */
+.chips.variant-tabs .chip.variant-tab { display: flex; align-items: center; gap: 0; padding: 0 0 0 6px; }
+.variant-tab .vt-check { flex: none; width: 13px; height: 13px; padding: 0; border-radius: 3px; border: 1px solid var(--ink-3); background: transparent; position: relative; cursor: pointer; }
+.variant-tab .vt-check.on { background: var(--accent); border-color: var(--accent); }
+.variant-tab .vt-check.on::after { content: ''; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 7px; border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.variant-tab .vt-label { flex: 1; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; padding: 0 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
+.variant-tab .vt-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
+.chip.export-variant { display: inline-flex; align-items: center; gap: 6px; }
+
+/* HIG-40：文字动画预设卡片。字形 T 在悬停 / 选中时演示这个预设 */
+.anim-dot { display: inline-block; width: 5px; height: 5px; margin-left: 4px; border-radius: 50%; background: var(--accent); vertical-align: middle; }
+.anim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; }
+.anim-card { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px 5px; border-radius: 6px; border: 1px solid var(--s1-line); background: var(--s2); color: var(--ink-2); font-size: 11px; cursor: pointer; }
+.anim-card:hover { color: var(--ink); border-color: var(--line); }
+.anim-card.active { border-color: var(--accent); color: var(--ink); background: var(--s1); }
+.anim-glyph { display: grid; place-items: center; width: 36px; height: 26px; border-radius: 4px; background: var(--bg); color: var(--ink); font-weight: 700; font-size: 15px; overflow: hidden; }
+.anim-glyph.none { color: var(--ink-3); }
+.anim-card:hover .anim-glyph:not(.none), .anim-card.active .anim-glyph:not(.none) { animation-duration: 1.2s; animation-iteration-count: infinite; animation-timing-function: ease-out; }
+.anim-card:hover .anim-glyph.in.fade, .anim-card.active .anim-glyph.in.fade { animation-name: ag-fade-in; }
+.anim-card:hover .anim-glyph.out.fade, .anim-card.active .anim-glyph.out.fade { animation-name: ag-fade-out; }
+.anim-card:hover .anim-glyph.in.slide_up, .anim-card.active .anim-glyph.in.slide_up { animation-name: ag-in-up; }
+.anim-card:hover .anim-glyph.in.slide_down, .anim-card.active .anim-glyph.in.slide_down { animation-name: ag-in-down; }
+.anim-card:hover .anim-glyph.in.slide_left, .anim-card.active .anim-glyph.in.slide_left { animation-name: ag-in-left; }
+.anim-card:hover .anim-glyph.in.slide_right, .anim-card.active .anim-glyph.in.slide_right { animation-name: ag-in-right; }
+.anim-card:hover .anim-glyph.in.pop, .anim-card.active .anim-glyph.in.pop { animation-name: ag-pop-in; }
+.anim-card:hover .anim-glyph.out.slide_up, .anim-card.active .anim-glyph.out.slide_up { animation-name: ag-out-up; }
+.anim-card:hover .anim-glyph.out.slide_down, .anim-card.active .anim-glyph.out.slide_down { animation-name: ag-out-down; }
+.anim-card:hover .anim-glyph.out.slide_left, .anim-card.active .anim-glyph.out.slide_left { animation-name: ag-out-left; }
+.anim-card:hover .anim-glyph.out.slide_right, .anim-card.active .anim-glyph.out.slide_right { animation-name: ag-out-right; }
+.anim-card:hover .anim-glyph.out.pop, .anim-card.active .anim-glyph.out.pop { animation-name: ag-pop-out; }
+.anim-card:hover .anim-glyph.loop.breathe, .anim-card.active .anim-glyph.loop.breathe { animation-name: ag-breathe; animation-timing-function: ease-in-out; }
+.anim-card:hover .anim-glyph.loop.float, .anim-card.active .anim-glyph.loop.float { animation-name: ag-float; animation-timing-function: ease-in-out; }
+.anim-card:hover .anim-glyph.loop.blink, .anim-card.active .anim-glyph.loop.blink { animation-name: ag-blink; animation-timing-function: ease-in-out; }
+@keyframes ag-fade-in { 0% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes ag-fade-out { 0%, 40% { opacity: 1; } 90%, 100% { opacity: 0; } }
+@keyframes ag-in-up { 0% { opacity: 0; transform: translateY(8px); } 50%, 100% { opacity: 1; transform: none; } }
+@keyframes ag-in-down { 0% { opacity: 0; transform: translateY(-8px); } 50%, 100% { opacity: 1; transform: none; } }
+@keyframes ag-in-left { 0% { opacity: 0; transform: translateX(10px); } 50%, 100% { opacity: 1; transform: none; } }
+@keyframes ag-in-right { 0% { opacity: 0; transform: translateX(-10px); } 50%, 100% { opacity: 1; transform: none; } }
+@keyframes ag-pop-in { 0% { opacity: 0; transform: scale(0.5); } 35% { opacity: 1; transform: scale(1.1); } 50%, 100% { transform: none; } }
+@keyframes ag-out-up { 0%, 40% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: translateY(-8px); } }
+@keyframes ag-out-down { 0%, 40% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: translateY(8px); } }
+@keyframes ag-out-left { 0%, 40% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: translateX(-10px); } }
+@keyframes ag-out-right { 0%, 40% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: translateX(10px); } }
+@keyframes ag-pop-out { 0%, 40% { opacity: 1; transform: none; } 90%, 100% { opacity: 0; transform: scale(0.5); } }
+@keyframes ag-breathe { 0%, 100% { transform: none; } 50% { transform: scale(1.18); } }
+@keyframes ag-float { 0%, 100% { transform: none; } 50% { transform: translateY(-4px); } }
+@keyframes ag-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* 时间线文字条上的入场 / 出场段 */
+.tl-anim { position: absolute; top: 0; bottom: 0; pointer-events: none; background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--accent) 35%, transparent) 3px 5px); }
+.tl-anim.in { left: 0; border-right: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); }
+.tl-anim.out { right: 0; border-left: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); }
+.chips.export-variants { display: grid; grid-template-columns: repeat(2, 1fr); }
+.chips.export-variants .chip { justify-content: space-between; }
+.audio-list-bar { flex-wrap: wrap; }
+.audio-list-bar .chips { flex: none; white-space: nowrap; }
+.audio-list-bar .chips .chip { white-space: nowrap; }

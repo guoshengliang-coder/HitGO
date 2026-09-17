@@ -10,15 +10,18 @@ import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, stickerAud
 import { windowRange } from '../../lib/stickerMedia';
 import { layerName } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
-import { IconTrash } from '../ui/Icons';
+import { IconEye, IconTrash } from '../ui/Icons';
 import { Modal } from '../ui/Modal';
 import { Field, Num, Slider } from '../ui/Num';
 import { Seg, type SegOption } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import type { AudioRole, AudioTrack, SeparationModel } from '../../types';
 
-/** 选一段音频素材作为 BGM / 口播；可以直接在这里上传（走素材库同一条上传链路）。 */
-function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (assetId: string) => void; onClose: () => void }) {
+/**
+ * 音频素材列表：我的 / 素材库 / 分离结果 + 搜索 + 直接上传（走素材库同一条上传链路）。
+ * 弹窗选择器点选用（onPick）；音频面板里常驻一份，卡片拖到时间线上加轨（draggable，HIG-33）。
+ */
+function AudioAssetList({ onPick, draggable }: { onPick?: (assetId: string) => void; draggable?: boolean }) {
   const assets = useEditor((s) => s.assets);
   const loadAssets = useEditor((s) => s.loadAssets);
   const [bucket, setBucket] = useState<AssetBucket>('mine');
@@ -40,14 +43,14 @@ function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (asse
     }
   };
   return (
-    <Modal title={role === 'bgm' ? '选择 BGM' : '选择口播'} onClose={onClose} width={520}>
-      <div className="inline" style={{ marginBottom: 8 }}>
+    <>
+      <div className="inline audio-list-bar" style={{ marginBottom: 8 }}>
         <div className="chips">
           {(['mine', 'library', 'derived'] as AssetBucket[]).map((b) => (
             <button key={b} className={`chip ${bucket === b ? 'active' : ''}`} onClick={() => setBucket(b)}>{BUCKET_LABEL[b]}</button>
           ))}
         </div>
-        <input className="input sm" placeholder="搜索音频…" value={q} onChange={(e) => setQ(e.target.value)} style={{ flex: 1 }} />
+        <input className="input sm" placeholder="搜索音频…" value={q} onChange={(e) => setQ(e.target.value)} style={{ flex: 1, minWidth: 90 }} />
         <label className="btn sm" style={{ cursor: 'pointer' }}>
           {progress !== null ? `上传中 ${Math.round(progress * 100)}%` : '上传音频'}
           <input type="file" multiple accept={AUDIO_ACCEPT} className="sr-only" disabled={progress !== null} onChange={(e) => { void upload(Array.from(e.target.files ?? [])); e.target.value = ''; }} />
@@ -59,12 +62,30 @@ function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (asse
       ) : (
         <div className="sticker-grid">
           {list.map((a) => (
-            <AssetCard key={a.id} asset={a} onPick={() => onPick(a.id)} />
+            <AssetCard key={a.id} asset={a} onPick={onPick ? () => onPick(a.id) : undefined} draggable={draggable} />
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+/** 选一段音频素材作为 BGM / 口播。 */
+function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (assetId: string) => void; onClose: () => void }) {
+  return (
+    <Modal title={role === 'bgm' ? '选择 BGM' : '选择口播'} onClose={onClose} width={520}>
+      <AudioAssetList onPick={onPick} />
       <div className="hint" style={{ marginTop: 8 }}>点击即加为{role === 'bgm' ? ' BGM（循环、60% 音量、末尾淡出 1 秒）' : '口播（原音量、播一遍）'}，加入后可在面板里调时段、音量、淡入淡出，也可以在时间线上拖动。还在探测时长的素材要等它就绪。</div>
     </Modal>
+  );
+}
+
+/** 常驻的音频素材（HIG-33）：拖到时间线上加轨，落点就是起点。 */
+function LibrarySection() {
+  return (
+    <Section id="audio.library" title="音频素材" bodyClass="stack" hint="拖到时间线上加轨" help={LIBRARY_HELP}>
+      <AudioAssetList draggable />
+    </Section>
   );
 }
 
@@ -81,6 +102,7 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
   const assets = useEditor((s) => s.assets);
   const update = useEditor((s) => s.updateAudioTrack);
   const remove = useEditor((s) => s.removeAudioTrack);
+  const toggleHidden = useEditor((s) => s.toggleTrackHidden);
   const select = useEditor((s) => s.setSelectedTrack);
   const postDuration = usePostDuration();
   const r = resolveTrack(track);
@@ -94,13 +116,16 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
   const windowLen = Math.max(0, Math.min(we, postDuration) - ws);
   const notReady = !asset || (asset.status ?? 'ready') !== 'ready';
   return (
-    <div className={`track-item ${selected ? 'selected' : ''}`} onClick={() => select(track.id)}>
+    <div className={`track-item ${selected ? 'selected' : ''} ${track.hidden ? 'hidden' : ''}`} onClick={() => select(track.id)}>
       <div className="track-head">
         <span className={`role ${r.role}`}>{r.role === 'voice' ? '口播' : 'BGM'}</span>
         {r.align === 'source' && <span className="role source" title="对齐源时间轴：随剪辑一起裁，不循环、无偏移">源</span>}
         <span className="tname" title={asset?.name}>{name}</span>
         {mediaDuration > 0 && <span className="mono muted">{formatSeconds(mediaDuration, 1)}</span>}
         {!asset && <span className="error-text small" title="素材已被删除或被重新分离 / 重新配音替换掉，导出时会跳过这条音轨">素材已失效，导出会跳过</span>}
+        <button className="btn ghost icon sm" title={track.hidden ? '显示（导出时恢复）' : '隐藏（导出时也不混入，不删除）'} aria-label={track.hidden ? '显示音轨' : '隐藏音轨'} aria-pressed={!!track.hidden} onClick={(e) => { e.stopPropagation(); toggleHidden(track.id); }}>
+          <IconEye off={!!track.hidden} />
+        </button>
         <button className="btn ghost icon sm danger" aria-label="删除音轨" onClick={(e) => { e.stopPropagation(); remove(track.id); }}>
           <IconTrash />
         </button>
@@ -157,16 +182,24 @@ function SourceSection() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const audio = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio : null));
   const setSourceVolume = useEditor((s) => s.setSourceVolume);
+  const toggleSourceHidden = useEditor((s) => s.toggleSourceHidden);
   const sv = sourceVolume(audio);
+  const hidden = !!audio?.source_hidden;
   const mutes = audio?.source_mute ?? [];
   const hasAudio = !!video?.has_audio;
-  const summary = !hasAudio ? '无音轨' : sv === 0 ? '静音' : `${Math.round(sv * 100)}%${mutes.length ? ` · 静音 ${mutes.length} 段` : ''}`;
+  const summary = !hasAudio ? '无音轨' : hidden ? '已隐藏' : sv === 0 ? '静音' : `${Math.round(sv * 100)}%${mutes.length ? ` · 静音 ${mutes.length} 段` : ''}`;
   return (
     <Section id="audio.source" title="源音轨" bodyClass="stack" summary={<span>{summary}</span>} hint={hasAudio ? '时间线上选中源音轨，Q / W 静音左 / 右侧' : undefined} help={SOURCE_HELP}>
       <Slider label="音量" value={sv} disabled={!hasAudio} onChange={setSourceVolume} />
       <Field label="整条静音" title="源视频自带的声音整个不要（换 BGM / 口播时常用）">
         <button type="button" role="switch" aria-checked={sv === 0} aria-label="整条静音" className={`sw ${sv === 0 ? 'on' : ''}`} disabled={!hasAudio} onClick={() => setSourceVolume(sv === 0 ? 1 : 0)} />
       </Field>
+      {hasAudio && hidden && (
+        <div className="inline">
+          <span className="hint" style={{ flex: 1 }}>源音轨已隐藏，成片不带原声；音量设置保留。</span>
+          <button className="btn sm" onClick={toggleSourceHidden}>显示</button>
+        </div>
+      )}
       {!hasAudio && <div className="hint">源视频没有音轨；加 BGM / 口播后成片才有声音。</div>}
       {hasAudio && mutes.length > 0 && <div className="hint">已静音 {mutes.length} 段原声：{mutes.map(([a, b]) => `${a.toFixed(1)}–${b.toFixed(1)}s`).join('、')}（剪后时间）。</div>}
     </Section>
@@ -212,6 +245,7 @@ const MODEL_OPTIONS: SegOption<SeparationModel>[] = [
   { v: 'htdemucs_ft', label: '高质量', title: 'htdemucs_ft 四模型集成：人声边缘更干净，慢约 4 倍' },
 ];
 
+const LIBRARY_HELP = '把卡片拖到下方时间线上：落点就是音轨起点。落在口播音轨那一行加为口播（按素材时长放一遍），其余位置加为 BGM（循环铺到结尾，落在最开头则全程）。也可以把电脑里的 mp3 / wav / m4a 直接拖到时间线上，上传完成后自动加轨。';
 const SOURCE_HELP = '源视频自带的声音。要剪掉一段原声：在时间线上点「源音轨」，按 Q / W 静音播放头左 / 右侧，或 I、O 标一段；画面不受影响。';
 const TRACKS_HELP = 'BGM 会循环铺满并在末尾淡出；口播按素材原长播一遍，可设区间。各音轨按原音量直接叠加，不自动压低源音轨。时段基于剪后时间轴，可在时间线上拖动条移动、拖两端调整（按住 ⌥ 不吸附）；修改剪辑不会自动改动音轨时段，超出剪后时长的部分成片里会被截掉。';
 const SEPARATE_HELP = '把源视频的声音拆成人声轨和伴奏轨，之后可以只留一条再叠新的 BGM 或口播。在服务器 CPU 上跑，短片约一分钟。分离结果也会出现在「+ BGM / + 口播」选择器的「分离结果」栏里，可用到别的视频上；重新分离会替换掉这两条素材。';
@@ -303,6 +337,7 @@ export function AudioPanel() {
       <div className="panel-body inspector">
         <SourceSection />
         <TracksSection />
+        <LibrarySection />
         <SeparateSection />
         <StickerAudioSection />
       </div>

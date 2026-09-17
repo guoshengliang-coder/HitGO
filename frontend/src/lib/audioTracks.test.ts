@@ -26,6 +26,18 @@ describe('isDefaultAudio / contractAudio', () => {
     const out = contractAudio({ source_volume: 0.33333, tracks: [{ id: 'a', asset_id: 'x', t: [1.23456, 4], volume: 0.7 }] });
     expect(out).toEqual({ source_volume: 0.333, tracks: [{ id: 'a', asset_id: 'x', t: [1.235, 4], volume: 0.7 }] });
   });
+  it('隐藏（HIG-33）：source_hidden 单独也算非缺省；hidden 只在为 true 时带上', () => {
+    expect(isDefaultAudio({ source_volume: 1, tracks: [], source_hidden: true })).toBe(false);
+    expect(contractAudio({ source_volume: 1, tracks: [], source_hidden: true })).toEqual({ source_volume: 1, source_hidden: true, tracks: [] });
+    expect(contractAudio({ source_volume: 1, tracks: [], source_hidden: false })).toBeUndefined();
+    const out = contractAudio({ source_volume: 0.5, tracks: [{ id: 'a', asset_id: 'x', t: 'all', hidden: true }, { id: 'b', asset_id: 'y', t: 'all', hidden: false }] });
+    expect(out?.tracks).toEqual([{ id: 'a', asset_id: 'x', t: 'all', hidden: true }, { id: 'b', asset_id: 'y', t: 'all' }]);
+    expect(out).not.toHaveProperty('source_hidden');
+  });
+  it('源音轨隐藏时增益为 0，音量设置保留', () => {
+    expect(sourceGainAt({ source_volume: 0.8, tracks: [], source_hidden: true }, 3)).toBe(0);
+    expect(sourceGainAt({ source_volume: 0.8, tracks: [] }, 3)).toBe(0.8);
+  });
 });
 
 describe('trackMediaTime', () => {

@@ -226,6 +226,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "rotate": 0,                           // 角度，绕图层中心
       "opacity": 1,
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
+      "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
       "playback": "loop",                    // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
       "mix_audio": false                     // 可选，缺省 false：视频贴纸自带的音轨是否合成进成片
     },
@@ -255,6 +256,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "anchor": "top-center", "margin": [0, 0.06],
       "width": 0.5,                          // 相对画布宽；PNG 按此缩放
       "rotate": 0, "opacity": 1, "t": "all",
+      "animation": {                         // 可选（HIG-40）：入场 / 出场 / 循环动画，三项各自可选，见下方规则
+        "in": { "preset": "pop", "duration": 0.5 },
+        "out": { "preset": "fade", "duration": 0.5 },
+        "loop": { "preset": "breathe", "period": 1.2 }
+      },
       "origin": "localize", "lang": "ko"     // 可选；前端标记：改语言套用出来的译文字幕（见下方规则）
     },
     {
@@ -269,7 +275,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     }
   ],
   "outputs": [
-    { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high" },
+    { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high",
+      "export": true },                      // 可选（HIG-35）：导出时是否勾选这个画幅；缺省时 9x16 视为 true、其余视为 false，见下方规则
     { "variant_key": "1x1",  "aspect": "1:1",  "fill": "blur",
       "layer_fit": "video",                  // 可选，缺省 "canvas"：图层相对该画布 | "video"：跟着视频画面走，见下方规则
       "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
@@ -279,6 +286,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "audio": {                                 // 可选；缺省 = 源音轨原样保留（即此前的行为）
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
     "source_mute": [[3.0, 4.5]],             // 可选，缺省 []：源音轨在这些时段静音（剪后时间轴，秒），画面不动（HIG-25）
+    "source_hidden": false,                  // 可选，缺省 false：源音轨关掉眼睛，成片不带原声，source_volume 原样保留（HIG-33）
     "tracks": [
       {
         "id": "au_1",
@@ -290,6 +298,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
+        "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
     ]
@@ -312,7 +321,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
 - **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
-- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
+- **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。勾选结果写进各输出的 `export`（HIG-35，可选布尔；缺省时 `9x16` 视为勾选、其余视为不勾），「成片画面」画幅页签上的勾与导出对话框是同一份，随视频保存；worker 不读 `export`，这次出哪些文件仍只由 `variant_keys` 决定。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
 - **`layer_fit`**（可选，缺省 `"canvas"`）：非 `9x16` 输出上图层怎么摆。`"canvas"` = 上面的公式直接套该输出的画布（此前的行为）；`"video"` = 图层跟着视频画面走：
   - **参考画布**：spec 里 `variant_key = "9x16"` 的输出（没有时按 `9:16` + `blur`）。图层的 `anchor / margin / width / height` 都按参考画布理解。参考输出自身、以及源视频宽高未知时忽略此字段，按 `"canvas"` 处理。
   - **映射**：分别算出源画面在参考画布与目标画布上的位置（`blur` / `color`：contain 居中；`crop`：先取裁切窗口再 cover 居中），得到「参考画布像素 → 源像素 → 目标画布像素」的等比映射 `p' = offset + p·k`。
@@ -330,6 +339,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 层级按 `layers` 数组顺序：编辑器新建 / 粘贴遮盖层时插到第一个文字图层之前，所以遮盖永远压在字幕之下；用户仍可在同类里调层级。
   - 批量套用 `style_only` 时复制 `mode | color | blur | height`（+ 公共的 `width | rotate | opacity`），未匹配的遮盖层插到目标第一个文字图层之前而不是追加到末尾。
   - 编辑器预览用 `backdrop-filter` 模糊 / 色块 div 实时叠在画面上，只是近似；成片效果以 worker 为准。遮盖只是模糊 / 色块，不是无痕擦除。
+- **隐藏 `hidden`**（HIG-33，图层 / 音轨可选，缺省 `false`；源音轨用 `audio.source_hidden`）：编辑器轨道头的「眼睛」。
+  隐藏不是删除，所有设置都留在 spec 里，打开眼睛即恢复。worker 对 `hidden = true` 的图层当作不存在（贴纸的
+  `mix_audio` 声音一并去掉），不写警告；`hidden = true` 的 track 不混入，也不计入回传 `audio.skipped`；
+  `source_hidden = true` 等价于 `source_volume = 0`（回传的 `audio.source_volume` 为 0），但 spec 里的 `source_volume`
+  不变。编辑器预览按同样的规则隐藏 / 静音。前端只在为 `true` 时发送这些字段。批量套用时随所在的图层 / `audio`
+  块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
 - **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
@@ -378,6 +393,21 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **改语言标记 `origin` / `lang`**（可选）：`layers[]` 与 `audio.tracks[]` 上的前端标记，`origin = "localize"` 表示这一层 / 轨
   是套用某个语言版本生成的，`lang` 是语言码。worker 忽略这两个字段（`extra = "ignore"` 校验但原样存取），批量套用
   原样复制；前端靠它们在切换版本时替换旧层 / 轨、判断当前套用的是哪个版本。
+- **文字动画 `animation`**（文字图层可选，HIG-40）：`{ in?, out?, loop? }`，缺省 / 空对象 = 不动（命令与此前完全一致）。
+  - `in` / `out`：`{ preset, duration }`，`preset` ∈ `fade | slide_up | slide_down | slide_left | slide_right | pop`，`duration` 秒，(0, 10]，缺省 0.5。
+    `loop`：`{ preset, period }`，`preset` ∈ `breathe | float | blink`，`period` 秒，[0.2, 10]，缺省 1.2。
+  - 时间相对图层的出现时段 `[a, b]`（`t = "all"` 时为 `[0, 剪后时长]`，终点裁到剪后时长），本地时间 `u = 时刻 − a`，`L = b − a`。
+    入场占 `[0, di]`，`di = min(in.duration, L)`；出场占 `[L − do, L]`，`do = min(out.duration, L − di)`；循环从 `di` 持续到 `L`（与出场叠加）。
+    `t` 为区间时 `in.duration + out.duration` 不能超过 `L`（400）；编辑器保存前按上面的规则把两者压进时段。
+  - 每一帧是四个量：透明度倍数 `opacity`（乘在图层 `opacity` 上）、中心偏移 `dx / dy`（**相对画布高**，各画幅看起来一样）、绕中心缩放 `scale`。各项相乘 / 相加：
+    - 入场，`p = clip(u/di, 0, 1)`，`e = 1 − (1 − p)³`：`fade` 透明度 `e`；`slide_up` 另 `dy = 0.05·(1 − e)`（从下方滑上来），`slide_down` `dy = −0.05·(1 − e)`，
+      `slide_left` `dx = 0.05·(1 − e)`（从右侧滑向左），`slide_right` `dx = −0.05·(1 − e)`；`pop` 透明度 `clip(3p, 0, 1)`、`scale = 0.5 + 0.5·back(p)`，
+      `back(p) = 1 + 2.70158·(p − 1)³ + 1.70158·(p − 1)²`（略微回弹）。
+    - 出场，`q = clip((u − (L − do))/do, 0, 1)`，`e = q³`：透明度 `1 − e`；`slide_up` `dy = −0.05·e`，`slide_down` `dy = 0.05·e`，`slide_left` `dx = −0.05·e`，
+      `slide_right` `dx = 0.05·e`；`pop` `scale = 1 − 0.5·e`；`fade` 只有透明度。
+    - 循环（`di ≤ u ≤ L`），`w = 2π·(u − di)/period`：`breathe` `scale × (1 + 0.03·(1 − cos w))`；`float` `dy − 0.008·sin w`；`blink` 透明度 × `(1 − 0.35·(1 − cos w))`。
+  - 前端 `lib/textAnimation.ts` 与后端 `services/animation.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/textAnimationCases.json` 做 golden 测试。
+    编辑器画布按同一曲线预览；选中文字且暂停时显示静止状态（方便拖动调整）。批量套用 `style_only` 时随文字一起复制。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius` 以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。
 
 ## 3. API
@@ -397,7 +427,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `POST /api/batches/{id}/apply` `{ source_video_id, target_video_ids: [], modules: ["trim"|"layers"|"outputs"|"audio"|"cover"], layer_mode?: "replace"|"style_only" }` → `Video[]`（被更新的目标）。规则：把源 spec 的对应模块深拷贝到目标；目标没有 spec 时先建空 spec；`trim` 模块套用时若目标时长更短，丢弃超出的区间；`audio` 模块整块深拷贝（源没有 `audio` 块时目标的也被清掉）；`cover` 模块同样整块深拷贝（源没有封面时清掉目标的）。
   - `layer_mode`（只影响 `layers` 模块，默认 `replace`）：
     - `replace`：目标的图层列表整体替换为源的深拷贝（原有行为）。
-    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
+    - `style_only`：源图层逐个匹配目标图层——先按相同 `id`；文字图层没有 id 匹配时退而找第一个 `text` 完全相同的目标文字图层（每个目标图层最多被匹配一次）。匹配上的目标只覆盖类型相关字段（贴纸：`asset_id | playback | mix_audio`；文字：`text | spans | style | image_url | image_size | variant_images | animation`；遮盖：`mode | color | blur | height`）以及 `width | rotate | opacity`，保留目标自己的 `anchor | margin | t` 与其它键；没匹配上的源图层深拷贝追加到末尾——遮盖层例外，插到目标第一个文字图层之前（保持压在字幕之下）。目标没有图层时等价于 `replace`。
 - `GET /api/batches/{id}/jobs` → `Job[]`（该批次全部任务，按创建时间倒序）
 - `GET /api/batches/{id}/outputs` → `Job[]`（status = done，按视频 order、variant_key 排）
 - `GET /api/outputs?limit=100&offset=0&q=` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
@@ -577,6 +607,12 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 2. `filter_complex` 顺序：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
    - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
+   - 带 `animation` 的文字图层（第 2 节）：输入改为 `-loop 1 -framerate <fps> -t <b> -i <png>`（从 0 起逐帧，滤镜时间 = 成片时间）；
+     链路 `format=rgba,scale=w:h` →（`scale` 动时）`pad` 到 1.1 倍留出余量 + `perspective=x0..y3=中心 ± 半宽/半高·scale((in−1)/fps − a):sense=destination:eval=frame`
+     （滤镜链路不能逐帧改尺寸，所以用透视搬角点代替缩放；`in` 从 1 计数）→ `rotate`（同静态）→（`opacity` 动时）
+     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·opacity·anim(T − a)'` 代替 `colorchannelmixer`；`overlay` 的 x / y 在动时写成
+     `x0 + H·dx(t − a)` 表达式，`enable` 照旧。不动的通道保持静态写法；没有 `animation` 的图层命令不变。
+   - `hidden = true` 的图层 / track 在构图前直接跳过，`source_hidden = true` 按 `source_volume = 0` 处理（第 2 节）。
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
    - 遮盖层（`type = "mask"`）不加 `-i` 输入，直接作用在当前画布 `[c{n−1}]` 上，区域先裁到画布内（x, y, w, h 为整数像素）：
      - blur：`[c{n−1}]split=2[m{n}s][m{n}b]`；`[m{n}b]format=rgba,crop=w:h:x:y,boxblur=lr=R:lp=P[:enable='between(t,a,b)'][,colorchannelmixer=aa=opacity][m{n}x]`；

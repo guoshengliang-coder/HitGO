@@ -386,3 +386,29 @@ def test_text_variant_images_validated():
         spec["layers"][1]["variant_images"] = bad
         with pytest.raises(ValidationError):
             EditSpec.model_validate(spec)
+
+
+def test_hidden_flags_default_off_and_must_be_booleans():
+    """HIG-33: the eye in the editor is stored on layers, tracks and the source track."""
+    spec = validate(audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm"}]))
+    assert [layer.hidden for layer in spec.layers] == [False, False]
+    assert spec.audio.tracks[0].hidden is False and spec.audio.source_hidden is False
+    raw = audio_spec(source_hidden=True, tracks=[{"id": "au_1", "asset_id": "a_bgm", "hidden": True}])
+    raw["layers"][1]["hidden"] = True
+    spec = validate(raw)
+    assert spec.layers[1].hidden and spec.audio.tracks[0].hidden and spec.audio.source_hidden
+    bad = valid_spec()
+    bad["layers"][0]["hidden"] = "maybe"
+    assert "hidden" in errors_of(bad)
+
+
+def test_output_export_flag_is_optional_and_boolean():
+    """HIG-35: the editor stores the export tick on each output; the worker ignores it."""
+    spec = validate(valid_spec())
+    assert [o.export for o in spec.outputs] == [None, None]
+    raw = valid_spec()
+    raw["outputs"][0]["export"] = False
+    raw["outputs"][1]["export"] = True
+    assert [o.export for o in validate(raw).outputs] == [False, True]
+    raw["outputs"][1]["export"] = "yes please"
+    assert "export" in errors_of(raw)

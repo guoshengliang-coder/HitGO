@@ -7,7 +7,8 @@ import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
-import { countSafeZoneOverlaps, outputFor } from '../../lib/spec';
+import { countSafeZoneOverlaps, exportKeys, outputFor } from '../../lib/spec';
+import { toggleExportVariant } from '../../lib/exportScope';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose } from '../ui/Icons';
 import { Field } from '../ui/Num';
@@ -15,10 +16,10 @@ import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
 import { CoverSection } from './CoverSection';
-import { VARIANT_DEFS, variantDef, type FillMode, type OutputQuality } from '../../types';
+import { VARIANT_DEFS, variantDef, type FillMode, type OutputQuality, type VariantKey } from '../../types';
 
 const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
-const FRAME_HELP = '每个画幅单独设置（导出时在「导出」里勾选出哪些画幅）。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
+const FRAME_HELP = '每个画幅单独设置；页签左边的勾表示导出时出这个画幅，勾选跟着视频保存，「导出」弹窗默认就按它来。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
 const DURATION_HELP = '文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。';
 
 /** 成片画面：按画幅页签设置填充方式、裁切范围、清晰度（HIG-8 搬到这里，HIG-29 恢复多画幅）。页签与画布预览联动。 */
@@ -28,6 +29,7 @@ function FrameSection() {
   const patchOutput = useEditor((s) => s.patchOutput);
   const previewKey = useEditor((s) => s.previewVariantKey);
   const setPreviewVariant = useEditor((s) => s.setPreviewVariant);
+  const setExportVariants = useEditor((s) => s.setExportVariants);
   const setCrop = useEditor((s) => s.setCrop);
   const cropEditing = useEditor((s) => s.cropEditing);
   const setCropEditing = useEditor((s) => s.setCropEditing);
@@ -55,6 +57,7 @@ function FrameSection() {
   // 安全区按竖版平台定义，只对 9:16 检查
   const overlaps = spec && isRef ? countSafeZoneOverlaps(spec, zone, assets) : 0;
   const calibrated = Object.keys(calibration).length > 0;
+  const exported: VariantKey[] = spec ? exportKeys(spec) : ['9x16'];
 
   const setFill = (fill: FillMode) => {
     if (fill === out.fill) return;
@@ -66,7 +69,7 @@ function FrameSection() {
   // 收起来之后摘要就是这块设置唯一的可见信息，所以安全区有重叠时也要在这一行看得见
   const summary = (
     <span className="mono">
-      {def.label} · {frameSummary(out, postDuration + preroll, calibration, sameAspect)}
+      {def.label} · {frameSummary(out, postDuration + preroll, calibration, sameAspect)} · 导出 {exported.map((k) => variantDef(k).label).join(' / ')}
       {overlaps > 0 && <span style={{ color: 'var(--st-failed-fg)' }}> · {overlaps} 个图层越界</span>}
     </span>
   );
@@ -74,16 +77,33 @@ function FrameSection() {
   return (
     <Section id="trim.frame" title="成片画面" defaultOpen={false} bodyClass="stack" summary={summary} help={FRAME_HELP}>
       <div className="chips variant-tabs" role="tablist" aria-label="画幅" style={{ display: 'flex' }}>
-        {VARIANT_DEFS.map((d) => (
-          <button key={d.key} role="tab" aria-selected={previewKey === d.key} className={`chip ${previewKey === d.key ? 'active' : ''}`} title={`${d.width}×${d.height} · ${d.note}`} onClick={() => setPreviewVariant(d.key)}>
-            {d.label}
-          </button>
-        ))}
-        <span className="mono muted small" style={{ marginLeft: 'auto' }}>
-          {def.width}×{def.height}
-        </span>
+        {VARIANT_DEFS.map((d) => {
+          const on = exported.includes(d.key);
+          const configured = d.key !== '9x16' && !!spec?.outputs.some((o) => o.variant_key === d.key);
+          return (
+            <div key={d.key} className={`chip variant-tab ${previewKey === d.key ? 'active' : ''}`}>
+              <button
+                type="button"
+                role="checkbox"
+                aria-checked={on}
+                aria-label={`导出 ${d.label}`}
+                className={`vt-check ${on ? 'on' : ''}`}
+                title={on ? (exported.length > 1 ? `导出时出 ${d.label}（点击取消勾选）` : '至少导出一个画幅') : `勾选：导出时也出 ${d.label}（${d.width}×${d.height}）`}
+                onClick={() => setExportVariants(toggleExportVariant(exported, d.key))}
+              />
+              <button type="button" role="tab" aria-selected={previewKey === d.key} className="vt-label" title={`预览并设置 ${d.label}：${d.width}×${d.height} · ${d.note}${configured ? ' · 已有设置' : ''}`} onClick={() => setPreviewVariant(d.key)}>
+                {d.label}
+                {configured && <span className="vt-dot" aria-hidden />}
+              </button>
+            </div>
+          );
+        })}
       </div>
-      {!isRef && <div className="hint">画布正在预览 {def.label}：图层默认跟着视频画面走，在画布上拖动会只改这个画幅。导出时在「导出」里勾选 {def.label} 才会出这个文件。</div>}
+      <div className="hint">
+        {def.width}×{def.height}
+        {exported.includes(previewKey) ? ' · 导出时会出这个画幅' : ' · 未勾选，导出时不出这个画幅'}
+        {!isRef && '；画布正在预览它，图层默认跟着视频画面走，在画布上拖动只改这个画幅'}
+      </div>
       {sameAspect ? (
         <div className="hint">源画面已是 {def.label}，直接铺满成片，不需要填充或裁切。</div>
       ) : (

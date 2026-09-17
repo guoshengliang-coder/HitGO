@@ -6,6 +6,7 @@
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
+// 拖放加音轨（HIG-33）：音频面板的素材卡片、或系统里的音频文件拖到时间线上，落点为起点，落在口播行加口播，其余加 BGM（lib/timelineDrop）。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor } from '../../store/editor';
@@ -19,7 +20,15 @@ import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { IconEye, IconLock } from '../ui/Icons';
-import type { Asset, Layer } from '../../types';
+import { api } from '../../api';
+import { isFileDrag, rejectedText, splitByAccept } from '../../lib/fileDrop';
+import { dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
+import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
+import { hasAnimation, phaseLengths } from '../../lib/textAnimation';
+import type { Asset, AudioRole, Layer } from '../../types';
+
+/** 系统文件拖进来：上传完成、素材探测就绪后才能加轨，先记下落点。 */
+type PendingDrop = { assetId: string; role: AudioRole; start: number; videoId: string };
 
 const LABEL_W = 96;
 const SNAP_PX = 6;
@@ -29,17 +38,31 @@ function CoverGap({ width }: { width: number }) {
   return width > 0 ? <div className="tl-cover-gap" style={{ width }} title="封面期间不叠加图层、不放音轨" /> : null;
 }
 
-/** 音频模块的源音轨行：状态（静音 / 音量）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
-function SourceAudioRow({ hasAudio, volume, width, offset, scrub, selected, onSelect, children }: { hasAudio: boolean; volume: number; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
-  const muted = !hasAudio || volume === 0;
-  const label = !hasAudio ? '源音轨（无）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
+/** 轨道头的眼睛（HIG-33）：关掉 = 隐藏，留在 spec 里、成片不出；再打开即恢复。 */
+function EyeButton({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
   return (
-    <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
-      <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>{label}</div>
+    <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+      <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={onToggle}>
+        <IconEye off={hidden} />
+      </button>
+    </span>
+  );
+}
+
+/** 音频模块的源音轨行：状态（静音 / 音量 / 隐藏）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
+function SourceAudioRow({ hasAudio, volume, hidden, onToggleHidden, width, offset, scrub, selected, onSelect, children }: { hasAudio: boolean; volume: number; hidden: boolean; onToggleHidden: () => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+  const muted = !hasAudio || volume === 0 || hidden;
+  const label = !hasAudio ? '源音轨（无）' : hidden ? '源音轨（已隐藏）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
+  return (
+    <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${hidden ? 'hidden' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
+      <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>
+        <span className="lname">{label}</span>
+        {hasAudio && <EyeButton hidden={hidden} onToggle={onToggleHidden} />}
+      </div>
       <div className="body" {...scrub}>
         <CoverGap width={offset} />
-        {hasAudio && <div className={`tl-bar audio all ${volume === 0 ? 'muted' : ''} ${selected ? 'selected' : ''}`} style={{ left: offset, width, cursor: 'default', opacity: volume === 0 ? 0.35 : 0.45 + 0.55 * volume, pointerEvents: 'none' }} />}
-        {hasAudio && volume > 0 && children}
+        {hasAudio && <div className={`tl-bar audio all ${volume === 0 || hidden ? 'muted' : ''} ${selected ? 'selected' : ''}`} style={{ left: offset, width, cursor: 'default', opacity: volume === 0 || hidden ? 0.35 : 0.45 + 0.55 * volume, pointerEvents: 'none' }} />}
+        {hasAudio && volume > 0 && !hidden && children}
       </div>
     </div>
   );
@@ -139,6 +162,8 @@ export function Timeline() {
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
+  const toggleTrackHidden = useEditor((s) => s.toggleTrackHidden);
+  const toggleSourceHidden = useEditor((s) => s.toggleSourceHidden);
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
   const setSelectedMute = useEditor((s) => s.setSelectedMute);
   const updateSourceMute = useEditor((s) => s.updateSourceMute);
@@ -149,6 +174,13 @@ export function Timeline() {
   const [dragVal, setDragVal] = useState<[number, number] | null>(null);
   const [snapX, setSnapX] = useState<number | null>(null);
   const dragRef = useRef<[number, number] | null>(null);
+  const addAudioTrack = useEditor((s) => s.addAudioTrack);
+  const setStep = useEditor((s) => s.setStep);
+  const setToast = useEditor((s) => s.setToast);
+  const loadAssets = useEditor((s) => s.loadAssets);
+  const currentVideoId = useEditor((s) => s.currentVideoId);
+  const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number } | null>(null);
+  const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
   const duration = Math.max(0.1, video?.duration ?? 0);
   const fitPps = Math.max(1, containerW - LABEL_W - 2) / (duration + preroll);
@@ -256,6 +288,87 @@ export function Timeline() {
     return timelineTime(x, prerollRef.current, ppsRef.current, duration);
   };
   const scrub = useScrub(xToTime);
+
+  // ---- 拖放加音轨（HIG-33）----
+  const dropPoint = (e: React.DragEvent<HTMLElement>) => {
+    const src = Math.max(0, xToTime(e.clientX));
+    const rowRole = (e.target as HTMLElement).closest<HTMLElement>('[data-drop-role]')?.dataset.dropRole as AudioRole | undefined;
+    return { x: off + src * pps, role: dropRole(rowRole), post: Math.min(sourceToPost(src, remove), postDuration) };
+  };
+  const addDropped = (assetId: string, role: AudioRole, start: number): boolean => {
+    const asset = useEditor.getState().assets.find((a) => a.id === assetId);
+    const t = dropWindow({ start, role, postDuration, mediaDuration: asset?.duration });
+    if (addAudioTrack(assetId, role, { t }) === null) return false;
+    if (!audioStep) setStep('audio');
+    return true;
+  };
+  const onDragOver = (e: React.DragEvent<HTMLElement>) => {
+    if (!video || !spec || (!isAssetDrag(e.dataTransfer.types) && !isFileDrag(e.dataTransfer.types))) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const p = dropPoint(e);
+    setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role ? h : p));
+  };
+  const onDragLeave = (e: React.DragEvent<HTMLElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(null);
+  };
+  const onDrop = (e: React.DragEvent<HTMLElement>) => {
+    setDropHint(null);
+    if (!video || !spec) return;
+    const card = parseAssetDrag(e.dataTransfer.getData(ASSET_DRAG_MIME));
+    const files = isFileDrag(e.dataTransfer.types) ? Array.from(e.dataTransfer.files) : [];
+    if (!card && !files.length) return;
+    e.preventDefault();
+    const { role, post } = dropPoint(e);
+    if (card) {
+      if (card.type !== 'audio') return;
+      if (!addDropped(card.id, role, post)) setToast('素材还在处理中，就绪后再拖进来');
+      return;
+    }
+    const { accepted, rejected } = splitByAccept(files, AUDIO_ACCEPT);
+    const skipped = rejectedText(rejected, 'mp3 / wav / m4a');
+    if (!accepted.length) {
+      if (skipped) setToast(skipped);
+      return;
+    }
+    const videoId = video.id;
+    setToast(`正在上传 ${accepted.length} 个音频…${skipped ? `（${skipped}）` : ''}`);
+    void (async () => {
+      try {
+        const uploaded = await api.uploadAssets('audio', accepted);
+        await loadAssets();
+        // 多个文件依次排在落点之后：各自从上一个的结尾开始（时长未知时同一起点）
+        let start = post;
+        const pend: PendingDrop[] = [];
+        for (const a of uploaded) {
+          pend.push({ assetId: a.id, role, start, videoId });
+          if (a.duration) start = Math.min(start + a.duration, Math.max(0, postDuration - 0.1));
+        }
+        setPendingDrops((p) => [...p, ...pend]);
+        setToast(null);
+      } catch (err) {
+        setToast(`上传失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+  };
+  // 上传的素材探测就绪后加轨；处理失败的提示一下；期间换了视频就不加到别的视频上
+  useEffect(() => {
+    if (!pendingDrops.length) return;
+    const left: PendingDrop[] = [];
+    for (const p of pendingDrops) {
+      const asset = assets.find((a) => a.id === p.assetId);
+      const status = asset?.status ?? 'ready';
+      if (!asset || status === 'preparing') {
+        if (asset || p.videoId === currentVideoId) left.push(p);
+        continue;
+      }
+      if (status === 'failed') setToast(`「${asset.name}」处理失败，没有加轨`);
+      else if (p.videoId !== currentVideoId) setToast(`「${asset.name}」已上传；已切换视频，没有自动加轨`);
+      else addDropped(p.assetId, p.role, p.start);
+    }
+    if (left.length !== pendingDrops.length) setPendingDrops(left);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assets, pendingDrops, currentVideoId]);
 
   // ---- 拖动区间 / 图层条（pointer capture + 吸附）----
   const startDrag = (e: RPointerEvent<HTMLElement>, d: Drag) => {
@@ -384,8 +497,8 @@ export function Timeline() {
   };
 
   return (
-    <div className="timeline">
-      <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''}`} ref={scrollRef}>
+    <div className="timeline" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
         <div className="tl-inner" style={{ width: off + trackW + LABEL_W }}>
           <div className="tl-row" style={{ height: 20 }}>
             <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
@@ -455,6 +568,8 @@ export function Timeline() {
             <SourceAudioRow
               hasAudio={!!video?.has_audio}
               volume={sourceVolume(spec?.audio)}
+              hidden={!!spec?.audio?.source_hidden}
+              onToggleHidden={toggleSourceHidden}
               width={trackW}
               offset={off}
               scrub={scrub.handlers}
@@ -497,16 +612,18 @@ export function Timeline() {
               const asset = assets.find((a) => a.id === t.asset_id);
               const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
               const problem = trackAssetProblem(t, assets);
+              const hidden = !!t.hidden;
               return (
-                <div key={t.id} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
-                  <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}`}>
+                <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
+                  <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
                     <span className="lname">{name}</span>
+                    <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
                   </div>
                   <div className="body" {...scrub.handlers}>
                     <CoverGap width={off} />
                     <div
-                      className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 ? 'muted' : ''}`}
+                      className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 || hidden ? 'muted' : ''} ${hidden ? 'hidden' : ''}`}
                       style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
                         setSelectedTrack(t.id);
@@ -520,7 +637,7 @@ export function Timeline() {
                       {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                       {r.loop ? ' ↻' : ''}
                       {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
-                      {problem === 'missing' ? ' · 素材已失效，导出会跳过' : problem === 'not-ready' ? ' · 素材处理中' : ''}
+                      {hidden ? ' · 已隐藏' : problem === 'missing' ? ' · 素材已失效，导出会跳过' : problem === 'not-ready' ? ' · 素材处理中' : ''}
                       {!all && (
                         <>
                           <div className="edge l" onPointerDown={(e) => { setSelectedTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} />
@@ -535,25 +652,25 @@ export function Timeline() {
           {audioStep && tracks.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
               <div className="lbl">BGM / 口播</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>还没有 BGM / 口播，在右侧添加；加入后可在这里拖动条调整时段。</div>
+              <div className="body hint" style={{ padding: '6px 8px' }}>还没有 BGM / 口播：把右侧「音频素材」或电脑里的音频文件拖到这里，或点右侧「+ BGM / + 口播」。</div>
             </div>
           )}
           {stickerAudio.map((l) => {
             const [pa, pb] = windowRange(l.t, postDuration);
             const left = off + postToSource(pa, remove) * pps;
             const right = off + postToSource(pb, remove) * pps;
-            const on = !!l.mix_audio;
+            const on = !!l.mix_audio && !l.hidden;
             const name = layerName(l, assets);
             return (
               <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
-                <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改）`}>
+                <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改${l.hidden ? '；贴纸图层已隐藏，声音跟着不出' : ''}）`}>
                   <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
                   <span className="lname">{name}</span>
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
                   <div className={`tl-bar audio sticker ${l.t === 'all' ? 'all' : ''} ${on ? '' : 'muted'}`} style={{ left, width: Math.max(4, right - left), cursor: 'default', pointerEvents: 'none' }}>
-                    {on ? '合成' : '不合成'} · {l.t === 'all' ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
+                    {l.hidden ? '图层已隐藏' : on ? '合成' : '不合成'} · {l.t === 'all' ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                   </div>
                 </div>
               </div>
@@ -567,14 +684,14 @@ export function Timeline() {
             const left = off + postToSource(pa, remove) * pps;
             const right = off + postToSource(pb, remove) * pps;
             const sel = selectedLayerId === l.id;
-            const hidden = l.visible === false;
+            const hidden = !!l.hidden;
             const locked = !!l.locked;
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
                   <span className="lname">{layerName(l, assets)}</span>
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
-                    <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: hidden }, false)}>
+                    <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
                       <IconEye off={hidden} />
                     </button>
                     <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !locked }, false)}>
@@ -596,6 +713,17 @@ export function Timeline() {
                       startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
                     }}
                   >
+                    {l.type === 'text' && hasAnimation(l.animation) && (() => {
+                      // 入场 / 出场段（HIG-40）：按剪后时长近似画宽，时段里有删除区间时略有偏差
+                      const [di, dout] = phaseLengths(l.animation, pb - pa);
+                      const px = Math.max(4, right - left) / Math.max(1e-6, pb - pa);
+                      return (
+                        <>
+                          {di > 0 && <span className="tl-anim in" style={{ width: di * px }} title={`入场 ${di.toFixed(2)}s`} />}
+                          {dout > 0 && <span className="tl-anim out" style={{ width: dout * px }} title={`出场 ${dout.toFixed(2)}s`} />}
+                        </>
+                      );
+                    })()}
                     {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
                     {!all && !locked && (
                       <>
@@ -624,6 +752,13 @@ export function Timeline() {
           )}
 
           {snapX !== null && <div className="tl-snap" style={{ left: LABEL_W + snapX }} />}
+          {dropHint && (
+            <div className="tl-drop" style={{ left: LABEL_W + dropHint.x }}>
+              <span className="tl-drop-tip">
+                加为{dropHint.role === 'voice' ? '口播' : ' BGM'} · {dropHint.post.toFixed(1)}s
+              </span>
+            </div>
+          )}
           <div className="tl-playhead" style={{ left: LABEL_W + timelineX(time, preroll, pps) }}>
             <div className="grip" {...scrub.handlers} title="拖动定位" />
           </div>
