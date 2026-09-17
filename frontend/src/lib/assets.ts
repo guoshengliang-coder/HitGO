@@ -6,16 +6,19 @@ import { langLabel } from './localize';
 /** 界面上的三栏：原料库（内置示例 + 将来的正式物料库）/ 我上传的 / 分离结果（从视频分离出的人声、伴奏，以及改语言生成的配音）。 */
 export type AssetBucket = 'library' | 'mine' | 'derived';
 
-/** 派生素材的角标：人声 / 伴奏 / 配音（带目标语言）。 */
+/** 派生素材的角标：人声 / 伴奏 / 配音（带目标语言）/ 朗读（HIG-50）。 */
 export function stemLabel(d: DerivedFrom): string {
   if (d.stem === 'vocals') return '人声';
   if (d.stem === 'instrumental') return '伴奏';
+  if (d.stem === 'tts') return '朗读';
   return d.lang ? `${langLabel(null, d.lang)}配音` : '配音';
 }
 
-/** 派生素材角标的悬停说明。 */
+/** 派生素材角标的悬停说明。朗读不属于任何视频，显示文案开头。 */
 export function stemTitle(d: DerivedFrom): string {
-  return d.stem === 'dubbed' ? `「${d.video_name}」改语言生成的配音` : `从「${d.video_name}」分离`;
+  if (d.stem === 'tts') return d.text ? `朗读：「${d.text}」` : '大字报朗读';
+  const name = d.video_name ?? '';
+  return d.stem === 'dubbed' ? `「${name}」改语言生成的配音` : `从「${name}」分离`;
 }
 
 const BUCKET_SOURCES: Record<AssetBucket, AssetSource[]> = {

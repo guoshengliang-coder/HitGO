@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { VIDEO_ACCEPT, isFileDrag, mergeFiles, rejectedText, splitByAccept } from './fileDrop';
+import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL, isFileDrag, mergeFiles, rejectedText, splitByAccept } from './fileDrop';
 
 const f = (name: string, type = '') => ({ name, type });
 
@@ -17,6 +17,13 @@ describe('splitByAccept', () => {
     const { accepted, rejected } = splitByAccept([f('A.MP4'), f('b.mov'), f('c.avi', 'video/x-msvideo'), f('d.txt', 'text/plain')], VIDEO_ACCEPT);
     expect(accepted.map((x) => x.name)).toEqual(['A.MP4', 'b.mov']);
     expect(rejected.map((x) => x.name)).toEqual(['c.avi', 'd.txt']);
+  });
+
+  it('批次素材也收 jpg / png 图片（HIG-50），其它图片格式仍跳过', () => {
+    const { accepted, rejected } = splitByAccept([f('a.jpg'), f('b.JPEG'), f('c.png'), f('d', 'image/png'), f('e.webp', 'image/webp'), f('f.gif')], VIDEO_ACCEPT);
+    expect(accepted.map((x) => x.name)).toEqual(['a.jpg', 'b.JPEG', 'c.png', 'd']);
+    expect(rejected.map((x) => x.name)).toEqual(['e.webp', 'f.gif']);
+    expect(VIDEO_ACCEPT_LABEL).toBe('mp4 / mov / jpg / png');
   });
 
   it('matches exact MIME types and wildcards', () => {
