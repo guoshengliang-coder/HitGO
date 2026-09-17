@@ -496,6 +496,10 @@ class OutputVariant(BaseModel):
     color: str = "#000000"
     quality: Quality = "standard"
     crop: CropRect | None = None  # only honoured when fill == "crop"; None = centred cover crop
+    # Blurred backdrop (HIG-54), only honoured when fill == "blur": strength 0–100 and the
+    # backdrop brightness in percent (100 = not dimmed). Old specs get the stronger defaults.
+    blur: int = Field(default=60, ge=0, le=100)
+    bg_brightness: int = Field(default=50, ge=20, le=100)
     layer_fit: LayerFit = "canvas"
     layer_overrides: dict[str, LayerOverride] = Field(default_factory=dict)
     # Editor preference (HIG-35): is this output ticked for export? None = only 9x16 is.

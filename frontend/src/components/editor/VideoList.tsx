@@ -13,6 +13,7 @@ import { BlankMaterialDialog, NewMaterialButton } from '../ui/NewMaterial';
 import { InlineName } from '../ui/InlineName';
 import { IconPen, IconTrash } from '../ui/Icons';
 import { defaultApplyModules } from '../../lib/steps';
+import { isDefaultBlurFill } from '../../lib/blurFill';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
@@ -29,7 +30,7 @@ export function moduleConfigured(spec: EditSpec | undefined, module: ApplyModule
   if (module === 'layers') return spec.layers.length > 0;
   if (module === 'audio') return !isDefaultAudio(spec.audio);
   if (module === 'cover') return !!spec.cover;
-  return spec.outputs.some((o) => o.fill !== 'blur' || o.quality === 'high');
+  return spec.outputs.some((o) => o.fill !== 'blur' || o.quality === 'high' || !isDefaultBlurFill(o));
 }
 
 export function ApplyDialog({ targetIds, onClose, defaultModules }: { targetIds: string[]; onClose: () => void; defaultModules?: ApplyModule[] }) {

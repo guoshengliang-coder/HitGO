@@ -7,11 +7,12 @@ import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
+import { BG_BRIGHTNESS_MAX, BG_BRIGHTNESS_MIN, BLUR_MAX, BLUR_MIN, bgBrightnessOf, blurOf } from '../../lib/blurFill';
 import { countSafeZoneOverlaps, exportKeys, outputFor } from '../../lib/spec';
 import { toggleExportVariant } from '../../lib/exportScope';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose } from '../ui/Icons';
-import { Field } from '../ui/Num';
+import { Field, Slider } from '../ui/Num';
 import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
@@ -19,7 +20,7 @@ import { CoverSection } from './CoverSection';
 import { VARIANT_DEFS, variantDef, type FillMode, type OutputQuality, type VariantKey } from '../../types';
 
 const RANGES_HELP = '这里的起止时间基于源视频时间轴，不是剪后时间轴。列表里点一段即选中，选中后可以用「删除选中区间」撤掉，也可以直接在时间轴上拖动区间边缘调整。';
-const FRAME_HELP = '每个画幅单独设置；页签左边的勾表示导出时出这个画幅，勾选跟着视频保存，「导出」弹窗默认就按它来。填充决定源画面放不满画幅时怎么补；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
+const FRAME_HELP = '每个画幅单独设置；页签左边的勾表示导出时出这个画幅，勾选跟着视频保存，「导出」弹窗默认就按它来。填充决定源画面放不满画幅时怎么补，模糊背景可以调模糊强度和背景亮度（越暗越不抢主体）；清晰度决定编码档位，大小是按码率估算的参考值，本批次有已完成任务时会按实际码率校准。非 9:16 画幅上文字、贴纸、遮盖默认跟着视频画面走，切到该页签后可在画布上单独微调。';
 const DURATION_HELP = '文字 / 贴纸 / BGM / 口播的出现时段基于剪后时间轴（从正片第一帧算起，不含封面）。修改剪辑不会自动改动图层和音轨时段，文本、贴纸、字幕模块会对落在剪后时长之外的图层给出提示。源音轨、BGM、口播在「音频」模块里调。';
 
 /** 成片画面：按画幅页签设置填充方式、裁切范围、清晰度（HIG-8 搬到这里，HIG-29 恢复多画幅）。页签与画布预览联动。 */
@@ -109,6 +110,13 @@ function FrameSection() {
       ) : (
         <>
           <Seg label="填充方式" options={(Object.keys(FILL_LABEL) as FillMode[]).map((f) => ({ v: f, label: FILL_LABEL[f], title: FILL_TIP[f] }))} value={out.fill} onChange={setFill} />
+          {out.fill === 'blur' && (
+            <>
+              {/* 滑杆的数值块按 0–1 显示成 %，字段本身存 0–100 的整数 */}
+              <Slider label="模糊强度" value={blurOf(out) / 100} min={BLUR_MIN / 100} max={BLUR_MAX / 100} onChange={(v) => patchOutput({ blur: Math.round(v * 100) })} />
+              <Slider label="背景亮度" value={bgBrightnessOf(out) / 100} min={BG_BRIGHTNESS_MIN / 100} max={BG_BRIGHTNESS_MAX / 100} onChange={(v) => patchOutput({ bg_brightness: Math.round(v * 100) })} />
+            </>
+          )}
           {out.fill === 'color' && (
             <Field label="颜色">
               <ColorPicker label="纯色边颜色" value={out.color ?? '#000000'} onChange={(c) => patchOutput({ color: c })} />

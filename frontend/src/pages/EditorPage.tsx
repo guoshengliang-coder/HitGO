@@ -24,7 +24,7 @@ import { ExportDialog } from '../components/editor/ExportDialog';
 import { ProgressModal } from '../components/editor/ProgressModal';
 import { ShortcutsModal } from '../components/editor/ShortcutsModal';
 import { Splitter } from '../components/ui/Splitter';
-import { clampPrefs, LAYOUT_DEFAULTS, loadLayoutPrefs, saveLayoutPrefs, type LayoutPrefs } from '../lib/layoutPrefs';
+import { clampPrefs, fitToViewport, LAYOUT_DEFAULTS, loadLayoutPrefs, saveLayoutPrefs, type LayoutPrefs } from '../lib/layoutPrefs';
 
 function isTyping(e: KeyboardEvent) {
   const el = e.target as HTMLElement | null;
@@ -329,16 +329,24 @@ export function EditorPage() {
   const flushSave = useEditor((s) => s.flushSave);
   const [exportOpen, setExportOpen] = useState(false);
 
-  // 面板尺寸：右栏宽 / 时间线高，拖动分隔条调整，存本机
-  const [layout, setLayout] = useState<LayoutPrefs>(() => loadLayoutPrefs());
+  // 面板尺寸：左栏宽 / 右栏宽 / 时间线高，拖动分隔条调整，存本机（HIG-53 补左栏）。
+  // 存的是用户拖出来的值；实际生效的按窗口尺寸收紧，窗口变小不会把中栏和画面挤没。
+  const [prefs, setPrefs] = useState<LayoutPrefs>(() => loadLayoutPrefs());
+  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const layout = fitToViewport(prefs, viewport.w, viewport.h);
   const resize = useCallback((patch: Partial<LayoutPrefs>) => {
-    setLayout((cur) => {
-      const next = clampPrefs({ ...cur, ...patch });
+    setPrefs((cur) => {
+      const next = clampPrefs({ ...fitToViewport(cur, window.innerWidth, window.innerHeight), ...patch });
       saveLayoutPrefs(next);
       return next;
     });
   }, []);
-  const layoutStyle = { '--right-w': `${layout.rightW}px`, '--timeline-h': `${layout.timelineH}px` } as CSSProperties;
+  const layoutStyle = { '--left-w': `${layout.leftW}px`, '--right-w': `${layout.rightW}px`, '--timeline-h': `${layout.timelineH}px` } as CSSProperties;
 
   useEffect(() => {
     if (id) void load(id);
@@ -381,13 +389,15 @@ export function EditorPage() {
       <TopBar onExport={() => setExportOpen(true)} />
       <div className="editor-body">
         <VideoList />
+        <Splitter axis="x" label="调整左侧列表宽度" onMove={(d) => resize({ leftW: layout.leftW + d })} onReset={() => resize({ leftW: LAYOUT_DEFAULTS.leftW })} />
         <div className="col-center">
           {/* 裁切编辑时 Stage 只隐藏不卸载：<video> 和 player 挂在 Stage 上，CropEditor 从它抓帧（HIG-5） */}
           {step === 'trim' && cropEditing && <CropEditor />}
           <Stage hidden={step === 'trim' && cropEditing} />
+          {/* 横条贴着画面下沿（HIG-53）：往下拖画面变大、时间线区变矮 */}
+          <Splitter axis="y" label="调整画面与时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
           <QuickBar />
           <Transport />
-          <Splitter axis="y" label="调整时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
           <Timeline />
         </div>
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />

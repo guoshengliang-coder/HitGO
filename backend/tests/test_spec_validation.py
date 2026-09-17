@@ -35,6 +35,20 @@ def test_defaults_fill_in():
     spec = validate({"outputs": [{"variant_key": "9x16", "aspect": "9:16"}]})
     assert spec.trim.remove == [] and spec.layers == []
     assert spec.outputs[0].fill == "blur" and spec.outputs[0].color == "#000000"
+    assert spec.outputs[0].blur == 60 and spec.outputs[0].bg_brightness == 50
+
+
+@pytest.mark.parametrize(
+    "patch,field",
+    [({"blur": -1}, "blur"), ({"blur": 101}, "blur"), ({"bg_brightness": 19}, "bg_brightness"), ({"bg_brightness": 101}, "bg_brightness")],
+)
+def test_blur_background_ranges(patch, field):
+    assert field in errors_of({"outputs": [{"variant_key": "9x16", "aspect": "9:16", **patch}]})
+
+
+def test_blur_background_bounds_are_valid():
+    spec = validate({"outputs": [{"variant_key": "9x16", "aspect": "9:16", "blur": 0, "bg_brightness": 20}]})
+    assert (spec.outputs[0].blur, spec.outputs[0].bg_brightness) == (0, 20)
 
 
 def test_extra_keys_are_ignored_but_override_keys_are_strict():

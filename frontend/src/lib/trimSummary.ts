@@ -4,6 +4,7 @@
 
 import { estimateOutputBytes, formatBytes, qualityOf, type Calibration } from './estimate';
 import { formatSeconds, type Range } from './time';
+import { bgBrightnessOf, blurOf, isDefaultBlurFill } from './blurFill';
 import type { CoverSpec, FillMode, OutputQuality, OutputVariant } from '../types';
 
 export const FILL_LABEL: Record<FillMode, string> = { blur: '模糊背景', color: '纯色', crop: '裁切' };
@@ -27,15 +28,15 @@ export function coverSummary(cover: CoverSpec | null | undefined, preroll: numbe
   return cover ? formatSeconds(preroll, 1) : '无';
 }
 
-/** 成片画面：填充方式 · 清晰度 · 估算大小。源已是该画幅比例时不显示填充（那时面板里也没有这个选项）。 */
+/** 成片画面：填充方式 · 清晰度 · 估算大小。源已是该画幅比例时不显示填充（那时面板里也没有这个选项）；模糊背景调过强度 / 亮度时带上数值。 */
 export function frameSummary(
-  out: Pick<OutputVariant, 'variant_key' | 'fill' | 'quality'>,
+  out: Pick<OutputVariant, 'variant_key' | 'fill' | 'quality' | 'blur' | 'bg_brightness'>,
   duration: number,
   calibration?: Calibration,
   sameAspect = false,
 ): string {
   const parts = [QUALITY_LABEL[qualityOf(out)], `约 ${formatBytes(estimateOutputBytes(out, duration, calibration))}`];
-  if (!sameAspect) parts.unshift(FILL_LABEL[out.fill]);
+  if (!sameAspect) parts.unshift(out.fill === 'blur' && !isDefaultBlurFill(out) ? `${FILL_LABEL.blur} ${blurOf(out)}/${bgBrightnessOf(out)}%` : FILL_LABEL[out.fill]);
   return parts.join(' · ');
 }
 

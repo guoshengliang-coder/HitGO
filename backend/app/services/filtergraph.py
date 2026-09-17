@@ -77,7 +77,9 @@ def encode_args(quality: str = "standard") -> list[str]:
     """Encoder argv for a quality tier; unknown tiers fall back to standard."""
     return list(ENCODE_PRESETS.get(quality, ENCODE_PRESETS["standard"]))
 
-BLUR_RADIUS = "20:2"
+# Blurred backdrop (contract §2 outputs[].blur / bg_brightness): radius = short side × strength × this.
+BLUR_BG_RADIUS_PER_SHORT_SIDE = 0.08
+BLUR_BG_POWER = 2
 # Mask layer blur strength (contract §2 mask.blur 1 | 2 | 3) → boxblur luma radius : power.
 MASK_BLUR_LEVELS: dict[int, tuple[int, int]] = {1: (10, 1), 2: (20, 2), 3: (40, 3)}
 MASK_MIN_SIZE = 2  # px; a mask region smaller than this after clamping is skipped
@@ -172,6 +174,24 @@ def _fmt(v: float) -> str:
     return s if s not in ("", "-0") else "0"
 
 
+def blur_background_radius(W: int, H: int, strength: int) -> int:
+    """boxblur radius of the blurred backdrop, kept below the chroma plane's limit (quarter of the short side)."""
+    short = min(W, H)
+    radius = round(short * max(0, min(100, strength)) / 100 * BLUR_BG_RADIUS_PER_SHORT_SIDE)
+    return max(0, min(radius, short // 4 - 1))
+
+
+def blur_background_steps(W: int, H: int, strength: int, brightness: int) -> list[str]:
+    """Filters for the cover-scaled backdrop: blur, then dim it with a translucent black box."""
+    steps: list[str] = []
+    radius = blur_background_radius(W, H, strength)
+    if radius > 0:
+        steps.append(f"boxblur={radius}:{BLUR_BG_POWER}")
+    if brightness < 100:
+        steps.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=black@{_fmt(1 - brightness / 100)}:t=fill")
+    return steps
+
+
 def fill_chains(
     label: str,
     fill: str,
@@ -181,18 +201,22 @@ def fill_chains(
     H: int,
     out: str,
     tag: str = "",
+    blur: int = 60,
+    brightness: int = 50,
 ) -> list[str]:
     """Lay ``label`` onto the W×H canvas (contract §2 fill), ending in ``out``.
 
     ``tag`` suffixes the intermediate labels so a second fill (the cover) can live in the same
     graph; the main video uses no tag, which keeps its chains exactly as they always were.
+    ``blur`` / ``brightness`` are the variant's backdrop strength and brightness (fill == "blur" only).
     """
     chains: list[str] = []
     if fill == "blur":
         chains.append(f"{label}split=2[bg{tag}][fg{tag}]")
+        backdrop = [f"crop={W}:{H}", *blur_background_steps(W, H, blur, brightness)]
         chains.append(
             f"[bg{tag}]scale={W}:{H}:force_original_aspect_ratio=increase,"
-            f"crop={W}:{H},boxblur={BLUR_RADIUS}[bgb{tag}]"
+            f"{','.join(backdrop)}[bgb{tag}]"
         )
         chains.append(f"[fg{tag}]scale={W}:{H}:force_original_aspect_ratio=decrease[fgs{tag}]")
         chains.append(f"[bgb{tag}][fgs{tag}]overlay=(W-w)/2:(H-h)/2{out}")
@@ -449,7 +473,10 @@ def build_render_command(
 
     # ---- 2. canvas fill -----------------------------------------------------
     W, H = canvas_w, canvas_h
-    chains += fill_chains(video_label, variant.fill, variant.color, variant.crop, W, H, "[c0]")
+    chains += fill_chains(
+        video_label, variant.fill, variant.color, variant.crop, W, H, "[c0]",
+        blur=variant.blur, brightness=variant.bg_brightness,
+    )
     current = "[c0]"
 
     # ---- 3. layers ----------------------------------------------------------
@@ -830,7 +857,8 @@ def build_render_command(
             inputs.append(["-loop", "1", "-framerate", fps, "-t", _fmt(n), "-i", media.path])
         # The source crop window describes the source frame, so the cover never gets it.
         chains += fill_chains(
-            f"[{input_index}:v]", variant.fill, variant.color, None, W, H, "[cvf]", tag="_cv"
+            f"[{input_index}:v]", variant.fill, variant.color, None, W, H, "[cvf]", tag="_cv",
+            blur=variant.blur, brightness=variant.bg_brightness,
         )
         chains.append(
             f"[cvf]fps={fps},setsar=1,format=yuv420p,trim=end={_fmt(n)},setpts=PTS-STARTPTS[cv]"

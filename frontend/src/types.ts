@@ -604,6 +604,10 @@ export interface OutputVariant {
   color?: string;
   quality?: OutputQuality;
   crop?: CropRect;
+  /** 可选（HIG-54）：模糊背景的模糊强度 0–100，缺省 60；只在 fill = blur 时生效（lib/blurFill）。 */
+  blur?: number;
+  /** 可选（HIG-54）：模糊背景的亮度 20–100（%），缺省 50，100 = 不压暗；只在 fill = blur 时生效。 */
+  bg_brightness?: number;
   /** 非 9x16 输出上图层怎么摆（HIG-29）：canvas = 相对该画布（缺省）；video = 跟着视频画面走（lib/variantLayout）。 */
   layer_fit?: 'canvas' | 'video';
   layer_overrides?: Record<string, LayerOverride>;

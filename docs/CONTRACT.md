@@ -305,6 +305,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     { "variant_key": "9x16", "aspect": "9:16", "fill": "blur", "quality": "high",
       "export": true },                      // 可选（HIG-35）：导出时是否勾选这个画幅；缺省时 9x16 视为 true、其余视为 false，见下方规则
     { "variant_key": "1x1",  "aspect": "1:1",  "fill": "blur",
+      "blur": 60, "bg_brightness": 50,       // 可选（HIG-54）：模糊背景的模糊强度 0–100 / 背景亮度 20–100（%），只在 fill = "blur" 时生效
       "layer_fit": "video",                  // 可选，缺省 "canvas"：图层相对该画布 | "video"：跟着视频画面走，见下方规则
       "layer_overrides": { "l_1": { "margin": [0.05, 0.05], "width": 0.3 } } },
     { "variant_key": "4x5",  "aspect": "4:5",  "fill": "crop",
@@ -348,6 +349,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
 - **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在文本 / 贴纸模块里对落在已删区间外的图层给提示。
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
+- **模糊背景的强度与亮度**（HIG-54，可选，**只在 `fill = "blur"` 时生效**，其它 fill 忽略）：
+  - `blur`：整数 0–100，缺省 60。boxblur 半径 `r = round(min(W, H) · blur / 100 · 0.08)`，收到 `min(W, H) / 4 − 1`（色度平面的上限）以内，power 固定 2；`r = 0` 时不模糊。所有画幅短边都是 1080，所以缺省半径 52（HIG-54 之前固定为 20，约等于 `blur = 23`）。
+  - `bg_brightness`：整数 20–100，缺省 50，模糊底的亮度百分比；模糊后叠一层 `black@(1 − bg_brightness/100)`，100 = 不压暗（HIG-54 之前的成片不压暗）。
+  - 旧 spec 没有这两个字段时按缺省值渲染，重新导出会比以前更糊更暗。前端预览用同一公式：CSS `blur()` 的 σ ≈ `0.8 · r` 按舞台尺寸缩放，`brightness(bg_brightness/100)`——是近似，成片以 worker 为准。
+  - 封面沿用所在画幅的这两个值。批量套用 `outputs` 模块时原样复制。
 - **裁切窗口 `crop`**（可选，默认 null）：源画面上的裁切矩形，`{ x, y, w, h }` 均为相对源宽 / 高的 0–1 比例，`0 < w, h ≤ 1`，`x + w ≤ 1`，`y + h ≤ 1`。**只在 `fill = "crop"` 时生效**，其它 fill 忽略；缺省等价于现在的 cover 居中裁切。worker 先按窗口裁出源区域，再 cover 居中缩放到输出画幅——窗口比例与画幅不一致时不会变形，只会再居中裁一次。用途：横屏源里只取正中的竖版内容区。批量套用 `outputs` 模块时原样复制（相对比例，跨分辨率可用）。
 - 至少有一个输出；`variant_key` 在同一 spec 内唯一，`9x16` 视为默认变体（回传语义"替换原素材"，其余为派生）。
 - **编辑器里的多画幅**（HIG-29，取代 HIG-8 的「只出 9x16」）：`outputs` 保存「已配置的画幅」，`9x16` 始终存在并排第一，其余按 `9x16 / 1x1 / 4x5 / 16x9` 排；导出时在导出对话框勾选这次出哪些画幅（`POST /api/render` 的 `variant_keys`），勾选到但 spec 里还没有的画幅按缺省（`fill = "blur"`、`quality` 随 `9x16`、`layer_fit = "video"`）补上再保存。取消勾选不会删掉已配置画幅的设置。勾选结果写进各输出的 `export`（HIG-35，可选布尔；缺省时 `9x16` 视为勾选、其余视为不勾），「成片画面」画幅页签上的勾与导出对话框是同一份，随视频保存；worker 不读 `export`，这次出哪些文件仍只由 `variant_keys` 决定。载入时没有 `layer_fit` 的非 `9x16` 输出（HIG-8 之前的旧 spec）改成 `"video"` 并清掉其 `layer_overrides`（旧覆盖按画布相对写，语义已变）。
@@ -725,7 +731,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      `format=rgba,scale=w:h[,colorchannelmixer=aa=opacity],pad=w:h+2·bh:0:bh:color=0x00000000,crop=cw:bh:(iw-ow)/2:'clip(y0+(t-a-hs)*V,y0,y1)'`
      （`cw = min(w, 框宽)`；`y0 / y1 / hs / V` 由 Python 按第 2 节公式算成常数），`overlay=bx+(bw-cw)/2:by:eof_action=repeat[:enable]`。
      不做 `rotate`，不叠 `animation`。
-   - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
+   - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `crop=W:H` + `boxblur=r:2`（`r` 见第 2 节，为 0 时省略）+（`bg_brightness < 100` 时）`drawbox=x=0:y=0:w=iw:h=ih:color=black@(1−bg_brightness/100):t=fill`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
    - 带 `animation` 的文字图层（第 2 节）：输入改为 `-loop 1 -framerate <fps> -t <b> -i <png>`（从 0 起逐帧，滤镜时间 = 成片时间）；
      链路 `format=rgba,scale=w:h` →（`scale` 动时）`pad` 到 1.1 倍留出余量 + `perspective=x0..y3=中心 ± 半宽/半高·scale((in−1)/fps − a):sense=destination:eval=frame`
      （滤镜链路不能逐帧改尺寸，所以用透视搬角点代替缩放；`in` 从 1 计数）→ `rotate`（同静态）→（`opacity` 动时）
@@ -768,7 +774,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    - 封面 `cover`（第 2 节）：以上正片画面接 `setsar=1,trim=end=剪后时长`，正片声音统一成一路带标签的
      `aformat=48000/stereo,apad,atrim=end=剪后时长`（原本直接映射 `0:a:0` 的也走这里；原本 `-an` 的改用
      `anullsrc` 截到剪后时长）。封面输入：图片 `-loop 1 -framerate <源 fps> -t N -i`，视频照常输入（带透明的
-     WebM 同样强制解码器）；画面按同一 `fill` 铺满画幅（blur / color 同上，crop 不带窗口），接
+     WebM 同样强制解码器）；画面按同一 `fill` 铺满画幅（blur / color 同上，blur 用同一组 `blur / bg_brightness`；crop 不带窗口），接
      `fps=<源 fps>,setsar=1,format=yuv420p,trim=end=N,setpts=PTS-STARTPTS`；声音为视频封面的
      `[i:a]asetpts=PTS-STARTPTS,aformat,apad,atrim=end=N`，否则 `anullsrc` 截到 N。最后
      `[封面v][封面a][正片v][正片a]concat=n=2:v=1:a=1` 输出。成片总时长 = N + 剪后时长（进度与 `-t` 都用它）。
