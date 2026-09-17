@@ -3,17 +3,29 @@
 // 几何 / 时长都是 lib/poster 的纯函数；改 spec、合成朗读、同步成片时长在 store（addPosterLayer / setScroll /
 // setPosterText / generateVoice / autoHighlight）。样式分组直接复用文本模块的 TextSections。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor } from '../../store/editor';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
+import { useEditor, type ApplyModule } from '../../store/editor';
 import { fitScrollSpeed, resolveScroll, SCROLL_SPEED_MAX, SCROLL_SPEED_MIN, scrollLayerDuration, scrollSummary } from '../../lib/poster';
 import { normalizeSpans } from '../../lib/textSpans';
-import type { Asset, AudioTrack, EditSpec, ScrollBox, TextLayer } from '../../types';
+import { splitByPunctuation } from '../../lib/posterSplit';
+import { loadFeaturePrefs, saveFeaturePrefs, type FeaturePrefs, type PunctMode } from '../../lib/featurePrefs';
+import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL } from '../../lib/fileDrop';
+import { formatSeconds } from '../../lib/time';
+import type { Asset, AudioTrack, EditSpec, ScrollBox, TextLayer, Video } from '../../types';
 import { IconSpinner, IconTrash } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field, Num } from '../ui/Num';
 import { TextSections } from './LayerParts';
 
-const COPY_HELP = '整篇文案烘焙成一张高图，按框宽自动折行（手动换行保留），在框里向上滚过。改字后成片时长会跟着滚动全程重新算；文案越长滚得越久。';
+const COPY_HELP = '整篇文案烘焙成一张高图，按框宽自动折行（手动换行保留），在框里向上滚过。改字后成片时长会跟着滚动全程重新算；文案越长滚得越久。打开「粘贴时按标点分行」后，粘进来的文案在，。！？；、：等标点后自动换行，行尾标点按右边的设置保留或去掉；已经在框里的文案可以点「按标点重新分行」。';
+const BACKGROUND_HELP = '一条文案配多个背景一起出片：在这里勾选本批次里的其它素材（或直接上传多个视频 / 图片，上传完自动勾上），点「应用到所选背景」把当前这条的滚动文字、成片时长、画面和朗读轨复制过去，再「导出」把当前这条和所选背景一次提交。勾选和左栏的勾选是同一份。';
+const PUNCT_OPTIONS: { key: PunctMode; label: string }[] = [
+  { key: 'keep', label: '保留标点' },
+  { key: 'drop-pause', label: '去掉逗号类' },
+  { key: 'drop-all', label: '去掉全部标点' },
+];
+/** 铺到其它背景时带上的模块：滚动文字（图层）、成片时长（剪辑）、画面、朗读轨（音频）。 */
+const BACKGROUND_MODULES: ApplyModule[] = ['trim', 'layers', 'outputs', 'audio'];
 const SCROLL_HELP = '速度单位是「画布高 / 秒」：0.08 表示每秒滚过画布高的 8%。框是文案露出的区域，缺省取当前安全区。「开头就有字」= 第一屏不从底边滚入而是直接显示首行，可停留几秒再滚；「结尾停留」= 末行到框底就停住，不再滚出。';
 const VOICE_HELP = '把当前文案交给百炼 TTS 合成一条朗读音轨（素材库里 stem = tts 的派生音频），加到音频轨；成片时长取滚动与朗读较长者。「配合朗读调速」把滚动全程调成和朗读一样长。';
 const HIGHLIGHT_HELP = '交给大模型从文案里挑重点词组，按黄 / 绿 / 红 / 蓝轮流上色（合并进已有的上色区间）。想手动挑：到「文本」模块的文本框里选中文字再「上色」。';
@@ -41,13 +53,60 @@ function voiceTrackOf(spec: EditSpec | null, assets: Asset[]): { track: AudioTra
 
 const charCount = (text: string) => Array.from(text.replace(/\s+/g, '')).length;
 
+/** 粘贴分行的两项本机偏好（HIG-55）：面板里两处文案框共用。 */
+function usePastePrefs(): [FeaturePrefs, (patch: Partial<FeaturePrefs>) => void] {
+  const [prefs, setPrefs] = useState(loadFeaturePrefs);
+  return [prefs, (patch) => setPrefs(saveFeaturePrefs(patch))];
+}
+
+/**
+ * 粘贴时按标点分行：分完和原文一样就交给浏览器；否则自己插入。优先 execCommand('insertText')，
+ * 这样 textarea 的原生撤销和 onChange 都照常；浏览器不支持时退回拼字符串交给 onChange。
+ */
+function pasteSplit(e: ClipboardEvent<HTMLTextAreaElement>, prefs: FeaturePrefs, onChange: (v: string) => void) {
+  if (!prefs.posterSplitOnPaste) return;
+  const raw = e.clipboardData.getData('text/plain');
+  if (!raw) return;
+  const text = splitByPunctuation(raw, prefs.posterPunct);
+  if (text === raw) return;
+  e.preventDefault();
+  const ta = e.currentTarget;
+  if (document.execCommand?.('insertText', false, text)) return;
+  const { selectionStart: a, selectionEnd: b, value } = ta;
+  onChange(value.slice(0, a) + text + value.slice(b));
+}
+
+/** 粘贴分行开关 + 标点处理。 */
+function PasteSplitPrefs({ prefs, setPrefs, onResplit }: { prefs: FeaturePrefs; setPrefs: (patch: Partial<FeaturePrefs>) => void; onResplit?: () => void }) {
+  return (
+    <div className="paste-prefs">
+      <label className="inline small">
+        <input type="checkbox" checked={prefs.posterSplitOnPaste} onChange={(e) => setPrefs({ posterSplitOnPaste: e.target.checked })} />
+        粘贴时按标点分行
+      </label>
+      <select className="select sm" value={prefs.posterPunct} aria-label="分行后的标点" title="分行后行尾的标点怎么处理" onChange={(e) => setPrefs({ posterPunct: e.target.value as PunctMode })}>
+        {PUNCT_OPTIONS.map((o) => (
+          <option key={o.key} value={o.key}>{o.label}</option>
+        ))}
+      </select>
+      {onResplit && (
+        <button className="btn ghost sm" title="把框里现有的文案按标点重新分行（用右边的标点设置）；已上色的区间可能要重新挑" onClick={onResplit}>
+          按标点重新分行
+        </button>
+      )}
+    </div>
+  );
+}
+
 /** 还没有滚动文字：贴文案 → 生成。 */
 function EmptyState() {
   const addPosterLayer = useEditor((s) => s.addPosterLayer);
   const [text, setText] = useState('');
+  const [prefs, setPrefs] = usePastePrefs();
   return (
     <Section id="poster.copy" title="文案" bodyClass="stack" help={COPY_HELP}>
-      <textarea className="textarea" rows={8} value={text} placeholder="把整篇文案粘到这里…" aria-label="文案" onChange={(e) => setText(e.target.value)} />
+      <textarea className="textarea" rows={8} value={text} placeholder="把整篇文案粘到这里…" aria-label="文案" onChange={(e) => setText(e.target.value)} onPaste={(e) => pasteSplit(e, prefs, setText)} />
+      <PasteSplitPrefs prefs={prefs} setPrefs={setPrefs} />
       <div className="inline">
         <button className="btn primary" disabled={!text.trim()} onClick={() => addPosterLayer(text.trim())}>
           生成滚动文字
@@ -91,11 +150,20 @@ function CopySection({ layer }: { layer: TextLayer }) {
     removeLayer(layer.id);
   };
   const n = charCount(draft);
+  const [prefs, setPrefs] = usePastePrefs();
+  const resplit = () => {
+    const next = splitByPunctuation(draft, prefs.posterPunct);
+    if (next !== draft) {
+      onChange(next);
+      flush();
+    }
+  };
   return (
     <Section id="poster.copy" title="文案" bodyClass="stack" summary={<span>{n} 字</span>} help={COPY_HELP}>
-      <textarea className="textarea" rows={8} value={draft} placeholder="把整篇文案粘到这里…" aria-label="文案" onChange={(e) => onChange(e.target.value)} onBlur={flush} />
+      <textarea className="textarea" rows={8} value={draft} placeholder="把整篇文案粘到这里…" aria-label="文案" onChange={(e) => onChange(e.target.value)} onBlur={flush} onPaste={(e) => pasteSplit(e, prefs, onChange)} />
+      <PasteSplitPrefs prefs={prefs} setPrefs={setPrefs} onResplit={resplit} />
       <div className="inline">
-        <span className="hint" style={{ flex: 1 }}>粘贴整篇文案，按框宽自动折行；手动换行保留 · {n} 字</span>
+        <span className="hint" style={{ flex: 1 }}>{prefs.posterSplitOnPaste ? '粘贴时按标点分行' : '按框宽自动折行'}；手动换行保留 · {n} 字</span>
         <button className="btn ghost sm danger" title="删除这条滚动文字图层（朗读轨不动）" onClick={remove}>
           <IconTrash /> 删除
         </button>
@@ -299,6 +367,100 @@ function HighlightSection({ layer }: { layer: TextLayer }) {
   );
 }
 
+/** 背景（HIG-55）：勾选本批次的其它素材 / 上传多个背景，一键铺过去并一起导出。 */
+function BackgroundSection() {
+  const videos = useEditor((s) => s.videos);
+  const currentId = useEditor((s) => s.currentVideoId);
+  const selectedIds = useEditor((s) => s.selectedIds);
+  const toggleSelected = useEditor((s) => s.toggleSelected);
+  const appendVideos = useEditor((s) => s.appendVideos);
+  const appendProgress = useEditor((s) => s.appendProgress);
+  const applyToTargets = useEditor((s) => s.applyToTargets);
+  const openExport = useEditor((s) => s.openExport);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const others = videos.filter((v) => v.id !== currentId);
+  const targets = others.filter((v) => selectedIds.includes(v.id));
+  const notReady = targets.filter((v) => v.status !== 'ready');
+  const upload = async (files: File[]) => {
+    const ids = await appendVideos(files);
+    // 读最新的勾选：上传期间用户可能又点了别的
+    const picked = useEditor.getState().selectedIds;
+    for (const id of ids) if (!picked.includes(id)) toggleSelected(id);
+  };
+  const apply = async () => {
+    setBusy(true);
+    try {
+      await applyToTargets(targets.map((v) => v.id), BACKGROUND_MODULES);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const exportAll = () => {
+    if (currentId && !selectedIds.includes(currentId)) toggleSelected(currentId);
+    openExport({ scope: 'selected' });
+  };
+  const applyReason = !targets.length ? '先勾选要铺文案的背景' : notReady.length ? `${notReady.length} 个背景还在预处理，就绪后再应用` : '';
+  const rowMeta = (v: Video) => `${v.kind === 'blank' ? '空白 · ' : v.kind === 'image' ? '图 · ' : ''}${formatSeconds(v.duration)}${v.status === 'ready' ? '' : v.status === 'failed' ? ' · 预处理失败' : ' · 预处理中'}`;
+
+  return (
+    <Section id="poster.backgrounds" title="背景" bodyClass="stack" summary={<span>{targets.length ? `已选 ${targets.length} 个` : '只有当前'}</span>} help={BACKGROUND_HELP}>
+      <div className="bg-list" role="group" aria-label="背景">
+        {videos.map((v) => {
+          const isCur = v.id === currentId;
+          const on = isCur || selectedIds.includes(v.id);
+          return (
+            <label key={v.id} className={`bg-row ${on ? 'on' : ''}`} title={isCur ? '当前正在编辑的这条，总会一起导出' : v.name}>
+              <input type="checkbox" checked={on} disabled={isCur} onChange={() => toggleSelected(v.id)} aria-label={`背景 ${v.name}`} />
+              <span className="bg-thumb" style={{ backgroundImage: v.poster_url ? `url("${v.poster_url}")` : undefined }} />
+              <span className="bg-name">{v.name}</span>
+              <span className={`bg-meta small ${v.status === 'failed' ? 'error-text' : 'muted'}`}>{isCur ? '当前' : rowMeta(v)}</span>
+            </label>
+          );
+        })}
+      </div>
+      <div className="inline">
+        <button className="btn sm" disabled={appendProgress !== null} title={`一次选多个文件（${VIDEO_ACCEPT_LABEL}），上传完自动勾上`} onClick={() => fileRef.current?.click()}>
+          {appendProgress !== null ? `上传中 ${Math.round(appendProgress * 100)}%` : '上传背景…'}
+        </button>
+        {others.length > 0 && (
+          <button
+            className="btn ghost sm"
+            onClick={() => {
+              // 全选了就全部取消，否则把没勾的补上
+              const allOn = targets.length === others.length;
+              for (const v of others) if (selectedIds.includes(v.id) === allOn) toggleSelected(v.id);
+            }}
+          >
+            {targets.length === others.length ? '全不选' : '全选'}
+          </button>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept={VIDEO_ACCEPT}
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = Array.from(e.target.files ?? []);
+            e.target.value = '';
+            if (files.length) void upload(files);
+          }}
+        />
+      </div>
+      <div className="inline">
+        <button className="btn primary sm" disabled={busy || !!applyReason} title={applyReason || '把滚动文字、成片时长、画面和朗读轨复制到所选背景（覆盖它们原有的这几项，可撤销）'} onClick={() => void apply()}>
+          {busy ? '应用中…' : `应用到所选 ${targets.length} 个背景`}
+        </button>
+        <button className="btn sm" disabled={!targets.length} title="打开导出：范围是当前这条 + 所选背景" onClick={exportAll}>
+          导出 {targets.length + 1} 条…
+        </button>
+      </div>
+      {targets.length > 0 && <div className="hint">先「应用」再「导出」；应用后改了文案，要再应用一次。</div>}
+    </Section>
+  );
+}
+
 export function PosterPanel() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] ?? null : null));
@@ -324,7 +486,7 @@ export function PosterPanel() {
         {video && !layer && (
           <>
             <EmptyState />
-            <div className="hint">建好后：调速度和框 → 可选生成朗读并「配合朗读调速」→ 自动挑重点词 → 左栏「批量应用」铺到其它背景，再导出。</div>
+            <div className="hint">建好后：调速度和框 → 可选生成朗读并「配合朗读调速」→ 自动挑重点词 → 在「背景」里勾选或上传其它背景，应用后一起导出。</div>
           </>
         )}
         {video && layer && (
@@ -334,9 +496,10 @@ export function PosterPanel() {
             <TextSections layer={layer} sel={null} poster />
             <VoiceSection layer={layer} voice={voice} />
             <HighlightSection layer={layer} />
+            <BackgroundSection />
             <div className="poster-foot">
               <div className="mono small">{scrollSummary(layer, voiceSeconds)}</div>
-              <div className="hint">做好后用左栏「批量应用」铺到其它背景，再导出。</div>
+              <div className="hint">做好后在上面「背景」里选好其它背景，应用后一起导出。</div>
             </div>
           </>
         )}

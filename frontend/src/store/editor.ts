@@ -164,7 +164,8 @@ export interface EditorState {
   refreshVideos: () => Promise<void>;
   loadAssets: () => Promise<void>;
   /** 把视频文件追加到当前批次（左栏拖入，HIG-21）；传完并入列表并轮询预处理。 */
-  appendVideos: (files: File[]) => Promise<void>;
+  /** 追加上传；返回新建视频的 id（失败 / 正在上传时为空数组），大字报「上传背景」据此自动勾选（HIG-55）。 */
+  appendVideos: (files: File[]) => Promise<string[]>;
   /** 删除视频（左栏，HIG-20）：逐条调接口，删成功的从列表 / 草稿 / 历史里拿掉。调用方负责二次确认。 */
   deleteVideos: (ids: string[]) => Promise<void>;
   /** 改批次名 / 视频名（HIG-27）；成功返回 true，失败 toast 原因。 */
@@ -784,18 +785,20 @@ export const useEditor = create<EditorState>((set, get) => {
 
     appendVideos: async (files) => {
       const b = get().batch;
-      if (!b || !files.length || get().appendProgress !== null) return;
+      if (!b || !files.length || get().appendProgress !== null) return [];
       set({ appendProgress: 0 });
       try {
         const created = await api.uploadVideos(b.id, files, (f) => {
           if (get().batch?.id === b.id) set({ appendProgress: f });
         });
-        if (get().batch?.id !== b.id) return;
+        if (get().batch?.id !== b.id) return [];
         await get().refreshVideos();
         set((s) => ({ appendProgress: null, currentVideoId: s.currentVideoId ?? created[0]?.id ?? null, toast: `已追加 ${created.length} 条视频，预处理完成后即可编辑`, toastAction: null }));
         pollPreparingVideos();
+        return created.map((v) => v.id);
       } catch (e) {
         if (get().batch?.id === b.id) set({ appendProgress: null, toast: `追加视频失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+        return [];
       }
     },
 
