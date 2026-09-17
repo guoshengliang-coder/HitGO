@@ -69,7 +69,7 @@ function FrameSection() {
   // 收起来之后摘要就是这块设置唯一的可见信息，所以安全区有重叠时也要在这一行看得见
   const summary = (
     <span className="mono">
-      导出 {exported.map((k) => variantDef(k).label).join(' / ')} · {def.label} {frameSummary(out, postDuration + preroll, calibration, sameAspect)}
+      {def.label} · {frameSummary(out, postDuration + preroll, calibration, sameAspect)} · 导出 {exported.map((k) => variantDef(k).label).join(' / ')}
       {overlaps > 0 && <span style={{ color: 'var(--st-failed-fg)' }}> · {overlaps} 个图层越界</span>}
     </span>
   );

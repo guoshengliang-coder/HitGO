@@ -77,7 +77,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
       </label>
       <div className="field" style={{ marginBottom: 12 }}>
         画幅
-        <div className="chips" role="group" aria-label="导出画幅">
+        <div className="chips export-variants" role="group" aria-label="导出画幅">
           {VARIANT_DEFS.map((d) => {
             const on = variantKeys.includes(d.key);
             return (

@@ -786,3 +786,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .variant-tab .vt-label { flex: 1; height: 100%; border: 0; background: transparent; color: inherit; font: inherit; padding: 0 6px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 3px; }
 .variant-tab .vt-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
 .chip.export-variant { display: inline-flex; align-items: center; gap: 6px; }
+
+.chips.export-variants { display: grid; grid-template-columns: repeat(2, 1fr); }
+.chips.export-variants .chip { justify-content: space-between; }
+.audio-list-bar { flex-wrap: wrap; }
+.audio-list-bar .chips { flex: none; white-space: nowrap; }
+.audio-list-bar .chips .chip { white-space: nowrap; }

@@ -44,7 +44,7 @@ function AudioAssetList({ onPick, draggable }: { onPick?: (assetId: string) => v
   };
   return (
     <>
-      <div className="inline" style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+      <div className="inline audio-list-bar" style={{ marginBottom: 8 }}>
         <div className="chips">
           {(['mine', 'library', 'derived'] as AssetBucket[]).map((b) => (
             <button key={b} className={`chip ${bucket === b ? 'active' : ''}`} onClick={() => setBucket(b)}>{BUCKET_LABEL[b]}</button>
@@ -83,7 +83,7 @@ function AudioPicker({ role, onPick, onClose }: { role: AudioRole; onPick: (asse
 /** 常驻的音频素材（HIG-33）：拖到时间线上加轨，落点就是起点。 */
 function LibrarySection() {
   return (
-    <Section id="audio.library" title="音频素材" hint="拖到时间线上加轨" help={LIBRARY_HELP}>
+    <Section id="audio.library" title="音频素材" bodyClass="stack" hint="拖到时间线上加轨" help={LIBRARY_HELP}>
       <AudioAssetList draggable />
     </Section>
   );

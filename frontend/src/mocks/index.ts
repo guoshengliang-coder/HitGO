@@ -524,10 +524,11 @@ function tickJobs() {
           // 同 worker（契约 §1 Job output.audio，HIG-26）：spec 带 audio 块时记下实际混进的音轨，素材不在的算跳过
           const audio = v?.edit_spec?.audio;
           if (audio) {
-            const found = audio.tracks.map((t) => ({ t, a: assets.find((x) => x.id === t.asset_id && x.type === 'audio') }));
+            // 关掉眼睛的音轨（HIG-33）既不混入也不算跳过
+            const found = audio.tracks.filter((t) => !t.hidden).map((t) => ({ t, a: assets.find((x) => x.id === t.asset_id && x.type === 'audio') }));
             const skipped = found.filter((x) => !x.a).map((x) => x.t.id);
             j.output.audio = {
-              source_volume: v?.has_audio ? audio.source_volume : 0,
+              source_volume: v?.has_audio && !audio.source_hidden ? audio.source_volume : 0,
               source_mute: audio.source_mute?.length ?? 0,
               tracks: found.flatMap(({ t, a }) => (a ? [{ id: t.id, asset_id: t.asset_id, name: a.name, role: t.role ?? 'bgm' }] : [])),
               skipped,
