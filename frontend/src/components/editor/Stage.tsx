@@ -26,7 +26,7 @@ import { blurFillFilter } from '../../lib/blurFill';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
 import { windowContains } from '../../lib/time';
-import { clipAt, clipWindows } from '../../lib/sequence';
+import { clipAt, clipWindows, sequenceSourceGain } from '../../lib/sequence';
 import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
@@ -667,14 +667,14 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     const el = videoRef.current;
     if (!el) return;
     el.volume = srcVolume;
-    if (!srcAudio?.source_mute?.length || srcAudio.source_hidden) return;
+    if (!spec?.sequence && (!srcAudio?.source_mute?.length || srcAudio.source_hidden)) return;
     const apply = () => {
       const v = videoRef.current;
-      if (v) v.volume = sourceGainAt(srcAudio, player.postTime);
+      if (v) v.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.postTime) : sourceGainAt(srcAudio, player.postTime);
     };
     apply();
     return player.subscribe(apply);
-  }, [srcVolume, srcAudio, video?.id]);
+  }, [srcVolume, srcAudio, video?.id, spec?.sequence]);
 
   // 封面时长 → 播放头前面的封面段。必须写在「播放器挂载」之前：换视频时先有新的封面时长，挂载时才能退到封面起点。
   useEffect(() => {
@@ -785,7 +785,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           key={video?.id}
           style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: needsFill && fill === 'crop' ? 'hidden' : undefined }}
           onLoadedMetadata={(e) => {
-            e.currentTarget.volume = srcVolume;
+            e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.postTime) : sourceGainAt(srcAudio, player.postTime);
           }}
         />
         {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}

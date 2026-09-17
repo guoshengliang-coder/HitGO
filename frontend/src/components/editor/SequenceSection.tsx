@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useEditor } from '../../store/editor';
+import { useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
-import { clipDisplayGroups, duplicateClip, insertClip, moveClipGroup, removeClip, sequenceDuration, splitClip, updateClip } from '../../lib/sequence';
+import { clipDisplayGroups, duplicateClip, insertClip, moveClipGroup, removeClip, splitClip, updateClip } from '../../lib/sequence';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL, splitByAccept } from '../../lib/fileDrop';
 import type { ClipTransitionType, SequenceClip } from '../../types';
@@ -27,6 +27,8 @@ export function SequenceSection() {
   const appendVideos = useEditor((s) => s.appendVideos);
   const appendProgress = useEditor((s) => s.appendProgress);
   const [picker, setPicker] = useState(false);
+  const [insertMode, setInsertMode] = useState<'playhead' | 'start' | 'end'>('playhead');
+  const [insertionTime, setInsertionTime] = useState(0);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
@@ -37,14 +39,15 @@ export function SequenceSection() {
   const selectedIndex = clips.findIndex((clip) => clip.id === selectedId);
   const selectedGroupIndex = groups.findIndex((g) => g.clips.some((w) => w.clip.id === selectedId));
   const selectedSource = selected ? videos.find((v) => v.id === selected.video_id) : null;
-  const duration = sequence ? sequenceDuration(sequence) : current?.duration ?? 0;
+  const duration = usePostDuration();
+  const insertAt = insertMode === 'start' ? 0 : insertMode === 'end' ? duration : Math.max(0, Math.min(duration, insertionTime));
 
   const save = (next: typeof spec) => { if (current && next) replaceSpec(current.id, next, { history: true }); };
   const add = (sourceId: string) => {
     if (!current || !spec) return;
     const source = videos.find((v) => v.id === sourceId);
     if (!source || source.status !== 'ready') return;
-    const at = Math.max(0, Math.min(duration, player.currentTime));
+    const at = insertAt;
     const inserted = insertClip(spec, current.id, current.duration, source.id, source.duration, at);
     save(inserted.spec);
     setSelected(inserted.clipId);
@@ -73,7 +76,7 @@ export function SequenceSection() {
     <>
       <Section id="trim.sequence" title="视频片段" summary={<span className="mono">{clips.length ? `${new Set(clips.map((c) => c.video_id)).size} 条来源 · ${formatSeconds(duration)}` : '当前仅一条源视频'}</span>} bodyClass="stack">
         <div className="hint">在播放头插入本批次视频；也可以在视频轨上拖动片段调整顺序。插入使用来源的原始画面与声音。原视频已有的删减区间会折叠显示，不代表又添加了视频。</div>
-        <button className="btn" onClick={() => setPicker(true)} disabled={!current || current.status !== 'ready' || (current.kind ?? 'video') !== 'video'}>＋ 添加视频片段</button>
+        <button className="btn" onClick={() => { player.pause(); setInsertionTime(player.postTime); setInsertMode('playhead'); setPicker(true); }} disabled={!current || current.status !== 'ready' || (current.kind ?? 'video') !== 'video'}>＋ 添加视频片段</button>
         {clips.length > 0 && (
           <div className="sequence-list">
             {groups.map((group, index) => {
@@ -92,6 +95,7 @@ export function SequenceSection() {
         )}
         {selected && selectedSource && (
           <>
+            <label className="field">本片段原声（%）<input className="input sm" aria-label="本片段原声音量" type="number" min="0" max="100" step="5" disabled={!selectedSource.has_audio} key={`${selected.id}:volume:${selected.source_volume}`} defaultValue={Math.round((selected.source_volume ?? 1) * 100)} onBlur={(e) => { const value = Number(e.target.value); if (Number.isFinite(value) && value >= 0 && value <= 100) patchClip({ source_volume: value / 100 }); }} /><span className="hint">{selectedSource.has_audio ? '只调整选中片段；原视频的配音只随原视频播放。' : '这段源视频没有原声音轨。'}</span></label>
             <div className="inline"><label className="field">源片入点<input className="input sm" type="number" min="0" max={selected.out - 0.1} step="0.01" key={`${selected.id}:in:${selected.in}`} defaultValue={selected.in} onBlur={(e) => editEdge('in', Number(e.target.value))} /></label><label className="field">源片出点<input className="input sm" type="number" min={selected.in + 0.1} max={selectedSource.duration} step="0.01" key={`${selected.id}:out:${selected.out}`} defaultValue={selected.out} onBlur={(e) => editEdge('out', Number(e.target.value))} /></label></div>
             <div className="inline"><button className="btn sm" onClick={() => { const next = splitClip(spec!, selected.id, Math.max(0, player.currentTime)); if (next) save(next); else setError('播放头需位于选中片段内部'); }}>在播放头拆分</button><button className="btn sm" onClick={() => { const result = duplicateClip(spec!, selected.id); if (result) { save(result.spec); setSelected(result.clipId); } }}>复制</button><button className="btn sm danger" disabled={clips.length <= 1} onClick={() => { const next = removeClip(spec!, selected.id); if (next) { save(next); setSelected(next.sequence?.clips[Math.max(0, selectedIndex - 1)]?.id ?? null); } }}>删除</button></div>
             <div className="inline"><button className="btn sm" disabled={selectedGroupIndex <= 0} onClick={() => save(moveClipGroup(spec!, current!.id, groups[selectedGroupIndex].key, selectedGroupIndex - 1))}>前移</button><button className="btn sm" disabled={selectedGroupIndex >= groups.length - 1} onClick={() => save(moveClipGroup(spec!, current!.id, groups[selectedGroupIndex].key, selectedGroupIndex + 1))}>后移</button></div>
@@ -101,7 +105,8 @@ export function SequenceSection() {
         {error && <div className="error-text" role="alert">{error}</div>}
       </Section>
       {picker && <Modal title="添加视频片段" onClose={() => setPicker(false)} width={510}>
-        <div className="hint">选择本批次已就绪的视频，插入到当前播放头位置。来源视频已有的字幕、音频等编辑不会带入。</div>
+        <label className="field">插入位置<select className="input" value={insertMode} onChange={(e) => setInsertMode(e.target.value as typeof insertMode)}><option value="playhead">播放头（{formatTime(insertionTime)}）</option><option value="start">片头</option><option value="end">片尾</option></select></label>
+        <div className="hint">将插入到 {formatTime(insertAt)}{insertAt === 0 ? '，成为第一段' : insertAt === duration ? '，接在现有内容之后' : ''}。使用所选 MP4 自己的原始画面和声音，已有编辑不会带入。</div>
         <input className="input" type="search" placeholder="搜索本批次视频" value={query} onChange={(e) => setQuery(e.target.value)} style={{ width: '100%', margin: '10px 0' }} />
         <div className="sequence-picker-list">{videos.filter((v) => (v.kind ?? 'video') === 'video' && v.name.toLowerCase().includes(query.toLowerCase())).map((v) => <button key={v.id} className="sequence-pick" disabled={v.status !== 'ready'} onClick={() => add(v.id)}><span>{v.name}</span><small>{v.status === 'ready' ? formatSeconds(v.duration) : v.status === 'preparing' ? '预处理中…' : '预处理失败'}</small></button>)}</div>
         <label className="btn" style={{ cursor: 'pointer', marginTop: 12 }}>{appendProgress === null ? '上传视频到本批次' : `上传中 ${Math.round(appendProgress * 100)}%`}<input type="file" className="sr-only" multiple accept={VIDEO_ACCEPT} disabled={appendProgress !== null} onChange={(e) => { const { accepted, rejected } = splitByAccept(Array.from(e.target.files ?? []), VIDEO_ACCEPT); if (rejected.length) setError(`只支持 ${VIDEO_ACCEPT_LABEL}`); if (accepted.length) void appendVideos(accepted); e.target.value = ''; }} /></label>

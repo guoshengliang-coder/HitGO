@@ -8,9 +8,12 @@ import { useEffect, useRef } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
 import { resolveTrack, trackGain, trackMediaTime } from '../../lib/audioTracks';
+import { sequenceSourceTime } from '../../lib/sequence';
 import { isAssetReady, type AudioTrack } from '../../types';
 
 function TrackAudio({ track }: { track: AudioTrack }) {
+  const ownerId = useEditor((s) => s.currentVideoId);
+  const sequence = useEditor((s) => s.currentVideoId ? s.specs[s.currentVideoId]?.sequence : null);
   const asset = useEditor((s) => s.assets.find((a) => a.id === track.asset_id));
   const postDuration = usePostDuration();
   const elRef = useRef<HTMLAudioElement | null>(null);
@@ -37,7 +40,8 @@ function TrackAudio({ track }: { track: AudioTrack }) {
     const tolerance = r.role === 'voice' ? 0.1 : 0.25;
     const sync = (postTime: number, playing: boolean, sourceTime: number) => {
       // align = source 的音轨（分离出的人声 / 伴奏）按源时间定位，剪辑跳过的段它也跳过
-      const at = trackMediaTime(postTime, r, postDuration, mediaDuration, sourceTime);
+      const rawTime = sequence && ownerId ? sequenceSourceTime(sequence, ownerId, postTime) : sourceTime;
+      const at = trackMediaTime(postTime, r, postDuration, mediaDuration, rawTime);
       el.volume = Math.max(0, Math.min(1, trackGain(postTime, r, postDuration, mediaDuration)));
       if (at === null || !playing) {
         if (!el.paused) el.pause();
@@ -57,7 +61,7 @@ function TrackAudio({ track }: { track: AudioTrack }) {
       unsub();
       el.pause();
     };
-  }, [url, track, mediaDuration, postDuration]);
+  }, [url, track, mediaDuration, postDuration, sequence, ownerId]);
 
   return null;
 }

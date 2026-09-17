@@ -1,11 +1,63 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type SequenceClip } from '../types';
-import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeSequence, moveClip, moveClipGroup, removeClip, removeClipGroup, sequenceDuration, updateClip } from './sequence';
+import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeSequence, moveClip, moveClipGroup, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, updateClip } from './sequence';
+import { trackMediaTime } from './audioTracks';
 
 const clip = (id: string, videoId: string, start: number, end: number): SequenceClip => ({ id, video_id: videoId, in: start, out: end });
 const withSequence = (...clips: SequenceClip[]): EditSpec => ({ ...emptySpec(), sequence: { clips } });
 
 describe('HIG-39 composed timeline', () => {
+  it.each([0, 4, 8])('inserting at %s preserves owner mute but keeps the inserted original audio', (at) => {
+    const spec: EditSpec = { ...emptySpec(), audio: { source_volume: 0, tracks: [{ id: 'dub', asset_id: 'a', align: 'source', t: 'all' }] } };
+    const next = insertClip(spec, 'owner', 8, 'inserted', 3, at).spec;
+    expect(next.audio?.source_volume).toBe(1);
+    expect(sequenceSourceGain(next, 'owner', at + 1)).toBe(1);
+    expect(sequenceSourceTime(next.sequence!, 'owner', at + 1)).toBeUndefined();
+    const ownerAt = at === 0 ? 4 : 1;
+    expect(sequenceSourceGain(next, 'owner', ownerAt)).toBe(0);
+    expect(sequenceSourceTime(next.sequence!, 'owner', ownerAt)).toBe(1);
+  });
+
+  it('repairs the saved 23.5s insertion without changing order, dubbing or existing gain', () => {
+    const spec: EditSpec = { ...withSequence(clip('new', 'inserted', 0, 23.5), clip('a', 'owner', 0, 8.4), clip('b', 'owner', 9.969, 14.917)), audio: { source_volume: 0.3, tracks: [{ id: 'dub', asset_id: 'yue', align: 'source', t: 'all' }] } };
+    const next = normalizeSequenceAudio(spec, 'owner');
+    expect(next.sequence?.clips.map((c) => c.source_volume)).toEqual([1, 0.3, 0.3]);
+    expect(next.audio?.tracks).toEqual(spec.audio?.tracks);
+    expect(normalizeSequenceAudio(next, 'owner')).toBe(next);
+    expect(spec.audio?.source_volume).toBe(0.3);
+    const dub = next.audio!.tracks[0];
+    for (const candidate of [spec, next]) {
+      expect(sequenceSourceGain(candidate, 'owner', 1)).toBe(1);
+      expect(sequenceSourceGain(candidate, 'owner', 24)).toBe(0.3);
+      const rawAtStart = sequenceSourceTime(candidate.sequence!, 'owner', 1);
+      expect(trackMediaTime(1, dub, 36.848, 14.917, rawAtStart)).toBeNull();
+      const rawAfterCut = sequenceSourceTime(candidate.sequence!, 'owner', 32.9);
+      expect(rawAfterCut).toBeCloseTo(10.969);
+      expect(trackMediaTime(32.9, dub, 36.848, 14.917, rawAfterCut)).toBeCloseTo(10.969);
+    }
+    expect(sequenceTrackWindows(next.sequence!, 'owner', [0, 36.848])).toEqual([[23.5, 31.9], [31.9, 36.848]]);
+  });
+
+  it('keeps clip gains after reorder and respects a new whole-film mute and timed mutes', () => {
+    const old: EditSpec = { ...withSequence(clip('a', 'owner', 0, 4), clip('b', 'new', 0, 3)), audio: { source_volume: 0.8, source_hidden: true, tracks: [] } };
+    const normalized = normalizeSequenceAudio(old, 'owner');
+    const moved = moveClip(normalized, 'b', 0);
+    expect(sequenceSourceGain(moved, 'owner', 1)).toBe(1);
+    expect(sequenceSourceGain(moved, 'owner', 4)).toBe(0);
+    moved.audio!.source_mute = [[1, 2]];
+    expect(sequenceSourceGain(moved, 'owner', 1.5)).toBe(0);
+    moved.audio!.source_hidden = true;
+    expect(sequenceSourceGain(moved, 'owner', 0.5)).toBe(0);
+    expect(sequenceSourceGain(moved, 'owner', -0.5)).toBe(0);
+  });
+
+  it('changing one clip volume does not split existing timed tracks', () => {
+    const spec: EditSpec = { ...withSequence({ ...clip('a', 'owner', 0, 3), source_volume: 1 }, { ...clip('b', 'new', 0, 3), source_volume: 1 }), audio: { source_volume: 1, tracks: [{ id: 'bgm', asset_id: 'a', t: [1, 5] }] } };
+    const next = updateClip(spec, 'b', { source_volume: 0.4 });
+    expect(next.audio?.tracks).toEqual(spec.audio?.tracks);
+    expect(sequenceSourceGain(next, 'owner', 4)).toBe(0.4);
+    expect(trackMediaTime(4, next.audio!.tracks[0], 6, 10, undefined)).toBe(3);
+  });
   it('converts legacy removed ranges and output looping without changing the source footage', () => {
     const spec = { ...emptySpec(), trim: { remove: [[2, 4], [7, 8]] as [number, number][], duration: 11 } };
     const result = materializeSequence(spec, 'owner', 10);

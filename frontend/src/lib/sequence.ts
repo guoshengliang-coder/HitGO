@@ -47,9 +47,57 @@ export function clipAt(sequence: SequenceSpec, time: number) {
   return [...windows].reverse().find((w) => time >= w.start - 1e-6) ?? windows[0];
 }
 
+/** Legacy owner mute/volume must not silence a newly inserted source. */
+export function normalizeSequenceAudio(spec: EditSpec, ownerId: string): EditSpec {
+  if (!spec.sequence || spec.sequence.clips.some((c) => c.source_volume != null)) return spec;
+  const next = cloneSpec(spec);
+  const ownerGain = spec.audio?.source_hidden ? 0 : spec.audio?.source_volume ?? 1;
+  for (const clip of next.sequence!.clips) clip.source_volume = clip.video_id === ownerId ? ownerGain : 1;
+  if (next.audio) { next.audio.source_volume = 1; next.audio.source_hidden = false; }
+  return next;
+}
+
+/** Replacing the owner's voice must not mute unrelated inserted footage. Mutates the draft. */
+export function setOwnerSourceGain(spec: EditSpec, ownerId: string, gain: number): void {
+  Object.assign(spec, normalizeSequenceAudio(spec, ownerId));
+  if (spec.sequence) {
+    for (const clip of spec.sequence.clips) if (clip.video_id === ownerId) clip.source_volume = gain;
+  } else {
+    spec.audio ??= { source_volume: 1, tracks: [] };
+    spec.audio.source_volume = gain;
+  }
+}
+
+/** Source-aligned dubbing exists only over the owner's visible raw footage. */
+export function sequenceSourceTime(sequence: SequenceSpec, ownerId: string, time: number): number | undefined {
+  const window = clipAt(sequence, time);
+  if (!window || time < 0 || time >= sequenceDuration(sequence) || window.clip.video_id !== ownerId) return undefined;
+  return window.clip.in + time - window.start;
+}
+
+/** Visible spans for an owner-aligned track; never paint it over other sources. */
+export function sequenceTrackWindows(sequence: SequenceSpec, ownerId: string, range: [number, number]): [number, number][] {
+  const windows = clipWindows(sequence);
+  return windows.flatMap((w, i) => {
+    const start = Math.max(range[0], w.start);
+    const end = Math.min(range[1], windows[i + 1]?.start ?? w.end);
+    return w.clip.video_id === ownerId && end > start ? [[start, end] as [number, number]] : [];
+  });
+}
+
+/** Same clip/master gain and legacy fallback as the renderer. */
+export function sequenceSourceGain(spec: EditSpec, ownerId: string, time: number): number {
+  if (!spec.sequence || time < 0 || time >= sequenceDuration(spec.sequence)) return 0;
+  const clip = clipAt(spec.sequence, time)?.clip;
+  if (!clip || spec.audio?.source_mute?.some(([a, b]) => time >= a && time < b)) return 0;
+  const master = spec.audio?.source_hidden ? 0 : spec.audio?.source_volume ?? 1;
+  const legacy = spec.sequence.clips.every((c) => c.source_volume == null);
+  return legacy ? clip.video_id === ownerId ? master : 1 : master * (clip.source_volume ?? 1);
+}
+
 /** Materialize the old trim and optional loop/truncation as clips before the first insertion. */
 export function materializeSequence(spec: EditSpec, videoId: string, duration: number): EditSpec {
-  if (spec.sequence) return cloneSpec(spec);
+  if (spec.sequence) return cloneSpec(normalizeSequenceAudio(spec, videoId));
   const next = cloneSpec(spec);
   const segments = keepSegments(duration, next.trim.remove);
   const onePass = postTrimDuration(duration, next.trim.remove);
@@ -66,7 +114,7 @@ export function materializeSequence(spec: EditSpec, videoId: string, duration: n
   }
   next.sequence = { clips };
   next.trim = { remove: [] };
-  return next;
+  return normalizeSequenceAudio(next, videoId);
 }
 
 /** A timed thing crossing an insertion is copied to both old-footage sides. */
@@ -95,7 +143,7 @@ export function insertClip(spec: EditSpec, ownerId: string, ownerDuration: numbe
   const next = materializeSequence(spec, ownerId, ownerDuration);
   const sequence = next.sequence!;
   const position = Math.max(0, Math.min(sequenceDuration(sequence), at));
-  const clip: SequenceClip = { id: id('c'), video_id: sourceId, in: 0, out: sourceDuration };
+  const clip: SequenceClip = { id: id('c'), video_id: sourceId, in: 0, out: sourceDuration, source_volume: 1 };
   const windows = clipWindows(sequence);
   // At an overlap the incoming clip owns the preview frame, so an insertion
   // there must split that clip rather than the fading-out predecessor.
@@ -133,7 +181,7 @@ export function updateClip(spec: EditSpec, clipId: string, patch: Partial<Sequen
   const clip = next.sequence?.clips.find((c) => c.id === clipId);
   if (clip) Object.assign(clip, patch);
   if (next.sequence) sanitizeTransitions(next.sequence);
-  return retimeContent(spec, next);
+  return 'in' in patch || 'out' in patch || 'transition' in patch ? retimeContent(spec, next) : next;
 }
 
 /** A clip keeps its own timed content when it moves or changes length. */

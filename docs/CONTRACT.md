@@ -245,9 +245,17 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `cut | fade | slide_left | slide_right | wipe_left | wipe_right`；`cut` 时 `duration = 0`，
   其它效果的时长为 0.1–1.5 秒且小于相邻片段时长。拼接总时长等于各片段时长之和减去转场重叠时长。
 - 音频默认保留每个源片自己的声音；硬切处直接切换，视觉转场期间两段源音交叉淡化。
-  `audio.source_volume / source_hidden / source_mute` 作用于拼接后的源音轨；BGM、配音等
+  每个 clip 可选 `source_volume`（0–1，缺省 1），用于单独调整该段原声。首次插入时，
+  原视频的原声音量/隐藏状态转为原片各段的 `source_volume`，新插入片段设为 1；
+  总源音轨恢复音量 1、显示状态。`audio.source_volume / source_hidden / source_mute` 此后
+  作用于拼接后的源音轨；BGM、配音等
   `audio.tracks[]` 作用于拼接后的正片时轴。`align = "source"` 的既有音轨只跟随当前视频
-  的原始片段，在插入片段期间静音，以免错位。
+  的原始片段，在插入片段期间静音，以免错位；预览取原片入点加段内时间，不能直接取拼接时间。
+  兼容 v0.22.1 及更早的已保存序列：所有 clip 都没有明确 `source_volume` 时，旧的
+  `audio.source_volume / source_hidden` 只属于 owner 原片，插入来源原声按 1 处理；编辑器
+  载入时转为上述显式片段音量并保存，渲染端同样解释未迁移的旧 spec。
+  拼接后套用原片的分离音轨或语言配音，也只将 owner 片段原声静音，不能静音其它来源；
+  多语言导出的「原版」只恢复 owner 的原声，不改变其它来源的片段音量。
 - 插入片段时，原视频上已有的定时图层、静音区间和音轨跟随原画面后移；跨插入点的局部
   时段拆成前后两段，`"all"` 保持全程。用户随后可把新字幕、配音或 BGM 加在整个拼接时间轴上。
 - 保存 `edit_spec` 与开始渲染时都校验片段的归属、状态、源文件、时长与转场参数。
