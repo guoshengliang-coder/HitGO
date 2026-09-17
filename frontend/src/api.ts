@@ -9,6 +9,13 @@ export const MOCK = import.meta.env.VITE_MOCK === '1';
 /** 批量应用 layers 模块的方式：replace 整体替换；style_only 只覆盖样式，保留目标的 anchor / margin / t。 */
 export type ApplyLayerMode = 'replace' | 'style_only';
 
+/** POST /api/render 的一项（HIG-43）：lang null = 原版；edit_spec 缺省 = 用视频上保存的 spec。 */
+export interface RenderItem {
+  video_id: string;
+  lang: string | null;
+  edit_spec?: EditSpec;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -115,9 +122,9 @@ export const api = {
     request<Video[]>('POST', `/api/batches/${batchId}/apply`, body),
   batchJobs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/jobs`),
   batchOutputs: (batchId: string) => request<Job[]>('GET', `/api/batches/${batchId}/outputs`),
-  /** 跨批次的已完成产物，按完成时间倒序；q 按导出名称 / 批次名 / 视频名搜索（HIG-27）。 */
-  allOutputs: (limit = 100, offset = 0, q = '') =>
-    request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}`),
+  /** 跨批次的已完成产物，按完成时间倒序；q 按导出名称 / 批次名 / 视频名 / 语言名搜索（HIG-27）；lang 只要某个语言，original = 原版（HIG-43）。 */
+  allOutputs: (limit = 100, offset = 0, q = '', lang = '') =>
+    request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}${lang ? `&lang=${encodeURIComponent(lang)}` : ''}`),
   /**
    * 批量下载（HIG-47）：提交隐藏表单到 POST /api/outputs/zip，响应是附件，浏览器边收边写盘、不进内存。
    * 表单目标是隐藏 iframe，页面本身不跳转。成功时是附件下载，iframe 不会加载出页面；
@@ -215,9 +222,16 @@ export const api = {
   },
 
   // 渲染
-  /** name：本次导出的名称，写到每个任务上（可选，HIG-27）。 */
-  render: (video_ids: string[], name?: string, variant_keys?: string[]) =>
-    request<Job[]>('POST', '/api/render', { video_ids, ...(name?.trim() ? { name: name.trim() } : {}), ...(variant_keys?.length ? { variant_keys } : {}) }),
+  /**
+   * name：本次导出的名称，写到每个任务上（可选，HIG-27）。
+   * 传 RenderItem[]（HIG-43）时每项带语言，可带自己的 spec 快照：同一视频的多个语言一次提交。
+   */
+  render: (targets: string[] | RenderItem[], name?: string, variant_keys?: string[]) =>
+    request<Job[]>('POST', '/api/render', {
+      ...(targets.length && typeof targets[0] === 'object' ? { items: targets } : { video_ids: targets }),
+      ...(name?.trim() ? { name: name.trim() } : {}),
+      ...(variant_keys?.length ? { variant_keys } : {}),
+    }),
   getJob: (id: string) => request<Job>('GET', `/api/jobs/${id}`),
   retryJob: (id: string) => request<Job>('POST', `/api/jobs/${id}/retry`),
   getJobs: (ids: string[]) => request<Job[]>('GET', `/api/jobs?ids=${ids.join(',')}`),

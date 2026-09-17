@@ -29,11 +29,20 @@ def _safe_part(value: str | None) -> str:
 
 
 def output_file_name(
-    job_id: str, variant_key: str, export_name: str | None, batch_name: str | None, video_name: str | None
+    job_id: str,
+    variant_key: str,
+    export_name: str | None,
+    batch_name: str | None,
+    video_name: str | None,
+    lang_label: str | None = None,
 ) -> str:
-    """``导出名称_视频名_规格.mp4``; batch name when there is no export name; job id when all are empty."""
+    """``导出名称_视频名[_语言名]_规格.mp4``; batch name when there is no export name; job id when all are empty."""
     video = _VIDEO_EXT.sub("", video_name or "")
-    parts = [p for p in (_safe_part(export_name or batch_name), _safe_part(video), _safe_part(variant_key)) if p]
+    parts = [
+        p
+        for p in (_safe_part(export_name or batch_name), _safe_part(video), _safe_part(lang_label), _safe_part(variant_key))
+        if p
+    ]
     return f"{'_'.join(parts) if parts else job_id}.mp4"
 
 

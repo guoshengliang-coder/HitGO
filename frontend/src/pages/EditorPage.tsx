@@ -327,7 +327,9 @@ export function EditorPage() {
   const toastAction = useEditor((s) => s.toastAction);
   const setToast = useEditor((s) => s.setToast);
   const flushSave = useEditor((s) => s.flushSave);
-  const [exportOpen, setExportOpen] = useState(false);
+  const exportDialog = useEditor((s) => s.exportDialog);
+  const openExport = useEditor((s) => s.openExport);
+  const closeExport = useEditor((s) => s.closeExport);
 
   // 面板尺寸：左栏宽 / 右栏宽 / 时间线高，拖动分隔条调整，存本机（HIG-53 补左栏）。
   // 存的是用户拖出来的值；实际生效的按窗口尺寸收紧，窗口变小不会把中栏和画面挤没。
@@ -368,10 +370,10 @@ export function EditorPage() {
 
   // 快捷键
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => handleKey(e, { openExport: () => setExportOpen(true) });
+    const onKey = (e: KeyboardEvent) => handleKey(e, { openExport: () => openExport() });
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [openExport]);
 
   if (error) {
     return (
@@ -386,7 +388,7 @@ export function EditorPage() {
 
   return (
     <div className="editor" style={layoutStyle}>
-      <TopBar onExport={() => setExportOpen(true)} />
+      <TopBar onExport={() => openExport()} />
       <div className="editor-body">
         <VideoList />
         <Splitter axis="x" label="调整左侧列表宽度" onMove={(d) => resize({ leftW: layout.leftW + d })} onReset={() => resize({ leftW: LAYOUT_DEFAULTS.leftW })} />
@@ -411,7 +413,7 @@ export function EditorPage() {
           {step === 'poster' && <PosterPanel />}
         </div>
       </div>
-      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
+      {exportDialog && <ExportDialog request={exportDialog} onClose={closeExport} />}
       {progressOpen && <ProgressModal />}
       {shortcutsOpen && <ShortcutsModal />}
       {toast && (

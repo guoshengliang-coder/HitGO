@@ -108,3 +108,18 @@ def test_stream_zip_emits_bytes_before_the_last_entry_and_reads_back(tmp_path):
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert zf.testzip() is None
     assert [len(zf.read(n)) for n in zf.namelist()] == [2 << 20] * 3
+
+
+def test_zip_names_carry_the_language(client, ready_video, db):
+    """HIG-43: 名称_视频名_语言名_规格.mp4; outputs without a language keep the old name."""
+    add_done(db, "j_ko", "9x16", b"k", name="投放", lang="ko")
+    add_done(db, "j_orig", "9x16", b"o", name="投放")
+    add_done(db, "j_odd", "9x16", b"x", name="投放", lang="zz")
+    r = post_zip(client, ["j_ko", "j_orig", "j_odd"])
+    assert r.status_code == 200, r.text
+    assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == ["投放_V01_韩语_9x16.mp4", "投放_V01_9x16.mp4", "投放_V01_zz_9x16.mp4"]
+
+
+def test_output_file_name_language_segment():
+    assert output_file_name("j", "1x1", None, "批次", "a.mov", "日语") == "批次_a_日语_1x1.mp4"
+    assert output_file_name("j", "1x1", None, "批次", "a.mov", None) == "批次_a_1x1.mp4"

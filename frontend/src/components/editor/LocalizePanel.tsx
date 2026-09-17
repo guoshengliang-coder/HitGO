@@ -304,6 +304,7 @@ function ApplySection({ video, loc, options }: SectionProps) {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const assets = useEditor((s) => s.assets);
   const applyVersion = useEditor((s) => s.applyVersion);
+  const openExport = useEditor((s) => s.openExport);
   const applied = appliedVersion(spec, loc);
   const versions = Object.entries(loc?.versions ?? {}).filter(([, v]) => v.status === 'done');
   const sepDone = video.separation?.status === 'done' && !!video.separation.instrumental_asset_id;
@@ -340,6 +341,17 @@ function ApplySection({ video, loc, options }: SectionProps) {
               重新套用
             </button>
           )}
+        </div>
+      )}
+      {versions.some(([lang]) => canApplyVersion(video, lang, assets).ok) && (
+        <div className="inline">
+          <button
+            className="btn sm"
+            title="一次导出多个语言版本：每个语言各出一份成片（不改当前套用）"
+            onClick={() => openExport({ scope: 'current', langs: versions.map(([lang]) => lang).filter((lang) => canApplyVersion(video, lang, assets).ok) })}
+          >
+            导出多语言…
+          </button>
         </div>
       )}
       {!sepDone && <div className="hint">还没有分离出的伴奏：套用后成片只有配音没有背景音乐。到「音频」模块分离后再点一次套用即可补上。</div>}

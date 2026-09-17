@@ -18,6 +18,7 @@ import {
   localizeTextStyle,
   mergedCues,
   parseTerms,
+  stripLocalization,
   termsToText,
   transcriptStatusText,
   versionStatusText,
@@ -396,5 +397,26 @@ describe('新增语言', () => {
   it('阿拉伯语用 Noto Sans Arabic，西葡法用内置字体', () => {
     expect(fontForLang('ar')).toBe('Noto Sans Arabic');
     expect(fontForLang('es')).toBe(fontForLang('fr'));
+  });
+});
+
+describe('stripLocalization（HIG-43 导出原版）', () => {
+  const userText: TextLayer = { id: 'user', type: 'text', text: '用户的标题', style: defaultTextStyle(), anchor: 'top-center', margin: [0, 0.1], width: 0.5, rotate: 0, opacity: 1, t: 'all' };
+  it('去掉套用出来的层 / 轨，源音量从 0 恢复成 1；用户的层 / 轨不动', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [userText], audio: { source_volume: 0.8, tracks: [{ id: 'bgm_user', asset_id: 'a_up', role: 'bgm', t: 'all' }] } };
+    applyLocalizationToSpec(spec, 'ko', ctx(video()));
+    stripLocalization(spec);
+    expect(spec.layers).toEqual([userText]);
+    expect(spec.audio!.tracks.map((t) => t.id)).toEqual(['bgm_user']);
+    expect(spec.audio!.source_volume).toBe(1);
+  });
+  it('没套用过：原样；用户自己把原声调成 0 也不动', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [userText], audio: { source_volume: 0, tracks: [] } };
+    stripLocalization(spec);
+    expect(spec.layers).toEqual([userText]);
+    expect(spec.audio!.source_volume).toBe(0);
+    const bare = emptySpec();
+    stripLocalization(bare);
+    expect(bare).toEqual(emptySpec());
   });
 });

@@ -198,4 +198,5 @@ def job_out(job: Job, batch_name: str | None = None, video_name: str | None = No
         name=job.name,
         batch_name=batch_name,
         video_name=video_name,
+        lang=job.lang,
     )

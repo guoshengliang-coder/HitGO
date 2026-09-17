@@ -5,6 +5,7 @@
 // - ?q=：按导出名称 / 批次名 / 视频名搜索（HIG-27）；总表交给后端过滤，批次视图在本地过滤。
 // - 批量下载（HIG-47）：勾选已完成的行，打成一个 zip 由后端边打边传（lib/outputSelection、api.downloadOutputsZip）。
 // - 播放（HIG-52）：已完成的行点「播放」，弹窗里直接放成片（OutputPlayerModal）。
+// - 语言（HIG-43）：多语言导出的成片在变体旁标语言；?lang= 按语言筛（original = 原版），搜索也能搜语言名。
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
@@ -17,6 +18,8 @@ import { matchesQuery } from '../lib/search';
 import { headState, isDownloadable, MAX_ZIP_JOBS, pruneSelection, selectionSummary, toggleAll, toggleOne } from '../lib/outputSelection';
 import { variantDef, type VariantKey } from '../types';
 import { OutputPlayerModal } from '../components/OutputPlayerModal';
+import { langLabel } from '../lib/localize';
+import { ORIGINAL_LANG } from '../lib/langExport';
 
 const PAGE = 100;
 /** 批次视图还有任务在跑时的重拉间隔。进度弹窗用 1.5s，这里是看板，慢一点够用。 */
@@ -50,8 +53,55 @@ function useSearchQuery(): [string, (v: string) => void, string] {
   return [input, setInput, applied];
 }
 
+/** 语言筛选与 URL 的 ?lang= 同步（HIG-43）；'' = 全部。 */
+function useLangFilter(): [string, (v: string) => void] {
+  const [params, setParams] = useSearchParams();
+  const lang = params.get('lang') ?? '';
+  const set = useCallback(
+    (v: string) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (v) next.set('lang', v);
+          else next.delete('lang');
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+  return [lang, set];
+}
+
+function jobLangs(jobs: Job[] | null): string[] {
+  return [...new Set((jobs ?? []).map((j) => j.lang).filter((l): l is string => !!l))];
+}
+
+/** 列表里出现过的语言 + 当前选中的，下拉框的选项；没有任何多语言成片且没在筛时不显示。 */
+function LangFilter({ langs, value, onChange }: { langs: string[]; value: string; onChange: (v: string) => void }) {
+  const codes = [...langs];
+  if (value && value !== ORIGINAL_LANG && !codes.includes(value)) codes.push(value);
+  if (!codes.length && !value) return null;
+  return (
+    <select className="input lang-filter" aria-label="按语言筛选" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">全部语言</option>
+      <option value={ORIGINAL_LANG}>原版</option>
+      {codes.map((c) => (
+        <option key={c} value={c}>
+          {langLabel(null, c)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function matchesLang(job: Job, lang: string): boolean {
+  if (!lang) return true;
+  return lang === ORIGINAL_LANG ? !job.lang : job.lang === lang;
+}
+
 function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return <input className="input search-input" type="search" placeholder="搜索导出名称 / 批次 / 视频" aria-label="搜索产物" value={value} onChange={(e) => onChange(e.target.value)} />;
+  return <input className="input search-input" type="search" placeholder="搜索导出名称 / 批次 / 视频 / 语言" aria-label="搜索产物" value={value} onChange={(e) => onChange(e.target.value)} />;
 }
 
 export function AllOutputsPage() {
@@ -72,6 +122,9 @@ function AllOutputs() {
   const jobsRef = useRef<Job[] | null>(null);
   jobsRef.current = jobs;
   const [input, setInput, query] = useSearchQuery();
+  const [lang, setLang] = useLangFilter();
+  // 下拉框的语言选项从没筛时见过的产物里攒，筛了之后别的语言才不会从选项里消失
+  const [seenLangs, setSeenLangs] = useState<string[]>([]);
   // 搜索词变了之后，还没回来的旧请求结果要丢掉，不然会盖住新结果
   const seq = useRef(0);
 
@@ -81,8 +134,9 @@ function AllOutputs() {
     const mine = ++seq.current;
     try {
       const offset = mode === 'reset' ? 0 : (jobsRef.current?.length ?? 0);
-      const page = await api.allOutputs(PAGE, offset, query);
+      const page = await api.allOutputs(PAGE, offset, query, lang);
       if (!alive.current || mine !== seq.current) return;
+      setSeenLangs((prev) => [...new Set([...prev, ...jobLangs(page)])]);
       setJobs((prev) => (mode === 'reset' || !prev ? page : [...prev, ...page]));
       setDone(page.length < PAGE);
       setUpdatedAt(new Date());
@@ -92,7 +146,7 @@ function AllOutputs() {
     } finally {
       if (alive.current && mine === seq.current) setLoading(false);
     }
-  }, [query]);
+  }, [query, lang]);
 
   useEffect(() => {
     alive.current = true;
@@ -107,6 +161,7 @@ function AllOutputs() {
       <div className="page-head">
         <h1>产物</h1>
         <span className="spacer" />
+        <LangFilter langs={seenLangs} value={lang} onChange={setLang} />
         <SearchBox value={input} onChange={setInput} />
         <button className="btn" onClick={() => void load('reset')} disabled={loading} title="重新拉取列表">
           {loading ? '刷新中…' : updatedAt ? `更新于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '刷新'}
@@ -114,7 +169,7 @@ function AllOutputs() {
       </div>
       <div className="hint" style={{ marginBottom: 12 }}>所有批次已完成的成片，从新到旧；点批次名只看那一批。</div>
       {error && <div className="error-text">{error}</div>}
-      <OutputsTable jobs={jobs} mode="all" emptyText={query ? `没有名称、批次或视频名包含「${query}」的产物。` : undefined} emptyAction={!query ? <Link to="/" className="btn"><IconExport /> 去批次列表导出</Link> : undefined} />
+      <OutputsTable jobs={jobs} mode="all" emptyText={query ? `没有名称、批次、视频名或语言包含「${query}」的产物。` : lang ? '没有这个语言的产物。' : undefined} emptyAction={!query && !lang ? <Link to="/" className="btn"><IconExport /> 去批次列表导出</Link> : undefined} />
       {jobs && jobs.length > 0 && !done && (
         <div style={{ marginTop: 12 }}>
           <button className="btn" onClick={() => void load('more')} disabled={loading}>
@@ -134,6 +189,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const alive = useRef(true);
   const [input, setInput, query] = useSearchQuery();
+  const [lang, setLang] = useLangFilter();
 
   // 一次拉全：产物列表 + 批次（要视频名）+ 全部任务（要知道还有没有在跑的）。
   // 只拉 outputs 的话，页面会停在「导出那一刻」的快照上——这正是 HIG-19 的现象。
@@ -188,6 +244,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
       <div className="page-head">
         <h1>产物 · {batch?.name ?? '…'}</h1>
         <span className="spacer" />
+        <LangFilter langs={jobLangs(jobs)} value={lang} onChange={setLang} />
         <SearchBox value={input} onChange={setInput} />
         <span className="save-indicator" title="有任务在跑时每 2 秒自动重拉">
           <i className={pending > 0 ? 'busy' : ''} />
@@ -208,10 +265,10 @@ function BatchOutputs({ batchId }: { batchId: string }) {
       </div>
       {error && <div className="error-text">{error}</div>}
       <OutputsTable
-        jobs={jobs && jobs.filter((j) => matchesQuery(j.name, query) || matchesQuery(j.video_name, query) || matchesQuery(batch?.name, query))}
+        jobs={jobs && jobs.filter((j) => matchesLang(j, lang) && (matchesQuery(j.name, query) || matchesQuery(j.video_name, query) || matchesQuery(batch?.name, query) || (!!j.lang && matchesQuery(langLabel(null, j.lang), query))))}
         mode="batch"
         batchName={batch?.name}
-        emptyText={query && jobs?.length ? `这一批里没有名称或视频名包含「${query}」的产物。` : undefined}
+        emptyText={jobs?.length ? (query ? `这一批里没有名称、视频名或语言包含「${query}」的产物。` : lang ? '这一批里没有这个语言的产物。' : undefined) : undefined}
       />
     </div>
   );
@@ -304,6 +361,11 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
               )}
               <td>
                 <span className="mono">{vd?.label ?? j.variant_key}</span>
+                {j.lang && (
+                  <span className="pill lang-pill" style={{ marginLeft: 6 }} title="多语言导出的语言版本">
+                    {langLabel(null, j.lang)}
+                  </span>
+                )}
                 {mode === 'batch' && vd?.note && <span className="muted small"> · {vd.note}</span>}
               </td>
               <td className="mono">{j.output ? `${j.output.width}×${j.output.height}` : '—'}</td>
@@ -311,8 +373,8 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
               <td className="mono">{j.output ? fmtSize(j.output.size) : '—'}</td>
               <td className="mono">
                 {fmtDateOr(j.finished_at)}
-                {versions.get(j.id) === 'latest' && <span className="pill done" style={{ marginLeft: 6 }} title="同一视频同一变体里最近生成的一条">最新</span>}
-                {versions.get(j.id) === 'older' && <span className="muted small" style={{ whiteSpace: 'nowrap' }} title="同一视频同一变体后来又导出过；这条不含之后的改动"> · 旧版本</span>}
+                {versions.get(j.id) === 'latest' && <span className="pill done" style={{ marginLeft: 6 }} title="同一视频、同一变体、同一语言里最近生成的一条">最新</span>}
+                {versions.get(j.id) === 'older' && <span className="muted small" style={{ whiteSpace: 'nowrap' }} title="同一视频、同一变体、同一语言后来又导出过；这条不含之后的改动"> · 旧版本</span>}
               </td>
               <td>
                 {j.output_url ? (

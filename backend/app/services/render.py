@@ -216,8 +216,13 @@ def resolve_image_url(url: str) -> ImageSource | None:
     return _image_from_file(path) if path else None
 
 
+def job_spec(job: Job, video: Video) -> dict[str, Any] | None:
+    """The spec a job renders: its own snapshot (HIG-43) or, without one, the video's current spec."""
+    return job.edit_spec if job.edit_spec is not None else video.edit_spec
+
+
 def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
-    spec = EditSpec.model_validate(video.edit_spec)
+    spec = EditSpec.model_validate(job_spec(job, video))
     variant = next((o for o in spec.outputs if o.variant_key == job.variant_key), None)
     if variant is None:
         raise RenderError(f"编辑参数中没有输出变体 {job.variant_key}")
@@ -256,7 +261,7 @@ def build_callback(job: Job, video: Video, batch: Batch, output: dict[str, Any])
             "size": output["size"],
             "codec": output["codec"],
         },
-        "edit_spec": video.edit_spec,
+        "edit_spec": job_spec(job, video),
         "operator": {"id": "demo", "name": "演示用户"},
         "idempotency_key": f"{batch.id}:{video.id}:{job.variant_key}:{job.attempt}",
     }
@@ -283,7 +288,7 @@ def render_job(db: Session, job_id: str) -> None:
 
     tmp_out = storage.tmp_output_path(job.id)
     try:
-        if video.status != "ready" or not video.edit_spec or not video.duration:
+        if video.status != "ready" or not job_spec(job, video) or not video.duration:
             raise RenderError("视频尚未就绪或没有编辑参数")
         plan = build_plan(db, job, video)
         tmp_out.parent.mkdir(parents=True, exist_ok=True)

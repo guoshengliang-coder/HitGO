@@ -190,12 +190,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "created_at": "...", "started_at": null, "finished_at": null,
   "name": null,                   // 导出时填的名称（POST /api/render 的 name），没填为 null
   "batch_name": null,             // 只有跨批次的 GET /api/outputs 会填；其余端点为 null
-  "video_name": null              // 同上
+  "video_name": null,             // 同上
+  "lang": null                    // 可选（HIG-43）：成片语言代码（如 "ko"），null = 原版 / 没套用语言
 }
 ```
 
 `name` 是一次导出共用的名称，同一次 `POST /api/render` 建出的所有任务带同一个值；前端下载时用它拼文件名
-（`名称_视频名_规格.mp4`，没有名称时用批次名），并可在 `GET /api/outputs?q=` 里搜到。
+（`名称_视频名[_语言名]_规格.mp4`，没有名称时用批次名；语言名是改语言选项里的中文名，如「韩语」，`lang` 为 null 时没有这一段），并可在 `GET /api/outputs?q=` 里搜到。
 
 `batch_name` / `video_name` 是给跨批次列表用的冗余字段：`GET /api/outputs` 一次返回来自不同批次的
 任务，调用方没法像单批次页面那样再拉一次 `GET /api/batches/{id}` 去查名字。其余返回 `Job` 的端点
@@ -520,13 +521,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `GET /api/outputs?limit=100&offset=0&q=` → `Job[]`（**跨批次**，status = done，按 `finished_at` 倒序，缺 `finished_at` 时退回 `created_at`）。
   每项额外带上 `batch_name` 与 `video_name`。`limit` 默认 100、上限 500，`offset` 默认 0；越界返回空数组。
   `q` 可选：去掉前后空白后非空时，只返回任务 `name`、批次名或视频名包含它（不区分大小写）的产物；分页作用在过滤之后。
+  `lang` 可选（HIG-43）：只返回该语言的产物；传 `original` 只返回 `lang` 为 null 的产物。`q` 也匹配语言中文名（如搜「韩语」）。
 - `POST /api/outputs/zip`（HIG-47，批量下载）：请求体是**表单**（`application/x-www-form-urlencoded`），字段 `job_ids`
   可重复，1–500 个；响应 200 `application/zip`，`Content-Disposition: attachment`（`filename*` 为
   `批次名_产物_YYYYMMDD-HHMM.zip`，跨批次时批次名换成 `HitGO`）。
   - 用表单而不是 JSON：页面提交隐藏表单，浏览器边收边写盘，不把整个包读进内存。受访问码 Cookie 保护，同其它 `/api`。
   - 按请求里的顺序打包；重复 id、不存在的 id、`status != done` 的任务、成片文件已不在的任务直接跳过。
     一个可下载的都没有、`job_ids` 为空或超过 500 个时返回 400。
-  - 包内文件名同单个下载：`导出名称_视频名_规格.mp4`（没有导出名称用批次名，视频名去 `.mp4 / .mov`，
+  - 包内文件名同单个下载：`导出名称_视频名[_语言名]_规格.mp4`（没有导出名称用批次名，视频名去 `.mp4 / .mov`，
     `\ / : * ? " < > |` 与控制字符换成 `_`，每段最长 80 字符；全空时用任务 id）；同名（不区分大小写）的第二个起
     追加 ` (2)`、` (3)`。
   - 条目不压缩（`STORED`，mp4 本身已压缩），开 zip64，边读边写出：不预先算总大小，所以没有 `Content-Length`，
@@ -591,7 +593,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   （日期、数字 + 单位、金额、百分比），只给测试 / 演示。
 
 ### 渲染
-- `POST /api/render` `{ video_ids: [], name?: string, variant_keys?: string[] }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。每个视频按其 spec 的 `outputs` 生成任务；`variant_keys`（HIG-29，可选，非空）只为这些输出建任务，某个视频的 spec 里没有其中某个 key 时整单 400，缺省 = 全部输出。已有 queued / running 任务的同一 video+variant 不重复建（409 列出冲突，只检查本次要建的 key）。
+- `POST /api/render` `{ video_ids?: [], items?: [{ video_id, lang?: string | null, edit_spec?: EditSpec }], name?: string, variant_keys?: string[] }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。每个视频按其 spec 的 `outputs` 生成任务；`variant_keys`（HIG-29，可选，非空）只为这些输出建任务，某个视频的 spec 里没有其中某个 key 时整单 400，缺省 = 全部输出。已有 queued / running 任务的同一 video + variant + lang 不重复建（409 列出冲突，只检查本次要建的 key）。
+  - `video_ids` 与 `items`（HIG-43，多语言批量导出）**二选一**，恰好填一个且非空，否则 400。`video_ids: [a]` 等价于 `items: [{ video_id: a }]`。
+  - `items[].lang`：这份成片的语言（改语言的语言代码，如 `ko`），写到任务的 `lang`；null / 缺省 = 原版或没套用语言。必须是改语言支持的语言代码（`GET /api/localize/options` 里出现过的），否则 400。同一 `video_id + lang` 在一次请求里重复出现只取第一个。
+  - `items[].edit_spec`：带了就按它校验（同 `PUT /spec`）并**存为任务快照**，worker 渲染、重试和回传 JSON 都用这份快照，不读也不改视频上的 `edit_spec`；没带就和原来一样，worker 执行时读视频当前的 spec。前端导出多个语言时，每个语言各带一份套用好的 spec，编辑器里的 spec 不动。
 - `GET /api/jobs/{id}` → `Job`
 - `POST /api/jobs/{id}/retry` → `Job`（failed 才允许）
 - `GET /api/jobs?ids=a,b,c` → `Job[]`（前端轮询进度，1.5 秒一次）

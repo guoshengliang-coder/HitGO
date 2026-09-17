@@ -14,7 +14,7 @@ from app.db import get_db
 from app.models import JOB_DONE, Batch, Job, Video
 from app.schemas import JobOut
 from app.serializers import job_out
-from app.services import storage
+from app.services import localize, storage
 from app.services.output_zip import ZipEntry, dedupe_names, output_file_name, stream_zip
 
 router = APIRouter(prefix="/api/outputs", tags=["outputs"])
@@ -23,6 +23,15 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
 # One zip holds at most this many outputs (same as a page of GET /api/outputs).
 MAX_ZIP_JOBS = 500
+# ``GET /api/outputs?lang=original``: outputs without a language (HIG-43).
+ORIGINAL_LANG = "original"
+
+
+def lang_label(lang: str | None) -> str | None:
+    """Chinese name of a localize language for file names; unknown codes fall back to the code."""
+    if not lang:
+        return None
+    return localize.LANGS.get(lang, {}).get("label", lang)
 
 
 def _escape_like(term: str) -> str:
@@ -35,6 +44,7 @@ def list_outputs(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(default=0, ge=0),
     q: str | None = Query(default=None, max_length=255),
+    lang: str | None = Query(default=None, max_length=16),
     db: Session = Depends(get_db),
 ) -> list[JobOut]:
     """Finished outputs across every batch, newest first.
@@ -46,12 +56,18 @@ def list_outputs(
     job.batch / job.video per row would be one query each.
 
     ``q`` narrows to jobs whose export name, batch name or video name contains it
-    (case-insensitive), before paging.
+    (case-insensitive), or whose language label does (HIG-43), before paging. ``lang``
+    keeps one language; ``original`` keeps outputs without one.
     """
     stmt = select(Job).where(Job.status == JOB_DONE)
+    if lang == ORIGINAL_LANG:
+        stmt = stmt.where(Job.lang.is_(None))
+    elif lang:
+        stmt = stmt.where(Job.lang == lang)
     term = (q or "").strip()
     if term:
         pattern = f"%{_escape_like(term.lower())}%"
+        matching_langs = [code for code, info in localize.LANGS.items() if term.lower() in info["label"].lower()]
         stmt = (
             stmt.join(Batch, Batch.id == Job.batch_id)
             .join(Video, Video.id == Job.video_id)
@@ -60,6 +76,7 @@ def list_outputs(
                     func.lower(func.coalesce(Job.name, "")).like(pattern, escape="\\"),
                     func.lower(Batch.name).like(pattern, escape="\\"),
                     func.lower(Video.name).like(pattern, escape="\\"),
+                    Job.lang.in_(matching_langs),
                 )
             )
         )
@@ -106,7 +123,9 @@ def download_outputs_zip(
     video_names = dict(db.execute(select(Video.id, Video.name).where(Video.id.in_({j.video_id for j in rows}))).all())
     names = dedupe_names(
         [
-            output_file_name(j.id, j.variant_key, j.name, batch_names.get(j.batch_id), video_names.get(j.video_id))
+            output_file_name(
+                j.id, j.variant_key, j.name, batch_names.get(j.batch_id), video_names.get(j.video_id), lang_label(j.lang)
+            )
             for j in rows
         ]
     )

@@ -371,6 +371,8 @@ pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); paddi
 .btn-group .btn + .btn { border-left: 1px solid var(--s1-line); }
 .spacer { flex: 1; }
 .search-input { width: 200px; margin-right: 8px; }
+.lang-filter { width: auto; margin-right: 8px; }
+.pill.lang-pill { background: var(--st-ready-bg); color: var(--st-ready-fg); }
 .save-indicator { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-3); font-size: 12px; white-space: nowrap; margin-right: 4px; }
 .save-indicator i { width: 6px; height: 6px; border-radius: 50%; background: var(--st-done-fg); flex: none; }
 .save-indicator.dirty i, .save-indicator.saving i { background: var(--st-rendering-fg); }
@@ -870,6 +872,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-anim.out { right: 0; border-left: 1px solid color-mix(in srgb, var(--accent) 60%, transparent); }
 .chips.export-variants { display: grid; grid-template-columns: repeat(2, 1fr); }
 .chips.export-variants .chip { justify-content: space-between; }
+.chips.export-langs { display: flex; }
 .audio-list-bar { flex-wrap: wrap; }
 .audio-list-bar .chips { flex: none; white-space: nowrap; }
 .audio-list-bar .chips .chip { white-space: nowrap; }

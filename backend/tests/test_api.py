@@ -590,6 +590,60 @@ def test_render_name_is_optional_and_bounded(client, ready_video, enqueued):
     assert all(j["name"] is None for j in jobs)
 
 
+def test_render_items_per_language_store_snapshot_and_lang(client, ready_video, db, enqueued):
+    """HIG-43: one item per language, each with its own spec; the video's saved spec is untouched."""
+    saved = valid_spec()
+    put_spec(client, VIDEO, saved)
+    ko = valid_spec(layers=[], outputs=[{"variant_key": "9x16", "aspect": "9:16", "fill": "blur"}])
+    r = client.post(
+        "/api/render",
+        json={
+            "items": [
+                {"video_id": VIDEO, "lang": "ko", "edit_spec": ko},
+                {"video_id": VIDEO, "lang": "en"},
+                {"video_id": VIDEO, "lang": "ko", "edit_spec": saved},  # repeat of ko: first entry wins
+                {"video_id": VIDEO},
+            ],
+            "variant_keys": ["9x16"],
+            "name": "多语言",
+        },
+    )
+    assert r.status_code == 201, r.text
+    jobs = r.json()
+    assert [(j["lang"], j["variant_key"]) for j in jobs] == [("ko", "9x16"), ("en", "9x16"), (None, "9x16")]
+    assert all(j["name"] == "多语言" for j in jobs)
+    db.expire_all()
+    assert db.get(Job, jobs[0]["id"]).edit_spec == ko
+    assert db.get(Job, jobs[1]["id"]).edit_spec is None and db.get(Job, jobs[2]["id"]).edit_spec is None
+    assert db.get(Video, VIDEO).edit_spec == saved
+    assert client.get(f"/api/jobs/{jobs[0]['id']}").json()["lang"] == "ko"
+
+    # Same video + variant in another language does not conflict; the same language does.
+    r = client.post("/api/render", json={"items": [{"video_id": VIDEO, "lang": "ja"}], "variant_keys": ["9x16"]})
+    assert r.status_code == 201 and r.json()[0]["lang"] == "ja"
+    r = client.post("/api/render", json={"items": [{"video_id": VIDEO, "lang": "ko"}], "variant_keys": ["9x16"]})
+    assert r.status_code == 409
+    assert r.json()["conflicts"] == [{"video_id": VIDEO, "variant_key": "9x16", "lang": "ko", "job_id": jobs[0]["id"]}]
+    # video_ids is the no-language path: busy with jobs[2]
+    assert client.post("/api/render", json={"video_ids": [VIDEO], "variant_keys": ["9x16"]}).status_code == 409
+
+
+def test_render_items_validation(client, ready_video, enqueued):
+    put_spec(client, VIDEO, valid_spec())
+    assert client.post("/api/render", json={}).status_code == 400
+    assert client.post("/api/render", json={"video_ids": [VIDEO], "items": [{"video_id": VIDEO}]}).status_code == 400
+    assert client.post("/api/render", json={"items": []}).status_code == 400
+    r = client.post("/api/render", json={"items": [{"video_id": VIDEO, "lang": "xx"}]})
+    assert r.status_code == 400 and "xx" in r.json()["detail"]
+    bad = valid_spec(outputs=[])
+    r = client.post("/api/render", json={"items": [{"video_id": VIDEO, "lang": "ko", "edit_spec": bad}]})
+    assert r.status_code == 400 and "编辑参数无效" in r.json()["detail"]
+    # a snapshot's own outputs decide which variant_keys exist
+    one = valid_spec(outputs=[{"variant_key": "1x1", "aspect": "1:1", "fill": "blur"}])
+    r = client.post("/api/render", json={"items": [{"video_id": VIDEO, "lang": "ko", "edit_spec": one}], "variant_keys": ["9x16"]})
+    assert r.status_code == 400 and "9x16" in r.json()["detail"]
+
+
 def test_render_refuses_not_ready_video(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     vid = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"])).json()[0]["id"]
@@ -657,6 +711,22 @@ def test_all_outputs_only_done(client, ready_video, db):
     add_job(db, VIDEO, "1x1", "failed", id="j_failed")
     add_job(db, VIDEO, "4x5", "queued", id="j_queued")
     assert [j["id"] for j in client.get("/api/outputs").json()] == ["j_done"]
+
+
+def test_all_outputs_lang_filter_and_search(client, ready_video, db):
+    """HIG-43: ?lang= keeps one language (original = none); q also matches the language name."""
+    out = {"width": 1080, "height": 1920, "duration": 20.6, "size": 123, "codec": "h264/aac"}
+    base = utcnow()
+    add_job(db, VIDEO, "9x16", "done", id="j_ko", lang="ko", output=out, finished_at=base - timedelta(minutes=1))
+    add_job(db, VIDEO, "1x1", "done", id="j_en", lang="en", output=out, finished_at=base - timedelta(minutes=2))
+    add_job(db, VIDEO, "4x5", "done", id="j_orig", output=out, finished_at=base - timedelta(minutes=3))
+    ids = lambda **params: [j["id"] for j in client.get("/api/outputs", params=params).json()]  # noqa: E731
+    assert ids() == ["j_ko", "j_en", "j_orig"]
+    assert ids(lang="ko") == ["j_ko"]
+    assert ids(lang="original") == ["j_orig"]
+    assert ids(q="韩语") == ["j_ko"]
+    assert ids(q="语") == ["j_ko", "j_en"]
+    assert client.get("/api/outputs").json()[0]["lang"] == "ko"
 
 
 def test_all_outputs_falls_back_to_created_at(client, ready_video, db):
@@ -979,6 +1049,34 @@ def test_render_task_records_the_audio_it_actually_mixed(ready_video, monkeypatc
     }
     assert "au_old" in j.error
     assert client.get(f"/api/jobs/{job.id}").json()["output"]["audio"]["skipped"] == ["au_old"]
+
+
+def test_render_task_uses_job_snapshot_not_later_spec(ready_video, monkeypatch, db, client):
+    """HIG-43: a spec saved after queueing does not leak into a job that carries its own snapshot."""
+    from app.services import ffprobe, render as render_service
+
+    snapshot = valid_spec(layers=[])
+    put_spec(client, VIDEO, snapshot)
+    jobs = client.post(
+        "/api/render", json={"items": [{"video_id": VIDEO, "lang": "ko", "edit_spec": snapshot}], "variant_keys": ["9x16"]}
+    ).json()
+    later = valid_spec(trim={"remove": [[1.0, 2.0]]})
+    put_spec(client, VIDEO, later)
+    seen = {}
+
+    def fake_run(argv, expected, on_progress, **kw):
+        seen["expected"] = expected
+        storage.tmp_output_path(jobs[0]["id"]).write_bytes(b"mp4")
+
+    monkeypatch.setattr(render_service, "run_ffmpeg", fake_run)
+    monkeypatch.setattr(ffprobe, "probe", lambda p: {"width": 1080, "height": 1920, "duration": 20.6, "has_audio": True})
+    worker.render_job.run(jobs[0]["id"])
+    db.expire_all()
+    j = db.get(Job, jobs[0]["id"])
+    assert j.status == "done", j.error
+    assert j.callback["edit_spec"] == snapshot
+    # snapshot trims 1.4 + 1.4 s off 24.6 s; the later spec would have trimmed 1 s
+    assert seen["expected"] == pytest.approx(24.6 - 2.6 - 1.4)
 
 
 def test_render_task_failure_records_stderr_tail(ready_video, monkeypatch, db, client):
