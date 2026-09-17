@@ -84,6 +84,8 @@ class LayerBase(BaseModel):
     rotate: float = Field(default=0.0, ge=-360, le=360)
     opacity: float = Field(default=1.0, ge=0, le=1)
     t: Literal["all"] | TimeWindow = "all"
+    # Eye switched off in the editor (HIG-33): kept in the spec, left out of the output.
+    hidden: bool = False
 
     @field_validator("t")
     @classmethod
@@ -374,6 +376,7 @@ class AudioTrack(BaseModel):
     loop: bool = False
     fade_in: float = Field(default=0.0, ge=0)
     fade_out: float = Field(default=0.0, ge=0)
+    hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
 
     @field_validator("t")
     @classmethod
@@ -398,6 +401,8 @@ class AudioSpec(BaseModel):
     # Post-trim spans where the source audio is silenced, picture untouched (HIG-25).
     source_mute: list[TimeWindow] = Field(default_factory=list)
     tracks: list[AudioTrack] = Field(default_factory=list)
+    # Eye off on the source track (HIG-33): no source audio in the output, source_volume kept.
+    source_hidden: bool = False
 
     @field_validator("source_mute")
     @classmethod

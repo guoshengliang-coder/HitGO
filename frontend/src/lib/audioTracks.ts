@@ -37,7 +37,7 @@ export function sourceVolume(audio: AudioSpec | null | undefined): number {
 
 /** 没有 audio 块，或源音量 1、没有原声静音区间且没有音轨：等价于契约缺省，发给后端时省略。 */
 export function isDefaultAudio(audio: AudioSpec | null | undefined): boolean {
-  return !audio || (audio.source_volume === 1 && audio.tracks.length === 0 && !(audio.source_mute?.length));
+  return !audio || (audio.source_volume === 1 && audio.tracks.length === 0 && !(audio.source_mute?.length) && !audio.source_hidden);
 }
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -48,8 +48,10 @@ export function contractAudio(audio: AudioSpec | null | undefined): AudioSpec | 
   return {
     source_volume: round3(audio.source_volume),
     ...(audio.source_mute?.length ? { source_mute: audio.source_mute.map(([a, b]) => [round3(a), round3(b)] as Range) } : {}),
+    ...(audio.source_hidden ? { source_hidden: true } : {}),
     tracks: audio.tracks.map((t) => {
       const copy: AudioTrack = { ...t };
+      if (!copy.hidden) delete copy.hidden;
       if (copy.t !== 'all') copy.t = [round3(copy.t[0]), round3(copy.t[1])];
       return copy;
     }),
@@ -199,7 +201,7 @@ export function sourceMutedAt(audio: AudioSpec | null | undefined, postTime: num
 
 /** 预览里源视频此刻的音量：source_volume，落在静音区间里为 0（成片端 volume=0:enable 同一规则）。 */
 export function sourceGainAt(audio: AudioSpec | null | undefined, postTime: number): number {
-  return sourceMutedAt(audio, postTime) ? 0 : sourceVolume(audio);
+  return audio?.source_hidden || sourceMutedAt(audio, postTime) ? 0 : sourceVolume(audio);
 }
 
 /** 往 source_mute 里加一段 [a, b]（剪后时间，自动排序、合并相邻 / 重叠，裁到剪后时长）。短于 0.05 秒不加。 */

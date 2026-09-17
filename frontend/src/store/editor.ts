@@ -207,9 +207,14 @@ export interface EditorState {
   setSelectedTrack: (id: string | null) => void;
   setSourceVolume: (v: number) => void;
   /** 加一条音轨（素材须 ready）；按角色套默认值，返回新 id。 */
-  addAudioTrack: (assetId: string, role: AudioRole) => string | null;
+  /** init：拖进时间线时带上落点算出的时段等（HIG-33），覆盖按角色的默认值。 */
+  addAudioTrack: (assetId: string, role: AudioRole, init?: Partial<Omit<AudioTrack, 'id' | 'asset_id' | 'role'>>) => string | null;
   updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
   removeAudioTrack: (id: string) => void;
+  /** 音轨眼睛（HIG-33）：隐藏 / 显示，进撤销栈（影响成片）。 */
+  toggleTrackHidden: (id: string) => void;
+  /** 源音轨眼睛（HIG-33）：source_hidden 开关，source_volume 不动。 */
+  toggleSourceHidden: () => void;
   /** 在播放头处把音轨拆成两条（HIG-25），选中后一条；播放头不在时段内部时提示。 */
   splitAudioTrack: (id: string) => void;
   /** 删掉音轨在播放头左 / 右的部分（拆分后删一侧）。选中的是源音轨行（SOURCE_TRACK_ID）时改为加原声静音区间。 */
@@ -1034,12 +1039,12 @@ export const useEditor = create<EditorState>((set, get) => {
         audio.source_volume = Math.max(0, Math.min(1, Math.round(v * 100) / 100));
       });
     },
-    addAudioTrack: (assetId, role) => {
+    addAudioTrack: (assetId, role, init) => {
       const asset = get().assets.find((a) => a.id === assetId);
       if (!isAssetReady(asset)) return null; // 还在探测时长：加进去也放不出来
       const id = newTrackId();
       get().updateSpec((spec) => {
-        ensureAudio(spec).tracks.push({ id, asset_id: assetId, role, t: 'all', ...trackDefaultsFor(role) });
+        ensureAudio(spec).tracks.push({ id, asset_id: assetId, role, t: 'all', ...trackDefaultsFor(role), ...init });
       });
       set({ selectedTrackId: id });
       return id;
@@ -1053,6 +1058,21 @@ export const useEditor = create<EditorState>((set, get) => {
         },
         { history },
       );
+    },
+    toggleTrackHidden: (id) => {
+      get().updateSpec((spec) => {
+        const t = spec.audio?.tracks.find((x) => x.id === id);
+        if (!t) return;
+        if (t.hidden) delete t.hidden;
+        else t.hidden = true;
+      });
+    },
+    toggleSourceHidden: () => {
+      get().updateSpec((spec) => {
+        const audio = ensureAudio(spec);
+        if (audio.source_hidden) delete audio.source_hidden;
+        else audio.source_hidden = true;
+      });
     },
     removeAudioTrack: (id) => {
       get().updateSpec((spec) => {

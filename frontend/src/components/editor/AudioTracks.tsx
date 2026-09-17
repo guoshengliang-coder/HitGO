@@ -67,7 +67,8 @@ export function AudioTracks() {
   const tracks = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio?.tracks : undefined)) ?? [];
   return (
     <>
-      {tracks.map((t) => (
+      {/* 关掉眼睛的音轨（HIG-33）不挂元素，卸载时 pause，和成片一样不出声 */}
+      {tracks.filter((t) => !t.hidden).map((t) => (
         <TrackAudio key={t.id} track={t} />
       ))}
     </>

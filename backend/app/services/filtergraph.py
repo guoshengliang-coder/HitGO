@@ -384,6 +384,8 @@ def build_render_command(
     canvas_w, canvas_h = CANVAS_SIZES[variant.aspect]
     audio_spec = spec.audio
     source_volume = float(audio_spec.source_volume) if audio_spec is not None else 1.0
+    if audio_spec is not None and audio_spec.source_hidden:
+        source_volume = 0.0
     # A muted source (audio.source_volume = 0) must not be decoded into the trim/concat
     # graph at all: a concat output nobody consumes makes ffmpeg reject the whole graph
     # ("Filter 'concat' has output 0 (at) unconnected").
@@ -435,6 +437,8 @@ def build_render_command(
     has_video_layer = False
     sticker_audio: list[str] = []  # labels of sticker audio chains to mix in
     for layer in spec.layers:
+        if layer.hidden:
+            continue  # eye off: no picture, and a video sticker's mix_audio goes with it
         if isinstance(layer, MaskLayer):
             # No media input: the mask works on the running canvas itself.
             window = None if layer.t == "all" else _layer_window(layer.t, expected_duration)
@@ -553,6 +557,8 @@ def build_render_command(
     mixed_tracks: list[dict[str, Any]] = []
     skipped_tracks: list[str] = []
     for track in audio_spec.tracks if audio_spec is not None else []:
+        if track.hidden:
+            continue  # eye off: deliberately left out, so not a warning / skipped entry
         source = (audio_assets or {}).get(track.asset_id)
         if source is None:
             warnings.append(f"音轨 {track.id}：音频素材 {track.asset_id} 不存在或未就绪，已跳过")

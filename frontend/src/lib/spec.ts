@@ -7,7 +7,7 @@ import { getCachedText } from './textImage';
 import { contractAudio } from './audioTracks';
 import { contractCover } from './cover';
 
-const LOCAL_LAYER_FIELDS = ['name', 'visible', 'locked', 'width_manual'] as const;
+const LOCAL_LAYER_FIELDS = ['name', 'locked', 'width_manual'] as const;
 
 /** 发送给后端前剔除本地 UI 字段并规范化区间；audio / cover 块只在非缺省时带上，保持旧 spec 形状。 */
 export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
@@ -22,6 +22,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       // 浅拷贝即可：style（含 shadow / letter_spacing）等嵌套对象原样透传
       const copy: Record<string, unknown> = { ...l };
       for (const f of LOCAL_LAYER_FIELDS) delete copy[f];
+      if (!l.hidden) delete copy.hidden;
       // 没有局部上色时不发 spans，保持旧 spec 形状
       if (l.type === 'text' && !l.spans?.length) delete copy.spans;
       if (l.type === 'text' && !(l.variant_images && Object.keys(l.variant_images).length)) delete copy.variant_images;
@@ -129,7 +130,7 @@ export function countSafeZoneOverlaps(spec: EditSpec, zone: SafeZone | undefined
   const c = { W: 1080, H: 1920 };
   let n = 0;
   for (const layer of spec.layers) {
-    if (layer.visible === false || layer.type === 'mask') continue; // 遮盖压在画面上，不算遮挡平台 UI
+    if (layer.hidden || layer.type === 'mask') continue; // 遮盖压在画面上，不算遮挡平台 UI
     const box = placeLayer(layer, layerAspect(layer, assets), c);
     if (zone.zones.some((r) => boxOverlapsRect(box, c, r))) n += 1;
   }

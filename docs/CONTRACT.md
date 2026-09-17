@@ -226,6 +226,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "rotate": 0,                           // 角度，绕图层中心
       "opacity": 1,
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
+      "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
       "playback": "loop",                    // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
       "mix_audio": false                     // 可选，缺省 false：视频贴纸自带的音轨是否合成进成片
     },
@@ -279,6 +280,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "audio": {                                 // 可选；缺省 = 源音轨原样保留（即此前的行为）
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
     "source_mute": [[3.0, 4.5]],             // 可选，缺省 []：源音轨在这些时段静音（剪后时间轴，秒），画面不动（HIG-25）
+    "source_hidden": false,                  // 可选，缺省 false：源音轨关掉眼睛，成片不带原声，source_volume 原样保留（HIG-33）
     "tracks": [
       {
         "id": "au_1",
@@ -290,6 +292,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
+        "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
     ]
@@ -330,6 +333,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 层级按 `layers` 数组顺序：编辑器新建 / 粘贴遮盖层时插到第一个文字图层之前，所以遮盖永远压在字幕之下；用户仍可在同类里调层级。
   - 批量套用 `style_only` 时复制 `mode | color | blur | height`（+ 公共的 `width | rotate | opacity`），未匹配的遮盖层插到目标第一个文字图层之前而不是追加到末尾。
   - 编辑器预览用 `backdrop-filter` 模糊 / 色块 div 实时叠在画面上，只是近似；成片效果以 worker 为准。遮盖只是模糊 / 色块，不是无痕擦除。
+- **隐藏 `hidden`**（HIG-33，图层 / 音轨可选，缺省 `false`；源音轨用 `audio.source_hidden`）：编辑器轨道头的「眼睛」。
+  隐藏不是删除，所有设置都留在 spec 里，打开眼睛即恢复。worker 对 `hidden = true` 的图层当作不存在（贴纸的
+  `mix_audio` 声音一并去掉），不写警告；`hidden = true` 的 track 不混入，也不计入回传 `audio.skipped`；
+  `source_hidden = true` 等价于 `source_volume = 0`（回传的 `audio.source_volume` 为 0），但 spec 里的 `source_volume`
+  不变。编辑器预览按同样的规则隐藏 / 静音。前端只在为 `true` 时发送这些字段。批量套用时随所在的图层 / `audio`
+  块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
 - **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
@@ -577,6 +586,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 2. `filter_complex` 顺序：
    - 源 → `trim`/`atrim` 切保留段 → `concat`（无 remove 时跳过；无音轨时只处理视频）
    - 画幅：`blur` = `split` → 一路 `scale` 到 cover + `boxblur=20` + `crop=W:H`，另一路 `scale` 到 contain，`overlay` 居中；`color` = `scale` contain + `pad=W:H:(ow-iw)/2:(oh-ih)/2:color`；`crop` = （有 `crop` 窗口时先 `crop=w='iw*w':h='ih*h':x='iw*x':y='ih*y'`）→ `scale` cover + `crop=W:H`
+   - `hidden = true` 的图层 / track 在构图前直接跳过，`source_hidden = true` 按 `source_volume = 0` 处理（第 2 节）。
    - 图层：按顺序 `[img]scale=w:-1,rotate=...:c=none:ow=rotw:oh=roth,format=rgba,colorchannelmixer=aa=opacity[li]`，`overlay=x:y:enable='between(t,a,b)'`（`t="all"` 不加 enable）
    - 遮盖层（`type = "mask"`）不加 `-i` 输入，直接作用在当前画布 `[c{n−1}]` 上，区域先裁到画布内（x, y, w, h 为整数像素）：
      - blur：`[c{n−1}]split=2[m{n}s][m{n}b]`；`[m{n}b]format=rgba,crop=w:h:x:y,boxblur=lr=R:lp=P[:enable='between(t,a,b)'][,colorchannelmixer=aa=opacity][m{n}x]`；

@@ -22,6 +22,14 @@ describe('toContractSpec · audio', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [{ id: 'l', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: 'all', name: 'x', locked: true }] };
     expect(toContractSpec(spec).layers[0]).not.toHaveProperty('name');
   });
+  it('hidden 是契约字段（HIG-33）：true 时发给后端，false / 缺省时不发', () => {
+    const base = { type: 'sticker' as const, asset_id: 'a', anchor: 'top-left' as const, margin: [0, 0] as [number, number], width: 0.3, rotate: 0, opacity: 1, t: 'all' as const };
+    const spec: EditSpec = { ...emptySpec(), layers: [{ ...base, id: 'l1', hidden: true }, { ...base, id: 'l2', hidden: false }, { ...base, id: 'l3' }] };
+    const layers = toContractSpec(spec).layers;
+    expect(layers[0]).toHaveProperty('hidden', true);
+    expect(layers[1]).not.toHaveProperty('hidden');
+    expect(layers[2]).not.toHaveProperty('hidden');
+  });
 });
 
 describe('toContractSpec · cover（HIG-9）', () => {

@@ -705,7 +705,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
           {[...layers].reverse().map((l) => (
             <div
               key={l.id}
-              className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.visible === false ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
+              className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.hidden ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
               onClick={() => setSelected(l.id)}
               role="button"
               tabIndex={0}
@@ -723,7 +723,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
               <span className="muted">{layerIcon(l.type)}</span>
               <LayerNameCell layer={l} editing={editingId === l.id} onEdit={() => setEditingId(l.id)} onDone={() => setEditingId(null)} />
               <span className="acts" onClick={(e) => e.stopPropagation()}>
-                <button className="btn ghost icon" title="显示 / 隐藏（仅预览）" onClick={() => updateLayer(l.id, { visible: l.visible === false }, false)}><IconEye off={l.visible === false} /></button>
+                <button className="btn ghost icon" title={l.hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={l.hidden ? '显示' : '隐藏'} aria-pressed={!!l.hidden} onClick={() => updateLayer(l.id, { hidden: !l.hidden })}><IconEye off={!!l.hidden} /></button>
                 <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !l.locked }, false)}><IconLock open={!l.locked} /></button>
                 <button className="btn ghost icon" title={`${hintFor('layer-up')}（${hintFor('layer-top')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'top') : moveLayer(l.id, 1))}><IconUp /></button>
                 <button className="btn ghost icon" title={`${hintFor('layer-down')}（${hintFor('layer-bottom')}）`} onClick={(e) => (e.shiftKey ? moveLayerTo(l.id, 'bottom') : moveLayer(l.id, -1))}><IconDown /></button>

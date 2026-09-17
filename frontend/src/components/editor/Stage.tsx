@@ -472,13 +472,14 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上；
   // 有原声静音区间（source_mute，HIG-25）时跟着播放头逐帧取增益，落进区间就是 0。
-  const srcVolume = sourceVolume(spec?.audio);
+  // 源音轨关掉眼睛（HIG-33）：预览同样听不到原声
+  const srcVolume = spec?.audio?.source_hidden ? 0 : sourceVolume(spec?.audio);
   const srcAudio = spec?.audio;
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
     el.volume = srcVolume;
-    if (!srcAudio?.source_mute?.length) return;
+    if (!srcAudio?.source_mute?.length || srcAudio.source_hidden) return;
     const apply = (t: number) => {
       const v = videoRef.current;
       if (v) v.volume = sourceGainAt(srcAudio, sourceToPost(Math.max(0, t), player.remove));
@@ -577,7 +578,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         <AudioTracks />
         {!coverActive &&
           layers.map((l) => {
-            if (l.type !== 'mask' || l.visible === false || !windowContains(l.t, postTime)) return null;
+            if (l.type !== 'mask' || l.hidden || !windowContains(l.t, postTime)) return null;
             const g = geomOf(l);
             const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
             return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
@@ -587,7 +588,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
             <KLayer>
               {layers.map((l) => {
-                if (l.visible === false || coverActive) return null;
+                if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
                 const selectable = layerTypes.includes(l.type);
                 if (l.type === 'mask') {

@@ -763,3 +763,17 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .version-item .warn-list { margin: 0; padding-left: 16px; color: var(--ink-2); font-size: 11px; line-height: 1.5; }
 .badge-stale { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-edited-bg); color: var(--st-edited-fg); flex: none; }
 .badge-ok { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--st-done-bg); color: var(--st-done-fg); flex: none; }
+
+/* HIG-33：关掉眼睛的轨道——眼睛常显（一眼看出哪条被隐藏），名字划线，条变淡 */
+.tl-row.hidden .lbl .tl-acts { opacity: 0.9; }
+.tl-audio.hidden .lbl .lname { color: var(--ink-3); text-decoration: line-through; }
+.tl-audio.hidden .lbl .role { opacity: 0.5; }
+.tl-bar.audio.hidden { opacity: 0.35; }
+.tl-layer.hidden .tl-bar { opacity: 0.4; }
+.track-item.hidden .tname { color: var(--ink-3); text-decoration: line-through; }
+
+/* HIG-33：拖音频到时间线——落点竖线 + 提示 */
+.tl-scroll.drop-over { box-shadow: inset 0 0 0 1px var(--focus); }
+.tl-drop { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--focus); z-index: 6; pointer-events: none; }
+.tl-drop-tip { position: absolute; top: 2px; left: 4px; font-size: 10.5px; white-space: nowrap; padding: 1px 6px; border-radius: 4px; background: var(--focus); color: #fff; }
+.asset-card.drag { cursor: grab; }
