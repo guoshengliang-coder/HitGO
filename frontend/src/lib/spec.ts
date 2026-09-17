@@ -6,6 +6,7 @@ import { normalizeRanges } from './time';
 import { getCachedText } from './textImage';
 import { contractAudio } from './audioTracks';
 import { contractCover } from './cover';
+import { contractAnimation } from './textAnimation';
 
 const LOCAL_LAYER_FIELDS = ['name', 'locked', 'width_manual'] as const;
 
@@ -26,6 +27,11 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       // 没有局部上色时不发 spans，保持旧 spec 形状
       if (l.type === 'text' && !l.spans?.length) delete copy.spans;
       if (l.type === 'text' && !(l.variant_images && Object.keys(l.variant_images).length)) delete copy.variant_images;
+      if (l.type === 'text') {
+        const animation = contractAnimation(l.animation, l.t === 'all' ? null : l.t[1] - l.t[0]);
+        if (animation) copy.animation = animation;
+        else delete copy.animation;
+      }
       return copy as unknown as Layer;
     }),
     outputs: spec.outputs.map((o) => {

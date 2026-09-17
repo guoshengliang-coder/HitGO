@@ -21,6 +21,11 @@ separation that does not finish within SMOKE_SEPARATE_TIMEOUT seconds (default
 300; 0 skips the step) fails the smoke test — that usually means the separator
 container is not running. When an image sticker is available it is also used as a 1.5 s
 cover (edit_spec.cover), so the output must be 1.5 s longer than the trimmed clip.
+The same image also stands in for two animated text PNGs (layers[].animation, HIG-40):
+pop in + slide-down out + breathe on a rotated layer (perspective + geq + rotate), and a
+fade-in + float loop (overlay expressions) — the server's ffmpeg must accept those per-frame
+expressions. A hidden sticker layer and, with BGM, a hidden second track (hidden, HIG-33) must
+leave no trace: the job still succeeds and the hidden track is neither mixed nor skipped.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
@@ -154,6 +159,25 @@ layers += [
      "margin": [0.04, 0.04], "width": 0.3, "height": 0.08, "rotate": 0, "opacity": 0.8, "t": "all"},
 ]
 
+# Hidden layer (HIG-33): kept in the spec, never rendered.
+layers.append(
+    {"id": "l_hidden", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "center", "margin": [0, 0],
+     "width": 0.9, "rotate": 0, "opacity": 1, "t": "all", "hidden": True}
+)
+if image_stickers:
+    # Animated text (HIG-40); any /media/ PNG works as the pre-rendered text image.
+    png = image_stickers[0]
+    text = {"type": "text", "text": "smoke", "style": {}, "image_url": png["url"], "image_size": [png["width"], png["height"]]}
+    layers += [
+        {**text, "id": "l_anim_pop", "anchor": "center", "margin": [0, -0.15], "width": 0.4, "rotate": 6, "opacity": 0.9,
+         "t": [0.5, 4.5], "animation": {"in": {"preset": "pop", "duration": 0.6}, "out": {"preset": "slide_down", "duration": 0.6},
+                                         "loop": {"preset": "breathe", "period": 1.0}}},
+        {**text, "id": "l_anim_float", "anchor": "top-center", "margin": [0, 0.3], "width": 0.25, "rotate": 0, "opacity": 1,
+         "t": "all", "animation": {"in": {"preset": "fade", "duration": 0.8}, "loop": {"preset": "float", "period": 1.5}}},
+    ]
+else:
+    print("no image sticker available — skipping the text-animation part of the smoke test")
+
 spec = {
     "spec_version": 1,
     "trim": {"remove": [[2.0, 4.0]]},
@@ -175,7 +199,10 @@ if use_bgm:
     spec["audio"] = {
         "source_volume": 0,
         "tracks": [{"id": "au_bgm", "asset_id": audio_assets[0]["id"], "role": "bgm", "t": "all",
-                    "volume": 0.6, "loop": True, "fade_out": 1}],
+                    "volume": 0.6, "loop": True, "fade_out": 1},
+                   # Eye switched off (HIG-33): must be neither mixed nor reported as skipped.
+                   {"id": "au_hidden", "asset_id": audio_assets[0]["id"], "role": "voice", "t": [0, 2],
+                    "hidden": True}],
     }
 if stem_asset_id:
     # The separated vocals ride on the source timeline and get the same trim as the video.
@@ -226,6 +253,14 @@ if mix_audio or use_bgm or stem_asset_id:
     for j in jobs:
         if j["status"] == "done" and j["output"]["codec"] != "h264/aac":
             print("mixed audio missing from", j["variant_key"], j["output"])
+            sys.exit(1)
+
+if use_bgm:
+    for j in jobs:
+        audio = (j.get("output") or {}).get("audio") or {}
+        seen = [t["id"] for t in audio.get("tracks", [])] + list(audio.get("skipped", []))
+        if j["status"] == "done" and "au_hidden" in seen:
+            print("hidden track showed up in", j["variant_key"], audio)
             sys.exit(1)
 
 expected = {"9x16": (1080, 1920), "1x1": (1080, 1080), "4x5": (1080, 1350), "16x9": (1920, 1080)}

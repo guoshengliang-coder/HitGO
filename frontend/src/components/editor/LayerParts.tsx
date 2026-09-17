@@ -18,6 +18,7 @@ import { drawTextImage } from '../../lib/textImage';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { groupPresets } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
+import { TextAnimationSection } from './TextAnimationSection';
 import { ColorPicker } from '../ui/ColorPicker';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
@@ -592,6 +593,7 @@ export function LayerProps({ layer }: { layer: Layer }) {
       {layer.type === 'mask' && <MaskSection layer={layer} />}
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />
+      {layer.type === 'text' && <TextAnimationSection layer={layer} />}
       <TimeSection layer={layer} />
       {layer.type === 'text' && <div className="hint">文字在导出时按 1080×1920 渲染为透明 PNG（image_url）；宽度默认跟随渲染尺寸。</div>}
       {layer.type === 'mask' && <div className="hint">遮盖只是把这块区域模糊或盖色，不是无痕擦除；画布上的模糊是近似预览，成片以导出为准。遮盖总在字幕之下。</div>}

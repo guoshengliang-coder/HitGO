@@ -405,6 +405,19 @@ export interface Preset {
   created_at: string;
 }
 
+/** 文字动画预设（HIG-40，契约 §2 layers[type=text].animation）；曲线见 lib/textAnimation。 */
+export type TextAnimMovePreset = 'fade' | 'slide_up' | 'slide_down' | 'slide_left' | 'slide_right' | 'pop';
+export type TextAnimLoopPreset = 'breathe' | 'float' | 'blink';
+
+export interface TextAnimation {
+  /** 入场：时段开头；duration 秒，缺省 0.5。 */
+  in?: { preset: TextAnimMovePreset; duration?: number };
+  /** 出场：时段结尾；duration 秒，缺省 0.5。 */
+  out?: { preset: TextAnimMovePreset; duration?: number };
+  /** 循环：入场结束到时段结束（与出场叠加）；period 秒，缺省 1.2。 */
+  loop?: { preset: TextAnimLoopPreset; period?: number };
+}
+
 export interface TextLayer extends LayerBase {
   type: 'text';
   text: string;
@@ -415,6 +428,8 @@ export interface TextLayer extends LayerBase {
   image_size?: [number, number] | null;
   /** 可选（HIG-29）：按输出画幅重新渲染的 PNG，键为 variant_key；worker 优先用它，找不到时回落 image_url。导出时重新生成。 */
   variant_images?: Record<string, { url: string; size: [number, number] }> | null;
+  /** 可选（HIG-40）：入场 / 出场 / 循环动画；空对象等于没有，发送时省略。 */
+  animation?: TextAnimation;
   /** 本地字段：用户是否手动设置过宽度（否则宽度跟随渲染尺寸）。发送时剔除。 */
   width_manual?: boolean;
 }

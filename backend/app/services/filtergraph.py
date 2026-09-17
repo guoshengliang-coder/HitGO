@@ -7,7 +7,9 @@ resolved are skipped and reported in ``RenderPlan.warnings``.
 Filter graph order:
     source → trim/atrim + concat (skipped when nothing is removed)
            → canvas fill (blur | color | crop; crop honours an optional source window first)
-           → one overlay per layer (enable='between(t,a,b)' for timed layers); mask layers
+           → one overlay per layer (enable='between(t,a,b)' for timed layers; an animated text
+             layer, HIG-40, loops its PNG and moves through perspective / geq / overlay
+             expressions, see services/animation.py); mask layers
              (contract §2 type "mask") take no input: a split + crop + boxblur + overlay, or a
              drawbox, over the running canvas
            → format=yuv420p
@@ -37,6 +39,7 @@ from app.schemas import (
     StickerLayer,
     TextLayer,
 )
+from app.services.animation import SCALE_HEADROOM, AnimExpr, expressions, with_time
 from app.services.layout import (
     Box,
     FitMap,
@@ -486,21 +489,59 @@ def build_render_command(
             if image.decoder:
                 options += ["-c:v", image.decoder]
 
+        # Text animation (HIG-40): None-valued channels stay static; no animation = the old argv.
+        anim = (
+            expressions(layer.animation, t_end - t_start)
+            if isinstance(layer, TextLayer) and not image.is_video
+            else AnimExpr()
+        )
+        animated = any((anim.opacity, anim.dx, anim.dy, anim.scale))
+        fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
+
         input_index = len(inputs)
-        inputs.append([*options, "-i", image.path])
+        if animated:
+            # A still PNG hands overlay a single frame; per-frame alpha / scale need one frame per
+            # output frame. Frames count from the output's t = 0, so filter time == output time.
+            inputs.append(["-loop", "1", "-framerate", fps, "-t", _fmt(t_end), "-i", image.path])
+        else:
+            inputs.append([*options, "-i", image.path])
         layer_index += 1
         lbl = f"[l{layer_index}]"
 
         steps = [f"[{input_index}:v]format=rgba", f"scale={w}:{h}"]
+        frame = box  # the rectangle the layer's frame occupies before rotation
+        if anim.scale:
+            # Scale around the centre inside a fixed, padded frame: filter links cannot change
+            # size per frame, so perspective moves the corners instead of resizing.
+            pw = 2 * math.ceil(w * SCALE_HEADROOM / 2)
+            ph = 2 * math.ceil(h * SCALE_HEADROOM / 2)
+            steps.append(f"pad={pw}:{ph}:{(pw - w) // 2}:{(ph - h) // 2}:color=0x00000000")
+            # perspective's frame counter `in` starts at 1, and it has no time variable
+            s = with_time(anim.scale, f"(in-1)/{fps}", t_start)
+            corners = {
+                "x0": f"W/2-W/2*({s})", "y0": f"H/2-H/2*({s})",
+                "x1": f"W/2+W/2*({s})", "y1": f"H/2-H/2*({s})",
+                "x2": f"W/2-W/2*({s})", "y2": f"H/2+H/2*({s})",
+                "x3": f"W/2+W/2*({s})", "y3": f"H/2+H/2*({s})",
+            }  # fmt: skip
+            steps.append(
+                "perspective=" + ":".join(f"{k}='{v}'" for k, v in corners.items()) + ":sense=destination:eval=frame"
+            )
+            frame = Box(box.x + (w - pw) / 2, box.y + (h - ph) / 2, pw, ph)
+            x, y = round(frame.x), round(frame.y)
         rotate = float(geo["rotate"]) % 360
         if rotate != 0:
             rad = math.radians(rotate)
             r = f"{rad:.6f}"
             steps.append(f"rotate={r}:c=none:ow='rotw({r})':oh='roth({r})'")
-            rx, ry = rotated_overlay_position(box, rotate)
+            rx, ry = rotated_overlay_position(frame, rotate)
             x, y = round(rx), round(ry)
         opacity = float(geo["opacity"])
-        if opacity < 1:
+        if anim.opacity:
+            fade = with_time(anim.opacity, "T", t_start)
+            gain = fade if opacity >= 1 else f"{_fmt(opacity)}*{fade}"
+            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{gain}'")
+        elif opacity < 1:
             steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
         if image.is_video:
             # Start the sticker at its own frame 0 when the window opens, instead of
@@ -515,7 +556,9 @@ def build_render_command(
         chains.append(",".join(steps) + lbl)
 
         eof_action = "pass" if (image.is_video and playback == "once") else "repeat"
-        overlay = f"{current}{lbl}overlay={x}:{y}:eof_action={eof_action}"
+        ox = f"'{x}+{H}*({with_time(anim.dx, 't', t_start)})'" if anim.dx else str(x)
+        oy = f"'{y}+{H}*({with_time(anim.dy, 't', t_start)})'" if anim.dy else str(y)
+        overlay = f"{current}{lbl}overlay={ox}:{oy}:eof_action={eof_action}"
         if layer.t != "all":
             overlay += f":enable='between(t,{_fmt(t_start)},{_fmt(t_end)})'"
         out = f"[c{layer_index}]"

@@ -26,7 +26,8 @@ import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
-import { stickerAudible, stickerFinished, stickerMediaTime } from '../../lib/stickerMedia';
+import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
+import { REST, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
 import { InlineTextEditor } from './InlineTextEditor';
 import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
@@ -258,6 +259,8 @@ function LayerNode({
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
   const postDuration = usePostDuration();
+  const postTime = usePostTime();
+  const playing = useEditor((s) => s.playing);
   const sticker = layer.type === 'sticker' ? assets.find((a) => a.id === layer.asset_id) : undefined;
   const stickerIsVideo = isVideoAsset(sticker);
   // 静态图走 useImage；视频贴纸优先用浏览器可播的预览代理（MOV/ProRes 直接放会是空白）
@@ -337,6 +340,14 @@ function LayerNode({
   const aspect = layerAspect(layer, assets);
   const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
   const draggable = selectable && !layer.locked;
+  // 文字动画（HIG-40）：按成片同一套曲线采样，只叠加在显示上。选中且暂停时显示静止状态，
+  // 否则停在入场开头（透明）时既看不见也没法调；拖动 / 变换写回时把动画偏移扣掉。
+  const animation = layer.type === 'text' ? (layer as TextLayer).animation : undefined;
+  let anim = REST;
+  if (hasAnimation(animation) && !(selected && !playing)) {
+    const [a, b] = windowRange(layer.t, postDuration);
+    anim = sampleAnimation(animation, postTime - a, b - a);
+  }
   const onDblClick = () => {
     onSelect();
     if (layer.type === 'text' && selectable && !layer.locked) onEdit();
@@ -344,8 +355,8 @@ function LayerNode({
 
   const commitBox = (node: Konva.Image, newW: number, rotate?: number) => {
     const h = newW / aspect;
-    const cx = node.x();
-    const cy = node.y();
+    const cx = node.x() - anim.dx * H;
+    const cy = node.y() - anim.dy * H;
     const nb = { x: cx - newW / 2, y: cy - h / 2, w: newW, h };
     if (onCommitVariant) {
       onCommitVariant(nb, rotate);
@@ -370,14 +381,16 @@ function LayerNode({
     <KImage
       ref={registerNode}
       image={image}
-      x={box.x + box.w / 2}
-      y={box.y + box.h / 2}
+      x={box.x + box.w / 2 + anim.dx * H}
+      y={box.y + box.h / 2 + anim.dy * H}
       width={box.w}
       height={box.h}
       offsetX={box.w / 2}
       offsetY={box.h / 2}
+      scaleX={anim.scale}
+      scaleY={anim.scale}
       rotation={geom?.rotate ?? layer.rotate}
-      opacity={geom?.opacity ?? layer.opacity}
+      opacity={(geom?.opacity ?? layer.opacity) * anim.opacity}
       visible={!hidden}
       draggable={draggable}
       listening={selectable}
@@ -394,9 +407,9 @@ function LayerNode({
       onTransformEnd={(e) => {
         onGuides(NO_GUIDES);
         const node = e.target as Konva.Image;
-        const newW = Math.max(8, node.width() * node.scaleX());
-        node.scaleX(1);
-        node.scaleY(1);
+        const newW = Math.max(8, (node.width() * node.scaleX()) / anim.scale);
+        node.scaleX(anim.scale);
+        node.scaleY(anim.scale);
         commitBox(node, newW, node.rotation());
       }}
       stroke={selected ? GUIDE_COLOR : undefined}
