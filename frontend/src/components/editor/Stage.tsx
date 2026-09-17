@@ -9,6 +9,7 @@
 // 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
 // 拉伸不锁比例、没有旋转把手。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
+// 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import Konva from 'konva';
@@ -29,6 +30,7 @@ import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
 import { REST, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
 import { InlineTextEditor } from './InlineTextEditor';
+import { useCanvasImageDrop } from './useCanvasImageDrop';
 import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
@@ -421,6 +423,7 @@ function LayerNode({
 
 export function Stage({ hidden }: { hidden?: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const nodes = useRef<Record<string, Konva.Node | null>>({});
@@ -541,6 +544,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     tr.getLayer()?.batchDraw();
   }, [selectedLayerId, editingLayerId, step, spec, W, H, coverActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const imageDrop = useCanvasImageDrop(boxRef, { enabled: !!video && !!spec, isRef });
+
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
       if (e.target === e.target.getStage()) setSelectedLayer(null);
@@ -572,8 +577,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
 
   return (
-    <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined}>
-      <div className="stage-box" style={{ width: W, height: H }}>
+    <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
+      <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
         {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} videoId={video?.id} posterUrl={video?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
@@ -677,6 +682,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         {editingLayer && <InlineTextEditor key={editingLayer.id} layer={editingLayer} W={W} H={H} onClose={() => setEditingLayerId(null)} />}
         {!hasSrc && <div className="stage-hint">无代理视频（mock 示例）· 使用合成时钟播放</div>}
         {video?.status === 'preparing' && <div className="stage-hint">预处理中…</div>}
+        {imageDrop.over && (
+          <div className="dropzone-mask" aria-hidden>
+            <span>松手添加为贴纸</span>
+          </div>
+        )}
       </div>
     </div>
   );

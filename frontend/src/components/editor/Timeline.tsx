@@ -8,6 +8,7 @@
 // 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
 // 轨道头的名字双击改名（HIG-48）：视频轨改的是视频名（与左栏同一个），其余存进 spec（lib/trackNames），清空恢复自动名。
 // 拖放加音轨（HIG-33）：音频面板的素材卡片、或系统里的音频文件拖到时间线上，落点为起点，落在口播行加口播，其余加 BGM（lib/timelineDrop）。
+// 拖放加贴纸（HIG-46）：JPG / PNG 文件或贴纸卡片拖上来，加贴纸图层，落点时间起显示到片尾（lib/imageDrop），并切到「贴纸」模块。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor } from '../../store/editor';
@@ -25,7 +26,9 @@ import { InlineName } from '../ui/InlineName';
 import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
 import { api } from '../../api';
 import { isFileDrag, rejectedText, splitByAccept } from '../../lib/fileDrop';
-import { dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
+import { dropKind, dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
+import { IMAGE_ACCEPT, IMAGE_ACCEPT_TEXT, timelineDropWindow } from '../../lib/imageDrop';
+import { addStickerLayers, dropImages } from './stickerDrop';
 import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { hasAnimation, phaseLengths } from '../../lib/textAnimation';
 import type { Asset, AudioRole, AudioSpec, Layer } from '../../types';
@@ -195,7 +198,7 @@ export function Timeline() {
   const setToast = useEditor((s) => s.setToast);
   const loadAssets = useEditor((s) => s.loadAssets);
   const currentVideoId = useEditor((s) => s.currentVideoId);
-  const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number } | null>(null);
+  const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
   const duration = Math.max(0.1, video?.duration ?? 0);
@@ -322,8 +325,8 @@ export function Timeline() {
     if (!video || !spec || (!isAssetDrag(e.dataTransfer.types) && !isFileDrag(e.dataTransfer.types))) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    const p = dropPoint(e);
-    setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role ? h : p));
+    const p = { ...dropPoint(e), kind: dropKind(e.dataTransfer.types, e.dataTransfer.items) };
+    setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role && h.kind === p.kind ? h : p));
   };
   const onDragLeave = (e: React.DragEvent<HTMLElement>) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(null);
@@ -336,13 +339,23 @@ export function Timeline() {
     if (!card && !files.length) return;
     e.preventDefault();
     const { role, post } = dropPoint(e);
+    const stickerWindow = () => timelineDropWindow(post, postDuration);
     if (card) {
+      if (card.type === 'sticker') {
+        const asset = useEditor.getState().assets.find((a) => a.id === card.id);
+        if (!asset || (asset.status ?? 'ready') !== 'ready') setToast('素材还在处理中，就绪后再拖进来');
+        else addStickerLayers([asset], () => ({ t: stickerWindow() }));
+        return;
+      }
       if (card.type !== 'audio') return;
       if (!addDropped(card.id, role, post)) setToast('素材还在处理中，就绪后再拖进来');
       return;
     }
-    const { accepted, rejected } = splitByAccept(files, AUDIO_ACCEPT);
-    const skipped = rejectedText(rejected, 'mp3 / wav / m4a');
+    // 图片加贴纸，音频加音轨；两样都不是的一起提示
+    const images = splitByAccept(files, IMAGE_ACCEPT);
+    const { accepted, rejected } = splitByAccept(images.rejected, AUDIO_ACCEPT);
+    if (images.accepted.length) void dropImages(images.accepted, () => ({ t: stickerWindow() }));
+    const skipped = rejectedText(rejected, `mp3 / wav / m4a 或 ${IMAGE_ACCEPT_TEXT}`);
     if (!accepted.length) {
       if (skipped) setToast(skipped);
       return;
@@ -763,7 +776,7 @@ export function Timeline() {
                     ? '还没有译文字幕，在右侧生成语言版本后「套用」，字幕层和配音轨会一起加进来。'
                     : layerType === 'text'
                       ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。'
-                      : '还没有贴纸，在右侧素材里点选添加。'}
+                      : '还没有贴纸，在右侧素材里点选添加，或把 JPG / PNG 拖到这里 / 画布上。'}
               </div>
             </div>
           )}
@@ -772,7 +785,7 @@ export function Timeline() {
           {dropHint && (
             <div className="tl-drop" style={{ left: LABEL_W + dropHint.x }}>
               <span className="tl-drop-tip">
-                加为{dropHint.role === 'voice' ? '口播' : ' BGM'} · {dropHint.post.toFixed(1)}s
+                加为{dropHint.kind === 'sticker' ? '贴纸' : dropHint.role === 'voice' ? '口播' : ' BGM'} · {dropHint.post.toFixed(1)}s
               </span>
             </div>
           )}

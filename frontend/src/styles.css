@@ -433,6 +433,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .stage-box { position: relative; background: #0b0d10; border-radius: 4px; overflow: hidden; box-shadow: var(--shadow); }
 .stage-box video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #0b0d10; }
 .stage-box .konva-layer { position: absolute; inset: 0; }
+/* 画布拖入图片（HIG-46）：遮罩半透明，松手前还看得见落点下的画面 */
+.stage-box .dropzone-mask { background: color-mix(in srgb, var(--accent-soft) 30%, transparent); border-radius: 4px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
 .stage-hint { position: absolute; left: 8px; bottom: 8px; color: rgba(255,255,255,0.6); font-size: 11px; pointer-events: none; }
 .stage-box > canvas.crop-bg { position: absolute; inset: 0; display: block; }
 .crop-bar .btn.on { border-color: var(--hover-line); background: var(--panel-2); }

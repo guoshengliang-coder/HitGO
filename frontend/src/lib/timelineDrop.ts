@@ -1,4 +1,5 @@
 // 把音频拖进时间线（HIG-33）的纯逻辑：认拖拽载荷、按落点算新音轨的角色和时段。
+// HIG-46 起图片 / 贴纸卡片也能拖进来加贴纸，dragover 阶段靠 dropKind 决定提示「加为 BGM」还是「加为贴纸」。
 // 两种来源：音频面板里的素材卡片（自定义 MIME，不带 'Files'，所以不会让 DropZone 亮起"松手上传"），
 // 和从系统里拖进来的文件（先上传，就绪后在记住的落点加轨）。
 
@@ -30,6 +31,30 @@ export function parseAssetDrag(raw: string | null | undefined): AssetDragPayload
 /** dragover 阶段读不到数据，只能看 types：是不是素材卡片拖过来的。 */
 export function isAssetDrag(types: ArrayLike<string> | null | undefined): boolean {
   return !!types && Array.from(types).includes(ASSET_DRAG_MIME);
+}
+
+/** 卡片拖拽时另写一个带素材类型的空 MIME：dragover 读不到数据，但能看到 types，据此提前知道拖的是什么。 */
+export function assetDragTypeMime(type: AssetType): string {
+  return `${ASSET_DRAG_MIME}-${type}`;
+}
+
+/** dragover 阶段拖的素材卡片类型；不是卡片或旧写法（没有类型标记）返回 null。 */
+export function assetDragType(types: ArrayLike<string> | null | undefined): AssetType | null {
+  if (!types) return null;
+  const prefix = `${ASSET_DRAG_MIME}-`;
+  const hit = Array.from(types).find((t) => t.startsWith(prefix));
+  return hit ? (hit.slice(prefix.length) as AssetType) : null;
+}
+
+/**
+ * 这次拖到时间线上会加什么：素材卡片看类型标记；系统文件看 items 的 MIME（dragover 时拿得到类型、拿不到内容），
+ * 全是图片才算贴纸，其余（音频、混着的、类型不明的）按音轨提示——松手时再按实际文件分流。
+ */
+export function dropKind(types: ArrayLike<string> | null | undefined, items: ArrayLike<{ kind: string; type: string }> | null | undefined): 'sticker' | 'audio' {
+  const card = assetDragType(types);
+  if (card) return card === 'sticker' ? 'sticker' : 'audio';
+  const files = Array.from(items ?? []).filter((i) => i.kind === 'file');
+  return files.length > 0 && files.every((i) => /^image\//i.test(i.type)) ? 'sticker' : 'audio';
 }
 
 /** 落在哪一行决定角色：落在口播音轨行上加口播，其余（BGM 行、源音轨、空白处）都加 BGM。 */
