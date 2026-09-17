@@ -621,7 +621,9 @@ def build_render_command(
         if anim.opacity:
             fade = with_time(anim.opacity, "T", t_start)
             gain = fade if opacity >= 1 else f"{_fmt(opacity)}*{fade}"
-            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*{gain}'")
+            # The gain only depends on time: evaluate it once per row (st / ld) instead of per pixel.
+            # Long curves (bounce, elastic) on a padded, rotated frame are otherwise ~15× slower.
+            steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*if(eq(X,0),st(0,{gain}),ld(0))'")
         elif opacity < 1:
             steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
         if image.is_video:

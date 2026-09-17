@@ -729,7 +729,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    - 带 `animation` 的文字图层（第 2 节）：输入改为 `-loop 1 -framerate <fps> -t <b> -i <png>`（从 0 起逐帧，滤镜时间 = 成片时间）；
      链路 `format=rgba,scale=w:h` →（`scale` 动时）`pad` 到 1.1 倍留出余量 + `perspective=x0..y3=中心 ± 半宽/半高·scale((in−1)/fps − a):sense=destination:eval=frame`
      （滤镜链路不能逐帧改尺寸，所以用透视搬角点代替缩放；`in` 从 1 计数）→ `rotate`（同静态）→（`opacity` 动时）
-     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·opacity·anim(T − a)'` 代替 `colorchannelmixer`；`overlay` 的 x / y 在动时写成
+     `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·if(eq(X,0), st(0, opacity·anim(T − a)), ld(0))'` 代替 `colorchannelmixer`（增益只随时间变，每行求一次值，逐像素求值在弹跳 / 弹性等长曲线上慢十几倍）；`overlay` 的 x / y 在动时写成
      `x0 + H·dx(t − a)` 表达式，`enable` 照旧。不动的通道保持静态写法；没有 `animation` 的图层命令不变。
    - 带 `reveal` 的文字图层（HIG-45）：同样逐帧输入；`scale=w:h` 之后、`pad / perspective / rotate` 之前加
      `geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)·mask'`，`mask` 为 `if(gte(T − a, s + D), 1, …)` 里按 `Y/H` 查行、按 `X/W` 查格子的平衡二叉 `if(lt(…))` 树

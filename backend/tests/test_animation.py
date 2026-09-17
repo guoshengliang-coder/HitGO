@@ -167,7 +167,8 @@ def test_animated_text_loops_its_png_and_uses_frame_expressions():
     assert "scale=540:130,pad=594:144:27:7:color=0x00000000,perspective=" in g
     assert "((in-1)/25-2)" in g and ":sense=destination:eval=frame" in g
     # opacity: the layer's own 0.8 times the fade, on the output clock shifted to the window
-    assert "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*0.8*" in g and "(T-2)" in g
+    # evaluated once per row: the gain only depends on time
+    assert "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*if(eq(X,0),st(0,0.8*" in g and "(T-2)" in g and "),ld(0))'" in g
     # slide_up exit moves y; x is static; the window still gates the overlay
     assert "overlay=243:" in g and "'+1920*(" not in g
     assert "enable='between(t,2,5)'" in g and "(t-2)" in g
