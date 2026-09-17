@@ -36,7 +36,8 @@ def test_still_args_loop_an_odd_sized_image_into_five_seconds(tmp_path):
 
 @needs_ffmpeg
 def test_run_preprocess_generates_the_source_first(tmp_path):
-    source = tmp_path / "source.mp4"
+    # The video dir does not exist yet: a blank clip has no upload that would have created it.
+    source = tmp_path / "b_x" / "v_y" / "source.mp4"
     meta = preprocess.run_preprocess(
         source=source,
         proxy=tmp_path / "proxy.mp4",
