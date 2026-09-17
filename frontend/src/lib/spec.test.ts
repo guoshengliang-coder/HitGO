@@ -18,9 +18,13 @@ describe('toContractSpec · audio', () => {
       tracks: [{ id: 'au_1', asset_id: 'a_bgm', role: 'bgm', t: [0.123, 3], loop: true, volume: 0.6, fade_out: 1 }],
     });
   });
-  it('本地图层字段仍被剔除', () => {
-    const spec: EditSpec = { ...emptySpec(), layers: [{ id: 'l', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: 'all', name: 'x', locked: true }] };
-    expect(toContractSpec(spec).layers[0]).not.toHaveProperty('name');
+  it('本地图层字段仍被剔除；name 是契约字段（HIG-48），非空时发送', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [{ id: 'l', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: 'all', name: ' 角标 ', locked: true }] };
+    const out = toContractSpec(spec).layers[0];
+    expect(out).not.toHaveProperty('locked');
+    expect(out).toHaveProperty('name', '角标');
+    const blank: EditSpec = { ...spec, layers: [{ ...spec.layers[0], name: '  ' }] };
+    expect(toContractSpec(blank).layers[0]).not.toHaveProperty('name');
   });
   it('hidden 是契约字段（HIG-33）：true 时发给后端，false / 缺省时不发', () => {
     const base = { type: 'sticker' as const, asset_id: 'a', anchor: 'top-left' as const, margin: [0, 0] as [number, number], width: 0.3, rotate: 0, opacity: 1, t: 'all' as const };
@@ -97,7 +101,7 @@ describe('遮盖层', () => {
     expect(countSafeZoneOverlaps(spec, zone, [])).toBe(0);
   });
   it('toContractSpec 剔除本地字段后原样透传遮盖字段', () => {
-    const spec: EditSpec = { ...emptySpec(), layers: [{ ...mask, name: 'x', blur: 3, color: '#112233' }] };
+    const spec: EditSpec = { ...emptySpec(), layers: [{ ...mask, locked: true, blur: 3, color: '#112233' }] };
     expect(toContractSpec(spec).layers[0]).toEqual({ ...mask, blur: 3, color: '#112233' });
   });
 });

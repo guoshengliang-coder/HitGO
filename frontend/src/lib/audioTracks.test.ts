@@ -26,6 +26,18 @@ describe('isDefaultAudio / contractAudio', () => {
     const out = contractAudio({ source_volume: 0.33333, tracks: [{ id: 'a', asset_id: 'x', t: [1.23456, 4], volume: 0.7 }] });
     expect(out).toEqual({ source_volume: 0.333, tracks: [{ id: 'a', asset_id: 'x', t: [1.235, 4], volume: 0.7 }] });
   });
+  it('轨道名（HIG-48）：source_name 单独也算非缺省；空名字不发', () => {
+    expect(isDefaultAudio({ source_volume: 1, tracks: [], source_name: '原声' })).toBe(false);
+    expect(isDefaultAudio({ source_volume: 1, tracks: [], source_name: ' ' })).toBe(true);
+    expect(contractAudio({ source_volume: 1, tracks: [], source_name: ' 原声 ' })).toEqual({ source_volume: 1, source_name: '原声', tracks: [] });
+    const out = contractAudio({ source_volume: 0.5, tracks: [{ id: 'a', asset_id: 'x', t: 'all', name: '开场' }, { id: 'b', asset_id: 'x', t: 'all', name: '' }] });
+    expect(out?.tracks[0]).toHaveProperty('name', '开场');
+    expect(out?.tracks[1]).not.toHaveProperty('name');
+  });
+  it('拆分音轨两段都沿用原名（HIG-48）', () => {
+    const parts = splitTrackAt({ id: 'a', asset_id: 'x', t: [0, 10], name: '开场' }, 4, D, 30, 'b');
+    expect(parts?.map((p) => p.name)).toEqual(['开场', '开场']);
+  });
   it('隐藏（HIG-33）：source_hidden 单独也算非缺省；hidden 只在为 true 时带上', () => {
     expect(isDefaultAudio({ source_volume: 1, tracks: [], source_hidden: true })).toBe(false);
     expect(contractAudio({ source_volume: 1, tracks: [], source_hidden: true })).toEqual({ source_volume: 1, source_hidden: true, tracks: [] });

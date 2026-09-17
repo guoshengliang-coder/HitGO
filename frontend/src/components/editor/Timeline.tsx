@@ -6,7 +6,9 @@
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
 // 拖动区间 / 图层条 / 音轨条时吸附到 0、时长、播放头、入点与其他区间端点（按住 ⌥ 关闭）。
+// 轨道头的名字双击改名（HIG-48）：视频轨改的是视频名（与左栏同一个），其余存进 spec（lib/trackNames），清空恢复自动名。
 // 拖放加音轨（HIG-33）：音频面板的素材卡片、或系统里的音频文件拖到时间线上，落点为起点，落在口播行加口播，其余加 BGM（lib/timelineDrop）。
+// 拖放加贴纸（HIG-46）：JPG / PNG 文件或贴纸卡片拖上来，加贴纸图层，落点时间起显示到片尾（lib/imageDrop），并切到「贴纸」模块。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor } from '../../store/editor';
@@ -20,12 +22,16 @@ import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { IconEye, IconLock } from '../ui/Icons';
+import { InlineName } from '../ui/InlineName';
+import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
 import { api } from '../../api';
 import { isFileDrag, rejectedText, splitByAccept } from '../../lib/fileDrop';
-import { dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
+import { dropKind, dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
+import { IMAGE_ACCEPT, IMAGE_ACCEPT_TEXT, timelineDropWindow } from '../../lib/imageDrop';
+import { addStickerLayers, dropImages } from './stickerDrop';
 import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { hasAnimation, phaseLengths } from '../../lib/textAnimation';
-import type { Asset, AudioRole, Layer } from '../../types';
+import type { Asset, AudioRole, AudioSpec, Layer } from '../../types';
 
 /** 系统文件拖进来：上传完成、素材探测就绪后才能加轨，先记下落点。 */
 type PendingDrop = { assetId: string; role: AudioRole; start: number; videoId: string };
@@ -49,14 +55,21 @@ function EyeButton({ hidden, onToggle }: { hidden: boolean; onToggle: () => void
   );
 }
 
+/** 轨道头上可双击改名的名字（HIG-48）：清空提交空字符串，由调用方恢复自动名。 */
+function TrackName({ value, display, label, onSave }: { value: string; display?: string; label: string; onSave: (name: string) => Promise<boolean> | boolean | void }) {
+  return <InlineName className="lname" inputClassName="lname-input" value={value} display={display} label={label} allowEmpty maxLength={TRACK_NAME_MAX} onSave={onSave} />;
+}
+
 /** 音频模块的源音轨行：状态（静音 / 音量 / 隐藏）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
-function SourceAudioRow({ hasAudio, volume, hidden, onToggleHidden, width, offset, scrub, selected, onSelect, children }: { hasAudio: boolean; volume: number; hidden: boolean; onToggleHidden: () => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+function SourceAudioRow({ audio, hasAudio, onToggleHidden, onRename, width, offset, scrub, selected, onSelect, children }: { audio: AudioSpec | null | undefined; hasAudio: boolean; onToggleHidden: () => void; onRename: (name: string) => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+  const volume = sourceVolume(audio);
+  const hidden = !!audio?.source_hidden;
   const muted = !hasAudio || volume === 0 || hidden;
-  const label = !hasAudio ? '源音轨（无）' : hidden ? '源音轨（已隐藏）' : volume === 0 ? '源音轨（已静音）' : volume < 1 ? `源音轨 ${Math.round(volume * 100)}%` : '源音轨';
+  const label = sourceAudioLabel(audio, hasAudio);
   return (
     <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${hidden ? 'hidden' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
       <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>
-        <span className="lname">{label}</span>
+        <TrackName value={sourceAudioName(audio)} display={label} label="源音轨名" onSave={onRename} />
         {hasAudio && <EyeButton hidden={hidden} onToggle={onToggleHidden} />}
       </div>
       <div className="body" {...scrub}>
@@ -153,6 +166,9 @@ export function Timeline() {
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
+  const renameLayer = (l: Layer, name: string) => {
+    if (cleanTrackName(name) !== cleanTrackName(l.name)) updateLayer(l.id, { name: cleanTrackName(name) });
+  };
   const assets = useEditor((s) => s.assets);
   const coverAsset = useEditor((s) => {
     const cover = s.currentVideoId ? s.specs[s.currentVideoId]?.cover : null;
@@ -164,6 +180,9 @@ export function Timeline() {
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
   const toggleTrackHidden = useEditor((s) => s.toggleTrackHidden);
   const toggleSourceHidden = useEditor((s) => s.toggleSourceHidden);
+  const renameAudioTrack = useEditor((s) => s.renameAudioTrack);
+  const renameSourceAudio = useEditor((s) => s.renameSourceAudio);
+  const renameVideo = useEditor((s) => s.renameVideo);
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
   const setSelectedMute = useEditor((s) => s.setSelectedMute);
   const updateSourceMute = useEditor((s) => s.updateSourceMute);
@@ -179,7 +198,7 @@ export function Timeline() {
   const setToast = useEditor((s) => s.setToast);
   const loadAssets = useEditor((s) => s.loadAssets);
   const currentVideoId = useEditor((s) => s.currentVideoId);
-  const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number } | null>(null);
+  const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
   const duration = Math.max(0.1, video?.duration ?? 0);
@@ -306,8 +325,8 @@ export function Timeline() {
     if (!video || !spec || (!isAssetDrag(e.dataTransfer.types) && !isFileDrag(e.dataTransfer.types))) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    const p = dropPoint(e);
-    setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role ? h : p));
+    const p = { ...dropPoint(e), kind: dropKind(e.dataTransfer.types, e.dataTransfer.items) };
+    setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role && h.kind === p.kind ? h : p));
   };
   const onDragLeave = (e: React.DragEvent<HTMLElement>) => {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHint(null);
@@ -320,13 +339,23 @@ export function Timeline() {
     if (!card && !files.length) return;
     e.preventDefault();
     const { role, post } = dropPoint(e);
+    const stickerWindow = () => timelineDropWindow(post, postDuration);
     if (card) {
+      if (card.type === 'sticker') {
+        const asset = useEditor.getState().assets.find((a) => a.id === card.id);
+        if (!asset || (asset.status ?? 'ready') !== 'ready') setToast('素材还在处理中，就绪后再拖进来');
+        else addStickerLayers([asset], () => ({ t: stickerWindow() }));
+        return;
+      }
       if (card.type !== 'audio') return;
       if (!addDropped(card.id, role, post)) setToast('素材还在处理中，就绪后再拖进来');
       return;
     }
-    const { accepted, rejected } = splitByAccept(files, AUDIO_ACCEPT);
-    const skipped = rejectedText(rejected, 'mp3 / wav / m4a');
+    // 图片加贴纸，音频加音轨；两样都不是的一起提示
+    const images = splitByAccept(files, IMAGE_ACCEPT);
+    const { accepted, rejected } = splitByAccept(images.rejected, AUDIO_ACCEPT);
+    if (images.accepted.length) void dropImages(images.accepted, () => ({ t: stickerWindow() }));
+    const skipped = rejectedText(rejected, `mp3 / wav / m4a 或 ${IMAGE_ACCEPT_TEXT}`);
     if (!accepted.length) {
       if (skipped) setToast(skipped);
       return;
@@ -513,7 +542,9 @@ export function Timeline() {
           </div>
 
           <div className="tl-row tl-video">
-            <div className="lbl">视频</div>
+            <div className="lbl" title="视频轨：双击改视频名（与左栏同一个名字）">
+              {video ? <TrackName value={video.name} label="视频名" onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}
+            </div>
             <div className="body" {...scrub.handlers}>
               {off > 0 && (
                 <div
@@ -566,10 +597,10 @@ export function Timeline() {
 
           {audioStep && (
             <SourceAudioRow
+              audio={spec?.audio}
               hasAudio={!!video?.has_audio}
-              volume={sourceVolume(spec?.audio)}
-              hidden={!!spec?.audio?.source_hidden}
               onToggleHidden={toggleSourceHidden}
+              onRename={renameSourceAudio}
               width={trackW}
               offset={off}
               scrub={scrub.handlers}
@@ -609,15 +640,14 @@ export function Timeline() {
               const left = off + postToSource(pa, remove) * pps;
               const right = off + postToSource(pb, remove) * pps;
               const sel = selectedTrackId === t.id;
-              const asset = assets.find((a) => a.id === t.asset_id);
-              const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '音频';
+              const name = audioTrackName(t, assets);
               const problem = trackAssetProblem(t, assets);
               const hidden = !!t.hidden;
               return (
                 <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => setSelectedTrack(t.id)}>
                   <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
-                    <span className="lname">{name}</span>
+                    <TrackName value={name} label="音轨名" onSave={(v) => renameAudioTrack(t.id, v)} />
                     <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
                   </div>
                   <div className="body" {...scrub.handlers}>
@@ -665,7 +695,7 @@ export function Timeline() {
               <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
                 <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改${l.hidden ? '；贴纸图层已隐藏，声音跟着不出' : ''}）`}>
                   <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
-                  <span className="lname">{name}</span>
+                  <TrackName value={name} label="贴纸名" onSave={(v) => renameLayer(l, v)} />
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
@@ -689,7 +719,7 @@ export function Timeline() {
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
-                  <span className="lname">{layerName(l, assets)}</span>
+                  <TrackName value={layerName(l, assets)} label="图层名" onSave={(v) => renameLayer(l, v)} />
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                     <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
                       <IconEye off={hidden} />
@@ -746,7 +776,7 @@ export function Timeline() {
                     ? '还没有译文字幕，在右侧生成语言版本后「套用」，字幕层和配音轨会一起加进来。'
                     : layerType === 'text'
                       ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。'
-                      : '还没有贴纸，在右侧素材里点选添加。'}
+                      : '还没有贴纸，在右侧素材里点选添加，或把 JPG / PNG 拖到这里 / 画布上。'}
               </div>
             </div>
           )}
@@ -755,7 +785,7 @@ export function Timeline() {
           {dropHint && (
             <div className="tl-drop" style={{ left: LABEL_W + dropHint.x }}>
               <span className="tl-drop-tip">
-                加为{dropHint.role === 'voice' ? '口播' : ' BGM'} · {dropHint.post.toFixed(1)}s
+                加为{dropHint.kind === 'sticker' ? '贴纸' : dropHint.role === 'voice' ? '口播' : ' BGM'} · {dropHint.post.toFixed(1)}s
               </span>
             </div>
           )}

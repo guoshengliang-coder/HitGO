@@ -311,6 +311,11 @@ table.table { width: 100%; border-collapse: collapse; background: var(--panel); 
 .table th, .table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
 .table th { font-weight: 500; color: var(--ink-2); background: var(--panel-2); font-size: 12px; }
 .table tr:last-child td { border-bottom: 0; }
+/* 产物页批量下载（HIG-47）：勾选列 + 表格上方的操作条 */
+.table .col-check { width: 28px; padding-right: 0; }
+.table .col-check input { margin: 2px 0 0; cursor: pointer; }
+.table tr.picked td { background: var(--accent-soft, var(--panel-2)); }
+.outputs-bulk { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; min-height: 28px; }
 pre.json { background: var(--panel-2); border: 1px solid var(--line-soft); padding: 8px; border-radius: 4px; font-size: 11px; max-height: 320px; overflow: auto; margin: 6px 0 0; }
 
 /* ---- 素材库 ---- */
@@ -428,6 +433,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .stage-box { position: relative; background: #0b0d10; border-radius: 4px; overflow: hidden; box-shadow: var(--shadow); }
 .stage-box video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #0b0d10; }
 .stage-box .konva-layer { position: absolute; inset: 0; }
+/* 画布拖入图片（HIG-46）：遮罩半透明，松手前还看得见落点下的画面 */
+.stage-box .dropzone-mask { background: color-mix(in srgb, var(--accent-soft) 30%, transparent); border-radius: 4px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
 .stage-hint { position: absolute; left: 8px; bottom: 8px; color: rgba(255,255,255,0.6); font-size: 11px; pointer-events: none; }
 .stage-box > canvas.crop-bg { position: absolute; inset: 0; display: block; }
 .crop-bar .btn.on { border-color: var(--hover-line); background: var(--panel-2); }
@@ -487,6 +494,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .lbl .tl-acts { position: absolute; right: 2px; top: 0; bottom: 0; display: flex; align-items: center; flex: none; gap: 0; padding-left: 6px; background: linear-gradient(90deg, transparent, var(--s0) 30%); opacity: 0; transition: opacity 0.12s; }
 .tl-row:hover .lbl .tl-acts, .tl-row.selected .lbl .tl-acts, .tl-row .lbl .tl-acts:focus-within { opacity: 0.9; }
 .tl-row .lbl .tl-acts .btn { width: 20px; height: 20px; padding: 0; }
+/* 轨道名就地编辑（HIG-48）：输入框占满标签列，编辑时收起显示 / 锁定按钮 */
+.tl-row .lbl .lname-input { flex: 1; min-width: 0; height: 20px; font-size: 11px; padding: 0 4px; }
+.tl-row .lbl:has(.lname-input) .tl-acts { display: none; }
 .tl-row .lbl .role { font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--tk-bgm-bg); color: var(--tk-bgm-fg); flex: none; }
 .tl-row .lbl .role.voice { background: var(--tk-voice-bg); color: var(--tk-voice-fg); }
 .tl-row .lbl .role.sticker { background: var(--tk-sticker-bg); color: var(--tk-sticker-fg); }

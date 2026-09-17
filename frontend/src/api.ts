@@ -116,6 +116,53 @@ export const api = {
   /** 跨批次的已完成产物，按完成时间倒序；q 按导出名称 / 批次名 / 视频名搜索（HIG-27）。 */
   allOutputs: (limit = 100, offset = 0, q = '') =>
     request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}`),
+  /**
+   * 批量下载（HIG-47）：提交隐藏表单到 POST /api/outputs/zip，响应是附件，浏览器边收边写盘、不进内存。
+   * 表单目标是隐藏 iframe，页面本身不跳转。成功时是附件下载，iframe 不会加载出页面；
+   * 后端返回 400 之类的错误时 iframe 会加载出 JSON，读出 detail 交给 onError。mock 模式没有后端，返回 false。
+   */
+  downloadOutputsZip: (jobIds: string[], onError?: (message: string) => void): boolean => {
+    if (MOCK) return false;
+    const frameName = 'hitgo-download';
+    let frame = document.querySelector<HTMLIFrameElement>(`iframe[name="${frameName}"]`);
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.name = frameName;
+      frame.hidden = true;
+      document.body.appendChild(frame);
+    }
+    frame.onload = () => {
+      let text = '';
+      try {
+        text = frame?.contentDocument?.body?.textContent ?? '';
+      } catch {
+        return; // 读不到（非同源）就不提示
+      }
+      if (!text.trim()) return;
+      try {
+        const j = JSON.parse(text) as { detail?: unknown };
+        onError?.(typeof j.detail === 'string' ? j.detail : '打包下载失败');
+      } catch {
+        onError?.('打包下载失败');
+      }
+    };
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/api/outputs/zip';
+    form.target = frameName;
+    form.hidden = true;
+    for (const id of jobIds) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'job_ids';
+      input.value = id;
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+    return true;
+  },
 
   // 视频
   getVideo: (id: string) => request<Video>('GET', `/api/videos/${id}`),

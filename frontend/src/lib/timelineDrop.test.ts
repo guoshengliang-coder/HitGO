@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ASSET_DRAG_MIME, dropRole, dropWindow, encodeAssetDrag, isAssetDrag, parseAssetDrag } from './timelineDrop';
+import { ASSET_DRAG_MIME, assetDragType, assetDragTypeMime, dropKind, dropRole, dropWindow, encodeAssetDrag, isAssetDrag, parseAssetDrag } from './timelineDrop';
 
 describe('asset drag payload', () => {
   it('round-trips and rejects foreign data', () => {
@@ -13,6 +13,22 @@ describe('asset drag payload', () => {
     expect(isAssetDrag(['Files'])).toBe(false);
     expect(isAssetDrag(['text/plain'])).toBe(false);
     expect(isAssetDrag(null)).toBe(false);
+  });
+});
+
+describe('dropKind（HIG-46）', () => {
+  it('卡片看类型标记', () => {
+    expect(assetDragType([ASSET_DRAG_MIME, assetDragTypeMime('sticker')])).toBe('sticker');
+    expect(assetDragType([ASSET_DRAG_MIME])).toBeNull();
+    expect(dropKind([ASSET_DRAG_MIME, assetDragTypeMime('sticker')], [])).toBe('sticker');
+    expect(dropKind([ASSET_DRAG_MIME, assetDragTypeMime('audio')], [])).toBe('audio');
+  });
+  it('系统文件全是图片才算贴纸', () => {
+    const file = (type: string) => ({ kind: 'file', type });
+    expect(dropKind(['Files'], [file('image/png'), file('image/jpeg')])).toBe('sticker');
+    expect(dropKind(['Files'], [file('image/png'), file('audio/mpeg')])).toBe('audio');
+    expect(dropKind(['Files'], [file('')])).toBe('audio');
+    expect(dropKind(['Files'], [])).toBe('audio');
   });
 });
 

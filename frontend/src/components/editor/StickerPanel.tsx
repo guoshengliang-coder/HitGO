@@ -1,10 +1,15 @@
 // 「贴纸」模块右侧面板（HIG-8）：图层 / 原料库 / 我上传的 三个 tab，素材再按图片 / 视频筛选。
 // 只管贴纸图层；分类只用素材已有的 source 与 kind，不改契约。
+// HIG-46：面板整体可拖入 JPG / PNG，也可点「上传图片」选文件，上传后直接加为图层；素材卡片可拖到画布 / 时间线上。
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
-import { isAssetReady, isVideoAsset, type StickerLayer } from '../../types';
+import { isAssetReady, type Asset } from '../../types';
 import { newLayerId } from '../../lib/spec';
+import { defaultMargin, IMAGE_ACCEPT, IMAGE_ACCEPT_TEXT, newStickerLayer } from '../../lib/imageDrop';
+import { rejectedText } from '../../lib/fileDrop';
+import { DropZone } from '../ui/DropZone';
+import { dropImages } from './stickerDrop';
 import { filterAssets, type AssetBucket, type StickerKindFilter } from '../../lib/assets';
 import { AssetCard } from '../../pages/AssetsPage';
 import { IconSticker } from '../ui/Icons';
@@ -34,19 +39,56 @@ export function StickerPanel() {
     return l?.type === 'sticker' ? l : null;
   });
   const addLayer = useEditor((s) => s.addLayer);
+  const setToast = useEditor((s) => s.setToast);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
   const stickers = useMemo(() => (tab === 'layers' ? [] : filterAssets(assets, { type: 'sticker', bucket: tab, kind, q })), [assets, tab, kind, q]);
 
   const addSticker = (assetId: string) => {
     const asset = assets.find((a) => a.id === assetId);
     if (!isAssetReady(asset)) return; // 还在预处理：加进去也渲染不出来
-    const l: StickerLayer = { id: newLayerId(), type: 'sticker', asset_id: assetId, anchor: 'top-left', margin: [0.08, 0.12], width: 0.35, rotate: 0, opacity: 1, t: 'all' };
-    if (isVideoAsset(asset)) l.playback = 'loop';
-    addLayer(l);
+    if (!asset) return;
+    addLayer(newStickerLayer(newLayerId(), asset));
     setTab('layers');
   };
 
+  // 拖入或选择的图片：上传后按面板默认位置依次错开加图层
+  const addImages = (files: File[]) => {
+    if (!files.length || uploading) return;
+    setUploading(true);
+    void dropImages(files, (_a: Asset, i: number) => ({ margin: defaultMargin(i) })).finally(() => {
+      setUploading(false);
+      setTab('layers');
+    });
+  };
+
   return (
-    <div className="panel">
+    <DropZone
+      className="panel"
+      accept={IMAGE_ACCEPT}
+      disabled={uploading}
+      hint="松手添加为贴纸（JPG / PNG）"
+      onFiles={(accepted, rejected) => {
+        // 有可收的图片时，跳过提示会被上传进度盖掉，所以一并交给上传（uploadImages 会带上跳过的文件名）
+        if (!accepted.length) {
+          const skipped = rejectedText(rejected, IMAGE_ACCEPT_TEXT);
+          if (skipped) setToast(skipped);
+          return;
+        }
+        addImages([...accepted, ...rejected]);
+      }}
+    >
+      <input
+        ref={fileRef}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        multiple
+        hidden
+        onChange={(e) => {
+          addImages(Array.from(e.target.files ?? []));
+          e.target.value = '';
+        }}
+      />
       <div className="tabs" role="tablist" style={{ padding: '0 8px' }}>
         {TABS.map((t) => (
           <button key={t.key} role="tab" aria-selected={tab === t.key} className={`tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
@@ -60,8 +102,11 @@ export function StickerPanel() {
             <button className="btn" onClick={() => setTab('library')}>
               <IconSticker /> 添加贴纸
             </button>
+            <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading} title="选择 JPG / PNG，上传后直接加为贴纸；也可以把图片拖进这里、画布或时间线">
+              {uploading ? '上传中…' : '上传图片'}
+            </button>
           </div>
-          <LayerList type="sticker" emptyHint="还没有贴纸。去「原料库」或「我上传的」里点选添加，加入后可在画布上拖动、缩放、旋转。" />
+          <LayerList type="sticker" emptyHint="还没有贴纸。去「原料库」或「我上传的」里点选添加，或把 JPG / PNG 拖进来；加入后可在画布上拖动、缩放、旋转。" />
           {selected && <LayerProps key={selected.id} layer={selected} />}
         </div>
       ) : (
@@ -82,18 +127,18 @@ export function StickerPanel() {
                 ? '没有匹配的贴纸。'
                 : tab === 'library'
                   ? '原料库为空 · 把文件放进仓库的 samples/stickers 作为内置示例，正式环境接原料库 API'
-                  : '还没有贴纸，去「素材库」上传。'}
+                  : '还没有贴纸：把 JPG / PNG 拖进来、点「图层」页的「上传图片」，或去「素材库」上传。'}
             </div>
           ) : (
             <div className="sticker-grid">
               {stickers.map((a) => (
-                <AssetCard key={a.id} asset={a} onPick={() => addSticker(a.id)} />
+                <AssetCard key={a.id} asset={a} onPick={() => addSticker(a.id)} draggable />
               ))}
             </div>
           )}
-          <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）。视频贴纸默认循环播放，可在属性里改。</div>
+          <div className="hint">点击贴纸即添加为图层（宽 35%，左上锚点，边距 8% / 12%，全程显示）；也可以把卡片拖到画布或时间线上指定位置 / 起点。视频贴纸默认循环播放，可在属性里改。</div>
         </div>
       )}
-    </div>
+    </DropZone>
   );
 }

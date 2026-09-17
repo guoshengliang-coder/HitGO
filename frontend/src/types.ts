@@ -319,8 +319,9 @@ export interface LayerBase {
   lang?: string;
   /** 可选（HIG-33）：时间线上关掉眼睛。留在 spec 里，成片不渲染（视频贴纸的声音一起去掉）；缺省 false，false 时不发。 */
   hidden?: boolean;
-  // 前端本地字段（不发送给后端语义无影响；后端 schema 允许附加字段则透传）
+  /** 可选（HIG-48）：时间线 / 图层列表里改的名字；缺省按内容自动命名，只在非空时发（契约 §2）。 */
   name?: string;
+  // 前端本地字段（不发送给后端）
   locked?: boolean;
 }
 
@@ -515,6 +516,8 @@ export interface AudioTrack {
   lang?: string;
   /** 可选（HIG-33）：关掉眼睛，不混进成片也不算跳过；缺省 false，false 时不发。 */
   hidden?: boolean;
+  /** 可选（HIG-48）：时间线上改的轨道名；缺省显示素材文件名，只在非空时发。 */
+  name?: string;
 }
 
 /** 契约 §2 audio：源音轨音量 + 叠加音轨。缺省（无此块）= 源音轨原样保留。 */
@@ -526,6 +529,8 @@ export interface AudioSpec {
   tracks: AudioTrack[];
   /** 可选（HIG-33）：源音轨关掉眼睛，成片不带原声；source_volume 原样保留，打开眼睛即恢复。 */
   source_hidden?: boolean;
+  /** 可选（HIG-48）：源音轨改的名字；缺省叫「源音轨」，只在非空时发。 */
+  source_name?: string;
 }
 
 /** 契约 §2 cover（HIG-9）：成片最前面的封面。缺省（无此块）= 没有封面。 */

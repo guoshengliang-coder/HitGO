@@ -7,7 +7,7 @@ import { IconTrash } from '../components/ui/Icons';
 import { Seg } from '../components/ui/Seg';
 import { DropZone } from '../components/ui/DropZone';
 import { rejectedText } from '../lib/fileDrop';
-import { ASSET_DRAG_MIME, encodeAssetDrag } from '../lib/timelineDrop';
+import { ASSET_DRAG_MIME, assetDragTypeMime, encodeAssetDrag } from '../lib/timelineDrop';
 
 /** 音频素材的 accept 与空态文案；剪辑步骤的音轨选择器也用。 */
 /** 贴纸 / 封面素材可上传的格式（契约 §3）；jpg 没有透明通道，主要给封面用（HIG-9）。 */
@@ -46,6 +46,7 @@ export function AssetCard({ asset, onDelete, onPick, draggable }: { asset: Asset
         canDrag
           ? (e) => {
               e.dataTransfer.setData(ASSET_DRAG_MIME, encodeAssetDrag({ id: asset.id, type: asset.type }));
+              e.dataTransfer.setData(assetDragTypeMime(asset.type), '1');
               e.dataTransfer.effectAllowed = 'copy';
             }
           : undefined

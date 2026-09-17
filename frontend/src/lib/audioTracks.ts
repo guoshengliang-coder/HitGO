@@ -5,6 +5,7 @@
 import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type AudioTrack, type Layer, type StickerLayer, type TimeWindow } from '../types';
 import { windowRange } from './stickerMedia';
 import { normalizeRanges, type Range } from './time';
+import { cleanTrackName } from './trackNames';
 
 const EPS = 1e-6;
 
@@ -35,9 +36,9 @@ export function sourceVolume(audio: AudioSpec | null | undefined): number {
   return audio ? Math.max(0, Math.min(1, audio.source_volume)) : 1;
 }
 
-/** 没有 audio 块，或源音量 1、没有原声静音区间且没有音轨：等价于契约缺省，发给后端时省略。 */
+/** 没有 audio 块，或源音量 1、没有原声静音区间、没有音轨且源音轨没改名：等价于契约缺省，发给后端时省略。 */
 export function isDefaultAudio(audio: AudioSpec | null | undefined): boolean {
-  return !audio || (audio.source_volume === 1 && audio.tracks.length === 0 && !(audio.source_mute?.length) && !audio.source_hidden);
+  return !audio || (audio.source_volume === 1 && audio.tracks.length === 0 && !(audio.source_mute?.length) && !audio.source_hidden && !cleanTrackName(audio.source_name));
 }
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -49,9 +50,13 @@ export function contractAudio(audio: AudioSpec | null | undefined): AudioSpec | 
     source_volume: round3(audio.source_volume),
     ...(audio.source_mute?.length ? { source_mute: audio.source_mute.map(([a, b]) => [round3(a), round3(b)] as Range) } : {}),
     ...(audio.source_hidden ? { source_hidden: true } : {}),
+    ...(cleanTrackName(audio.source_name) ? { source_name: cleanTrackName(audio.source_name) } : {}),
     tracks: audio.tracks.map((t) => {
       const copy: AudioTrack = { ...t };
       if (!copy.hidden) delete copy.hidden;
+      const name = cleanTrackName(t.name);
+      if (name) copy.name = name;
+      else delete copy.name;
       if (copy.t !== 'all') copy.t = [round3(copy.t[0]), round3(copy.t[1])];
       return copy;
     }),

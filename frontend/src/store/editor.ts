@@ -10,6 +10,7 @@ import { api, ApiError, type ApplyLayerMode } from '../api';
 import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
 import { emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
+import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
@@ -215,6 +216,9 @@ export interface EditorState {
   toggleTrackHidden: (id: string) => void;
   /** 源音轨眼睛（HIG-33）：source_hidden 开关，source_volume 不动。 */
   toggleSourceHidden: () => void;
+  /** 轨道改名（HIG-48）：空白 = 恢复自动名。进撤销历史。 */
+  renameAudioTrack: (id: string, name: string) => void;
+  renameSourceAudio: (name: string) => void;
   /** 在播放头处把音轨拆成两条（HIG-25），选中后一条；播放头不在时段内部时提示。 */
   splitAudioTrack: (id: string) => void;
   /** 删掉音轨在播放头左 / 右的部分（拆分后删一侧）。选中的是源音轨行（SOURCE_TRACK_ID）时改为加原声静音区间。 */
@@ -1074,6 +1078,25 @@ export const useEditor = create<EditorState>((set, get) => {
         const audio = ensureAudio(spec);
         if (audio.source_hidden) delete audio.source_hidden;
         else audio.source_hidden = true;
+      });
+    },
+    renameAudioTrack: (id, name) => {
+      const clean = cleanTrackName(name);
+      const cur = get().currentSpec()?.audio?.tracks.find((x) => x.id === id);
+      if (!cur || clean === cleanTrackName(cur.name)) return;
+      get().updateSpec((spec) => {
+        const t = spec.audio?.tracks.find((x) => x.id === id);
+        if (!t) return;
+        if (clean) t.name = clean;
+        else delete t.name;
+      });
+    },
+    renameSourceAudio: (name) => {
+      const clean = cleanTrackName(name);
+      if (clean === cleanTrackName(get().currentSpec()?.audio?.source_name)) return;
+      get().updateSpec((spec) => {
+        if (clean) ensureAudio(spec).source_name = clean;
+        else if (spec.audio) delete spec.audio.source_name;
       });
     },
     removeAudioTrack: (id) => {

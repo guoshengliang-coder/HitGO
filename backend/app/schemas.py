@@ -74,6 +74,10 @@ def _check_time_window(t: Any) -> Any:
     return (float(a), float(b))
 
 
+# Longest track / layer label the editor can store (HIG-48).
+TRACK_NAME_MAX = 64
+
+
 class LayerBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -86,6 +90,8 @@ class LayerBase(BaseModel):
     t: Literal["all"] | TimeWindow = "all"
     # Eye switched off in the editor (HIG-33): kept in the spec, left out of the output.
     hidden: bool = False
+    # Track label the user typed on the timeline (HIG-48); the worker ignores it.
+    name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)
 
     @field_validator("t")
     @classmethod
@@ -427,6 +433,7 @@ class AudioTrack(BaseModel):
     fade_in: float = Field(default=0.0, ge=0)
     fade_out: float = Field(default=0.0, ge=0)
     hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
+    name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)  # timeline label (HIG-48)
 
     @field_validator("t")
     @classmethod
@@ -453,6 +460,8 @@ class AudioSpec(BaseModel):
     tracks: list[AudioTrack] = Field(default_factory=list)
     # Eye off on the source track (HIG-33): no source audio in the output, source_volume kept.
     source_hidden: bool = False
+    # Timeline label of the source track (HIG-48); the worker ignores it.
+    source_name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)
 
     @field_validator("source_mute")
     @classmethod
