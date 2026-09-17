@@ -10,6 +10,7 @@
 // 局部上色（layer.spans）由 textSpans.splitRuns 拆成片段，填充时逐段换色，描边全线同色。
 // 自动换行（HIG-51）：style.wrap_width（相对画布宽）指定时 PNG 宽固定为该宽度，文字按实际测量宽度折行（lib/textWrap）；
 // 断行位置一律按 1080×1920 基准字号算，各画幅重新渲染（variant_images）时断在同样的地方。
+// 框高（HIG-51）：style.box_height（相对画布高）比文字高时 PNG 拉高，文字垂直居中，背景块画满整个框。
 //
 // 文字图层的 width 语义：文字图层的宽度跟随其渲染尺寸，即 width = pngWidth / 1080，
 // 除非用户手动缩放过（layer.width_manual = true，本地字段，发送时剔除）。
@@ -22,7 +23,7 @@ import type { EditSpec, TextLayer, TextSpan, TextStyle, VariantKey } from '../ty
 import { outputFor } from './spec';
 import { resolveLayerBox } from './variantLayout';
 import { api } from '../api';
-import { resolveOverflowPad, resolveTextBox, splitRuns, type TextRun } from './textSpans';
+import { resolveOverflowPad, resolveTextBox, resolveTextBoxHeight, splitRuns, type TextRun } from './textSpans';
 import { wrapRuns } from './textWrap';
 import { buildGlyphLayout, graphemes, isRtlLine, type MeasuredLine } from './textReveal';
 
@@ -152,7 +153,7 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
   const { outerW, bgX, bgW: boxW, alignW } = resolveTextBox({
     contentW, padPx, strokePx, backgroundWidth: style.background ? style.background_width : null, wrapWidth, canvasW, align: style.align,
   });
-  const boxH = Math.ceil(contentH + padPx * 2 + strokePx * 2);
+  const { boxH, offsetY } = resolveTextBoxHeight({ contentH, padPx, strokePx, boxHeight: style.box_height, canvasH: H });
   const width = outerW + shadowPad * 2;
   const height = boxH + shadowPad * 2;
   if (height > TEXT_CANVAS_MAX_H) throw new Error(TEXT_TOO_LONG);
@@ -177,7 +178,7 @@ export function drawTextImage(text: string, style: TextStyle, H = TEXT_CANVAS.H,
     if (style.align === 'right') return left + alignW - lw;
     return left;
   };
-  const lineY = (i: number) => oy + strokePx + padPx + lineH * i + lineH / 2;
+  const lineY = (i: number) => oy + offsetY + strokePx + padPx + lineH * i + lineH / 2;
 
   const setShadow = (on: boolean) => {
     if (on && shadow) {
@@ -430,6 +431,26 @@ export function getCachedText(layer: TextLayer): RenderedText | undefined {
   return cache.get(textCacheKey(layer));
 }
 
+/**
+ * 同步渲染并写入预览缓存（拖边改换行宽度 / 框高时逐帧用）。只在这句文字已经渲染过一次（字体已就绪）时调用。
+ */
+export function renderTextSync(layer: TextLayer): RenderedText {
+  const key = textCacheKey(layer);
+  const hit = cache.get(key);
+  if (hit) return hit;
+  const r = drawTextImage(layer.text, layer.style, TEXT_CANVAS.H, layer.spans);
+  remember(key, r);
+  return r;
+}
+
+function remember(key: string, r: RenderedText) {
+  cache.set(key, r);
+  if (cache.size > 200) {
+    const first = cache.keys().next().value;
+    if (first) cache.delete(first);
+  }
+}
+
 export function ensureTextRendered(layer: TextLayer): Promise<RenderedText> {
   const key = textCacheKey(layer);
   const hit = cache.get(key);
@@ -437,12 +458,8 @@ export function ensureTextRendered(layer: TextLayer): Promise<RenderedText> {
   const p = pending.get(key);
   if (p) return p;
   const np = renderTextImage(layer).then((r) => {
-    cache.set(key, r);
+    remember(key, r);
     pending.delete(key);
-    if (cache.size > 200) {
-      const first = cache.keys().next().value;
-      if (first) cache.delete(first);
-    }
     return r;
   });
   pending.set(key, np);

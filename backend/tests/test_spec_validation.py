@@ -176,6 +176,20 @@ def test_text_wrap_width():
         assert "wrap_width" in errors_of(spec)
 
 
+def test_text_box_height():
+    # HIG-51: optional min text box height, relative to canvas height (0, 1]; absent / null = hug text
+    spec = valid_spec()
+    assert validate(spec).layers[1].style.box_height is None
+    style = spec["layers"][1]["style"]
+    style["box_height"] = 0.25
+    assert validate(spec).layers[1].style.box_height == 0.25
+    style["box_height"] = None
+    assert validate(spec).layers[1].style.box_height is None
+    for bad in (0, -0.1, 1.2):
+        style["box_height"] = bad
+        assert "box_height" in errors_of(spec)
+
+
 def test_aspect_and_fill_enums():
     assert "aspect" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "3:4"}]))
     assert "fill" in errors_of(valid_spec(outputs=[{"variant_key": "x", "aspect": "9:16", "fill": "stretch"}]))

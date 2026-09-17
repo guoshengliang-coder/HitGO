@@ -14,7 +14,7 @@ import { layerFollows, overrideDetaches, placementOfBox } from '../../lib/varian
 import { layerAspect } from '../../lib/spec';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
-import { drawTextImage } from '../../lib/textImage';
+import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
 import { clampWrapWidth, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { setLayerWrapWidth } from '../../lib/localize';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
@@ -371,6 +371,19 @@ const WRAP_MODES: SegOption<'off' | 'on'>[] = [
 ];
 const DEFAULT_WRAP_WIDTH = 0.9;
 
+/** 框高（HIG-51）：贴合文字，或固定一个最小高度（文字在框内垂直居中）；画布上拖文字框上下边也能调。 */
+const BOX_HEIGHT_MODES: SegOption<'fit' | 'fixed'>[] = [
+  { v: 'fit', label: '贴合文字' },
+  { v: 'fixed', label: '固定高度' },
+];
+
+/** 切到「固定高度」时的起始值：当前文字本身的框高（相对画布高），还没渲染过就给 0.2。 */
+function currentBoxHeight(layer: TextLayer): number {
+  const r = getCachedText(layer);
+  if (!r) return 0.2;
+  return Math.min(1, Math.max(0.01, round4((r.height - 2 * r.pad) / TEXT_CANVAS.H)));
+}
+
 const BG_WIDTH_MODES: SegOption<'fit' | 'full'>[] = [
   { v: 'fit', label: '贴合' },
   { v: 'full', label: '通栏' },
@@ -551,6 +564,16 @@ export function TextSections({ layer, sel, poster = false }: { layer: TextLayer;
             <Seg label="换行" options={WRAP_MODES} value={st.wrap_width ? 'on' : 'off'} onChange={(m) => updateLayer(layer.id, (l) => { if (l.type === 'text') setLayerWrapWidth(l, m === 'on' ? DEFAULT_WRAP_WIDTH : null); })} />
             {st.wrap_width ? (
               <Num label="换行宽度" value={st.wrap_width} min={WRAP_WIDTH_MIN} max={WRAP_WIDTH_MAX} step={0.01} suffix="% 宽" onChange={(v) => patchStyle({ wrap_width: clampWrapWidth(v) })} />
+            ) : (
+              <span />
+            )}
+          </div>
+        )}
+        {!poster && (
+          <div className="g2">
+            <Seg label="框高" options={BOX_HEIGHT_MODES} value={st.box_height ? 'fixed' : 'fit'} onChange={(m) => patchStyle({ box_height: m === 'fixed' ? currentBoxHeight(layer) : null })} />
+            {st.box_height ? (
+              <Num label="高度" value={st.box_height} min={0.01} max={1} step={0.01} suffix="% 高" onChange={(v) => patchStyle({ box_height: Math.max(0.01, Math.min(1, v)) })} />
             ) : (
               <span />
             )}

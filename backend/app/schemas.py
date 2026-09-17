@@ -149,6 +149,7 @@ class TextStyle(BaseModel):
     background_width: float | None = Field(default=None, gt=0, le=1)  # relative to canvas width; None = hug text
     background_radius: float | None = Field(default=None, ge=0)  # relative to canvas height; None = auto
     wrap_width: float | None = Field(default=None, gt=0, le=1)  # HIG-51 auto-wrap box, relative to canvas width; None = no wrap
+    box_height: float | None = Field(default=None, gt=0, le=1)  # HIG-51 min text box height, relative to canvas height; None = hug text
 
 
 class TextSpan(BaseModel):

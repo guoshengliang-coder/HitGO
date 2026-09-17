@@ -142,6 +142,16 @@ export function resolveTextBox(o: {
 }
 
 /**
+ * 文字框高度（HIG-51）：缺省紧贴文字（行高 × 行数 + 内边距 + 描边）；指定 boxHeight（相对画布高）时框拉到该高度，
+ * 但不小于紧贴高（字号、行数不变）。offsetY 是文字在框内垂直居中要往下挪的距离，背景块画满整个框。
+ */
+export function resolveTextBoxHeight(o: { contentH: number; padPx: number; strokePx: number; boxHeight: number | null | undefined; canvasH: number }): { boxH: number; offsetY: number } {
+  const tight = Math.ceil(o.contentH + o.padPx * 2 + o.strokePx * 2);
+  const boxH = o.boxHeight && o.boxHeight > 0 ? Math.max(tight, Math.round(o.boxHeight * o.canvasH)) : tight;
+  return { boxH, offsetY: (boxH - tight) / 2 };
+}
+
+/**
  * 文字框四周需要预留的溢出边距（px）：阴影要 blur + |offset|，发光是无偏移的光晕，
  * 模糊半径按 1.5 倍留（多遍叠画后光晕拖尾比 shadowBlur 名义值更长），取两者较大值。
  */

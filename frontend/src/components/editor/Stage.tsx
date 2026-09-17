@@ -8,7 +8,8 @@
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 // 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
 // 拉伸不锁比例、没有旋转把手。
-// 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），拖动中实时重新折行，高度跟着行数变。
+// 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），上下边把手改框高（style.box_height，
+// 不小于文字本身，文字在框内垂直居中）。拖边时逐帧同步重画 PNG，字号、字形不变，被拖边的对边不动。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
 // 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
 // 滚动文字（HIG-50 大字报）：PNG 在裁切框（scroll.box）里按 lib/poster 的曲线向上滚，框外裁掉；不能拖动 / 缩放，
@@ -27,8 +28,8 @@ import { layerTypesForStep } from '../../lib/steps';
 import { windowContains } from '../../lib/time';
 import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
-import { ensureTextRendered, getCachedText, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
-import { clampWrapWidth } from '../../lib/textWrap';
+import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
+import { boxHeightFromStage, edgeOfAnchor, keepOppositeEdge, wrapWidthFromStage } from '../../lib/textBoxDrag';
 import { setLayerWrapWidth } from '../../lib/localize';
 import { loadImage, useImage } from '../../lib/useImage';
 import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
@@ -45,11 +46,11 @@ import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './Mas
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
 import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
-// Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、左右边改换行宽度（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
+// Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、四条边改换行宽度 / 框高（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const EDGE_ANCHORS = ['middle-left', 'middle-right'];
-const TEXT_ANCHORS = [...CORNER_ANCHORS, ...EDGE_ANCHORS];
 const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', ...EDGE_ANCHORS, 'bottom-center'];
+const TEXT_ANCHORS = ALL_ANCHORS;
 
 /** 预览用的 glyph_layout 按渲染结果 + 单位缓存（渲染结果本身已按文字 / 样式缓存）。 */
 const layoutCache = new WeakMap<object, Map<string, ReturnType<typeof buildGlyphLayout>>>();
@@ -375,8 +376,9 @@ function LayerNode({
   if (layer.type !== 'sticker') image = lastText.current?.canvas;
   else if (!stickerIsVideo) image = stickerImg;
   else image = videoReady ? stickerVideo : stickerPoster;
-  // 拖边改换行宽度：开始时的 spec 快照（松手时压一条历史）、舞台像素 / PNG 像素的比例、节流用的 rAF
-  const edge = useRef<{ snapshot: EditSpec | null; ratio: number; startW: number; moved: boolean; raf: number } | null>(null);
+  // 拖边改换行宽度 / 框高：开始时的 spec 快照（松手时压一条历史）、舞台像素 / PNG 像素的比例、拖的轴和方向、
+  // 开始时该轴的长度、按拖到的尺寸改好的图层草稿（没拖动时为 null）、节流用的 rAF
+  const edge = useRef<{ snapshot: EditSpec | null; ratio: number; axis: 'x' | 'y'; side: 1 | -1; startLen: number; draft: TextLayer | null; raf: number } | null>(null);
   if (!image) return null;
 
   const aspect = layer.type === 'text' && lastText.current ? lastText.current.width / lastText.current.height : layerAspect(layer, assets);
@@ -462,25 +464,25 @@ function LayerNode({
     });
   };
 
-  // 左右边把手（文字）：Konva 把拉伸放在 scaleX 上，这里换成节点宽度（图片先横向拉伸），再节流写回 wrap_width
-  const isEdgeDrag = () => layer.type === 'text' && EDGE_ANCHORS.includes(activeAnchor() ?? '');
+  // 边把手（文字）：写回拖动中算好的草稿（换行宽度 / 框高，旧译文字幕并回的文字），框按节点当前尺寸反算位置
   const applyEdge = (node: Konva.Image, history: boolean) => {
     const e = edge.current;
-    const r = lastText.current;
-    if (!e || !r) return;
-    const newW = node.width();
     // 只点了一下把手没拖：不写 spec、不记历史
-    if (!e.moved && Math.abs(newW - e.startW) < 0.5) return;
-    e.moved = true;
-    const wrap = clampWrapWidth((newW / e.ratio - 2 * r.pad) / TEXT_CANVAS.W);
+    if (!e || !e.draft) return;
+    const draft = e.draft;
+    const newW = node.width();
+    const newH = node.height();
     const cx = node.x() - anim.dx * H;
     const cy = node.y() - anim.dy * H;
-    const nb = { x: cx - newW / 2, y: cy - node.height() / 2, w: newW, h: node.height() };
+    const nb = { x: cx - newW / 2, y: cy - newH / 2, w: newW, h: newH };
     updateLayer(
       layer.id,
       (l) => {
         if (l.type !== 'text') return;
-        setLayerWrapWidth(l, wrap);
+        l.text = draft.text;
+        if (draft.spans) l.spans = draft.spans;
+        else delete l.spans;
+        l.style = draft.style;
         if (onCommitVariant) return;
         const m = marginFromBox(nb, l.anchor, { W, H });
         l.margin = [round4(m[0]), round4(m[1])];
@@ -524,17 +526,38 @@ function LayerNode({
         commitBox(e.target as Konva.Image, box.w);
       }}
       onTransformStart={() => {
-        if (!isEdgeDrag() || !lastText.current) return;
+        const side = layer.type === 'text' ? edgeOfAnchor(activeAnchor()) : null;
+        if (!side || !lastText.current) return;
         const spec = useEditor.getState().currentSpec();
-        edge.current = { snapshot: spec ? cloneSpec(spec) : null, ratio: box.w / lastText.current.width, startW: box.w, moved: false, raf: 0 };
+        const startLen = side.axis === 'x' ? box.w : box.h;
+        edge.current = { snapshot: spec ? cloneSpec(spec) : null, ratio: box.w / lastText.current.width, ...side, startLen, draft: null, raf: 0 };
       }}
       onTransform={(e) => {
         const ed = edge.current;
-        if (!ed) return;
+        if (!ed || layer.type !== 'text') return;
         const node = e.target as Konva.Image;
-        const newW = Math.max(8, node.width() * (node.scaleX() / anim.scale));
-        // 保持左 / 右边不动：offset 跟着宽度走，scale 复原
-        node.setAttrs({ width: newW, offsetX: newW / 2, scaleX: anim.scale });
+        const s = anim.scale;
+        // Konva 把拉伸放在 scaleX / scaleY 上：换算成拖到的长度，再按新样式同步重画，节点尺寸跟着 PNG 走（字形不拉伸）
+        const dragged = Math.max(8, ed.axis === 'x' ? node.width() * (node.scaleX() / s) : node.height() * (node.scaleY() / s));
+        if (!ed.draft && Math.abs(dragged - ed.startLen) < 0.5) {
+          node.setAttrs({ scaleX: s, scaleY: s });
+          return;
+        }
+        const pad = lastText.current?.pad ?? 0;
+        const src = layer as TextLayer;
+        const draft: TextLayer = { ...src, style: { ...src.style } };
+        if (ed.axis === 'x') {
+          setLayerWrapWidth(draft, wrapWidthFromStage(dragged, ed.ratio, pad));
+        } else {
+          const tight = renderTextSync({ ...src, style: { ...src.style, box_height: null } }).height - 2 * pad;
+          draft.style.box_height = boxHeightFromStage(dragged, ed.ratio, pad, tight);
+        }
+        const r = renderTextSync(draft);
+        const w = r.width * ed.ratio;
+        const h = r.height * ed.ratio;
+        const c = keepOppositeEdge({ x: node.x(), y: node.y() }, node.rotation(), ed.axis, ed.side, dragged * s, (ed.axis === 'x' ? w : h) * s);
+        node.setAttrs({ image: r.canvas, width: w, height: h, offsetX: w / 2, offsetY: h / 2, scaleX: s, scaleY: s, x: c.x, y: c.y });
+        ed.draft = draft;
         if (!ed.raf) {
           ed.raf = requestAnimationFrame(() => {
             ed.raf = 0;
