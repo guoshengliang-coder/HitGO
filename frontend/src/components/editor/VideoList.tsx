@@ -14,6 +14,7 @@ import { InlineName } from '../ui/InlineName';
 import { IconPen, IconTrash } from '../ui/Icons';
 import { defaultApplyModules } from '../../lib/steps';
 import { isDefaultBlurFill } from '../../lib/blurFill';
+import { VIDEO_DRAG } from './SequenceTimeline';
 
 const MODULES: { key: ApplyModule; label: string; desc: string }[] = [
   { key: 'trim', label: '剪辑', desc: '删除区间（目标更短时丢弃超出部分）' },
@@ -166,7 +167,7 @@ export function VideoList() {
           const layerCount = spec?.layers.length ?? 0;
           const picked = selectedIds.includes(v.id);
           return (
-            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''} ${picked ? 'picked' : ''}`} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && setCurrent(v.id)}>
+            <div key={v.id} className={`vrow ${v.id === currentId ? 'current' : ''} ${picked ? 'picked' : ''}`} draggable={v.status === 'ready'} onDragStart={(e) => e.dataTransfer.setData(VIDEO_DRAG, v.id)} onClick={() => setCurrent(v.id)} role="button" tabIndex={0} onKeyDown={(e) => e.target === e.currentTarget && e.key === 'Enter' && setCurrent(v.id)}>
               <div className="poster" style={{ backgroundImage: v.poster_url ? `url("${v.poster_url}")` : undefined }}>
                 {/* 勾选框常显在海报左上角：勾选 = 批量目标，橙条 = 当前正在编辑，两件事分开（§4.2） */}
                 <input type="checkbox" className="vck" checked={picked} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelected(v.id)} aria-label={`勾选 ${v.name}`} />

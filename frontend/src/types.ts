@@ -680,6 +680,24 @@ export interface Trim {
   duration?: number | null;
 }
 
+/** HIG-39：当前视频的拼接时间轴引用本批次的原始源视频，不套用来源视频的 edit_spec。 */
+export type ClipTransitionType = 'cut' | 'fade' | 'slide_left' | 'slide_right' | 'wipe_left' | 'wipe_right';
+export interface ClipTransition {
+  type: ClipTransitionType;
+  duration: number;
+}
+export interface SequenceClip {
+  id: string;
+  video_id: string;
+  in: number;
+  out: number;
+  /** 当前片段与前一段之间的转场；首段不设。 */
+  transition?: ClipTransition | null;
+}
+export interface SequenceSpec {
+  clips: SequenceClip[];
+}
+
 export interface EditSpec {
   spec_version: 1;
   trim: Trim;
@@ -687,6 +705,7 @@ export interface EditSpec {
   outputs: OutputVariant[];
   audio?: AudioSpec | null;
   cover?: CoverSpec | null;
+  sequence?: SequenceSpec | null;
 }
 
 export const VARIANT_DEFS: { key: VariantKey; aspect: OutputAspectKey; width: number; height: number; label: string; note: string }[] = [

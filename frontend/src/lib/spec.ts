@@ -20,6 +20,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
   return {
     ...(audio ? { audio } : {}),
     ...(cover ? { cover } : {}),
+    ...(spec.sequence ? { sequence: spec.sequence } : {}),
     spec_version: 1,
     trim: {
       remove: normalizeRanges(spec.trim.remove, duration).map(([a, b]) => [round3(a), round3(b)]),

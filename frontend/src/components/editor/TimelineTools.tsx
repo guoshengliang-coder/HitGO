@@ -11,6 +11,7 @@ import { IconCutLeft, IconCutRight, IconSplit, IconTrash } from '../ui/Icons';
 
 export function TimelineTools() {
   const step = useEditor((s) => s.step);
+  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const time = useEditor((s) => s.time);
   const inPoint = useEditor((s) => s.inPoint);
   const setInPoint = useEditor((s) => s.setInPoint);
@@ -32,7 +33,7 @@ export function TimelineTools() {
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
 
-  const canDelete = step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId;
+  const canDelete = step === 'trim' ? (!hasSequence && selectedRange !== null) : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId;
   const onDelete = () => {
     if (step === 'trim') {
       if (selectedRange !== null) deleteRange(selectedRange);
@@ -46,7 +47,7 @@ export function TimelineTools() {
 
   return (
     <div className="tl-tools">
-      {step === 'trim' && (
+      {step === 'trim' && !hasSequence && (
         <>
           <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} title={hintFor('in')}>
             入点

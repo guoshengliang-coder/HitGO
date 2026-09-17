@@ -19,6 +19,7 @@ from app.routers._common import enqueue_or_503
 from app.schemas import EditSpec, JobOut, RenderIn, RenderItemIn
 from app.serializers import job_out
 from app.services import localize
+from app.services.sequence import resolve_sequence
 
 router = APIRouter(prefix="/api", tags=["render"])
 
@@ -56,6 +57,10 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
             raise HTTPException(
                 400, f"视频 {video.name} 的编辑参数无效：{first.get('msg', '')}"
             ) from None
+        try:
+            resolve_sequence(db, video, spec)
+        except ValueError as exc:
+            raise HTTPException(400, f"视频 {video.name} 的拼接片段无效：{exc}") from None
         keys = [o.variant_key for o in spec.outputs]
         if body.variant_keys is not None:
             unknown = [k for k in dict.fromkeys(body.variant_keys) if k not in keys]

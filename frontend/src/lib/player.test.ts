@@ -3,15 +3,40 @@ import { Player } from './player';
 
 // node 环境没有 HTMLVideoElement：EventTarget + 播放器会读写的几个字段就够用
 function fakeVideo(src = '/media/a.mp4') {
-  const el = new EventTarget() as EventTarget & { src: string; currentTime: number; duration: number; readyState: number; pause: () => void; play: () => Promise<void> };
+  const el = new EventTarget() as EventTarget & { src: string; currentTime: number; duration: number; readyState: number; pause: () => void; play: () => Promise<void>; getAttribute: (name: string) => string | null; setAttribute: (name: string, value: string) => void; load: () => void };
   el.src = src;
   el.currentTime = 0;
   el.duration = 10;
   el.readyState = 0;
   el.pause = vi.fn();
   el.play = vi.fn(() => Promise.resolve());
+  el.getAttribute = (name) => name === 'src' ? el.src : null;
+  el.setAttribute = (name, value) => { if (name === 'src') el.src = value; };
+  el.load = vi.fn();
   return el as unknown as HTMLVideoElement;
 }
+
+describe('Player multi-source preview (HIG-39)', () => {
+  it('maps composed seeks to raw source times and keeps the composed duration', () => {
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    p.setSequence([
+      { id: 'a', src: '/media/a.mp4', sourceIn: 2, sourceOut: 5, start: 0, end: 3 },
+      { id: 'b', src: '/media/b.mp4', sourceIn: 4, sourceOut: 8, start: 3, end: 7 },
+    ]);
+    expect(v.currentTime).toBe(2);
+    p.seek(4.5);
+    expect(v.src).toBe('/media/b.mp4');
+    v.dispatchEvent(new Event('loadedmetadata'));
+    expect(v.currentTime).toBe(5.5);
+    expect(p.duration).toBe(7);
+    p.seek(1);
+    expect(v.src).toBe('/media/a.mp4');
+    v.dispatchEvent(new Event('loadedmetadata'));
+    expect(v.currentTime).toBe(3);
+  });
+});
 
 describe('Player 换元素（HIG-12）', () => {
   it('detach 之后 getVideo 为 null，不会再交出上一条素材的元素', () => {

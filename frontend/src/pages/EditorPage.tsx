@@ -12,6 +12,7 @@ import { Stage } from '../components/editor/Stage';
 import { QuickBar } from '../components/editor/QuickBar';
 import { Transport } from '../components/editor/Transport';
 import { Timeline } from '../components/editor/Timeline';
+import { SequenceTimeline } from '../components/editor/SequenceTimeline';
 import { TrimPanel } from '../components/editor/TrimPanel';
 import { AudioPanel } from '../components/editor/AudioPanel';
 import { TextPanel } from '../components/editor/TextPanel';
@@ -320,6 +321,7 @@ export function EditorPage() {
   const error = useEditor((s) => s.error);
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
+  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const cropEditing = useEditor((s) => s.cropEditing);
   const progressOpen = useEditor((s) => s.progressOpen);
   const shortcutsOpen = useEditor((s) => s.shortcutsOpen);
@@ -400,7 +402,7 @@ export function EditorPage() {
           <Splitter axis="y" label="调整画面与时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
           <QuickBar />
           <Transport />
-          <Timeline />
+          {hasSequence ? <SequenceTimeline /> : <Timeline />}
         </div>
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
