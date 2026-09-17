@@ -9,11 +9,13 @@
 // 轨道头的名字双击改名（HIG-48）：视频轨改的是视频名（与左栏同一个），其余存进 spec（lib/trackNames），清空恢复自动名。
 // 拖放加音轨（HIG-33）：音频面板的素材卡片、或系统里的音频文件拖到时间线上，落点为起点，落在口播行加口播，其余加 BGM（lib/timelineDrop）。
 // 拖放加贴纸（HIG-46）：JPG / PNG 文件或贴纸卡片拖上来，加贴纸图层，落点时间起显示到片尾（lib/imageDrop），并切到「贴纸」模块。
+// 成片时长 trim.duration（HIG-50）比剪后长时：源片右边接一段「循环补足」斜纹块，横轴按 duration + 多出来的秒数延长；
+// 图层 / 音轨条可以排进那段；在那段里 scrub 换算成「第几遍 + 遍内源时刻」交给 player.seek(t, lap)，播放头按成片时刻定位。
 
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
-import { useCoverDuration, useEditor } from '../../store/editor';
+import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
-import { clamp, postToSource, postTrimDuration, sourceToPost } from '../../lib/time';
+import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { layerTypesForStep } from '../../lib/steps';
 import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
@@ -103,8 +105,8 @@ function useWidth(ref: React.RefObject<HTMLDivElement>) {
 
 type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move' | 'track-l' | 'track-r' | 'track-move' | 'mute-l' | 'mute-r' | 'mute-move'; index: number; startX: number; orig: [number, number] };
 
-/** 标尺 / 轨道上的 scrub：按下暂停并定位，拖动时用 rAF 节流连续定位。 */
-function useScrub(xToTime: (clientX: number) => number) {
+/** 标尺 / 轨道上的 scrub：按下暂停并定位，拖动时用 rAF 节流连续定位。seekAt 负责把横坐标换算成播放头位置。 */
+function useScrub(seekAt: (clientX: number) => void) {
   const [scrubbing, setScrubbing] = useState(false);
   const active = useRef(false);
   const raf = useRef(0);
@@ -112,7 +114,7 @@ function useScrub(xToTime: (clientX: number) => number) {
 
   const flush = () => {
     raf.current = 0;
-    if (pending.current !== null && active.current) player.seek(xToTime(pending.current));
+    if (pending.current !== null && active.current) seekAt(pending.current);
     pending.current = null;
   };
   const onPointerDown = (e: RPointerEvent<HTMLElement>) => {
@@ -125,7 +127,7 @@ function useScrub(xToTime: (clientX: number) => number) {
     }
     active.current = true;
     player.pause();
-    player.seek(xToTime(e.clientX));
+    seekAt(e.clientX);
     setScrubbing(true);
   };
   const onPointerMove = (e: RPointerEvent<HTMLElement>) => {
@@ -140,7 +142,7 @@ function useScrub(xToTime: (clientX: number) => number) {
       cancelAnimationFrame(raf.current);
       raf.current = 0;
     }
-    player.seek(xToTime(e.clientX));
+    seekAt(e.clientX);
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -158,6 +160,9 @@ export function Timeline() {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const step = useEditor((s) => s.step);
   const time = useEditor((s) => s.time);
+  const lap = useEditor((s) => s.lap);
+  const postTime = usePostTime();
+  const outputLen = usePostDuration();
   const playing = useEditor((s) => s.playing);
   const inPoint = useEditor((s) => s.inPoint);
   const selectedRange = useEditor((s) => s.selectedRangeIndex);
@@ -202,13 +207,22 @@ export function Timeline() {
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
   const duration = Math.max(0.1, video?.duration ?? 0);
-  const fitPps = Math.max(1, containerW - LABEL_W - 2) / (duration + preroll);
+  const remove = spec?.trim.remove ?? [];
+  const postLen = postTrimDuration(duration, remove);
+  // 成片时长（trim.duration，HIG-50）：比剪后长的部分接在源片右边（循环补足块），横轴按它延长；图层 / 音轨的时段上限也是它
+  const postDuration = Math.max(outputLen, 0);
+  const extra = Math.max(0, postDuration - postLen);
+  const axisLen = duration + extra;
+  const fitPps = Math.max(1, containerW - LABEL_W - 2) / (axisLen + preroll);
   const pps = clamp(timelinePps ?? fitPps, MIN_PPS, MAX_PPS);
-  const trackW = duration * pps;
+  const trackW = axisLen * pps;
   // 封面块宽度：正片各行的横坐标都要加上它
   const off = preroll * pps;
-  const remove = spec?.trim.remove ?? [];
-  const postDuration = postTrimDuration(duration, remove);
+  /** 横轴时刻（源时间，超过 duration 的部分是循环补足段）→ 成片时刻。 */
+  const axisToPost = (t: number) => (t <= duration ? sourceToPost(t, remove) : postLen + (t - duration));
+  // 播放头在横轴上的位置：第 0 遍就是源时刻，之后的遍数落在循环补足段里
+  const axisTime = lap === 0 ? time : duration + Math.max(0, postTime - postLen);
+  const headX = timelineX(axisTime, preroll, pps);
   const trimStep = step === 'trim';
   const audioStep = step === 'audio';
   const tracks = spec?.audio?.tracks ?? [];
@@ -222,6 +236,8 @@ export function Timeline() {
   ppsRef.current = pps;
   const prerollRef = useRef(preroll);
   prerollRef.current = preroll;
+  const axisTimeRef = useRef(axisTime);
+  axisTimeRef.current = axisTime;
 
   // ---- 缩放：围绕锚点保持光标下的时间不动 ----
   const zoomAnchor = useRef<{ time: number; offsetX: number } | null>(null);
@@ -281,7 +297,7 @@ export function Timeline() {
         zoomTo(detail.pps, { time: center, offsetX: viewW / 2 });
         return;
       }
-      const t = player.currentTime;
+      const t = axisTimeRef.current;
       const offsetX = Math.min(Math.max(0, timelineX(t, prerollRef.current, cur) - el.scrollLeft), el.clientWidth - LABEL_W);
       zoomTo(stepZoom(cur, detail), { time: t, offsetX });
     };
@@ -295,24 +311,35 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el || !playing) return;
     const viewW = el.clientWidth - LABEL_W;
-    const x = timelineX(time, preroll, pps);
+    const x = headX;
     if (x < el.scrollLeft || x > el.scrollLeft + viewW) el.scrollLeft = Math.max(0, x - viewW * 0.2);
-  }, [time, playing, pps, preroll]);
+  }, [headX, playing]);
 
+  /** 横坐标 → 横轴时刻（源时间；循环补足段延伸到 duration + extra），夹到 [-封面, axisLen]。 */
   const xToTime = (clientX: number) => {
     const el = scrollRef.current;
     if (!el) return 0;
     const rect = el.getBoundingClientRect();
     const x = clientX - rect.left - LABEL_W + el.scrollLeft;
-    return timelineTime(x, prerollRef.current, ppsRef.current, duration);
+    return timelineTime(x, prerollRef.current, ppsRef.current, axisLen);
   };
-  const scrub = useScrub(xToTime);
+  /** 定位播放头：源片段里是第 0 遍；循环补足段里换算成第几遍 + 遍内源时刻（HIG-50）。 */
+  const seekAt = (clientX: number) => {
+    const t = xToTime(clientX);
+    if (t <= duration) {
+      player.seek(t, 0);
+      return;
+    }
+    const { lap: n, rem } = splitPostTime(axisToPost(t), postLen, lapsFor(postDuration, postLen));
+    player.seek(postToSource(rem, remove), n);
+  };
+  const scrub = useScrub(seekAt);
 
   // ---- 拖放加音轨（HIG-33）----
   const dropPoint = (e: React.DragEvent<HTMLElement>) => {
     const src = Math.max(0, xToTime(e.clientX));
     const rowRole = (e.target as HTMLElement).closest<HTMLElement>('[data-drop-role]')?.dataset.dropRole as AudioRole | undefined;
-    return { x: off + src * pps, role: dropRole(rowRole), post: Math.min(sourceToPost(src, remove), postDuration) };
+    return { x: off + src * pps, role: dropRole(rowRole), post: Math.min(axisToPost(src), postDuration) };
   };
   const addDropped = (assetId: string, role: AudioRole, start: number): boolean => {
     const asset = useEditor.getState().assets.find((a) => a.id === assetId);
@@ -421,11 +448,11 @@ export function Timeline() {
     // 吸附候选：源时间（区间）或剪后时间（图层条、音轨条）
     const head = Math.max(0, time); // 封面段里的播放头按正片开头算
     const candidates: number[] = isMute
-      ? [0, postDuration, sourceToPost(time, remove), ...tracks.flatMap((t) => (t.t === 'all' ? [] : t.t)), ...mutes.flatMap((r, i) => (i === d.index ? [] : r))]
+      ? [0, postDuration, postTime, ...tracks.flatMap((t) => (t.t === 'all' ? [] : t.t)), ...mutes.flatMap((r, i) => (i === d.index ? [] : r))]
       : isTrack
-      ? trackSnapCandidates({ tracks, layers: spec?.layers ?? [], excludeTrackId: tracks[d.index]?.id ?? '', postDuration, playhead: sourceToPost(time, remove) })
+      ? trackSnapCandidates({ tracks, layers: spec?.layers ?? [], excludeTrackId: tracks[d.index]?.id ?? '', postDuration, playhead: postTime })
       : isBar
-        ? [0, postDuration, sourceToPost(time, remove), ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
+        ? [0, postDuration, postTime, ...(spec?.layers ?? []).flatMap((l, i) => (i === d.index || l.t === 'all' ? [] : l.t))]
         : [0, duration, head, ...(inPoint !== null ? [inPoint] : []), ...remove.flatMap((r, i) => (i === d.index ? [] : r))];
     const threshold = SNAP_PX / pps;
 
@@ -501,7 +528,7 @@ export function Timeline() {
 
   // ---- 标尺刻度：按 pps 选步长 ----
   const tickStep = pps >= 160 ? 0.5 : pps >= 60 ? 1 : pps >= 30 ? 2 : 5;
-  const tickCount = Math.floor(duration / tickStep + 1e-6);
+  const tickCount = Math.floor(axisLen / tickStep + 1e-6);
   const ticks: { t: number; label: string; minor: boolean }[] = [];
   for (let i = 0; i <= tickCount; i++) {
     const t = i * tickStep;
@@ -592,6 +619,31 @@ export function Timeline() {
                 );
               })}
               {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="入点" />}
+              {extra > 0 && (
+                <div
+                  className="tl-loop-fill"
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: off + duration * pps,
+                    width: extra * pps,
+                    borderLeft: '2px solid var(--accent)',
+                    background: 'repeating-linear-gradient(135deg, rgba(127, 127, 127, 0.28) 0 4px, rgba(127, 127, 127, 0.08) 4px 8px)',
+                    color: 'var(--ink-soft, #ccc)',
+                    fontSize: 10,
+                    lineHeight: '14px',
+                    padding: '3px 0 0 4px',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    pointerEvents: 'none',
+                    zIndex: 1,
+                  }}
+                  title={`成片时长 ${postDuration.toFixed(1)}s 比剪后时长 ${postLen.toFixed(1)}s 长：保留段从头再放，补足 ${extra.toFixed(1)}s（大字报的滚动 / 朗读比源片长）`}
+                >
+                  循环补足 {extra.toFixed(1)}s
+                </div>
+              )}
             </div>
           </div>
 
@@ -789,7 +841,7 @@ export function Timeline() {
               </span>
             </div>
           )}
-          <div className="tl-playhead" style={{ left: LABEL_W + timelineX(time, preroll, pps) }}>
+          <div className="tl-playhead" style={{ left: LABEL_W + headX }}>
             <div className="grip" {...scrub.handlers} title="拖动定位" />
           </div>
         </div>

@@ -216,3 +216,167 @@ describe('Player 倍速 / 倒放（HIG-30）', () => {
     expect(p.isPlaying).toBe(false);
   });
 });
+
+describe('Player 循环补足（HIG-50 trim.duration）', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function manualFrames() {
+    let cb: FrameRequestCallback | null = null;
+    let now = 1000;
+    vi.stubGlobal('requestAnimationFrame', (fn: FrameRequestCallback) => {
+      cb = fn;
+      return 1;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    return (ms: number) => {
+      now += ms;
+      const fn = cb;
+      cb = null;
+      fn?.(now);
+    };
+  }
+
+  it('没设成片时长时只有 1 遍，播到源片尾就停', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 4;
+    expect(p.laps).toBe(1);
+    p.play();
+    tick(4100);
+    expect(p.isPlaying).toBe(false);
+    expect(p.currentTime).toBe(4);
+    expect(p.lap).toBe(0);
+  });
+
+  it('成片比剪后长：源片放完回到第一个保留帧接着放，lap 递增、postTime 跨遍累加，到成片时长停', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 4;
+    p.remove = [[0, 1]]; // 剪后 3 秒
+    p.setOutputDuration(7.5); // 3 遍：3 + 3 + 1.5
+    expect(p.laps).toBe(3);
+    const laps: number[] = [];
+    p.subscribe((_t, _playing, lap) => laps.push(lap));
+    p.play();
+    expect(p.currentTime).toBe(1); // 跳过开头的删除区间
+    tick(2000);
+    expect(p.lap).toBe(0);
+    expect(p.postTime).toBeCloseTo(2);
+    tick(1500); // 源片到尾 → 第 1 遍
+    expect(p.isPlaying).toBe(true);
+    expect(p.lap).toBe(1);
+    expect(p.currentTime).toBe(1);
+    expect(p.postTime).toBeCloseTo(3);
+    tick(500);
+    expect(p.postTime).toBeCloseTo(3.5);
+    tick(3000); // → 第 2 遍
+    expect(p.lap).toBe(2);
+    tick(2000); // 成片时刻 7.5 → 停
+    expect(p.isPlaying).toBe(false);
+    expect(p.lap).toBe(2);
+    expect(p.postTime).toBeCloseTo(7.5);
+    expect(laps).toContain(1);
+    expect(laps).toContain(2);
+  });
+
+  it('成片比剪后短：在成片时长处截断', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 10;
+    p.setOutputDuration(2.5);
+    expect(p.laps).toBe(1);
+    p.play();
+    tick(3000);
+    expect(p.isPlaying).toBe(false);
+    expect(p.currentTime).toBeCloseTo(2.5);
+  });
+
+  it('seek 可指定遍数并夹到范围内；缺省保持当前遍；封面段只属于第 0 遍', () => {
+    manualFrames();
+    const p = new Player();
+    p.duration = 4;
+    p.setOutputDuration(10);
+    expect(p.laps).toBe(3);
+    p.seek(2, 1);
+    expect(p.lap).toBe(1);
+    expect(p.postTime).toBeCloseTo(6);
+    p.seek(3);
+    expect(p.lap).toBe(1);
+    p.seek(1, 9);
+    expect(p.lap).toBe(2);
+    p.setPreroll(1);
+    p.seek(-0.5);
+    expect(p.lap).toBe(0);
+    // 成片时长变短、遍数变少：播放头夹回最后一遍
+    p.seek(1, 2);
+    p.setOutputDuration(5);
+    expect(p.lap).toBe(1);
+    p.setOutputDuration(null);
+    expect(p.lap).toBe(0);
+    expect(p.laps).toBe(1);
+  });
+
+  it('停在成片末尾再按播放从第 0 遍的开头（有封面就从封面）重来；停在源片尾但还有下一遍时接着放下一遍', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 4;
+    p.setOutputDuration(8);
+    p.seek(4, 1);
+    p.play();
+    expect(p.lap).toBe(0);
+    expect(p.currentTime).toBe(0);
+    p.pause();
+    p.seek(4, 0);
+    p.play();
+    expect(p.lap).toBe(1);
+    expect(p.currentTime).toBe(0);
+    tick(100);
+    expect(p.isPlaying).toBe(true);
+    p.pause();
+  });
+
+  it('挂着 <video> 时：ended 事件换遍并让元素从开头重播；seek 落地前不把片尾当成下一次到尾', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    v.dispatchEvent(new Event('loadedmetadata')); // duration 10
+    p.setOutputDuration(25);
+    expect(p.laps).toBe(3);
+    p.play();
+    v.currentTime = 10;
+    v.dispatchEvent(new Event('ended'));
+    expect(p.lap).toBe(1);
+    expect(p.isPlaying).toBe(true);
+    expect(v.play).toHaveBeenCalledTimes(2);
+    // 元素还没 seek 回去（仍报 10）：这几帧不能再跳一遍
+    tick(16);
+    tick(16);
+    expect(p.lap).toBe(1);
+    expect(p.currentTime).toBe(0);
+    v.currentTime = 0.5;
+    tick(16);
+    expect(p.currentTime).toBe(0.5);
+    // 最后一遍到尾：停
+    p.seek(10, 2);
+    v.dispatchEvent(new Event('ended'));
+    expect(p.isPlaying).toBe(false);
+  });
+
+  it('倒放跨遍：从第 1 遍开头倒回第 0 遍的片尾', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.duration = 4;
+    p.setOutputDuration(8);
+    p.seek(0.2, 1);
+    p.shuttle(-1);
+    tick(500);
+    expect(p.lap).toBe(0);
+    expect(p.currentTime).toBeGreaterThan(3.5);
+    p.pause();
+  });
+});

@@ -187,6 +187,8 @@ const LOCALIZE_OPTIONS: LocalizeOptions = {
     { code: 'ko', label: '韩语' },
   ],
   target_langs: [
+    // 中文放第一位：大字报（HIG-50）朗读缺省取它
+    { code: 'zh', label: '中文', voices: [{ id: 'longanyang', label: '中文女声 安阳' }, { id: 'longxiaochun_v2', label: '中文女声 小春' }] },
     { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: '韩语女声 Kyong' }, { id: 'loongjihun_v3', label: '韩语男声 Jihun' }] },
     { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: '日语女声 Tomoka' }] },
     { code: 'en', label: '英语', voices: [{ id: 'loongstella_v3', label: '英语女声 Stella' }, { id: 'loongbella_v3', label: '英语女声 Bella' }] },

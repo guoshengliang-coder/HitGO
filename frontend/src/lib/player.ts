@@ -4,10 +4,13 @@
 // 走到 0 时再让正片开始播；封面画面 / 声音由 Stage 按 time + preroll 自己对齐。
 // 倍速（HIG-30 J/K/L）：rate > 1 时 <video> 与音轨按 playbackRate 快放；rate < 0 为倒放，
 // 由合成时钟往回走、逐帧 seek 画面，这时各媒体元素按「暂停对齐」处理（mediaRate = 0）。
+// 成片时长 trim.duration（HIG-50）比剪后时长长时，保留段循环补足：源片放完回到第一个保留帧接着放，
+// 用 lap（第几遍，0 起）记着；time 仍是源时间，成片时刻 = lap × 剪后时长 + 剪后时刻（postTime）。
+// 封面只在第 0 遍前面；成片时刻走到 trim.duration 就停（短于剪后时长时也在那里截断）。
 
-import { removedRangeAt, skipRemoved, type Range } from './time';
+import { lapsFor, postTimeOf, postToSource, postTrimDuration, removedRangeAt, skipRemoved, sourceToPost, type Range } from './time';
 
-type Listener = (t: number, playing: boolean) => void;
+type Listener = (t: number, playing: boolean, lap: number) => void;
 type FrameListener = () => void;
 
 export class Player {
@@ -24,6 +27,12 @@ export class Player {
   remove: Range[] = [];
   /** 封面时长（秒）；0 = 没有封面。用 setPreroll 改，保证播放头不落在封面之外。 */
   private prerollSec = 0;
+  /** 成片正片时长（秒）；null = 跟剪后时长一样（不循环、不截断）。用 setOutputDuration 改。 */
+  private outputSec: number | null = null;
+  /** 当前放到第几遍（0 起）；只有成片比剪后长时才会 > 0。 */
+  private lapValue = 0;
+  /** 换遍后让 <video> 回到开头的 seek 还没完成：元素这时仍报片尾，读了会连跳好几遍。 */
+  private lapSeekPending = false;
 
   private onLoadedMetadata = () => {
     const v = this.video;
@@ -39,8 +48,10 @@ export class Player {
     this.emit();
   };
 
+  /** <video> 自己播到尾：还有下一遍就接着放，否则停。rAF 那边也会检查，这里先到就先处理。 */
   private onEnded = () => {
-    this.pause();
+    if (!this.playing || this.rateValue < 0) return;
+    if (!this.advanceLap()) this.pause();
   };
 
   /** 当前元素有了新的可绘制帧（首帧解码完 / 跳转完成）。只挂在当前元素上，换元素时随 detach 解绑。 */
@@ -103,11 +114,67 @@ export class Player {
   }
 
   private emit() {
-    for (const l of this.listeners) l(this.time, this.playing);
+    for (const l of this.listeners) l(this.time, this.playing, this.lapValue);
   }
 
   get currentTime() {
     return this.time;
+  }
+
+  get lap() {
+    return this.lapValue;
+  }
+
+  get outputDuration() {
+    return this.outputSec;
+  }
+
+  /** 剪后时长（保留段总长）。 */
+  get postLength() {
+    return postTrimDuration(this.duration, this.remove);
+  }
+
+  /** 保留段要放几遍。 */
+  get laps() {
+    return lapsFor(this.outputSec, this.postLength);
+  }
+
+  /** 播放头的成片时刻（剪后时间轴，跨遍累加）；封面段里为 0。 */
+  get postTime() {
+    return postTimeOf(this.lapValue, this.postLength, sourceToPost(Math.max(0, this.time), this.remove));
+  }
+
+  /** 设成片时长（null = 跟剪后时长）；遍数变少时把落在后面的播放头夹回最后一遍。 */
+  setOutputDuration(sec: number | null) {
+    const next = typeof sec === 'number' && Number.isFinite(sec) && sec > 0 ? sec : null;
+    if (next === this.outputSec) return;
+    this.outputSec = next;
+    const maxLap = this.laps - 1;
+    if (this.lapValue > maxLap) this.seek(this.time, maxLap);
+    else this.emit();
+  }
+
+  /** 成片是否已经放到头：设了成片时长按成片时刻算，否则按源片尾。 */
+  private atOutputEnd(sourceTime = this.time): boolean {
+    if (this.outputSec !== null) return postTimeOf(this.lapValue, this.postLength, sourceToPost(Math.max(0, sourceTime), this.remove)) >= this.outputSec - 0.01;
+    return sourceTime >= this.duration - 0.01;
+  }
+
+  /** 源片放完：还有下一遍就回到第一个保留帧接着放（返回 true）；没有了返回 false，由调用方停下。 */
+  private advanceLap(): boolean {
+    if (this.lapValue + 1 >= this.laps) return false;
+    this.lapValue += 1;
+    this.time = skipRemoved(0, this.remove);
+    if (this.video && !this.synthetic) {
+      this.lapSeekPending = true;
+      try {
+        this.video.currentTime = this.time;
+      } catch {
+        /* ignore */
+      }
+      this.playVideo();
+    }
+    return true;
   }
 
   get preroll() {
@@ -167,10 +234,14 @@ export class Player {
     this.emit();
   }
 
-  seek(t: number) {
+  /** 定位到源时刻 t；lap 指定第几遍（缺省保持当前遍），封面段（t < 0）只属于第 0 遍。 */
+  seek(t: number, lap?: number) {
     const lo = this.prerollSec > 0 ? -this.prerollSec : 0; // 不写成 -0，免得 -0 流进 store
     const clamped = Math.max(lo, Math.min(this.duration || t, t));
     this.time = clamped;
+    this.lapSeekPending = false;
+    if (lap !== undefined) this.lapValue = Math.max(0, Math.min(this.laps - 1, Math.floor(lap)));
+    if (clamped < 0) this.lapValue = 0;
     if (this.video && !this.synthetic) {
       // 封面段里正片停在第 0 帧，等播放头走到 0 再接上
       if (clamped < 0 && this.playing) this.video.pause();
@@ -197,9 +268,11 @@ export class Player {
     this.applyRate();
     if (rate > 0) {
       const start = skipRemoved(this.time, this.remove);
-      // 播到头再按播放：从成片开头（有封面就从封面）重来
-      if (start >= this.duration - 0.01) this.seek(this.prerollSec > 0 ? -this.prerollSec : 0);
-      else if (start !== this.time) this.seek(start);
+      // 播到头再按播放：从成片开头（有封面就从封面）重来；源片到尾但还有下一遍就接着放下一遍
+      if (this.atOutputEnd(start)) this.seek(this.prerollSec > 0 ? -this.prerollSec : 0, 0);
+      else if (start >= this.duration - 0.01) {
+        if (!this.advanceLap()) this.seek(this.prerollSec > 0 ? -this.prerollSec : 0, 0);
+      } else if (start !== this.time) this.seek(start);
     }
     this.playing = true;
     if (this.time >= 0 && rate > 0) this.playVideo();
@@ -247,7 +320,13 @@ export class Player {
         this.playVideo();
       }
     } else if (this.video && !this.synthetic) {
-      this.time = this.video.currentTime;
+      const vt = this.video.currentTime;
+      if (this.lapSeekPending && vt >= this.duration - 0.05) {
+        // 换遍的 seek 还没落地：这一帧沿用上次的位置
+      } else {
+        this.lapSeekPending = false;
+        this.time = vt;
+      }
     } else {
       this.time += dt * this.rateValue;
     }
@@ -256,19 +335,39 @@ export class Player {
       this.time = skipped;
       if (this.video && !this.synthetic) this.video.currentTime = skipped;
     }
-    if (this.time >= this.duration && this.duration > 0) {
-      this.time = this.duration;
+    if (this.outputSec !== null && this.atOutputEnd() && this.time >= 0) {
+      // 成片时刻走到 trim.duration：停在那一帧（短于剪后时长时就是截断点）
+      this.time = Math.min(this.duration || this.time, postToSource(Math.max(0, this.outputSec - this.lapValue * this.postLength), this.remove));
+      if (this.video && !this.synthetic) {
+        try {
+          this.video.currentTime = this.time;
+        } catch {
+          /* ignore */
+        }
+      }
       this.pause();
       return;
+    }
+    if (this.time >= this.duration && this.duration > 0) {
+      // 源片到尾：还有下一遍就回到开头接着放
+      if (!this.advanceLap()) {
+        this.time = this.duration;
+        this.pause();
+        return;
+      }
     }
     this.emit();
     this.raf = requestAnimationFrame(this.loop);
   };
 
-  /** 倒放一帧：往回走，落进删除区间就跳到区间起点之前，走到开头停下。 */
+  /** 倒放一帧：往回走，落进删除区间就跳到区间起点之前；不是第 0 遍时退回上一遍的片尾，走到开头停下。 */
   private reverseStep(dt: number) {
     const lo = this.prerollSec > 0 ? -this.prerollSec : 0;
     let t = this.time + dt * this.rateValue;
+    if (t <= 0 && this.lapValue > 0) {
+      this.lapValue -= 1;
+      t = this.duration - 1e-3;
+    }
     for (let i = 0; i < 8; i++) {
       const r = t >= 0 ? removedRangeAt(t, this.remove) : null;
       if (!r) break;
@@ -293,6 +392,8 @@ export class Player {
 
   destroy() {
     this.pause();
+    this.lapValue = 0;
+    this.outputSec = null;
     this.listeners.clear();
     this.frameListeners.clear();
     this.detach();

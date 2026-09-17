@@ -7,7 +7,6 @@
 import { useEffect, useRef } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
-import { sourceToPost } from '../../lib/time';
 import { resolveTrack, trackGain, trackMediaTime } from '../../lib/audioTracks';
 import { isAssetReady, type AudioTrack } from '../../types';
 
@@ -51,8 +50,9 @@ function TrackAudio({ track }: { track: AudioTrack }) {
     };
     // 封面段（t < 0）不放 BGM / 口播：按暂停对齐（契约 §2 cover）
     // 倒放（mediaRate = 0）按暂停对齐（HIG-30）
-    sync(sourceToPost(player.currentTime, player.remove), player.mediaRate > 0 && player.currentTime >= 0, player.currentTime);
-    const unsub = player.subscribe((t) => sync(sourceToPost(t, player.remove), player.mediaRate > 0 && t >= 0, t));
+    // 成片时刻跨遍累加（HIG-50 循环补足）：朗读轨排到源片之后也能接着放
+    sync(player.postTime, player.mediaRate > 0 && player.currentTime >= 0, player.currentTime);
+    const unsub = player.subscribe((t) => sync(player.postTime, player.mediaRate > 0 && t >= 0, t));
     return () => {
       unsub();
       el.pause();

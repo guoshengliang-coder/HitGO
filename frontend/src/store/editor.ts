@@ -7,19 +7,21 @@
 
 import { create } from 'zustand';
 import { api, ApiError, type ApplyLayerMode } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, TextLayer, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
-import { emptySpec, isAssetReady } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
+import { defaultTextStyle, emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
-import { normalizeRanges, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
+import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { nudgePlacement, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, type Step } from '../lib/steps';
-import { bakeTextLayer, bakeTextLayerVariants } from '../lib/textImage';
+import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
@@ -100,6 +102,10 @@ export interface EditorState {
   selectedLayerId: string | null;
   time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
+  /** 播放到第几遍（0 起，HIG-50 循环补足）；镜像 player.lap。成片时刻 = lap × 剪后时长 + 剪后时刻，见 usePostTime。 */
+  lap: number;
+  /** 大字报（HIG-50）：正在合成的朗读素材 id（就绪后自动加为口播轨）；null = 没在合成。 */
+  posterVoicePending: string | null;
   saveState: SaveState;
   saveError: string | null;
   /** 剪辑模块里正在调整 9:16 输出的裁切窗口（中栏换成 CropEditor） */
@@ -159,6 +165,8 @@ export interface EditorState {
   setSelectedLayer: (id: string | null) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
+  /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
+  setPlayhead: (t: number, playing: boolean, lap: number) => void;
   setCropEditing: (on: boolean) => void;
   setPreviewVariant: (key: VariantKey) => void;
   setToast: (m: string | null, action?: ToastAction | null) => void;
@@ -289,6 +297,33 @@ export interface EditorState {
   setCoverDuration: (sec: number, history?: boolean) => void;
   clearCover: () => void;
 
+  // 大字报（契约 §2 scroll / trim.duration，HIG-50）
+  /**
+   * 加一个滚动文案图层并选中：裁切框取当前安全区的内安全框（没有就用通用竖版缺省），
+   * 样式用新建文字的缺省再调成大字报的字号 / 行距，按框宽自动折行。返回图层 id；没有当前视频时 null。
+   */
+  addPosterLayer: (text?: string) => string | null;
+  /** 当前视频的第一个滚动文字图层；没有时 null。 */
+  posterLayer: () => TextLayer | null;
+  /** 改滚动参数（合并进 layer.scroll，缺省值补齐）；改框时宽度与折行宽跟着框宽走，之后重算成片时长。 */
+  setScroll: (id: string, patch: Partial<TextScroll>, history?: boolean) => void;
+  /** 改文案：上色区间随文字平移（与属性面板一致）；PNG 重新渲染后按新高度重算成片时长。 */
+  setPosterText: (id: string, text: string, history?: boolean) => void;
+  /** 把滚动图层的预览 PNG 尺寸写进 image_size（不记历史）并重算成片时长；画布渲染完和改文案 / 改框后都调它。 */
+  syncPosterLayer: (id: string) => Promise<void>;
+  /**
+   * 生成朗读（POST /api/tts）：素材进 assets 并轮询，就绪后替换掉当前视频里已有的朗读轨（tts 派生素材）、
+   * 加为口播轨（从 0 起播到素材结束），再重算成片时长。返回素材 id；请求失败 toast 原因（含 503 的 detail）并返回 null。
+   */
+  generateVoice: (text: string, lang: string, voice: string, speechRate?: number) => Promise<string | null>;
+  /** 让后端挑重点词组并上色（并入已有区间，记一步历史）；失败 toast 并返回 false。 */
+  autoHighlight: (id: string) => Promise<boolean>;
+  /**
+   * 按滚动全程与朗读时长把 trim.duration 写成 posterDuration（不记历史，只在变了时写）；
+   * 没有滚动图层也没有口播轨时清掉。滚动图层还没渲染出 PNG（算不出时长）时保持原值。
+   */
+  syncPosterDuration: () => void;
+
   // 画面（唯一的 9:16 输出）
   /** 改某个画幅的输出设置（缺省 = previewVariantKey）；spec 里还没有这个画幅时先按缺省补上。 */
   patchOutput: (patch: Partial<OutputVariant>, key?: VariantKey) => void;
@@ -335,6 +370,8 @@ const PER_BATCH_INITIAL = {
   inPoint: null,
   time: 0,
   playing: false,
+  lap: 0,
+  posterVoicePending: null,
   saveState: 'idle',
   saveError: null,
   cropEditing: false,
@@ -361,6 +398,10 @@ const saveTimers: Record<string, number> = {};
 let pollTimer: number | null = null;
 let assetPollTimer: number | null = null;
 let videoPollTimer: number | null = null;
+/** 轮询到素材不再 preparing 时的回调（store 创建时赋值）：大字报的朗读素材就绪后自动加轨（HIG-50）。 */
+let onAssetSettled: (asset: Asset) => void = () => {};
+/** 发起朗读合成时的视频 id：就绪后加到它上面（期间可能换了视频）。 */
+let posterVoiceVideoId: string | null = null;
 
 /**
  * 视频贴纸是异步预处理的：preparing 期间没有尺寸也没有预览代理，画布画不出来。
@@ -378,6 +419,7 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
     if (updated.length) {
       const byId = new Map(updated.map((a) => [a.id, a]));
       set((s) => ({ assets: s.assets.map((a) => byId.get(a.id) ?? a) }));
+      for (const a of updated) if ((a.status ?? 'ready') !== 'preparing') onAssetSettled(a);
     }
     if (get().assets.some((a) => (a.status ?? 'ready') === 'preparing')) {
       assetPollTimer = window.setTimeout(tick, 2000);
@@ -463,7 +505,8 @@ export const useEditor = create<EditorState>((set, get) => {
     const spec = get().currentSpec();
     if (!v || !spec) return null;
     const remove = spec.trim.remove;
-    return { spec, p: sourceToPost(Math.max(0, get().time), remove), postDuration: postTrimDuration(v.duration, remove) };
+    // 成片时刻跨遍累加（HIG-50 循环补足）；时长按成片时长，音轨可以排到循环补足的那段里
+    return { spec, p: postTimeOf(get().lap, postTrimDuration(v.duration, remove), sourceToPost(Math.max(0, get().time), remove)), postDuration: outputDuration(v.duration, spec.trim) };
   };
   const splitAt = (id: string) => {
     const ctx = playheadPost();
@@ -582,7 +625,36 @@ export const useEditor = create<EditorState>((set, get) => {
     }
     player.pause();
     player.setPreroll(0); // 封面时长是 player 的跨视频状态，不清会带进新任务的播放头计算
+    player.setOutputDuration(null); // 成片时长同理（HIG-50）
     set({ ...PER_BATCH_INITIAL });
+  };
+
+  // 朗读素材就绪 / 失败（HIG-50）：替换掉那条视频里已有的朗读轨，加为口播轨；期间换了视频也加到发起时的那条上
+  onAssetSettled = (asset) => {
+    if (asset.id !== get().posterVoicePending) return;
+    const videoId = posterVoiceVideoId;
+    posterVoiceVideoId = null;
+    set({ posterVoicePending: null });
+    if ((asset.status ?? 'ready') !== 'ready') {
+      get().setToast(`朗读生成失败：${asset.error ?? '未知原因'}`);
+      return;
+    }
+    if (!videoId || !get().videos.some((v) => v.id === videoId)) return;
+    const id = newTrackId();
+    const assets = get().assets;
+    get().updateSpec(
+      (spec) => {
+        const audio = ensureAudio(spec);
+        audio.tracks = audio.tracks.filter((t) => assets.find((a) => a.id === t.asset_id)?.derived_from?.stem !== 'tts');
+        audio.tracks.push(voiceTrack(id, asset.id, asset.duration ?? 0));
+      },
+      { videoId },
+    );
+    if (videoId === get().currentVideoId) {
+      set({ selectedTrackId: id });
+      get().syncPosterDuration();
+    }
+    get().setToast('朗读已生成，已加为口播轨');
   };
 
   return {
@@ -737,7 +809,7 @@ export const useEditor = create<EditorState>((set, get) => {
           lastApply: s.lastApply && s.lastApply.targetIds.some((id) => gone.has(id)) ? null : s.lastApply,
           layerClipboardVideoId: s.layerClipboardVideoId && gone.has(s.layerClipboardVideoId) ? null : s.layerClipboardVideoId,
           ...(nextId !== s.currentVideoId
-            ? { currentVideoId: nextId, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null }
+            ? { currentVideoId: nextId, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null }
             : {}),
         });
       }
@@ -834,7 +906,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -848,6 +920,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
+    setPlayhead: (time, playing, lap) => set({ time, playing, lap }),
     setCropEditing: (cropEditing) => set({ cropEditing }),
     setPreviewVariant: (previewVariantKey) => set({ previewVariantKey }),
     setToast: (toast, action) => set({ toast, toastAction: toast ? action ?? null : null }),
@@ -1072,6 +1145,7 @@ export const useEditor = create<EditorState>((set, get) => {
         if (t.hidden) delete t.hidden;
         else t.hidden = true;
       });
+      get().syncPosterDuration(); // 关掉的可能是朗读轨（HIG-50）：隐藏的不算进成片时长
     },
     toggleSourceHidden: () => {
       get().updateSpec((spec) => {
@@ -1104,6 +1178,7 @@ export const useEditor = create<EditorState>((set, get) => {
         if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
       });
       if (get().selectedTrackId === id) set({ selectedTrackId: null });
+      get().syncPosterDuration(); // 删掉的可能是朗读轨（HIG-50）
     },
     splitAudioTrack: (id) => {
       const parts = splitAt(id);
@@ -1124,7 +1199,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
-      const postDuration = postTrimDuration(v.duration, spec.trim.remove);
+      const postDuration = outputDuration(v.duration, spec.trim);
       const lo = Math.min(a, b);
       const hi = Math.max(a, b);
       if (hi - lo < 0.05) return;
@@ -1139,7 +1214,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
-      const postDuration = postTrimDuration(v.duration, spec.trim.remove);
+      const postDuration = outputDuration(v.duration, spec.trim);
       get().updateSpec((sp) => {
         const audio = ensureAudio(sp);
         const rest = (audio.source_mute ?? []).filter((_, i) => i !== index);
@@ -1280,6 +1355,140 @@ export const useEditor = create<EditorState>((set, get) => {
       return true;
     },
 
+    addPosterLayer: (text) => {
+      if (!get().currentVideo()) return null;
+      const s = get();
+      const inner = s.safeZones.find((z) => z.key === s.safeZoneKey)?.inner;
+      const box: ScrollBox = inner && inner.w > 0 && inner.h > 0 ? { x: inner.x, y: inner.y, w: inner.w, h: inner.h } : DEFAULT_SCROLL_BOX;
+      // 大字报：比标题小一号、行距松一点，白字黑边（描边沿用缺省）
+      const style: TextStyle = { ...defaultTextStyle(), font_size: 0.045, align: 'center', line_height: 1.4, color: '#FFFFFF' };
+      const layer = newPosterLayer(newLayerId(), text ?? '', box, style);
+      get().addLayer(layer);
+      void get().syncPosterLayer(layer.id);
+      return layer.id;
+    },
+    posterLayer: () => {
+      const l = get().currentSpec()?.layers.find((x): x is TextLayer => x.type === 'text' && !!x.scroll);
+      return l ?? null;
+    },
+    setScroll: (id, patch, history = true) => {
+      const cur = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!cur || cur.type !== 'text') return;
+      get().updateLayer(
+        id,
+        (l) => {
+          if (l.type !== 'text') return;
+          l.scroll = { ...resolveScroll(l.scroll), ...patch };
+          if (patch.box) {
+            // 折行宽和图层宽都跟框宽走：PNG 正好填满框，后端也按 min(width, box.w) 缩放
+            l.style = { ...l.style, wrap_width: patch.box.w };
+            l.width = patch.box.w;
+            l.width_manual = true;
+          }
+        },
+        history,
+      );
+      if (patch.box) void get().syncPosterLayer(id);
+      else get().syncPosterDuration();
+    },
+    setPosterText: (id, text, history = true) => {
+      const cur = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!cur || cur.type !== 'text' || cur.text === text) return;
+      get().updateLayer(
+        id,
+        (l) => {
+          if (l.type !== 'text') return;
+          const moved = adjustSpans(l.spans, l.text, text);
+          if (moved.length) l.spans = moved;
+          else delete l.spans;
+          l.text = text;
+        },
+        history,
+      );
+      void get().syncPosterLayer(id);
+    },
+    syncPosterLayer: async (id) => {
+      const videoId = get().currentVideoId;
+      const layer = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!videoId || !layer || layer.type !== 'text' || !layer.scroll) return;
+      let size: [number, number] | null = null;
+      try {
+        const r = await ensureTextRendered(layer);
+        size = [r.width, r.height];
+      } catch {
+        /* 渲染不了（字体 / canvas 出错）：时长按已有的 image_size 算 */
+      }
+      // 渲染是异步的：回来时图层可能已经又改了（文字变了就等下一次），或者换了视频
+      const now = get().specs[videoId]?.layers.find((l) => l.id === id);
+      if (!now || now.type !== 'text' || !now.scroll) return;
+      if (size && (!now.image_size || now.image_size[0] !== size[0] || now.image_size[1] !== size[1])) {
+        const sz = size;
+        get().updateSpec(
+          (spec) => {
+            const l = spec.layers.find((x) => x.id === id);
+            if (l && l.type === 'text') l.image_size = sz;
+          },
+          { history: false, videoId },
+        );
+      }
+      if (videoId === get().currentVideoId) get().syncPosterDuration();
+    },
+    generateVoice: async (text, lang, voice, speechRate = 1) => {
+      const videoId = get().currentVideoId;
+      if (!videoId) return null;
+      let asset: Asset;
+      try {
+        asset = await api.synthesizeTts({ text, lang, voice, ...(speechRate !== 1 ? { speech_rate: speechRate } : {}) });
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : `朗读生成失败：${e instanceof Error ? e.message : String(e)}`);
+        return null;
+      }
+      set((s) => ({ assets: [...s.assets.filter((a) => a.id !== asset.id), asset], posterVoicePending: asset.id }));
+      posterVoiceVideoId = videoId;
+      if ((asset.status ?? 'ready') === 'preparing') pollPreparingAssets(set, get);
+      else onAssetSettled(asset);
+      return asset.id;
+    },
+    autoHighlight: async (id) => {
+      const layer = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (!layer || layer.type !== 'text') return false;
+      if (!layer.text.trim()) {
+        get().setToast('先输入文案再挑重点');
+        return false;
+      }
+      try {
+        const out = await api.highlight(layer.text);
+        const now = get().currentSpec()?.layers.find((l) => l.id === id);
+        if (!now || now.type !== 'text' || now.text !== layer.text) return false; // 等待期间文案改了：结果对不上号
+        if (!out.phrases.length) {
+          get().setToast('没有挑出重点词组');
+          return true;
+        }
+        get().updateLayer(id, { spans: highlightSpans(out.phrases, now.spans, now.text.length) });
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : `挑重点失败：${e instanceof Error ? e.message : String(e)}`);
+        return false;
+      }
+    },
+    syncPosterDuration: () => {
+      const spec = get().currentSpec();
+      if (!spec) return;
+      const d = posterDuration(spec, get().assets);
+      const cur = typeof spec.trim.duration === 'number' && spec.trim.duration > 0 ? spec.trim.duration : null;
+      // 有滚动图层 / 口播轨但暂时算不出（PNG 还没渲染、朗读素材还没就绪）：保持原值，别来回清
+      const hasCandidate = spec.layers.some((l) => l.type === 'text' && !!l.scroll && !l.hidden) || (spec.audio?.tracks ?? []).some((t) => t.role === 'voice' && !t.hidden);
+      const next = d ?? (hasCandidate ? cur : null);
+      if (next === cur) return;
+      get().updateSpec(
+        (s) => {
+          if (next === null) delete s.trim.duration;
+          else s.trim.duration = next;
+        },
+        { history: false },
+      );
+    },
+
     setCover: (assetId) => {
       const asset = get().assets.find((a) => a.id === assetId);
       if (!isCoverAsset(asset) || !isAssetReady(asset)) return;
@@ -1327,12 +1536,15 @@ export const useEditor = create<EditorState>((set, get) => {
         },
         { history },
       );
+      // 眼睛开关（HIG-33）碰到滚动文案（HIG-50）：隐藏的不算进成片时长
+      if (typeof patch === 'object' && 'hidden' in patch) get().syncPosterDuration();
     },
     removeLayer: (id) => {
       get().updateSpec((spec) => {
         spec.layers = spec.layers.filter((l) => l.id !== id);
       });
       if (get().selectedLayerId === id) set({ selectedLayerId: null });
+      get().syncPosterDuration(); // 删掉的可能是滚动文案（HIG-50）
     },
     moveLayer: (id, dir) => {
       const layers = get().currentSpec()?.layers ?? [];
@@ -1634,13 +1846,15 @@ export const useEditor = create<EditorState>((set, get) => {
 });
 
 // ---- 派生选择器 ----
+/** 成片正片时长：trim.duration（HIG-50）优先，否则剪后时长。图层 / 音轨的时段可以排到这么长。 */
+export function selectPostDuration(s: EditorState): number {
+  const v = s.videos.find((x) => x.id === s.currentVideoId);
+  const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
+  if (!v) return 0;
+  return outputDuration(v.duration, spec?.trim ?? { remove: [] });
+}
 export function usePostDuration(): number {
-  return useEditor((s) => {
-    const v = s.videos.find((x) => x.id === s.currentVideoId);
-    const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
-    if (!v) return 0;
-    return postTrimDuration(v.duration, spec?.trim.remove ?? []);
-  });
+  return useEditor(selectPostDuration);
 }
 
 /** 当前视频封面在成片里占的秒数（0 = 没有封面或封面不可用），与 worker 同一套判断。 */
@@ -1653,9 +1867,13 @@ export function useInCover(): boolean {
   return useEditor((s) => s.time < 0);
 }
 
+/** 播放头的成片时刻（剪后时间轴）：循环补足（HIG-50）时跨遍累加。 */
+export function selectPostTime(s: EditorState): number {
+  const v = s.videos.find((x) => x.id === s.currentVideoId);
+  const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
+  const remove = spec?.trim.remove ?? [];
+  return postTimeOf(s.lap, postTrimDuration(v?.duration ?? 0, remove), sourceToPost(s.time, remove));
+}
 export function usePostTime(): number {
-  return useEditor((s) => {
-    const spec = s.currentVideoId ? s.specs[s.currentVideoId] : null;
-    return sourceToPost(s.time, spec?.trim.remove ?? []);
-  });
+  return useEditor(selectPostTime);
 }

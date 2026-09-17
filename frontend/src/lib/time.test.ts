@@ -4,13 +4,17 @@ import {
   formatTimecode,
   frameDuration,
   keepSegments,
+  lapsFor,
   normalizeRanges,
+  outputDuration,
   postToSource,
   postTrimDuration,
   removedRangeAt,
   skipRemoved,
   sourceRangeToPost,
   sourceToPost,
+  postTimeOf,
+  splitPostTime,
   windowContains,
   wouldRemoveAll,
 } from './time';
@@ -169,5 +173,36 @@ describe('frameDuration / formatTimecode', () => {
   it('fps 缺省按 30', () => {
     expect(formatTimecode(30.1)).toBe('00:00:30:03');
     expect(formatTimecode(30.1, 0)).toBe('00:00:30:03');
+  });
+});
+
+// 成片时长与循环补足（HIG-50）：成片比剪后长时，保留段放几遍、第几遍里的剪后时刻怎么换算
+describe('outputDuration / lapsFor / postTimeOf / splitPostTime', () => {
+  it('outputDuration：trim.duration 正数时优先，否则剪后时长', () => {
+    expect(outputDuration(10, { remove: [[2, 4]] })).toBe(8);
+    expect(outputDuration(10, { remove: [[2, 4]], duration: null })).toBe(8);
+    expect(outputDuration(10, { remove: [[2, 4]], duration: 0 })).toBe(8);
+    expect(outputDuration(10, { remove: [[2, 4]], duration: 20.5 })).toBe(20.5);
+    expect(outputDuration(10, { remove: [], duration: 3 })).toBe(3);
+  });
+
+  it('lapsFor：没设 / 不长于剪后时长 → 1 遍；长于时向上取整', () => {
+    expect(lapsFor(null, 8)).toBe(1);
+    expect(lapsFor(8, 8)).toBe(1);
+    expect(lapsFor(3, 8)).toBe(1);
+    expect(lapsFor(8.5, 8)).toBe(2);
+    expect(lapsFor(16, 8)).toBe(2);
+    expect(lapsFor(16.01, 8)).toBe(3);
+    expect(lapsFor(16, 0)).toBe(1);
+  });
+
+  it('postTimeOf / splitPostTime 互为逆运算，越界的遍数夹到最后一遍', () => {
+    expect(postTimeOf(0, 8, 3)).toBe(3);
+    expect(postTimeOf(2, 8, 3)).toBe(19);
+    expect(splitPostTime(19, 8, 3)).toEqual({ lap: 2, rem: 3 });
+    expect(splitPostTime(8, 8, 3)).toEqual({ lap: 1, rem: 0 });
+    expect(splitPostTime(30, 8, 3)).toEqual({ lap: 2, rem: 14 });
+    expect(splitPostTime(5, 8, 1)).toEqual({ lap: 0, rem: 5 });
+    expect(splitPostTime(-1, 8, 2)).toEqual({ lap: 0, rem: 0 });
   });
 });
