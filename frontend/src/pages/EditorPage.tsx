@@ -5,6 +5,7 @@ import { player } from '../lib/player';
 import { layerTypeForStep } from '../lib/steps';
 import { frameDuration, postToSource, sourceToPost } from '../lib/time';
 import { SOURCE_TRACK_ID } from '../lib/audioTracks';
+import { clipDisplayGroups, clipWindows, removeClipGroup, splitClip } from '../lib/sequence';
 import { adjacentCutPoint, cutPoints, nextShuttleRate, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
 import { TopBar } from '../components/editor/TopBar';
 import { VideoList } from '../components/editor/VideoList';
@@ -12,7 +13,6 @@ import { Stage } from '../components/editor/Stage';
 import { QuickBar } from '../components/editor/QuickBar';
 import { Transport } from '../components/editor/Transport';
 import { Timeline } from '../components/editor/Timeline';
-import { SequenceTimeline } from '../components/editor/SequenceTimeline';
 import { TrimPanel } from '../components/editor/TrimPanel';
 import { AudioPanel } from '../components/editor/AudioPanel';
 import { TextPanel } from '../components/editor/TextPanel';
@@ -46,6 +46,10 @@ function cutPointTarget(dir: 1 | -1): number | null {
   const remove = spec?.trim.remove ?? [];
   const now = Math.max(0, player.currentTime);
   const layerEdges = (spec?.layers ?? []).flatMap((l) => (l.t === 'all' ? [] : l.t));
+  if (spec?.sequence) {
+    const edges = clipWindows(spec.sequence).flatMap((w) => [w.start, w.end]);
+    return adjacentCutPoint(cutPoints(duration, [], [...edges, ...layerEdges]), now, dir);
+  }
   if (s.step === 'trim') {
     const pts = cutPoints(duration, remove, [...(s.inPoint !== null ? [s.inPoint] : []), ...layerEdges.map((x) => postToSource(x, remove))]);
     return adjacentCutPoint(pts, now, dir);
@@ -169,7 +173,29 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
 
   // ---- 当前步骤的单键 ----
   if (s.step === 'trim') {
-    switch (e.code) {
+    const sequence = s.currentSpec()?.sequence;
+    if (sequence) {
+      const currentId = s.currentVideoId;
+      const spec = s.currentSpec();
+      const selectedId = s.selectedClipId;
+      if (currentId && spec && selectedId) switch (e.code) {
+        case 'KeyS': {
+          const next = splitClip(spec, selectedId, s.time);
+          if (next) { e.preventDefault(); s.replaceSpec(currentId, next, { history: true }); }
+          return;
+        }
+        case 'Delete':
+        case 'Backspace': {
+          const group = clipDisplayGroups(sequence, currentId).find((g) => g.clips.some((w) => w.clip.id === selectedId));
+          const next = group && removeClipGroup(spec, currentId, group.key);
+          if (next) { e.preventDefault(); s.replaceSpec(currentId, next, { history: true }); s.setSelectedClip(next.sequence?.clips[0]?.id ?? null); }
+          return;
+        }
+        case 'Escape':
+          s.setSelectedClip(null);
+          return;
+      }
+    } else switch (e.code) {
       case 'KeyI':
         s.setInPoint(s.time);
         return;
@@ -321,7 +347,6 @@ export function EditorPage() {
   const error = useEditor((s) => s.error);
   const batch = useEditor((s) => s.batch);
   const step = useEditor((s) => s.step);
-  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const cropEditing = useEditor((s) => s.cropEditing);
   const progressOpen = useEditor((s) => s.progressOpen);
   const shortcutsOpen = useEditor((s) => s.shortcutsOpen);
@@ -402,7 +427,7 @@ export function EditorPage() {
           <Splitter axis="y" label="调整画面与时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
           <QuickBar />
           <Transport />
-          {hasSequence ? <SequenceTimeline /> : <Timeline />}
+          <Timeline />
         </div>
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">

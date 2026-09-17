@@ -4,6 +4,8 @@ import { keepSegments, postTrimDuration } from './time';
 import { cloneSpec } from './spec';
 
 const MIN_CLIP = 0.1;
+export const VIDEO_DRAG = 'application/x-hitgo-source-video';
+export const CLIP_DRAG = 'application/x-hitgo-sequence-clip';
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 
 export function clipLength(clip: SequenceClip): number {
@@ -21,6 +23,22 @@ export function clipWindows(sequence: SequenceSpec): { clip: SequenceClip; start
     end = start + clipLength(clip);
     return { clip, start, end };
   });
+}
+
+/** Keep consecutive legacy keep-ranges of the owner visually under one source row.
+ * They stay separate render clips, so old deletions are preserved exactly. */
+export function clipDisplayGroups(sequence: SequenceSpec, ownerId: string) {
+  const groups: { key: string; clips: ReturnType<typeof clipWindows>; start: number; end: number }[] = [];
+  for (const window of clipWindows(sequence)) {
+    const previous = groups[groups.length - 1];
+    if (window.clip.video_id === ownerId && previous?.clips.every((w) => w.clip.video_id === ownerId) && !window.clip.transition) {
+      previous.clips.push(window);
+      previous.end = window.end;
+    } else {
+      groups.push({ key: window.clip.id, clips: [window], start: window.start, end: window.end });
+    }
+  }
+  return groups;
 }
 
 /** During an overlap preview switches to the entering clip; the render applies the transition. */
@@ -206,6 +224,34 @@ export function moveClip(spec: EditSpec, clipId: string, to: number): EditSpec {
   if (from < 0) return next;
   const [clip] = clips.splice(from, 1);
   clips.splice(Math.max(0, Math.min(clips.length, to)), 0, clip);
+  sanitizeTransitions(next.sequence!);
+  return retimeContent(spec, next);
+}
+
+/** Reorder a visible source block, including its internal legacy keep-ranges. */
+export function moveClipGroup(spec: EditSpec, ownerId: string, groupKey: string, to: number): EditSpec {
+  const next = cloneSpec(spec);
+  if (!next.sequence) return next;
+  const groups = clipDisplayGroups(next.sequence, ownerId);
+  const from = groups.findIndex((g) => g.key === groupKey);
+  if (from < 0) return next;
+  const [group] = groups.splice(from, 1);
+  groups.splice(Math.max(0, Math.min(groups.length, to)), 0, group);
+  next.sequence.clips = groups.flatMap((g) => g.clips.map((w) => w.clip));
+  sanitizeTransitions(next.sequence);
+  return retimeContent(spec, next);
+}
+
+/** Delete a visible video block as one unit, including legacy keep-ranges. */
+export function removeClipGroup(spec: EditSpec, ownerId: string, groupKey: string): EditSpec | null {
+  if (!spec.sequence) return null;
+  const groups = clipDisplayGroups(spec.sequence, ownerId);
+  if (groups.length <= 1) return null;
+  const group = groups.find((g) => g.key === groupKey);
+  if (!group) return null;
+  const next = cloneSpec(spec);
+  const ids = new Set(group.clips.map((w) => w.clip.id));
+  next.sequence!.clips = next.sequence!.clips.filter((clip) => !ids.has(clip.id));
   sanitizeTransitions(next.sequence!);
   return retimeContent(spec, next);
 }

@@ -7,11 +7,17 @@
 import { useEditor } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
 import { SOURCE_TRACK_ID } from '../../lib/audioTracks';
+import { clipDisplayGroups, removeClipGroup, splitClip } from '../../lib/sequence';
 import { IconCutLeft, IconCutRight, IconSplit, IconTrash } from '../ui/Icons';
 
 export function TimelineTools() {
   const step = useEditor((s) => s.step);
   const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
+  const currentVideoId = useEditor((s) => s.currentVideoId);
+  const spec = useEditor((s) => s.currentVideoId ? s.specs[s.currentVideoId] : null);
+  const selectedClipId = useEditor((s) => s.selectedClipId);
+  const setSelectedClip = useEditor((s) => s.setSelectedClip);
+  const replaceSpec = useEditor((s) => s.replaceSpec);
   const time = useEditor((s) => s.time);
   const inPoint = useEditor((s) => s.inPoint);
   const setInPoint = useEditor((s) => s.setInPoint);
@@ -32,18 +38,23 @@ export function TimelineTools() {
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
+  const groups = spec?.sequence && currentVideoId ? clipDisplayGroups(spec.sequence, currentVideoId) : [];
+  const selectedGroup = groups.find((g) => g.clips.some((w) => w.clip.id === selectedClipId));
 
-  const canDelete = step === 'trim' ? (!hasSequence && selectedRange !== null) : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId;
+  const canDelete = step === 'trim' ? hasSequence ? !!selectedGroup && groups.length > 1 : selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId;
   const onDelete = () => {
     if (step === 'trim') {
-      if (selectedRange !== null) deleteRange(selectedRange);
+      if (hasSequence && spec && currentVideoId && selectedGroup) {
+        const next = removeClipGroup(spec, currentVideoId, selectedGroup.key);
+        if (next) { replaceSpec(currentVideoId, next, { history: true }); setSelectedClip(next.sequence?.clips[0]?.id ?? null); }
+      } else if (!hasSequence && selectedRange !== null) deleteRange(selectedRange);
     } else if (step === 'audio') {
       if (onSource) {
         if (selectedMute !== null) deleteMute(selectedMute);
       } else if (selectedTrackId) removeTrack(selectedTrackId);
     } else if (selectedLayerId) removeLayer(selectedLayerId);
   };
-  const deleteHint = step === 'trim' ? 'delete-range' : step === 'audio' ? 'delete-track' : 'delete-layer';
+  const deleteHint = hasSequence && step === 'trim' ? '删除选中的视频块（包括原有剪辑区间）' : hintFor(step === 'trim' ? 'delete-range' : step === 'audio' ? 'delete-track' : 'delete-layer');
 
   return (
     <div className="tl-tools">
@@ -63,6 +74,13 @@ export function TimelineTools() {
           </button>
         </>
       )}
+      {step === 'trim' && hasSequence && (
+        <button className="btn" disabled={!spec || !selectedClipId} title="在播放头拆分选中的视频片段" onClick={() => {
+          if (!spec || !currentVideoId || !selectedClipId) return;
+          const next = splitClip(spec, selectedClipId, time);
+          if (next) replaceSpec(currentVideoId, next, { history: true });
+        }}><IconSplit /> 拆分</button>
+      )}
       {step === 'audio' && (
         <>
           <button className="btn" onClick={() => selectedTrackId && splitTrack(selectedTrackId)} disabled={!selectedTrackId || onSource} title={selectedTrackId ? hintFor('split-track') : '先选中一条 BGM / 口播'}>
@@ -76,7 +94,7 @@ export function TimelineTools() {
           </button>
         </>
       )}
-      <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" title={hintFor(deleteHint)}>
+      <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" title={deleteHint}>
         <IconTrash />
       </button>
     </div>

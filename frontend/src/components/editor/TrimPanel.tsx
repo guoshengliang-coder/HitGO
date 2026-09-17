@@ -139,6 +139,8 @@ function FrameSection() {
           );
         })}
       </div>
+      <div className="hint">点击画幅名称只切换预览；左侧勾选决定导出画幅。勾选多个画幅会分别生成文件。</div>
+      {exported.length > 1 && <button type="button" className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => setExportVariants([previewKey])}>仅导出当前预览画幅</button>}
       {previewKey === 'custom' && (
         <div className="stack-2">
           <div className="g2">

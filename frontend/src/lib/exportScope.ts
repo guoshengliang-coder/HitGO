@@ -1,9 +1,20 @@
 // 右上角「导出」的范围（HIG-8）：这一批全部（默认）/ 左侧勾选 / 仅当前。
 // 还没预处理完（或预处理失败）的视频不能保存 spec，也不能提交渲染（后端整单 400），这里提前剔掉并计数。
 
-import { VARIANT_DEFS, type VariantKey, type Video } from '../types';
+import { VARIANT_DEFS, type EditSpec, type VariantKey, type Video } from '../types';
+import { exportKeys } from './spec';
 
 export type ExportScope = 'batch' | 'selected' | 'current';
+
+/** A composed video exports as one result by default, not every raw source in the batch. */
+export function defaultExportScope(spec: EditSpec | null): ExportScope {
+  return spec?.sequence ? 'current' : 'batch';
+}
+
+/** Never apply a remembered multi-aspect choice over the current video's own spec. */
+export function dialogExportKeys(spec: EditSpec | null, remembered: VariantKey[]): VariantKey[] {
+  return spec ? exportKeys(spec) : remembered;
+}
 
 export interface ExportTargets {
   /** 实际提交的视频 id，按批次里的顺序。 */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { cleanExportVariants, loadExportVariants, resolveExportTargets, toggleExportVariant } from './exportScope';
-import type { Video } from '../types';
+import { cleanExportVariants, defaultExportScope, dialogExportKeys, loadExportVariants, resolveExportTargets, toggleExportVariant } from './exportScope';
+import { emptySpec, type Video } from '../types';
 
 const VIDEOS: Pick<Video, 'id' | 'status'>[] = [
   { id: 'v1', status: 'ready' },
@@ -25,6 +25,13 @@ describe('resolveExportTargets', () => {
 });
 
 describe('导出画幅勾选（HIG-29）', () => {
+  it('拼接成片默认只导出当前视频；当前视频的勾选不会被本机旧记录扩成多个画幅', () => {
+    const plain = emptySpec();
+    const joined = { ...emptySpec(), sequence: { clips: [{ id: 'a', video_id: 'v1', in: 0, out: 4 }] } };
+    expect(defaultExportScope(plain)).toBe('batch');
+    expect(defaultExportScope(joined)).toBe('current');
+    expect(dialogExportKeys(joined, ['9x16', '1x1', '4x5', '16x9'])).toEqual(['9x16']);
+  });
   it('清洗：按画幅顺序、去掉不认识的、空时回到 9x16', () => {
     expect(cleanExportVariants(['16x9', 'x', '9x16', '1x1'])).toEqual(['9x16', '1x1', '16x9']);
     expect(cleanExportVariants([])).toEqual(['9x16']);
