@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, resolveTextBox, setSpanColor, splitRuns } from './textSpans';
+import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, resolveTextBox, resolveTextBoxHeight, setSpanColor, splitRuns } from './textSpans';
 
 const RED = '#E3312B';
 const BLUE = '#0000FF';
@@ -115,6 +115,23 @@ describe('resolveTextBox', () => {
   });
   it('背景块比换行框宽时取背景块', () => {
     expect(resolveTextBox({ ...base, backgroundWidth: 1, wrapWidth: 0.5, align: 'center' })).toEqual({ outerW: 1080, bgX: 0, bgW: 1080, alignW: 1060 });
+  });
+});
+
+describe('resolveTextBoxHeight（HIG-51）', () => {
+  const base = { contentH: 200, padPx: 10, strokePx: 5, canvasH: 1920 };
+  it('没有 boxHeight 时紧贴文字（旧行为）', () => {
+    expect(resolveTextBoxHeight({ ...base, boxHeight: null })).toEqual({ boxH: 230, offsetY: 0 });
+    expect(resolveTextBoxHeight({ ...base, boxHeight: undefined })).toEqual({ boxH: 230, offsetY: 0 });
+  });
+  it('boxHeight 比文字矮时框不小于文字本身', () => {
+    expect(resolveTextBoxHeight({ ...base, boxHeight: 0.05 })).toEqual({ boxH: 230, offsetY: 0 });
+  });
+  it('boxHeight 比文字高时框拉高，文字垂直居中', () => {
+    expect(resolveTextBoxHeight({ ...base, boxHeight: 0.25 })).toEqual({ boxH: 480, offsetY: 125 });
+  });
+  it('按渲染高度换算（各画幅重渲染时比例不变）', () => {
+    expect(resolveTextBoxHeight({ contentH: 100, padPx: 5, strokePx: 0, boxHeight: 0.25, canvasH: 960 })).toEqual({ boxH: 240, offsetY: 65 });
   });
 });
 
