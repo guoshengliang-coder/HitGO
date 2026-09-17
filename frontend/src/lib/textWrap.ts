@@ -115,11 +115,25 @@ export function wrapRuns(lines: TextRun[][], maxWidth: number, measure: (s: stri
   return out;
 }
 
-/** 换行框宽度（相对画布宽）的合法范围：太窄每行放不下一个字，超过 1 契约不允许。 */
-export const WRAP_WIDTH_MIN = 0.05;
-export const WRAP_WIDTH_MAX = 1;
+/**
+ * 文字图层宽度上限（HIG-37，相对画布宽）：文字框可以宽于画布、伸出画面，出画部分裁掉；契约上限 3。
+ * 贴纸 / 遮盖仍 ≤ 1。
+ */
+export const TEXT_WIDTH_MAX = 3;
+
+/**
+ * 换行框宽度（相对画布宽）的合法范围（HIG-37 起不设实际上下限）：下限只防 0 宽，
+ * 拖边时真正的最窄由 Transformer 的 8px 决定，窄到放不下一个字时按字形硬断；上限跟文字图层宽度一致。
+ */
+export const WRAP_WIDTH_MIN = 0.005;
+export const WRAP_WIDTH_MAX = TEXT_WIDTH_MAX;
+
+/** 文字图层 width 收进 (0, TEXT_WIDTH_MAX]，保留 4 位小数。 */
+export function clampTextWidth(v: number): number {
+  return Math.round(Math.min(TEXT_WIDTH_MAX, v) * 10000) / 10000;
+}
 
 export function clampWrapWidth(v: number): number {
-  if (!Number.isFinite(v)) return WRAP_WIDTH_MAX;
+  if (!Number.isFinite(v)) return 1;
   return Math.round(Math.max(WRAP_WIDTH_MIN, Math.min(WRAP_WIDTH_MAX, v)) * 10000) / 10000;
 }

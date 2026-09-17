@@ -18,7 +18,7 @@ describe('variantLayout · golden（与后端共用）', () => {
     const box =
       l.kind === 'mask'
         ? followMaskBox(placeLayer(l, (l.width * ref.W) / (l.height! * ref.H), { W: ref.W, H: ref.H }), m)
-        : followLayerBox(l, l.image![0] / l.image![1], m);
+        : followLayerBox(l, l.image![0] / l.image![1], m, l.kind !== 'text');
     const e = c.expected;
     expect(m.k).toBeCloseTo(e.k, 3);
     for (const k of ['x', 'y', 'w', 'h'] as const) expect(box[k]).toBeCloseTo(e[k], 2);

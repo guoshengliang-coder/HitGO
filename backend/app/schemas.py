@@ -78,6 +78,10 @@ def _check_time_window(t: Any) -> Any:
 # Longest track / layer label the editor can store (HIG-48).
 TRACK_NAME_MAX = 64
 
+# Text boxes may be wider than the canvas (HIG-37): the part outside the frame is cropped.
+# Stickers and masks stay within one canvas width.
+TEXT_WIDTH_MAX = 3.0
+
 
 class LayerBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -148,7 +152,7 @@ class TextStyle(BaseModel):
     letter_spacing: float | None = None  # em units; negative tightens
     background_width: float | None = Field(default=None, gt=0, le=1)  # relative to canvas width; None = hug text
     background_radius: float | None = Field(default=None, ge=0)  # relative to canvas height; None = auto
-    wrap_width: float | None = Field(default=None, gt=0, le=1)  # HIG-51 auto-wrap box, relative to canvas width; None = no wrap
+    wrap_width: float | None = Field(default=None, gt=0, le=TEXT_WIDTH_MAX)  # HIG-51 auto-wrap box, relative to canvas width (HIG-37: up to 3×); None = no wrap
     box_height: float | None = Field(default=None, gt=0, le=1)  # HIG-51 min text box height, relative to canvas height; None = hug text
 
 
@@ -355,6 +359,7 @@ class TextScroll(BaseModel):
 
 class TextLayer(LayerBase):
     type: Literal["text"]
+    width: float = Field(default=0.3, gt=0, le=TEXT_WIDTH_MAX)  # HIG-37: may exceed the canvas width
     text: str = ""
     style: TextStyle | None = None
     spans: list[TextSpan] | None = None
@@ -456,7 +461,7 @@ class LayerOverride(BaseModel):
 
     anchor: Anchor | None = None
     margin: Margin | None = None
-    width: float | None = Field(default=None, gt=0, le=1.0)
+    width: float | None = Field(default=None, gt=0, le=TEXT_WIDTH_MAX)  # ≤ 1 unless the layer is text (checked on EditSpec)
     height: float | None = Field(default=None, gt=0, le=1.0)
     rotate: float | None = Field(default=None, ge=-360, le=360)
     opacity: float | None = Field(default=None, ge=0, le=1)
@@ -752,6 +757,11 @@ class EditSpec(BaseModel):
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
             raise ValueError(f"图层 id 重复：{', '.join(dupes)}")
+        kinds = {layer.id: layer.type for layer in self.layers}
+        for o in self.outputs:
+            for layer_id, ov in o.layer_overrides.items():
+                if ov.width is not None and ov.width > 1 and kinds.get(layer_id) != "text":
+                    raise ValueError(f"输出 {o.variant_key}：图层 {layer_id} 的覆盖宽度不能超过 1（只有文字图层可以宽于画布）")
         return self
 
     def layer_by_id(self, layer_id: str) -> StickerLayer | TextLayer | MaskLayer | None:

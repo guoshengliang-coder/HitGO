@@ -169,11 +169,34 @@ def test_text_wrap_width():
     style = spec["layers"][1]["style"]
     style["wrap_width"] = 0.9
     assert validate(spec).layers[1].style.wrap_width == 0.9
+    style["wrap_width"] = 2.5  # HIG-37: the box may be wider than the canvas, up to 3×
+    assert validate(spec).layers[1].style.wrap_width == 2.5
     style["wrap_width"] = None
     assert validate(spec).layers[1].style.wrap_width is None
-    for bad in (0, -0.1, 1.2):
+    for bad in (0, -0.1, 3.1):
         style["wrap_width"] = bad
         assert "wrap_width" in errors_of(spec)
+
+
+def test_only_text_layers_may_be_wider_than_the_canvas():
+    # HIG-37: text width (0, 3], sticker / mask width stays (0, 1] — on the layer and in overrides
+    spec = valid_spec()
+    spec["layers"][1]["width"] = 2.5
+    assert validate(spec).layers[1].width == 2.5
+    spec["layers"][1]["width"] = 3.1
+    assert "width" in errors_of(spec)
+
+    spec = valid_spec()
+    spec["layers"][0]["width"] = 1.2
+    assert "width" in errors_of(spec)
+
+    spec = valid_spec()
+    spec["outputs"][1]["layer_overrides"]["l_2"] = {"width": 2.0}
+    assert validate(spec).outputs[1].layer_overrides["l_2"].width == 2.0
+    spec["outputs"][1]["layer_overrides"]["l_1"] = {"width": 1.2}
+    assert "l_1" in errors_of(spec)
+    spec["outputs"][1]["layer_overrides"]["l_1"] = {"width": 3.2}
+    assert "width" in errors_of(spec)
 
 
 def test_text_box_height():

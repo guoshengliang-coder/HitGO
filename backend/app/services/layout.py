@@ -199,10 +199,15 @@ def follow_layer_box(
     image_w: int,
     image_h: int,
     m: FitMap,
+    *,
+    clamp: bool = True,
 ) -> Box:
     """Text / sticker: keep the anchor inside the visible video area, scale by min(k, 1) so a
     cover crop never blows text up, then shift the box back inside the canvas. For blur / color
-    (visible area = mapped reference canvas, k ≤ 1) this equals mapping the reference box."""
+    (visible area = mapped reference canvas, k ≤ 1) this equals mapping the reference box.
+
+    ``clamp=False`` (text, HIG-37) skips the shift: a box hanging off the frame stays there and
+    the overlay crops it, as the editor preview does."""
     if image_w <= 0 or image_h <= 0:
         raise ValueError("image size must be positive")
     s = min(m.k, 1.0)
@@ -211,7 +216,8 @@ def follow_layer_box(
     v = m.visible
     # margins are relative to the reference canvas; express them on the visible area
     placed = _place(anchor, margin, w, h, v.w, v.h)
-    return _clamp_into(Box(v.x + placed.x, v.y + placed.y, w, h), m.W, m.H)
+    box = Box(v.x + placed.x, v.y + placed.y, w, h)
+    return _clamp_into(box, m.W, m.H) if clamp else box
 
 
 def _clamp_into(b: Box, W: float, H: float) -> Box:

@@ -453,6 +453,48 @@ def test_real_ffmpeg_blur_background_is_dimmed(tmp_path):
     assert dim == pytest.approx(bright * 0.6 + 16 * 0.4, abs=12)
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_real_ffmpeg_text_wider_than_the_canvas_is_cropped_not_pushed_back(tmp_path):
+    # HIG-37: a follow-the-video text box 1.5× the canvas wide hanging off the left edge keeps its
+    # position on the 16:9 output (the part off the frame is cropped), as the editor preview shows
+    from PIL import Image
+
+    src = tmp_path / "black.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:size=540x960:rate=25:duration=1",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    png = tmp_path / "wide.png"
+    Image.new("RGBA", (1620, 200), (255, 255, 255, 255)).save(png, "PNG")
+    text = valid_spec()["layers"][1] | {"anchor": "bottom-left", "margin": [-0.3, 0.05], "width": 1.5, "image_size": [1620, 200]}
+    spec = EditSpec.model_validate(
+        valid_spec(
+            trim={"remove": []},
+            layers=[text],
+            outputs=[
+                {"variant_key": "9x16", "aspect": "9:16", "fill": "blur"},
+                {"variant_key": "16x9", "aspect": "16:9", "fill": "crop", "layer_fit": "video"},
+            ],
+        )
+    )
+    out = tmp_path / "out.mp4"
+    plan = build_render_command(
+        spec, {"duration": 1.0, "has_audio": False, "width": 540, "height": 960}, {}, spec.outputs[1],
+        source_path=str(src), output_path=str(out), resolve_image_url=lambda _u: ImageSource(str(png), 1620, 200),
+    )  # fmt: skip
+    subprocess.run(plan.argv, check=True, capture_output=True)
+    # 1920×1080 → 192×108: the box spans x −576…1044, y 826…1026 → x 0…104, y 83…103 after scaling
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
+         "-vf", "scale=192:108,format=gray", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    row = raw[92 * 192 : 93 * 192]
+    assert row[50] > 200  # inside the visible part of the box
+    assert row[150] < 50  # pushed back inside the canvas it would cover x 0…162 → white here
+
+
 # --- video stickers ---------------------------------------------------------------
 
 # 3s sticker; the spec's l_1 window is [0, 6] and the post-trim duration is 20.6s.

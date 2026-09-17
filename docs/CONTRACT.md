@@ -294,7 +294,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "letter_spacing": 0.02,              // 可选，em 单位，可为负
         "background_width": null,            // 可选；背景块宽度，相对画布宽 (0,1]，1 = 通栏；null / 缺省 = 紧贴文字，文字按 align 在块内排
         "background_radius": null,           // 可选；背景圆角，相对画布高；null / 缺省 = 自动（min(padding, font_size×0.2)）
-        "wrap_width": null,                  // 可选（HIG-51）；自动换行的文字框宽，相对画布宽 (0,1]：文字按实际宽度折行，PNG 宽固定为该宽（背景块仍按 background_width 规则，按 align 放在框内）；null / 缺省 = 不自动换行，只按 \n 分行
+        "wrap_width": null,                  // 可选（HIG-51）；自动换行的文字框宽，相对画布宽 (0,3]（HIG-37 起可宽于画布）：文字按实际宽度折行，PNG 宽固定为该宽（背景块仍按 background_width 规则，按 align 放在框内）；null / 缺省 = 不自动换行，只按 \n 分行
         "box_height": null                   // 可选（HIG-51）；文字框最小高度，相对画布高 (0,1]：框高 = max(文字本身高度, box_height)，文字在框内垂直居中，背景块画满整个框（字号、行数不变）；null / 缺省 = 贴合文字
       },
       "image_url": "/media/uploads/u_9k8j.png",   // 前端按输出分辨率渲染好的透明 PNG；worker 只用它
@@ -304,7 +304,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
                  "background_url": "/media/uploads/u_7h6b.png" }   // 可选（HIG-45）：该输出的背景块图，见逐字显现规则
       },
       "anchor": "top-center", "margin": [0, 0.06],
-      "width": 0.5,                          // 相对画布宽；PNG 按此缩放
+      "width": 0.5,                          // 相对画布宽；PNG 按此缩放。文字图层 (0,3]（HIG-37：框可宽于画布，出画部分裁掉），贴纸 / 遮盖 (0,1]
       "rotate": 0, "opacity": 1, "t": "all",
       "animation": {                         // 可选（HIG-40）：入场 / 出场 / 循环 / 逐字动画，四项各自可选，见下方规则
         "in": { "preset": "pop", "duration": 0.5,
@@ -399,12 +399,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - **参考画布**：spec 里 `variant_key = "9x16"` 的输出（没有时按 `9:16` + `blur`）。图层的 `anchor / margin / width / height` 都按参考画布理解。参考输出自身、以及源视频宽高未知时忽略此字段，按 `"canvas"` 处理。
   - **映射**：分别算出源画面在参考画布与目标画布上的位置（`blur` / `color`：contain 居中；`crop`：先取裁切窗口再 cover 居中），得到「参考画布像素 → 源像素 → 目标画布像素」的等比映射 `p' = offset + p·k`。
   - **遮盖层**：参考画布上的矩形整体过映射（`w·k`、`h·k`），对准烧进画面的原字幕；映射后被裁出画布的遮盖静默跳过，不写警告。模糊档位的像素半径不跟着缩放。
-  - **文字 / 贴纸**：可见视频区域 V = 映射后的参考画布与目标画布的交集；宽 = `width · 参考宽 · min(k, 1)`（cover 放大时不放大图层），位置按上面的锚点公式在 V 里算（`margin` 相对 V 的宽 / 高），最后整体平移回画布内。`blur` / `color` 时这与直接映射参考矩形等价。
+  - **文字 / 贴纸**：可见视频区域 V = 映射后的参考画布与目标画布的交集；宽 = `width · 参考宽 · min(k, 1)`（cover 放大时不放大图层），位置按上面的锚点公式在 V 里算（`margin` 相对 V 的宽 / 高），贴纸最后整体平移回画布内；文字不平移（HIG-37），出画部分裁掉，与编辑器预览一致。`blur` / `color` 时这与直接映射参考矩形等价。
   - **与 `layer_overrides` 的合并**：某图层的覆盖里只要出现 `anchor / margin / width / height` 任一项，它在这个输出上就不再跟随，几何完全按 `"canvas"` 语义（覆盖值优先，缺的回落到图层自身值，相对目标画布）；`rotate / opacity` 各自单独覆盖，不影响是否跟随。
   - **文字按输出重新渲染 `variant_images`**（文字图层可选字段）：`{ [variant_key]: { url, size: [w, h] } }`，`url` 同 `image_url` 必须是 `/media/` 站内路径，`size` 为正整数。worker 渲染某个输出时优先用该输出的 PNG，文件找不到时静默回落到 `image_url`；几何（位置、`width·W` 的宽度）不受影响，PNG 只决定清晰度。前端每次导出按各输出上文字的实际像素宽相对 `image_size` 的倍率重新生成（倍率与 1 相差不到 2% 的输出不单独生成，相近倍率共用一张），旧的整份替换。批量套用 `style_only` 时随文字一起复制。
   - 前端 `lib/variantLayout.ts` 与后端 `services/layout.py` 同一套规则，两端共用 `frontend/src/lib/fixtures/variantLayoutCases.json` 做 golden 测试。
 - **输出质量**：`quality`：`standard`（默认，省略即 standard）| `high`；决定第 6 节的编码档位，每个输出变体独立设置。
-- `layer_overrides` 只允许覆盖 `anchor | margin | width | height | rotate | opacity`（`height` 只对遮盖层有意义，其它类型忽略）。
+- `layer_overrides` 只允许覆盖 `anchor | margin | width | height | rotate | opacity`（`height` 只对遮盖层有意义，其它类型忽略）。`width` 的取值范围与图层自身一致：文字 (0,3]，贴纸 / 遮盖 (0,1]。
 - **遮盖层 `type = "mask"`**：把画布上的一块矩形区域模糊或盖上色块，典型用途是遮住烧进画面的原字幕再叠新字幕；不需要任何素材。
   - 位置换算同其它图层，`h = height·H`（`height` 缺省 0.12，(0, 1]）；`rotate` 忽略。超出画布的部分裁掉，剩余不足 2×2 px 时 worker 跳过该图层并在 job.error 里记警告（不失败）。
   - `mode = "blur"`（缺省）：区域模糊，`blur` 档位 1 / 2 / 3 = `boxblur=10:1 / 20:2 / 40:3`，半径自动收到 `min(w, h) / 2 − 1`（收到 0 时跳过并记警告）；`opacity` 是模糊层按透明度叠回原画面的比例。

@@ -136,7 +136,7 @@ def _case_box(c):
     if layer["kind"] == "mask":
         b = follow_mask_box(mask_box(layer["anchor"], tuple(layer["margin"]), layer["width"], layer["height"], rw, rh), m)
     else:
-        b = follow_layer_box(layer["anchor"], tuple(layer["margin"]), layer["width"], *layer["image"], m)
+        b = follow_layer_box(layer["anchor"], tuple(layer["margin"]), layer["width"], *layer["image"], m, clamp=layer["kind"] != "text")
     return m, b
 
 
@@ -170,3 +170,14 @@ def test_cover_crop_never_scales_layers_up_and_keeps_them_on_canvas():
     b = follow_layer_box("bottom-center", (0, 0.05), 0.5, 540, 130, m)
     assert b.w == pytest.approx(540)
     assert 0 <= b.y and b.y + b.h <= 1080
+
+
+def test_text_off_the_frame_is_not_pushed_back_but_stickers_are():
+    # HIG-37: a text box wider than / hanging off the canvas stays put (overlay crops it);
+    # stickers keep being shifted back inside the canvas
+    m = fit_map(("blur", None, 1080, 1920), ("crop", None, 1920, 1080), 1080, 1920)
+    sticker = follow_layer_box("bottom-left", (-0.3, 0.05), 1.5, 1620, 200, m)
+    text = follow_layer_box("bottom-left", (-0.3, 0.05), 1.5, 1620, 200, m, clamp=False)
+    assert (sticker.x, sticker.w) == pytest.approx((0, 1620))
+    assert text.x < 0
+    assert (text.y, text.w, text.h) == pytest.approx((sticker.y, sticker.w, sticker.h))

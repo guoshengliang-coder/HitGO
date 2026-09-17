@@ -55,9 +55,11 @@ describe('wrapRuns', () => {
 });
 
 describe('clampWrapWidth', () => {
-  it('限制在 [0.05, 1] 并保留 4 位小数', () => {
-    expect(clampWrapWidth(0.01)).toBe(0.05);
-    expect(clampWrapWidth(1.4)).toBe(1);
+  it('限制在 [0.005, 3] 并保留 4 位小数，可宽于画布（HIG-37）', () => {
+    expect(clampWrapWidth(0.001)).toBe(0.005);
+    expect(clampWrapWidth(0.01)).toBe(0.01);
+    expect(clampWrapWidth(1.4)).toBe(1.4);
+    expect(clampWrapWidth(3.5)).toBe(3);
     expect(clampWrapWidth(0.123456)).toBe(0.1235);
     expect(clampWrapWidth(Number.NaN)).toBe(1);
   });

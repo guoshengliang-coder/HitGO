@@ -6,6 +6,7 @@
 
 import { outputSize, variantDef, type CropRect, type EditSpec, type FillMode, type Layer, type LayerOverride, type OutputVariant } from '../types';
 import { marginFromBox, placeLayer, round4, type Canvas, type LayerBox, type Placement } from './layout';
+import { clampTextWidth } from './textWrap';
 
 export interface FrameSpec {
   fill: FillMode;
@@ -82,14 +83,18 @@ export function followMaskBox(ref: LayerBox, m: FitMap): LayerBox {
   return { x: m.ox + ref.x * m.k, y: m.oy + ref.y * m.k, w: ref.w * m.k, h: ref.h * m.k };
 }
 
-/** 文字 / 贴纸：在可见视频区域内保持锚点，按 min(k, 1) 缩放，最后平移回画布内。aspect = 宽 / 高。 */
-export function followLayerBox(p: Placement, aspect: number, m: FitMap): LayerBox {
+/**
+ * 文字 / 贴纸：在可见视频区域内保持锚点，按 min(k, 1) 缩放，最后平移回画布内。aspect = 宽 / 高。
+ * clamp = false（文字，HIG-37）不平移：框可以宽于画布、伸出画面，出画部分裁掉，与后端一致。
+ */
+export function followLayerBox(p: Placement, aspect: number, m: FitMap, clamp = true): LayerBox {
   const s = Math.min(m.k, 1);
   const w = p.width * m.refW * s;
   const h = aspect > 0 ? w / aspect : 0;
   const v = visibleBox(m);
   const placed = placeLayer({ ...p, width: w / v.w }, aspect, { W: v.w, H: v.h });
-  return clampInto({ x: v.x + placed.x, y: v.y + placed.y, w, h }, m.W, m.H);
+  const box = { x: v.x + placed.x, y: v.y + placed.y, w, h };
+  return clamp ? clampInto(box, m.W, m.H) : box;
 }
 
 function clampInto(b: LayerBox, W: number, H: number): LayerBox {
@@ -159,7 +164,7 @@ export function resolveLayerBox(spec: EditSpec, layer: Layer, variant: OutputVar
       const box = placeLayer(ref, (ref.width * m.refW) / ((ref.height ?? 0.12) * m.refH), { W: m.refW, H: m.refH });
       return { ...followMaskBox(box, m), ...extra };
     }
-    return { ...followLayerBox(ref, aspect, m), ...extra };
+    return { ...followLayerBox(ref, aspect, m, layer.type !== 'text'), ...extra };
   }
   if (layer.type === 'mask') {
     return { ...placeLayer(own, (own.width * canvas.W) / ((own.height ?? 0.12) * canvas.H), canvas), ...extra };
@@ -175,7 +180,8 @@ export function overrideFromBox(layer: Layer, box: LayerBox, anchor: Layer['anch
   const d = output ? outputSize(output) : variantDef(key);
   const c: Canvas = { W: d.width, H: d.height };
   const m = marginFromBox(box, anchor, c);
-  const o: LayerOverride = { anchor, margin: [round4(m[0]), round4(m[1])], width: round4(Math.max(1, box.w) / c.W) };
+  const w = round4(Math.max(1, box.w) / c.W);
+  const o: LayerOverride = { anchor, margin: [round4(m[0]), round4(m[1])], width: layer.type === 'text' ? clampTextWidth(w) : w };
   if (layer.type === 'mask') o.height = round4(Math.max(1, box.h) / c.H);
   if (rotate !== undefined) o.rotate = Math.round(rotate * 10) / 10;
   return o;
