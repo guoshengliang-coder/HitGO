@@ -3,7 +3,7 @@
 // 原先常驻在面板底部的那大段说明按语义拆进各分组标题旁的「?」里。
 
 import { useEffect, useRef, useState } from 'react';
-import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
+import { useCoverDuration, useEditor, usePostDuration, selectSourceDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
@@ -252,7 +252,7 @@ function RangesSection() {
 
 /** 原始 / 剪后 / 删除合计，有封面时再加封面与成片时长。 */
 function DurationSection() {
-  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
+  const duration = useEditor(selectSourceDuration);
   const postDuration = usePostDuration();
   const preroll = useCoverDuration();
 
@@ -260,11 +260,11 @@ function DurationSection() {
     <Section id="trim.duration" title="时长" bodyClass="stack" summary={<span className="mono">{durationSummary(postDuration, preroll)}</span>} help={DURATION_HELP}>
       <dl className="kv">
         <dt>原始时长</dt>
-        <dd>{formatSeconds(video?.duration ?? 0, 2)}</dd>
+        <dd>{formatSeconds(duration, 2)}</dd>
         <dt>剪后时长</dt>
         <dd>{formatSeconds(postDuration, 2)}</dd>
         <dt>删除合计</dt>
-        <dd>−{formatSeconds((video?.duration ?? 0) - postDuration, 2)}</dd>
+        <dd>−{formatSeconds(duration - postDuration, 2)}</dd>
         {preroll > 0 && (
           <>
             <dt>封面</dt>
@@ -281,14 +281,13 @@ function DurationSection() {
 /** 剪辑面板只放"看"的东西：区间列表、封面、成片画面、时长。剪的动作（入出点 / 删左右 / 删除）都在画布下方的工具条里（§8.1 A2）。 */
 export function TrimPanel() {
   const inPoint = useEditor((s) => s.inPoint);
-  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const setInPoint = useEditor((s) => s.setInPoint);
 
   return (
     <div className="panel">
       <div className="panel-head">剪辑</div>
       <div className="panel-body inspector">
-        {!hasSequence && inPoint !== null && (
+        {inPoint !== null && (
           <div className="hint">
             入点已设在 <span className="mono">{formatTime(inPoint)}</span>（源时间），移动播放头后按 O 设出点。
             <button className="btn ghost sm" onClick={() => setInPoint(null)} style={{ marginLeft: 6 }}>
@@ -298,7 +297,7 @@ export function TrimPanel() {
         )}
 
         <SequenceSection />
-        {!hasSequence && <RangesSection />}
+        <RangesSection />
         <CoverSection />
         <FrameSection />
         <DurationSection />

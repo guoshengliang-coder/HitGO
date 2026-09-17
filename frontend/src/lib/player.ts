@@ -111,7 +111,6 @@ export class Player {
     this.sequence = clips?.length ? clips : null;
     if (this.sequence) {
       this.duration = this.sequence[this.sequence.length - 1].end;
-      this.remove = [];
       this.lapValue = 0;
       this.outputSec = null;
       this.time = Math.max(-this.prerollSec, Math.min(this.duration, this.time));
@@ -329,6 +328,7 @@ export class Player {
     this.applyRate();
     if (this.sequence) {
       if (this.time >= this.duration - 0.01) this.seek(this.prerollSec > 0 ? -this.prerollSec : 0);
+      if (rate > 0 && this.time >= 0) this.seek(skipRemoved(this.time, this.remove));
       this.playing = true;
       if (this.time >= 0 && rate > 0) this.playVideo();
       this.lastTs = performance.now();
@@ -378,13 +378,15 @@ export class Player {
     if (this.sequence) {
       if (this.time < 0) {
         this.time += dt * this.rateValue;
-        if (this.time >= 0) { this.time = 0; this.syncSequenceMedia(); this.playVideo(); }
+        if (this.time >= 0) { this.time = skipRemoved(0, this.remove); this.syncSequenceMedia(); this.playVideo(); }
       } else {
         const clip = this.sequenceClipAt(this.time);
         if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn);
         else this.time += dt * this.rateValue;
         const next = this.sequence.find((c) => c.start > (clip?.start ?? 0) + 1e-6 && c.start <= this.time + 1e-3);
         if (next) { this.time = next.start; this.syncSequenceMedia(); this.playVideo(); }
+        const skipped = skipRemoved(this.time, this.remove);
+        if (skipped !== this.time) { this.time = skipped; this.syncSequenceMedia(); this.playVideo(); }
       }
       if (this.time >= this.duration - 0.01) { this.time = this.duration; this.pause(); return; }
       this.emit();
@@ -451,6 +453,11 @@ export class Player {
     const lo = this.prerollSec > 0 ? -this.prerollSec : 0;
     let t = this.time + dt * this.rateValue;
     if (this.sequence) {
+      for (let i = 0; i < this.remove.length; i++) {
+        const range = t >= 0 ? removedRangeAt(t, this.remove) : null;
+        if (!range) break;
+        t = range[0] - 1e-3;
+      }
       if (t <= lo) { this.seek(lo); this.pause(); return; }
       this.time = t;
       this.syncSequenceMedia();

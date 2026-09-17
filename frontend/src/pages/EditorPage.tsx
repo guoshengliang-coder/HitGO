@@ -5,7 +5,7 @@ import { player } from '../lib/player';
 import { layerTypeForStep } from '../lib/steps';
 import { frameDuration, postToSource, sourceToPost } from '../lib/time';
 import { SOURCE_TRACK_ID } from '../lib/audioTracks';
-import { clipDisplayGroups, clipWindows, removeClipGroup, splitClip } from '../lib/sequence';
+import { clipWindows } from '../lib/sequence';
 import { adjacentCutPoint, cutPoints, nextShuttleRate, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
 import { TopBar } from '../components/editor/TopBar';
 import { VideoList } from '../components/editor/VideoList';
@@ -48,7 +48,7 @@ function cutPointTarget(dir: 1 | -1): number | null {
   const layerEdges = (spec?.layers ?? []).flatMap((l) => (l.t === 'all' ? [] : l.t));
   if (spec?.sequence) {
     const edges = clipWindows(spec.sequence).flatMap((w) => [w.start, w.end]);
-    return adjacentCutPoint(cutPoints(duration, [], [...edges, ...layerEdges]), now, dir);
+    return adjacentCutPoint(cutPoints(duration, remove, [...edges, ...layerEdges]), now, dir);
   }
   if (s.step === 'trim') {
     const pts = cutPoints(duration, remove, [...(s.inPoint !== null ? [s.inPoint] : []), ...layerEdges.map((x) => postToSource(x, remove))]);
@@ -173,29 +173,7 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
 
   // ---- 当前步骤的单键 ----
   if (s.step === 'trim') {
-    const sequence = s.currentSpec()?.sequence;
-    if (sequence) {
-      const currentId = s.currentVideoId;
-      const spec = s.currentSpec();
-      const selectedId = s.selectedClipId;
-      if (currentId && spec && selectedId) switch (e.code) {
-        case 'KeyS': {
-          const next = splitClip(spec, selectedId, s.time);
-          if (next) { e.preventDefault(); s.replaceSpec(currentId, next, { history: true }); }
-          return;
-        }
-        case 'Delete':
-        case 'Backspace': {
-          const group = clipDisplayGroups(sequence, currentId).find((g) => g.clips.some((w) => w.clip.id === selectedId));
-          const next = group && removeClipGroup(spec, currentId, group.key);
-          if (next) { e.preventDefault(); s.replaceSpec(currentId, next, { history: true }); s.setSelectedClip(next.sequence?.clips[0]?.id ?? null); }
-          return;
-        }
-        case 'Escape':
-          s.setSelectedClip(null);
-          return;
-      }
-    } else switch (e.code) {
+    switch (e.code) {
       case 'KeyI':
         s.setInPoint(s.time);
         return;

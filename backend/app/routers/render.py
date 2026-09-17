@@ -51,7 +51,7 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
         if not raw:
             raise HTTPException(400, f"视频 {video.name} 还没有编辑参数")
         try:
-            spec = EditSpec.model_validate(raw, context={"duration": video.duration})
+            spec = EditSpec.model_validate(raw, context={} if raw.get("sequence") else {"duration": video.duration})
         except ValidationError as exc:
             first = exc.errors()[0]
             raise HTTPException(

@@ -749,8 +749,10 @@ class EditSpec(BaseModel):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> EditSpec:
-        if self.sequence is not None and (self.trim.remove or self.trim.duration is not None):
-            raise ValueError("多片段序列启用后，旧的 trim 删除区间和成片时长必须先转换为片段")
+        if self.sequence is not None:
+            if self.trim.duration is not None:
+                raise ValueError("多片段序列的成片时长必须先转换为片段")
+            self.trim = Trim.model_validate(self.trim.model_dump(), context={"duration": self.sequence.duration})
         keys = [o.variant_key for o in self.outputs]
         dupes = sorted({k for k in keys if keys.count(k) > 1})
         if dupes:

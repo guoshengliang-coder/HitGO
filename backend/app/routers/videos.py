@@ -56,7 +56,7 @@ def put_spec(video_id: str, body: SpecIn, db: Session = Depends(get_db)):
         if video.status != VIDEO_READY:
             raise HTTPException(400, "视频尚未预处理完成，暂时不能保存编辑参数")
         try:
-            spec = EditSpec.model_validate(body.edit_spec, context={"duration": video.duration})
+            spec = EditSpec.model_validate(body.edit_spec, context={} if body.edit_spec.get("sequence") else {"duration": video.duration})
             resolve_sequence(db, video, spec)
         except ValidationError as exc:
             errors = format_validation_errors(exc)

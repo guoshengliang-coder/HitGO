@@ -670,7 +670,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     if (!spec?.sequence && (!srcAudio?.source_mute?.length || srcAudio.source_hidden)) return;
     const apply = () => {
       const v = videoRef.current;
-      if (v) v.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.postTime) : sourceGainAt(srcAudio, player.postTime);
+      if (v) v.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
     };
     apply();
     return player.subscribe(apply);
@@ -725,7 +725,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   }, [spec?.sequence, video?.id, video?.duration]);
 
   useEffect(() => {
-    player.remove = spec?.sequence ? [] : spec?.trim.remove ?? [];
+    player.remove = spec?.trim.remove ?? [];
   }, [spec?.trim.remove, spec?.sequence]);
 
   // Transformer 绑定
@@ -785,7 +785,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           key={video?.id}
           style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: needsFill && fill === 'crop' ? 'hidden' : undefined }}
           onLoadedMetadata={(e) => {
-            e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.postTime) : sourceGainAt(srcAudio, player.postTime);
+            e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
           }}
         />
         {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}

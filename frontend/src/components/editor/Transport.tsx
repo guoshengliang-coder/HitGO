@@ -17,7 +17,6 @@ export function Transport() {
   const fps = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId)?.fps);
   const frame = frameDuration(fps);
   const remove = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.trim.remove : undefined));
-  const hasSequence = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.sequence));
   const postDuration = usePostDuration();
   // 左边是成片时间（有封面时从封面算起）；右边是源时间，封面段里显示封面自己的位置
   const preroll = useCoverDuration();
@@ -48,7 +47,7 @@ export function Transport() {
       <span className="tp-sep" />
       <TimelineTools />
       <span className="spacer" />
-      <span className="hint mono">{time < 0 ? `封面 ${formatTime(time + preroll)}` : `${hasSequence ? '拼接' : '源'} ${formatTime(time)}`}</span>
+      <span className="hint mono">{time < 0 ? `封面 ${formatTime(time + preroll)}` : `源 ${formatTime(time)}`}</span>
       <span className="tp-sep" />
       <span className="tp-zoom">
         <input type="range" min={0} max={1000} value={zoomSlider} onChange={(e) => onSlider(Number(e.target.value))} aria-label="时间轴缩放" title={hintFor('tl-zoom')} />

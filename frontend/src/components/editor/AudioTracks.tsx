@@ -40,7 +40,7 @@ function TrackAudio({ track }: { track: AudioTrack }) {
     const tolerance = r.role === 'voice' ? 0.1 : 0.25;
     const sync = (postTime: number, playing: boolean, sourceTime: number) => {
       // align = source 的音轨（分离出的人声 / 伴奏）按源时间定位，剪辑跳过的段它也跳过
-      const rawTime = sequence && ownerId ? sequenceSourceTime(sequence, ownerId, postTime) : sourceTime;
+      const rawTime = sequence && ownerId ? sequenceSourceTime(sequence, ownerId, sourceTime) : sourceTime;
       const at = trackMediaTime(postTime, r, postDuration, mediaDuration, rawTime);
       el.volume = Math.max(0, Math.min(1, trackGain(postTime, r, postDuration, mediaDuration)));
       if (at === null || !playing) {

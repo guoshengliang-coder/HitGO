@@ -111,6 +111,32 @@ describe('Player 封面段（HIG-9）', () => {
     return { p, v };
   }
 
+  it('HIG-39 拼接虚拟源沿用删除区间：正放跨来源跳过，倒放跳回，剪后时钟一致', () => {
+    const tick = manualFrames();
+    const p = new Player();
+    p.attach(null);
+    p.setSequence([
+      { id: 'a', src: '/a.mp4', start: 0, end: 3, sourceIn: 0, sourceOut: 3 },
+      { id: 'b', src: '/b.mp4', start: 3, end: 6, sourceIn: 1, sourceOut: 4 },
+    ]);
+    p.remove = [[2, 4]];
+    p.seek(1.5);
+    p.play();
+    tick(1000);
+    expect(p.currentTime).toBe(4);
+    expect(p.postTime).toBe(2);
+    p.pause();
+    p.seek(4.5);
+    p.play(-1);
+    tick(1000);
+    expect(p.currentTime).toBeCloseTo(1.999);
+    p.pause();
+    p.seek(2.5);
+    p.play();
+    expect(p.currentTime).toBe(4);
+    p.pause();
+  });
+
   it('seek 的下限是 -preroll；封面变短时播放头夹回新封面的起点', () => {
     const { p, v } = attached(2);
     p.seek(-5);
