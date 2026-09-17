@@ -153,6 +153,10 @@ class Job(Base):
     variant_key: Mapped[str] = mapped_column(String(64), nullable=False)
     # Optional label typed in the export dialog; shared by every job of one render call.
     name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Language of this output (HIG-43): a localize language code, None = original / none applied.
+    lang: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Spec snapshot sent with the render call (HIG-43); None = read video.edit_spec when the job runs.
+    edit_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, nullable=False, index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

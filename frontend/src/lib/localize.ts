@@ -384,6 +384,18 @@ export function appliedVersion(spec: EditSpec | null | undefined, loc: Localizat
   return { lang, state: fresh ? 'applied' : 'stale' };
 }
 
+/**
+ * 去掉改语言套用出来的层 / 轨（原地修改），给多语言导出里的「原版」用（HIG-43）。
+ * 套用时把源音轨静了音、spec 里没记原来的音量：删掉过配音轨且源音量为 0 时恢复成 1（默认值）。
+ */
+export function stripLocalization(spec: EditSpec): void {
+  spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
+  if (!spec.audio) return;
+  const hadVoice = spec.audio.tracks.some((t) => t.origin === LOCALIZE_ORIGIN && t.role === 'voice');
+  spec.audio.tracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN);
+  if (hadVoice && spec.audio.source_volume === 0) spec.audio.source_volume = 1;
+}
+
 /** 批量套用对话框的提示：对齐源时间轴的音轨 / 改语言生成的字幕都是按这条视频算的，套到别的视频会错位。 */
 export function applyCrossVideoWarnings(spec: EditSpec | null | undefined): string[] {
   if (!spec) return [];

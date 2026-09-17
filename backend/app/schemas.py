@@ -806,11 +806,32 @@ class ApplyIn(BaseModel):
 RENDER_NAME_MAX = 120
 
 
+class RenderItemIn(BaseModel):
+    video_id: str
+    # Localize language code of this output (HIG-43); None = original / none applied.
+    lang: str | None = None
+    # Spec snapshot for this output only; None = the video's saved spec at run time.
+    edit_spec: dict[str, Any] | None = None
+
+
 class RenderIn(BaseModel):
-    video_ids: list[str] = Field(min_length=1)
+    video_ids: list[str] | None = Field(default=None, min_length=1)
+    # HIG-43: one entry per (video, language); exclusive with video_ids.
+    items: list[RenderItemIn] | None = Field(default=None, min_length=1)
     name: str | None = None
     # Only render these outputs (HIG-29); None = every output in each video's spec.
     variant_keys: list[str] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> RenderIn:
+        if (self.video_ids is None) == (self.items is None):
+            raise ValueError("video_ids 与 items 需要且只能填一个")
+        return self
+
+    def planned_items(self) -> list[RenderItemIn]:
+        if self.items is not None:
+            return self.items
+        return [RenderItemIn(video_id=v) for v in self.video_ids or []]
 
     @field_validator("name")
     @classmethod
@@ -1102,6 +1123,7 @@ class JobOut(BaseModel):
     # because its caller already knows which batch (and video) it asked about.
     batch_name: str | None = None
     video_name: str | None = None
+    lang: str | None = None
 
 
 class UploadTicketOut(BaseModel):

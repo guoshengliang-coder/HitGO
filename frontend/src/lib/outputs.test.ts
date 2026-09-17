@@ -121,6 +121,24 @@ describe('outputFileName', () => {
   });
 });
 
+describe('HIG-43：多语言成片', () => {
+  it('文件名在视频名和画幅之间插入语言中文名；原版不加', () => {
+    const j = { ...job('j_1', 'v_1', '9x16', null), name: '投放', video_name: 'V01.mp4' };
+    expect(outputFileName({ ...j, lang: 'ko' })).toBe('投放_V01_韩语_9x16.mp4');
+    expect(outputFileName({ ...j, lang: null })).toBe('投放_V01_9x16.mp4');
+  });
+  it('同视频同画幅的不同语言各算各的，不互相标成旧版本', () => {
+    const ko = { ...job('j_ko', 'v_1', '9x16', '2026-09-17T01:00:00Z'), lang: 'ko' };
+    const en = { ...job('j_en', 'v_1', '9x16', '2026-09-17T02:00:00Z'), lang: 'en' };
+    const ko2 = { ...job('j_ko2', 'v_1', '9x16', '2026-09-17T03:00:00Z'), lang: 'ko' };
+    const tags = versionTags([ko, en, ko2]);
+    expect(tags.get('j_en')).toBeNull();
+    expect(tags.get('j_ko')).toBe('older');
+    expect(tags.get('j_ko2')).toBe('latest');
+    expect(latestJobIds([ko, en, ko2])).toEqual(new Set(['j_en', 'j_ko2']));
+  });
+});
+
 describe('HIG-26：产物页看清成片混了什么', () => {
   it('versionTags：同组多条时标最新 / 旧版本，单条不打标', () => {
     const jobs = [

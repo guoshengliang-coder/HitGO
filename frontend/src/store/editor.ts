@@ -6,12 +6,20 @@
 //   缺的用 ensureVariants 补上缺省设置。画面分组 / 画布预览看的是 previewVariantKey 这个画幅
 
 import { create } from 'zustand';
-import { api, ApiError, type ApplyLayerMode } from '../api';
+import { api, ApiError, type ApplyLayerMode, type RenderItem } from '../api';
 import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
-import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText } from '../lib/localize';
+import { appliedVersion, applyLocalizationToSpec, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization } from '../lib/localize';
+import { planLanguageExport, specLang } from '../lib/langExport';
+import type { ExportScope } from '../lib/exportScope';
+
+/** 打开导出弹窗时的预设（HIG-43）：改语言面板打开时预选范围和语言。 */
+export interface ExportDialogRequest {
+  scope?: ExportScope;
+  langs?: string[];
+}
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
@@ -116,6 +124,8 @@ export interface EditorState {
   jobs: Job[];
   trackedJobIds: string[];
   progressOpen: boolean;
+  /** 导出弹窗（HIG-43 起放进 store：改语言面板也能带着预选语言打开它）；null = 关着。 */
+  exportDialog: ExportDialogRequest | null;
   rendering: boolean;
   toast: string | null;
   toastAction: ToastAction | null;
@@ -338,9 +348,12 @@ export interface EditorState {
   undoLastApply: () => void;
   /** opts.name：导出名称，写到本次建出的每个任务上（HIG-27）。 */
   /** variantKeys：这次导出哪些画幅（缺省只出 9x16）。 */
-  saveAndRender: (targetIds: string[], opts?: { name?: string; variantKeys?: VariantKey[] }) => Promise<void>;
+  /** langs（HIG-43）：多语言导出，勾选的语言码（含 'original' = 原版）；每条视频每个语言各带一份套用好的 spec 快照，编辑器里的 spec 不动。缺省 / 空 = 按当前 spec 出一份。 */
+  saveAndRender: (targetIds: string[], opts?: { name?: string; variantKeys?: VariantKey[]; langs?: string[] }) => Promise<void>;
   retryJob: (id: string) => Promise<void>;
   closeProgress: () => void;
+  openExport: (req?: ExportDialogRequest) => void;
+  closeExport: () => void;
   openProgressFor: (jobs: Job[]) => void;
   flushSave: () => Promise<void>;
 }
@@ -379,6 +392,7 @@ const PER_BATCH_INITIAL = {
   jobs: [],
   trackedJobIds: [],
   progressOpen: false,
+  exportDialog: null,
   rendering: false,
   toast: null,
   toastAction: null,
@@ -1792,6 +1806,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const variantKeys: VariantKey[] = opts?.variantKeys?.length ? opts.variantKeys : ['9x16'];
       set({ rendering: true, toast: null });
       try {
+        const baked: Record<string, EditSpec> = {};
         for (const id of targetIds) {
           const video = s.videos.find((v) => v.id === id);
           if (!video) continue;
@@ -1813,15 +1828,49 @@ export const useEditor = create<EditorState>((set, get) => {
           set((st) => ({ specs: { ...st.specs, [id]: spec }, saveState: 'saving' }));
           const saved = await api.putSpec(id, toContractSpec(spec, video.duration));
           set((st) => ({ videos: st.videos.map((v) => (v.id === id ? saved : v)), saveState: 'saved' }));
+          baked[id] = spec;
         }
+        const targets = s.videos.filter((v) => baked[v.id]);
+        let items: RenderItem[];
+        let skippedText = '';
+        if (opts?.langs?.length) {
+          // 多语言（HIG-43）：在已烤好的 spec 副本上逐个语言套用，只给新生成的译文字幕烤 PNG
+          const assets = get().assets;
+          const plan = planLanguageExport(targets, opts.langs, assets);
+          items = [];
+          for (const it of plan.items) {
+            const video = targets.find((v) => v.id === it.video_id)!;
+            const spec = cloneSpec(baked[it.video_id]);
+            if (it.lang === null) stripLocalization(spec);
+            else {
+              applyLocalizationToSpec(spec, it.lang, { video, assets, langLabel: langLabel(get().localizeOptions, it.lang), newLayerId, newTrackId });
+              for (let i = 0; i < spec.layers.length; i++) {
+                const l = spec.layers[i];
+                if (l.type !== 'text' || l.origin !== LOCALIZE_ORIGIN) continue;
+                const one = await bakeTextLayer(l as TextLayer);
+                spec.layers[i] = await bakeTextLayerVariants(one, spec, variantKeys, video.width, video.height);
+              }
+            }
+            items.push({ video_id: it.video_id, lang: it.lang, edit_spec: toContractSpec(spec, video.duration) });
+          }
+          if (plan.skipped.length) skippedText = `；跳过 ${plan.skipped.length} 个没有该语言的组合`;
+          if (!items.length) {
+            set({ rendering: false, toast: `没有可导出的语言版本${skippedText}` });
+            return;
+          }
+        } else {
+          items = targets.map((v) => ({ video_id: v.id, lang: specLang(baked[v.id], v) }));
+        }
+        const wanted = new Set(items.map((it) => `${it.video_id}|${it.lang ?? ''}`));
         let jobs: Job[];
         try {
-          jobs = await api.render(targetIds, opts?.name, variantKeys);
+          jobs = await api.render(items, opts?.name, variantKeys);
+          if (skippedText) set({ toast: `已提交 ${jobs.length} 个任务${skippedText}` });
         } catch (e) {
           if (e instanceof ApiError && e.status === 409) {
             set({ toast: `有任务仍在进行：${e.message}` });
             const existing = await api.batchJobs(s.batch!.id);
-            jobs = existing.filter((j) => targetIds.includes(j.video_id) && variantKeys.includes(j.variant_key as VariantKey) && (j.status === 'queued' || j.status === 'running'));
+            jobs = existing.filter((j) => wanted.has(`${j.video_id}|${j.lang ?? ''}`) && variantKeys.includes(j.variant_key as VariantKey) && (j.status === 'queued' || j.status === 'running'));
           } else throw e;
         }
         set((st) => ({ jobs, trackedJobIds: Array.from(new Set([...st.trackedJobIds.filter((id) => st.jobs.find((j) => j.id === id && (j.status === 'queued' || j.status === 'running'))), ...jobs.map((j) => j.id)])), progressOpen: true, rendering: false }));
@@ -1842,6 +1891,8 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
     closeProgress: () => set({ progressOpen: false }),
+    openExport: (req) => set({ exportDialog: req ?? {} }),
+    closeExport: () => set({ exportDialog: null }),
     openProgressFor: (jobs) => {
       set({ jobs, trackedJobIds: jobs.map((j) => j.id), progressOpen: true });
       startPolling();

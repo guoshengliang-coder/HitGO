@@ -4,6 +4,7 @@
 // 播放器会退回到"合成时钟"模式（见 lib/player.ts）。
 
 import { installMock, ApiError, type ApplyLayerMode } from '../api';
+import { langLabel } from '../lib/localize';
 import type { Asset, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightPhrase, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, SeparationModel, TranscriptCue, TtsIn, VersionCue, Video } from '../types';
 
 const now = () => new Date().toISOString();
@@ -731,6 +732,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     const limit = Number(q.get('limit') ?? 100);
     const offset = Number(q.get('offset') ?? 0);
     const term = (q.get('q') ?? '').trim().toLowerCase();
+    const langParam = q.get('lang') ?? '';
     const done = jobs
       .filter((j) => j.status === 'done')
       .map((j) => ({
@@ -738,7 +740,8 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
         batch_name: batches.find((b) => b.id === j.batch_id)?.name ?? null,
         video_name: videos.find((v) => v.id === j.video_id)?.name ?? null,
       }))
-      .filter((j) => !term || [j.name, j.batch_name, j.video_name].some((s) => (s ?? '').toLowerCase().includes(term)));
+      .filter((j) => !term || [j.name, j.batch_name, j.video_name, j.lang ? langLabel(null, j.lang) : ''].some((s) => (s ?? '').toLowerCase().includes(term)))
+      .filter((j) => !langParam || (langParam === 'original' ? !j.lang : j.lang === langParam));
     done.sort((a, b) => (b.finished_at ?? b.created_at).localeCompare(a.finished_at ?? a.created_at) || b.id.localeCompare(a.id));
     return clone(done.slice(offset, offset + limit));
   }
@@ -976,15 +979,16 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return { url, width: dims[0], height: dims[1] };
   }
   if (path === '/api/render') {
-    const { video_ids, name, variant_keys } = body as { video_ids: string[]; name?: string; variant_keys?: string[] };
+    const { video_ids, items, name, variant_keys } = body as { video_ids?: string[]; items?: { video_id: string; lang?: string | null; edit_spec?: EditSpec }[]; name?: string; variant_keys?: string[] };
     const created: Job[] = [];
-    for (const vid of video_ids) {
-      const v = videos.find((x) => x.id === vid);
-      if (!v?.edit_spec) continue;
-      const missing = (variant_keys ?? []).filter((k) => !v.edit_spec!.outputs.some((o) => o.variant_key === k));
+    for (const item of items ?? (video_ids ?? []).map((video_id) => ({ video_id, lang: null, edit_spec: undefined }))) {
+      const v = videos.find((x) => x.id === item.video_id);
+      const spec = item.edit_spec ?? v?.edit_spec;
+      if (!v || !spec) continue;
+      const missing = (variant_keys ?? []).filter((k) => !spec.outputs.some((o) => o.variant_key === k));
       if (missing.length) throw new ApiError(400, `视频 ${v.name} 的编辑参数里没有输出 ${missing.join(', ')}`);
-      for (const o of v.edit_spec.outputs.filter((x) => !variant_keys || variant_keys.includes(x.variant_key))) {
-        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, name: name?.trim() || null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
+      for (const o of spec.outputs.filter((x) => !variant_keys || variant_keys.includes(x.variant_key))) {
+        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, name: name?.trim() || null, lang: item.lang ?? null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
         jobs.push(j);
         created.push(j);
       }
