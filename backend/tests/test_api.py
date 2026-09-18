@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import shutil
 from datetime import timedelta
 
@@ -240,6 +241,37 @@ def test_upload_videos_streams_and_enqueues(client, enqueued):
     detail = client.get(f"/api/batches/{bid}").json()
     assert detail["video_count"] == 3 and detail["status_counts"]["preparing"] == 3
     assert [v["name"] for v in detail["videos"]] == ["V01.mp4", "V02.MOV", "V03.mp4"]
+
+
+def test_batch_upload_logs_request_id_and_status(client, caplog):
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    request_id = "11111111-1111-4111-8111-111111111111"
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        response = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"]),
+                               headers={"X-Upload-Request-ID": request_id})
+    assert response.status_code == 201
+    assert any("upload_request_received" in record.message and request_id in record.message for record in caplog.records)
+    assert any("upload_request_finished" in record.message and '"status": 201' in record.message
+               and request_id in record.message for record in caplog.records)
+
+
+def test_failed_upload_diagnostic_is_authenticated_and_secret_free(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "access_code", "secret")
+    payload = {
+        "request_id": "11111111-1111-4111-8111-111111111111", "batch_id": "b_test000001",
+        "stage": "upload", "channel": "same_origin", "code": "UPLOAD_REQUEST_TOO_LARGE",
+        "status": 413, "file_count": 1, "total_bytes": 117755084, "elapsed_ms": 950,
+    }
+    with TestClient(app, base_url="https://testserver") as browser:
+        assert browser.post("/api/uploads/diagnostic", json=payload).status_code == 401
+        browser.post("/api/auth", json={"code": "secret"})
+        with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+            assert browser.post("/api/uploads/diagnostic", json=payload).status_code == 204
+        invalid = browser.post("/api/uploads/diagnostic", json={**payload, "cookie": "secret"})
+        assert invalid.status_code == 400
+    line = next(record.message for record in caplog.records if "upload_client_failure" in record.message)
+    assert payload["request_id"] in line and payload["code"] in line
+    assert "cookie" not in line and "secret" not in line
 
 
 def test_upload_rejects_bad_files_atomically(client, enqueued):

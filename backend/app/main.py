@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -23,6 +25,7 @@ from app.routers.auth import access_ok
 from app.services import media_ticket, storage, upload_ticket
 
 log = logging.getLogger("hitgo")
+upload_log = logging.getLogger("uvicorn.error")
 
 ALLOWED_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -181,6 +184,11 @@ class AccessGate:
             await self.app(scope, receive, send)
             return
         path: str = scope.get("path", "")
+        video_upload = _is_batch_video_upload_path(scope, path)
+        request_id = _upload_request_id(scope) if video_upload else ""
+        started = time.monotonic() if video_upload else 0.0
+        if video_upload:
+            upload_log.info("upload_request_received %s", json.dumps({"request_id": request_id, "path": path}))
         if path.startswith("/media/"):
             if storage.is_blocked_media_path(path[len("/media/") :]):
                 await JSONResponse({"detail": "不存在"}, status_code=404)(scope, receive, send)
@@ -194,8 +202,24 @@ class AccessGate:
                 else:
                     body = {"detail": "需要访问码"}
                 await JSONResponse(body, status_code=401)(scope, receive, send)
+                if video_upload:
+                    _log_upload_response(request_id, path, 401, started)
                 return
-        await self.app(scope, receive, send)
+        if not video_upload:
+            await self.app(scope, receive, send)
+            return
+        status = 0
+
+        async def send_with_status(message: dict) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            _log_upload_response(request_id, path, status, started)
 
 
 def _media_ticket_ok(scope: Scope, path: str) -> bool:
@@ -222,9 +246,29 @@ def _ticket_ok(scope: Scope) -> bool:
 
 
 def _is_upload_path(scope: Scope, path: str) -> bool:
-    return scope.get("method") == "POST" and (
-        path == "/api/assets" or re.fullmatch(r"/api/batches/[^/]+/videos", path) is not None
-    )
+    return (scope.get("method") == "POST" and path == "/api/assets") or _is_batch_video_upload_path(scope, path)
+
+
+def _is_batch_video_upload_path(scope: Scope, path: str) -> bool:
+    return scope.get("method") == "POST" and re.fullmatch(r"/api/batches/[^/]+/videos", path) is not None
+
+
+def _upload_request_id(scope: Scope) -> str:
+    for name, value in scope.get("headers", []):
+        if name == b"x-upload-request-id":
+            candidate = value.decode("latin-1")
+            if re.fullmatch(r"[0-9a-f-]{36}", candidate):
+                return candidate
+    return ""
+
+
+def _log_upload_response(request_id: str, path: str, status: int, started: float) -> None:
+    upload_log.info("upload_request_finished %s", json.dumps({
+        "request_id": request_id,
+        "path": path,
+        "status": status,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+    }))
 
 
 def cors_origins() -> list[str]:

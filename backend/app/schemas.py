@@ -1264,6 +1264,22 @@ class UploadTicketOut(BaseModel):
     expires_at: str | None = None
 
 
+class UploadDiagnosticIn(BaseModel):
+    """Minimal, secret-free report from a failed browser video upload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    batch_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    stage: Literal["ticket", "upload"]
+    channel: Literal["direct", "same_origin", "unknown"]
+    code: str = Field(min_length=1, max_length=80, pattern=r"^[A-Z0-9_]+$")
+    status: int = Field(ge=0, le=599)
+    file_count: int = Field(ge=1, le=100)
+    total_bytes: int = Field(ge=0)
+    elapsed_ms: int = Field(ge=0)
+
+
 class LayerImageOut(BaseModel):
     url: str
     width: int

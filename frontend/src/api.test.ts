@@ -29,6 +29,7 @@ describe('batch video upload', () => {
     await api.uploadVideos('b_one', [new File(['video'], 'a.mp4')]);
     expect(FakeXHR.last.url).toBe('https://up.example/api/batches/b_one/videos');
     expect(FakeXHR.last.headers['X-Upload-Ticket']).toBe('signed');
+    expect(FakeXHR.last.headers['X-Upload-Request-ID']).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('uses the same-origin route when no upload host is configured', async () => {
@@ -38,7 +39,7 @@ describe('batch video upload', () => {
     vi.stubGlobal('XMLHttpRequest', FakeXHR);
     await api.uploadVideos('b_one', [new File(['video'], 'a.mp4')]);
     expect(FakeXHR.last.url).toBe('/api/batches/b_one/videos');
-    expect(FakeXHR.last.headers).toEqual({});
+    expect(FakeXHR.last.headers['X-Upload-Request-ID']).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('shows a stable code when the edge rejects an oversized request', async () => {
@@ -49,13 +50,22 @@ describe('batch video upload', () => {
         super.send(body);
       }
     }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({
       upload_url: null, ticket: null, expires_at: null,
-    }) }));
+    }) });
+    vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('XMLHttpRequest', RejectedXHR);
     await expect(api.uploadVideos('b_one', [new File(['video'], 'a.mp4')])).rejects.toMatchObject({
       status: 413, code: 'UPLOAD_REQUEST_TOO_LARGE',
     });
+    expect(fetchMock).toHaveBeenCalledWith('/api/uploads/diagnostic', expect.objectContaining({ method: 'POST' }));
+    const report = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(report).toMatchObject({
+      batch_id: 'b_one', stage: 'upload', channel: 'same_origin', status: 413,
+      code: 'UPLOAD_REQUEST_TOO_LARGE', file_count: 1,
+    });
+    expect(report.request_id).toBe(FakeXHR.last.headers['X-Upload-Request-ID']);
+    expect(report).not.toHaveProperty('file_name');
     expect(uploadErrorText(new ApiError(413, '文件过大', 'UPLOAD_REQUEST_TOO_LARGE'))).toContain('错误码：UPLOAD_REQUEST_TOO_LARGE');
   });
 
