@@ -3,7 +3,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useEditor } from '../../store/editor';
-import { fontChoices, galleryItemKey, groupPresets, missingCatalogFonts, searchFontChoices, type GalleryItem } from '../../lib/textGallery';
+import { fontChoices, galleryItemKey, groupPresets, searchFontChoices, type GalleryItem } from '../../lib/textGallery';
 import { FONT_GROUP_LABEL, type FontGroup } from '../../lib/fontCatalog';
 import { IconChevron } from '../ui/Icons';
 import { presetThumb } from './LayerParts';
@@ -32,7 +32,6 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
   const deletePreset = useEditor((s) => s.deleteTextPreset);
   const groups = useMemo(() => groupPresets(presets), [presets]);
   const fonts = useMemo(() => fontChoices(assets), [assets]);
-  const missingFonts = useMemo(() => missingCatalogFonts(assets), [assets]);
   const [fontQuery, setFontQuery] = useState('');
   const shownFonts = useMemo(() => searchFontChoices(fonts, fontQuery), [fonts, fontQuery]);
   const [active, setActive] = useState<string | null>(null);
@@ -108,15 +107,6 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
           );
         })}
         {shownFonts.length === 0 && <div className="hint">没有符合「{fontQuery.trim()}」的可用字体。</div>}
-        {missingFonts.length > 0 && (
-          <details className="font-missing">
-            <summary>另有 {missingFonts.length} 款已选字体需要上传官方字体文件</summary>
-            <div className="font-missing-list">
-              {missingFonts.map((f) => <a key={f.family} href={f.sourceUrl} target="_blank" rel="noreferrer">{f.label} · {f.style}</a>)}
-            </div>
-            <a href="/assets">前往素材库 → 字体上传</a>
-          </details>
-        )}
       </GalleryGroup>
       <GalleryGroup title="花字" count={groups.text.length} open={!closed.fancy} onToggle={() => toggle('fancy')}>
         {presetCards(groups.text)}
