@@ -62,7 +62,7 @@ export function TextPanel() {
         {tab === 'layers' && (
           <>
             <div className="inline">
-              <button className="btn" onClick={() => addLayer(newTextLayer())}>
+              <button className="btn action action-wide" onClick={() => addLayer(newTextLayer())}>
                 <IconText /> 添加文字
               </button>
             </div>

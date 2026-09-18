@@ -130,7 +130,7 @@ export function NewMaterialButton({ onFiles, onBlank, disabled, up, className, c
   }, [open]);
   return (
     <span ref={wrapRef} className={`menu-wrap ${className ?? ''}`}>
-      <button className="btn" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button className="btn action" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {children ?? (
           <>
             <IconPlus /> 新建素材

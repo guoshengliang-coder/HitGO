@@ -55,6 +55,7 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
           {visual}
           <span className="pname">{title}</span>
         </button>
+        {active === key && <button className="btn action sm preset-add" onClick={() => onCreate(item)}>添加</button>}
         {extra}
       </div>
     );
@@ -83,7 +84,7 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
 
   return (
     <>
-      <div className="hint">单击选中卡片，双击（或按 Enter）添加为新的文字图层；要改已有文字，去「图层」页选中后在属性里调整。</div>
+      <div className="hint">单击选中样式，再点「添加」创建文字图层；双击或按 Enter 也可直接添加。</div>
       <GalleryGroup title="字体" count={fonts.length} open={!closed.font} onToggle={() => toggle('font')}>
         <div className="preset-list">
           {fonts.map((f) =>

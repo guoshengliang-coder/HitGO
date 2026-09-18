@@ -98,8 +98,8 @@ export function StickerPanel() {
       </div>
       {tab === 'layers' ? (
         <div className="panel-body">
-          <div className="inline">
-            <button className="btn" onClick={() => setTab('library')}>
+          <div className="inline panel-add-row">
+            <button className="btn action" onClick={() => setTab('library')}>
               <IconSticker /> 添加贴纸
             </button>
             <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading} title="选择 JPG / PNG，上传后直接加为贴纸；也可以把图片拖进这里、画布或时间线">

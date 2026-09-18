@@ -78,7 +78,7 @@ export function SequenceSection() {
     <>
       <Section id="trim.sequence" title="视频片段" summary={<span className="mono">{clips.length ? `${new Set(clips.map((c) => c.video_id)).size} 条来源 · ${formatSeconds(duration)}` : '当前仅一条源视频'}</span>} bodyClass="stack">
         <div className="hint">添加后作为一条视频剪辑，下方仍用入点/出点、删左/删右和删除区间拖拽。这里管理来源片段与转场，可拖动列表调整顺序；插入使用来源的原始画面与声音。</div>
-        <button className="btn" onClick={() => { player.pause(); setInsertionTime(sequence ? player.currentTime : player.postTime); setInsertMode('playhead'); setPicker(true); }} disabled={!current || current.status !== 'ready' || (current.kind ?? 'video') !== 'video'}>＋ 添加视频片段</button>
+        <button className="btn action action-wide" onClick={() => { player.pause(); setInsertionTime(sequence ? player.currentTime : player.postTime); setInsertMode('playhead'); setPicker(true); }} disabled={!current || current.status !== 'ready' || (current.kind ?? 'video') !== 'video'}>＋ 添加视频片段</button>
         {clips.length > 0 && (
           <div className="sequence-list">
             {groups.map((group, index) => {

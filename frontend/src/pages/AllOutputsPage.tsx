@@ -163,8 +163,9 @@ function AllOutputs() {
         <span className="spacer" />
         <LangFilter langs={seenLangs} value={lang} onChange={setLang} />
         <SearchBox value={input} onChange={setInput} />
+        {updatedAt && <span className="muted small">更新于 {updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>}
         <button className="btn" onClick={() => void load('reset')} disabled={loading} title="重新拉取列表">
-          {loading ? '刷新中…' : updatedAt ? `更新于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '刷新'}
+          {loading ? '刷新中…' : '刷新'}
         </button>
       </div>
       <div className="hint" style={{ marginBottom: 12 }}>所有批次已完成的成片，从新到旧；点批次名只看那一批。</div>
@@ -250,7 +251,7 @@ function BatchOutputs({ batchId }: { batchId: string }) {
           <i className={pending > 0 ? 'busy' : ''} />
           {pending > 0 ? `${pending} 个任务在跑` : updatedAt ? `更新于 ${updatedAt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}` : '…'}
         </span>
-        <button className="btn ghost sm" onClick={() => void load()} title="立即重拉">
+        <button className="btn sm" onClick={() => void load()} title="立即重拉">
           刷新
         </button>
         <Link to="/outputs" className="btn">
