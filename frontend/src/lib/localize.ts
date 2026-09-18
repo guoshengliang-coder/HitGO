@@ -42,6 +42,12 @@ export function langLabel(options: LocalizeOptions | null | undefined, code: str
   return hit?.label ?? LANG_LABEL_FALLBACK[code] ?? code;
 }
 
+/** 目标语言按勾选顺序提交；接口一轮最多接收 5 种语言。 */
+export function toggleTargetLang(selected: string[], code: string): string[] {
+  if (selected.includes(code)) return selected.filter((lang) => lang !== code);
+  return selected.length < 5 ? [...selected, code] : selected;
+}
+
 /** 某目标语言某音色的显示名；找不到时原样返回 id。 */
 export function voiceLabel(options: LocalizeOptions | null | undefined, lang: string, voiceId: string | null | undefined): string {
   if (!voiceId) return '默认音色';

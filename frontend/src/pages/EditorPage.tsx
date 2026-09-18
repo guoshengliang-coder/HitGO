@@ -324,6 +324,7 @@ export function EditorPage() {
   const loading = useEditor((s) => s.loading);
   const error = useEditor((s) => s.error);
   const batch = useEditor((s) => s.batch);
+  const hasCurrentVideo = useEditor((s) => s.videos.some((v) => v.id === s.currentVideoId));
   const step = useEditor((s) => s.step);
   const cropEditing = useEditor((s) => s.cropEditing);
   const progressOpen = useEditor((s) => s.progressOpen);
@@ -398,24 +399,28 @@ export function EditorPage() {
         <VideoList />
         <Splitter axis="x" label="调整左侧列表宽度" onMove={(d) => resize({ leftW: layout.leftW + d })} onReset={() => resize({ leftW: LAYOUT_DEFAULTS.leftW })} />
         <div className="col-center">
-          {/* 裁切编辑时 Stage 只隐藏不卸载：<video> 和 player 挂在 Stage 上，CropEditor 从它抓帧（HIG-5） */}
-          {step === 'trim' && cropEditing && <CropEditor />}
-          <Stage hidden={step === 'trim' && cropEditing} />
-          {/* 横条贴着画面下沿（HIG-53）：往下拖画面变大、时间线区变矮 */}
-          <Splitter axis="y" label="调整画面与时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
-          <QuickBar />
-          <Transport />
-          <Timeline />
+          {hasCurrentVideo ? <>
+            {/* 裁切编辑时 Stage 只隐藏不卸载：<video> 和 player 挂在 Stage 上，CropEditor 从它抓帧（HIG-5） */}
+            {step === 'trim' && cropEditing && <CropEditor />}
+            <Stage hidden={step === 'trim' && cropEditing} />
+            {/* 横条贴着画面下沿（HIG-53）：往下拖画面变大、时间线区变矮 */}
+            <Splitter axis="y" label="调整画面与时间线高度" onMove={(d) => resize({ timelineH: layout.timelineH - d })} onReset={() => resize({ timelineH: LAYOUT_DEFAULTS.timelineH })} />
+            <QuickBar />
+            <Transport />
+            <Timeline />
+          </> : <div className="empty" style={{ flex: 1 }}>批次里还没有视频；从左侧添加素材后开始编辑。</div>}
         </div>
         <Splitter axis="x" label="调整右侧面板宽度" onMove={(d) => resize({ rightW: layout.rightW - d })} onReset={() => resize({ rightW: LAYOUT_DEFAULTS.rightW })} />
         <div className="col-right">
-          {step === 'trim' && <TrimPanel />}
-          {step === 'audio' && <AudioPanel />}
-          {step === 'text' && <TextPanel />}
-          {step === 'sticker' && <StickerPanel />}
-          {step === 'subtitle' && <SubtitlePanel />}
-          {step === 'localize' && <LocalizePanel />}
-          {step === 'poster' && <PosterPanel />}
+          {hasCurrentVideo && <>
+            {step === 'trim' && <TrimPanel />}
+            {step === 'audio' && <AudioPanel />}
+            {step === 'text' && <TextPanel />}
+            {step === 'sticker' && <StickerPanel />}
+            {step === 'subtitle' && <SubtitlePanel />}
+            {step === 'localize' && <LocalizePanel />}
+            {step === 'poster' && <PosterPanel />}
+          </>}
         </div>
       </div>
       {exportDialog && <ExportDialog request={exportDialog} onClose={closeExport} />}

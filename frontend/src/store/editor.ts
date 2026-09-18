@@ -494,6 +494,17 @@ function saveLocalizeBgm(videoId: string, choice: LocalizeBgmChoice) {
   } catch { /* private mode: this run still uses the selected choice in memory */ }
 }
 
+function clearLocalizeBgm(videoId: string) {
+  delete bgmChoiceMemory[videoId];
+  try {
+    const all = JSON.parse(localStorage.getItem(BGM_CHOICE_KEY) ?? '{}');
+    if (all && typeof all === 'object') {
+      delete all[videoId];
+      localStorage.setItem(BGM_CHOICE_KEY, JSON.stringify(all));
+    }
+  } catch { /* localStorage unavailable */ }
+}
+
 function applyQuickWhenReady(videoId: string, get: () => EditorState) {
   const pending = quickRequests[videoId];
   if (!pending?.readyLang) return;
@@ -543,6 +554,7 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
     } catch {
       /* 断网 / 视频被删：下一轮再试；被删时 videos 里也不会再有它 */
     }
+    if (!get().videos.some((v) => v.id === videoId)) return;
     if (fresh) set((s) => ({ videos: s.videos.map((v) => (v.id === fresh!.id ? { ...v, [field]: fresh![field] } : v)) }));
     if (fresh && !fieldActive(fresh, field)) {
       await get().loadAssets();
@@ -654,12 +666,14 @@ export const useEditor = create<EditorState>((set, get) => {
     set({ saveState: 'saving' });
     try {
       const saved = await api.putSpec(videoId, toContractSpec(spec, video.duration));
+      if (!get().videos.some((v) => v.id === videoId)) return;
       set((s) => ({
         saveState: 'saved',
         saveError: null,
         videos: s.videos.map((v) => (v.id === videoId ? { ...saved, edit_spec: v.edit_spec ?? saved.edit_spec } : v)),
       }));
     } catch (e) {
+      if (!get().videos.some((v) => v.id === videoId)) return;
       set({ saveState: 'error', saveError: e instanceof Error ? e.message : String(e) });
     }
   };
@@ -895,11 +909,27 @@ export const useEditor = create<EditorState>((set, get) => {
             window.clearTimeout(saveTimers[id]);
             delete saveTimers[id];
           }
+          for (const field of ['separation', 'localization'] as const) {
+            const key = `${field}:${id}`;
+            if (fieldTimers[key]) window.clearTimeout(fieldTimers[key]);
+            delete fieldTimers[key];
+          }
+          delete dubRequests[id];
+          delete quickRequests[id];
+          clearLocalizeBgm(id);
         }
         const gone = new Set(deleted);
+        const deletedPosterVoice = !!posterVoiceVideoId && gone.has(posterVoiceVideoId);
+        if (deletedPosterVoice) posterVoiceVideoId = null;
         const s = get();
         const nextId = nextCurrentAfterDelete(s.videos, s.currentVideoId, deleted);
-        if (nextId !== s.currentVideoId) player.pause();
+        if (nextId !== s.currentVideoId) {
+          player.pause();
+          if (!nextId) {
+            player.setPreroll(0);
+            player.setOutputDuration(null);
+          }
+        }
         const omit = <T,>(rec: Record<string, T>) => Object.fromEntries(Object.entries(rec).filter(([id]) => !gone.has(id)));
         const videos = s.videos.filter((v) => !gone.has(v.id));
         set({
@@ -911,9 +941,11 @@ export const useEditor = create<EditorState>((set, get) => {
           jobs: s.jobs.filter((j) => !gone.has(j.video_id)),
           trackedJobIds: s.trackedJobIds.filter((id) => !s.jobs.some((j) => j.id === id && gone.has(j.video_id))),
           lastApply: s.lastApply && s.lastApply.targetIds.some((id) => gone.has(id)) ? null : s.lastApply,
+          layerClipboard: s.layerClipboardVideoId && gone.has(s.layerClipboardVideoId) ? null : s.layerClipboard,
           layerClipboardVideoId: s.layerClipboardVideoId && gone.has(s.layerClipboardVideoId) ? null : s.layerClipboardVideoId,
+          posterVoicePending: deletedPosterVoice ? null : s.posterVoicePending,
           ...(nextId !== s.currentVideoId
-            ? { currentVideoId: nextId, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null }
+            ? { currentVideoId: nextId, selectedLayerId: null, selectedClipId: null, replacingLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null, exportDialog: null, progressOpen: false, saveState: 'idle', saveError: null }
             : {}),
         });
       }

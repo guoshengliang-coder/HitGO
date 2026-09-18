@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { loadLocalizeBgm, useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
-import { appliedVersion, canApplyVersion, cloneStatusText, cloneSupported, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, versionVoiceText } from '../../lib/localize';
+import { appliedVersion, canApplyVersion, cloneStatusText, cloneSupported, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, toggleTargetLang, transcriptStatusText, versionStatusText, versionVoiceText } from '../../lib/localize';
 import { loadFeaturePrefs, saveFeaturePrefs } from '../../lib/featurePrefs';
 import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
@@ -134,7 +134,7 @@ function pickVoice(code: string, voices: Record<string, string>, loc: Localizati
 function QuickSection({ video, loc, options, blocked, sourceLang, draft }: SectionProps & { sourceLang: string; draft: GenerateDraft }) {
   const localizeVideo = useEditor((s) => s.localizeVideo);
   const assets = useEditor((s) => s.assets);
-  const [lang, setLang] = useState('');
+  const { selected, setSelected } = draft;
   const [bgmMode, setBgmMode] = useState<'keep' | 'replace'>(() => loadLocalizeBgm(video.id).mode);
   const [bgmAssetId, setBgmAssetId] = useState(() => {
     const choice = loadLocalizeBgm(video.id);
@@ -142,29 +142,31 @@ function QuickSection({ video, loc, options, blocked, sourceLang, draft }: Secti
   });
   const [pickingBgm, setPickingBgm] = useState(false);
   useEffect(() => {
-    setLang('');
     const choice = loadLocalizeBgm(video.id);
     setBgmMode(choice.mode);
     setBgmAssetId(choice.mode === 'replace' ? choice.assetId : '');
   }, [video.id]);
-  const target = options?.target_langs.find((t) => t.code === lang);
-  const voice = target ? pickVoice(lang, draft.voices, loc, options) : '';
+  const targets = options?.target_langs ?? [];
+  const chosen = selected.map((code) => targets.find((t) => t.code === code)).filter((t) => !!t);
+  const voices = Object.fromEntries(chosen.map((t) => [t.code, pickVoice(t.code, draft.voices, loc, options)]));
+  const voicesReady = chosen.every((t) => !!voices[t.code]);
   const bgmAsset = assets.find((a) => a.id === bgmAssetId);
   const bgmReady = bgmMode === 'keep' || (bgmAsset?.type === 'audio' && isAssetReady(bgmAsset));
+  const toggle = (code: string) => setSelected((langs) => toggleTargetLang(langs, code));
   const start = () => {
-    if (!lang || !voice || !bgmReady) return;
+    if (!chosen.length || !voicesReady || !bgmReady) return;
     const bgm: LocalizeBgmChoice = bgmMode === 'keep' ? { mode: 'keep' } : { mode: 'replace', assetId: bgmAssetId };
-    void localizeVideo({ source_lang: sourceLang, target_langs: [lang], voices: { [lang]: voice }, terms: parseTerms(draft.termsText), dub: true }, { bgm });
+    void localizeVideo({ source_lang: sourceLang, target_langs: chosen.map((t) => t.code), voices, terms: parseTerms(draft.termsText), dub: true }, { bgm });
   };
   return (
-    <Section id="localize.quick" title="转语言" bodyClass="stack" help="选目标语言和音色后直接生成配音与字幕；默认自动保留原伴奏，无需先到音频模块分离。">
+    <Section id="localize.quick" title="转语言" bodyClass="stack" help="最多勾选 5 种目标语言，逐种选择音色后一次生成配音与字幕；默认自动保留原伴奏。若开启生成后自动套用，会按勾选顺序套用首个成功版本，其余可在套用区切换或导出。">
       <Field label="目标语言">
-        <select className="select sm" value={lang} disabled={blocked} aria-label="转语言目标语言" onChange={(e) => setLang(e.target.value)}>
-          <option value="">选择语言</option>
-          {options?.target_langs.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
-        </select>
+        <div className="chips" role="group" aria-label="转语言目标语言">
+          {targets.map((t) => <button key={t.code} type="button" className={`chip ${selected.includes(t.code) ? 'active' : ''}`} aria-pressed={selected.includes(t.code)} disabled={blocked || (!selected.includes(t.code) && selected.length >= 5)} onClick={() => toggle(t.code)}>{t.label}</button>)}
+        </div>
       </Field>
-      {target && <Field label="音色"><VoiceSelect lang={lang} voices={target.voices} value={voice} onChange={(id) => draft.setVoices((v) => ({ ...v, [lang]: id }))} disabled={blocked} ariaLabel="转语言音色" /></Field>}
+      <div className="hint small">已选 {selected.length} / 5 种；生成后按勾选顺序优先套用首个成功版本。</div>
+      {chosen.map((t) => <Field key={t.code} label={`${t.label}音色`}><VoiceSelect lang={t.code} voices={t.voices} value={voices[t.code]} onChange={(id) => draft.setVoices((v) => ({ ...v, [t.code]: id }))} disabled={blocked} ariaLabel={`${t.label}转语言音色`} /></Field>)}
       <div className="inline small" role="group" aria-label="转语言 BGM">
         <label><input type="radio" name={`localize-bgm-${video.id}`} checked={bgmMode === 'keep'} disabled={blocked} onChange={() => setBgmMode('keep')} /> 保留原伴奏（自动分离）</label>
         <label><input type="radio" name={`localize-bgm-${video.id}`} checked={bgmMode === 'replace'} disabled={blocked} onChange={() => setBgmMode('replace')} /> 替换 BGM</label>
@@ -174,8 +176,8 @@ function QuickSection({ video, loc, options, blocked, sourceLang, draft }: Secti
         {bgmAsset && !isAssetReady(bgmAsset) && <span className="hint">素材尚未就绪</span>}
       </div>}
       {bgmMode === 'keep' && video.separation?.status === 'failed' && <div className="hint">上次伴奏分离失败；再次生成会重试。</div>}
-      <button className="btn action" disabled={blocked || !lang || !voice || !bgmReady} onClick={start}>
-        {lang ? `生成${target?.label ?? ''}配音与字幕` : '先选目标语言'}
+      <button className="btn action" disabled={blocked || !chosen.length || !voicesReady || !bgmReady} onClick={start}>
+        {chosen.length ? `生成 ${chosen.length} 种语言的配音与字幕` : '先选目标语言'}
       </button>
       {pickingBgm && <Modal title="选择 BGM" onClose={() => setPickingBgm(false)} width={520}>
         <AudioAssetList onPick={(id) => { setBgmAssetId(id); setPickingBgm(false); }} />
@@ -189,7 +191,7 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
   const localizeVideo = useEditor((s) => s.localizeVideo);
   const targets = options?.target_langs ?? [];
   const { selected, setSelected, termsText, setTermsText } = draft;
-  const toggle = (code: string) => setSelected((s) => (s.includes(code) ? s.filter((x) => x !== code) : [...s, code]));
+  const toggle = (code: string) => setSelected((s) => toggleTargetLang(s, code));
   const n = selected.length;
   const transcriptDone = loc?.transcript?.status === 'done';
   const generate = () => {
@@ -204,7 +206,7 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
           const has = !!loc?.versions?.[t.code];
           const on = selected.includes(t.code);
           return (
-            <button key={t.code} className={`chip ${on ? 'active' : ''}`} aria-pressed={on} disabled={blocked} title={has ? '已有这个语言的译文，再翻译会覆盖' : undefined} onClick={() => toggle(t.code)}>
+            <button key={t.code} className={`chip ${on ? 'active' : ''}`} aria-pressed={on} disabled={blocked || (!on && n >= 5)} title={has ? '已有这个语言的译文，再翻译会覆盖' : undefined} onClick={() => toggle(t.code)}>
               {t.label}
               {has ? ' ·' : ''}
             </button>

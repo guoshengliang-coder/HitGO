@@ -117,7 +117,7 @@
 `transcript.cues[].start / end` 基于**源时间轴**，前端要经 `trim.remove` 换算到剪后时间轴再生成字幕图层；版本
 `cues` 只有译文，按 `i` 对齐模板。一条视频同一时间只能「套用」一个语言版本（一份 `edit_spec`）；切换版本 =
 把旧的 `origin = "localize"` 层 / 轨换成新的。配音只含人声（其余静音），背景音乐由前端另加分离出的伴奏轨。
-编辑器的「转语言」主操作一次选择目标语言和音色，使用 `dub = true` 完成听写、翻译及口播；默认保留原伴奏，
+编辑器的「转语言」主操作一次勾选 1–5 种目标语言、逐语言选音色，使用 `dub = true` 完成听写、翻译及口播；若启用生成后自动套用，按勾选顺序套用首个成功版本，其余可手动切换或导出。默认保留原伴奏，
 没有可用的分离结果时自动调用 `POST /api/videos/{id}/separate`，伴奏与口播都就绪后才自动套用。选择「替换 BGM」
 时改用所选音频素材作为唯一 BGM，不要求源视频分离。分离或新 BGM 不可用时不得自动套用成缺少背景音乐的版本。
 听写修正、只翻译和逐版本重新配音仍由高级操作提供。
@@ -666,9 +666,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - `font`：`ttf / otf / woff2`
   - `audio`：`mp3 / wav / m4a`，入队探测时长并以 `status = "preparing"` 返回。
   - 单文件上限：图片 sticker 10 MiB、font 20 MiB、audio 50 MiB、视频 sticker 1 GiB，超出 400。视频贴纸与音频不限时长。
+  - PNG 被服务端以「无法解析图片」拒绝时，前端只对这张图尝试浏览器解码并重编码为标准 PNG，然后重传整个请求一次；浏览器也无法解码时显示 `UPLOAD_IMAGE_DECODE_FAILED` 并提示重新导出，不会把损坏文件当作成功上传。
   - 请求头 `X-Upload-Ticket: <ticket>`（可选）：对本路径有效时本请求免 Cookie 校验，见下面的上传子域名。
 - `POST /api/assets/upload-ticket` → `{ "upload_url": "https://hitgo-upload.example.com/api/assets" | null, "ticket": "..." | null, "expires_at": "..." | null }`。
-  需要正常的访问码 Cookie。服务端未配置 `UPLOAD_BASE_URL` 时三个字段都是 null，前端照旧同源上传。
+  需要正常的访问码 Cookie。服务端未配置 `UPLOAD_BASE_URL` 时三个字段都是 null；前端只对合计小于 90 MiB 的素材请求回退同源上传。合计达到 90 MiB 时必须拿到完整的直传地址和 ticket，取票失败显示 `UPLOAD_TICKET_REQUEST_FAILED`，未配置直传显示 `UPLOAD_DIRECT_REQUIRED`，票据不完整显示 `UPLOAD_TICKET_INVALID`，不会再把大文件发往主域名。
   配置了时签发一张绑定 `/api/assets`、10 分钟有效的 ticket，前端把 `POST /api/assets` 直接发到 `upload_url`
   （跨域 XHR，带 `X-Upload-Ticket`，不带 Cookie）。
   **为什么**：主域名走 Cloudflare 代理，免费版单个请求超过 100 MB 会被 Cloudflare 回 413，根本到不了源站；

@@ -24,6 +24,7 @@ import {
   parseTerms,
   stripLocalization,
   termsToText,
+  toggleTargetLang,
   transcriptStatusText,
   versionStatusText,
   voiceLabel,
@@ -104,6 +105,15 @@ const ids = () => {
   return `id${seq}`;
 };
 const ctx = (v: Video, label = '韩语') => ({ video: v, assets: ASSETS, langLabel: label, newLayerId: ids, newTrackId: ids });
+
+describe('目标语言多选（HIG-74 返工）', () => {
+  it('保留勾选顺序、最多五种，取消后能再选', () => {
+    const chosen = ['ko', 'ja', 'en', 'fr', 'de'];
+    expect(toggleTargetLang(chosen, 'es')).toEqual(chosen);
+    expect(toggleTargetLang(chosen, 'ja')).toEqual(['ko', 'en', 'fr', 'de']);
+    expect(toggleTargetLang(toggleTargetLang(chosen, 'ja'), 'es')).toEqual(['ko', 'en', 'fr', 'de', 'es']);
+  });
+});
 
 describe('文案与状态', () => {
   it('langLabel：options 优先，其次内置兜底，最后原样返回码', () => {
