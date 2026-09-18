@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas import CANVAS_SIZES, EditSpec, LayerOverride, MaskLayer, StickerLayer, TextLayer, empty_spec
+from app.schemas import CANVAS_SIZES, EditSpec, LayerOverride, MaskLayer, ShapeLayer, StickerLayer, TextLayer, empty_spec
 from tests.conftest import valid_spec
 
 
@@ -29,6 +29,14 @@ def test_contract_example_is_valid():
 
 def test_canvas_sizes():
     assert CANVAS_SIZES == {"9:16": (1080, 1920), "1:1": (1080, 1080), "4:5": (1080, 1350), "16:9": (1920, 1080)}
+
+
+def test_shape_layer_keeps_editable_geometry_and_rejects_bad_color():
+    shape = {"id": "s1", "type": "shape", "shape": "star", "width": 0.3, "height": 0.2, "fill": "#FF0000", "stroke": "#00FF00", "image_url": "/media/uploads/u_shape.png"}
+    spec = validate(valid_spec(layers=[shape]))
+    assert isinstance(spec.layers[0], ShapeLayer)
+    assert spec.layers[0].height == 0.2
+    assert "fill" in errors_of(valid_spec(layers=[{**shape, "fill": "red"}]))
 
 
 def test_custom_canvas_size_and_validation():

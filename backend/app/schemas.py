@@ -444,6 +444,34 @@ class TextLayer(LayerBase):
         return v
 
 
+class ShapeLayer(LayerBase):
+    """Editable geometry, rasterized by the editor for the existing PNG overlay path."""
+
+    type: Literal["shape"]
+    shape: Literal["rect", "ellipse", "triangle", "line", "arrow", "star"]
+    height: float = Field(default=0.12, gt=0, le=1.0)
+    fill: str = "#E3312B"
+    stroke: str = "#FFFFFF"
+    stroke_width: float = Field(default=0.004, ge=0, le=0.1)
+    radius: float = Field(default=0.02, ge=0, le=0.5)
+    flip_x: bool = False
+    flip_y: bool = False
+    image_url: str | None = None
+    image_size: tuple[int, int] | None = None
+
+    @field_validator("fill", "stroke")
+    @classmethod
+    def _validate_shape_color(cls, v: str) -> str:
+        if not _HEX_COLOR_6.fullmatch(v):
+            raise ValueError("图形颜色必须是 #RRGGBB 形式")
+        return v
+
+    @field_validator("image_url")
+    @classmethod
+    def _validate_image_url(cls, v: str | None) -> str | None:
+        return _media_url(v) if v else None
+
+
 MaskMode = Literal["blur", "solid"]
 
 
@@ -466,7 +494,7 @@ class MaskLayer(LayerBase):
         return v
 
 
-Layer = Annotated[StickerLayer | TextLayer | MaskLayer, Field(discriminator="type")]
+Layer = Annotated[StickerLayer | TextLayer | MaskLayer | ShapeLayer, Field(discriminator="type")]
 
 
 class LayerOverride(BaseModel):
@@ -784,7 +812,7 @@ class EditSpec(BaseModel):
                     raise ValueError(f"输出 {o.variant_key}：图层 {layer_id} 的覆盖宽度不能超过 1（只有文字图层可以宽于画布）")
         return self
 
-    def layer_by_id(self, layer_id: str) -> StickerLayer | TextLayer | MaskLayer | None:
+    def layer_by_id(self, layer_id: str) -> StickerLayer | TextLayer | MaskLayer | ShapeLayer | None:
         for layer in self.layers:
             if layer.id == layer_id:
                 return layer
@@ -933,6 +961,7 @@ class RenderIn(BaseModel):
     name: str | None = None
     # Only render these outputs (HIG-29); None = every output in each video's spec.
     variant_keys: list[str] | None = Field(default=None, min_length=1)
+    output_format: Literal["source", "mp4", "mov", "png", "jpg"] = "mp4"
 
     @model_validator(mode="after")
     def _one_source(self) -> RenderIn:
@@ -1191,6 +1220,7 @@ class VideoOut(BaseModel):
     status: str
     error: str | None
     kind: str = "video"  # video | image | blank (HIG-50)
+    original_ext: str | None = None
     width: int | None
     height: int | None
     duration: float | None
@@ -1256,6 +1286,7 @@ class JobOut(BaseModel):
     batch_id: str
     video_id: str
     variant_key: str
+    output_format: Literal["mp4", "mov", "png", "jpg"] = "mp4"
     status: str
     progress: int
     error: str | None

@@ -1,4 +1,4 @@
-// 产物页「播放」弹窗（HIG-52）：成片是同源 MP4，<video> 直接播；关闭即卸载，播放随之停止。
+// 产物页预览弹窗：视频播放、图片显示；关闭即卸载媒体。
 import { useEffect, useState } from 'react';
 import type { Job } from '../types';
 import { Modal } from './ui/Modal';
@@ -34,7 +34,11 @@ export function OutputPlayerModal({ job, fileName, onClose }: { job: Job; fileNa
         </a>
       }
     >
-      <video
+      {job.output_format === 'png' || job.output_format === 'jpg' ? <img
+        src={job.output_url ?? undefined}
+        alt={fileName}
+        style={{ display: 'block', width: box.width, height: box.height, margin: '0 auto', objectFit: 'contain' }}
+      /> : <video
         key={job.id}
         src={job.output_url ?? undefined}
         controls
@@ -42,7 +46,7 @@ export function OutputPlayerModal({ job, fileName, onClose }: { job: Job; fileNa
         playsInline
         preload="metadata"
         style={{ display: 'block', width: box.width, height: box.height, margin: '0 auto', background: '#000' }}
-      />
+      />}
     </Modal>
   );
 }

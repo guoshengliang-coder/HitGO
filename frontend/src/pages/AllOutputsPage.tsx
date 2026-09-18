@@ -370,7 +370,7 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
                 {mode === 'batch' && vd?.note && <span className="muted small"> · {vd.note}</span>}
               </td>
               <td className="mono">{j.output ? `${j.output.width}×${j.output.height}` : '—'}</td>
-              <td className="mono">{j.output ? formatSeconds(j.output.duration) : '—'}</td>
+              <td className="mono">{j.output && j.output_format !== 'png' && j.output_format !== 'jpg' ? formatSeconds(j.output.duration) : '—'}</td>
               <td className="mono">{j.output ? fmtSize(j.output.size) : '—'}</td>
               <td className="mono">
                 {fmtDateOr(j.finished_at)}
@@ -381,8 +381,8 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
                 {j.output_url ? (
                   <span className="output-actions">
                     {isDownloadable(j) && (
-                      <button className="btn sm" onClick={() => setPlaying(j)} title="在浏览器里直接播放这个成片">
-                        播放
+                      <button className="btn sm" onClick={() => setPlaying(j)} title="在浏览器里预览这个产物">
+                        {j.output_format === 'png' || j.output_format === 'jpg' ? '查看' : '播放'}
                       </button>
                     )}
                     {/* /media 与页面同源，download 属性里的文件名会生效（HIG-27） */}

@@ -208,7 +208,12 @@ export function Timeline() {
   const selectedRange = useEditor((s) => s.selectedRangeIndex);
   const setSelectedRange = useEditor((s) => s.setSelectedRange);
   const updateRemoveRange = useEditor((s) => s.updateRemoveRange);
-  const selectedLayerId = useEditor((s) => s.selectedLayerId);
+  const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
+  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
+  const selectLayers = useEditor((s) => s.selectLayers);
+  const shiftSelectedLayers = useEditor((s) => s.shiftSelectedLayers);
+  const [marqueeDraft, setMarqueeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const marqueeStart = useRef<{ x: number; y: number; mode: 'replace' | 'add' | 'subtract' } | null>(null);
   const focusLayer = useEditor((s) => s.focusLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const renameLayer = (l: Layer, name: string) => {
@@ -588,7 +593,10 @@ export function Timeline() {
           if (track && (a !== d.orig[0] || b !== d.orig[1])) updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
         } else {
           const layer = spec?.layers[d.index];
-          if (layer) updateLayer(layer.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
+          if (layer) {
+            if (d.kind === 'bar-move' && selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id)) shiftSelectedLayers(a - d.orig[0]);
+            else updateLayer(layer.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
+          }
         }
       }
       setDrag(null);
@@ -624,11 +632,46 @@ export function Timeline() {
     if (l.t === 'all') return 'all';
     return drag && drag.kind.startsWith('bar') && drag.index === i && dragVal ? dragVal : l.t;
   };
+  const marqueeDown = (e: RPointerEvent<HTMLDivElement>) => {
+    if (!marqueeEnabled || e.button !== 0 || !(e.target as HTMLElement).closest('.body')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    marqueeStart.current = { x, y, mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace' };
+    setMarqueeDraft({ x0: x, y0: y, x1: x, y1: y });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const marqueeMove = (e: RPointerEvent<HTMLDivElement>) => {
+    if (!marqueeStart.current) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setMarqueeDraft((d) => d && { ...d, x1: e.clientX - rect.left, y1: e.clientY - rect.top });
+  };
+  const marqueeUp = (e: RPointerEvent<HTMLDivElement>) => {
+    const start = marqueeStart.current;
+    if (!start) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const inner = e.currentTarget;
+    const innerRect = inner.getBoundingClientRect();
+    const x1 = e.clientX - innerRect.left, y1 = e.clientY - innerRect.top;
+    const left = Math.min(start.x, x1) + innerRect.left, right = Math.max(start.x, x1) + innerRect.left;
+    const top = Math.min(start.y, y1) + innerRect.top, bottom = Math.max(start.y, y1) + innerRect.top;
+    const hits = [...inner.querySelectorAll<HTMLElement>('.tl-layer .tl-bar[data-layer-id]')].filter((bar) => {
+      const r = bar.getBoundingClientRect();
+      return r.left <= right && r.right >= left && r.top <= bottom && r.bottom >= top;
+    }).map((bar) => bar.dataset.layerId!);
+    selectLayers(hits, start.mode);
+    marqueeStart.current = null;
+    setMarqueeDraft(null);
+    inner.releasePointerCapture(e.pointerId);
+  };
 
   return (
     <div className="timeline" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
-        <div className="tl-inner" style={{ width: off + trackW + LABEL_W }}>
+        <div className="tl-inner" style={{ width: off + trackW + LABEL_W, cursor: marqueeEnabled ? 'crosshair' : undefined }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
           <div className="tl-row" style={{ height: 20 }}>
             <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
@@ -836,11 +879,11 @@ export function Timeline() {
             const [pa, pb] = all ? [0, postDuration] : v;
             const left = off + postToSource(pa, remove) * pps;
             const right = off + postToSource(pb, remove) * pps;
-            const sel = selectedLayerId === l.id;
+            const sel = selectedLayerIds.includes(l.id);
             const hidden = !!l.hidden;
             const locked = !!l.locked;
             // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
-            const pick = () => focusLayer(l);
+            const pick = () => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); };
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`} onClick={pick}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
@@ -857,6 +900,7 @@ export function Timeline() {
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
                   <div
+                    data-layer-id={l.id}
                     className={`tl-bar ${l.type === 'mask' ? 'mask' : isOverlayVideo(l, assets) ? 'overlay' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
                     style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
                     onPointerDown={(e) => {
@@ -909,6 +953,7 @@ export function Timeline() {
             </div>
           )}
           </TrackGroup>
+          {marqueeDraft && <div className="tl-marquee" style={{ left: Math.min(marqueeDraft.x0, marqueeDraft.x1), top: Math.min(marqueeDraft.y0, marqueeDraft.y1), width: Math.abs(marqueeDraft.x1 - marqueeDraft.x0), height: Math.abs(marqueeDraft.y1 - marqueeDraft.y0) }} />}
 
           {snapX !== null && <div className="tl-snap" style={{ left: LABEL_W + snapX }} />}
           {dropHint && (

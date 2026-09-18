@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -22,6 +24,16 @@ from app.services import localize
 from app.services.sequence import resolve_sequence
 
 router = APIRouter(prefix="/api", tags=["render"])
+
+
+def resolved_output_format(requested: str, video: Video) -> str:
+    """Keep original upload type for 'source'; generated blanks have no upload."""
+    if requested != "source":
+        return requested
+    ext = video.original_ext or (video.source_ext if video.kind == "video" else Path(video.name).suffix.lower().lstrip("."))
+    if ext == "jpeg":
+        return "jpg"
+    return ext if ext in {"mp4", "mov", "png", "jpg"} else "mp4"
 
 
 @router.post("/render", response_model=list[JobOut], status_code=201)
@@ -97,6 +109,7 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
                     variant_key=key,
                     name=body.name,
                     lang=item.lang,
+                    output_format=resolved_output_format(body.output_format, video),
                     edit_spec=item.edit_spec,
                     status=JOB_QUEUED,
                 )

@@ -115,5 +115,6 @@ def delete_video(video_id: str, db: Session = Depends(get_db)) -> None:
     db.commit()
     storage.remove_tree(storage.video_dir(batch_id, video_id))
     for job_id in job_ids:
-        storage.remove_file(storage.output_path(job_id))
-        storage.remove_file(storage.tmp_output_path(job_id))
+        for output_format in ("mp4", "mov", "png", "jpg"):
+            storage.remove_file(storage.output_path(job_id, output_format))
+            storage.remove_file(storage.tmp_output_path(job_id, output_format))

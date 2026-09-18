@@ -5,7 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
-import { isAssetReady, isVideoAsset, type Asset } from '../../types';
+import { isAssetReady, isVideoAsset, type Asset, type ShapeLayer } from '../../types';
 import { newLayerId } from '../../lib/spec';
 import { defaultMargin, newStickerLayer, OVERLAY_ACCEPT, OVERLAY_ACCEPT_TEXT } from '../../lib/imageDrop';
 import { rejectedText } from '../../lib/fileDrop';
@@ -18,6 +18,11 @@ import { Section } from '../ui/Section';
 import { LayerList, LayerProps } from './LayerParts';
 
 type StickerTab = 'layers' | AssetBucket;
+const SHAPES: { key: ShapeLayer['shape']; label: string }[] = [
+  { key: 'rect', label: '矩形' }, { key: 'ellipse', label: '圆形' },
+  { key: 'triangle', label: '三角形' }, { key: 'line', label: '直线' },
+  { key: 'arrow', label: '箭头' }, { key: 'star', label: '星形' },
+];
 
 const TABS: { key: StickerTab; label: string }[] = [
   { key: 'layers', label: '图层' },
@@ -37,8 +42,11 @@ export function StickerPanel() {
   const assets = useEditor((s) => s.assets);
   const selected = useEditor((s) => {
     const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
-    return l?.type === 'sticker' ? l : null;
+    return l?.type === 'sticker' || l?.type === 'shape' ? l : null;
   });
+  const drawingShape = useEditor((s) => s.drawingShape);
+  const setDrawingShape = useEditor((s) => s.setDrawingShape);
+  const updateSelectedShapeStyle = useEditor((s) => s.updateSelectedShapeStyle);
   const layerFocusVersion = useEditor((s) => s.layerFocusVersion);
   useEffect(() => {
     if (selected) setTab('layers');
@@ -120,6 +128,26 @@ export function StickerPanel() {
             </button>
           </div>
           <LayerList type="sticker" emptyHint="还没有叠加素材。去「原料库」或「我上传的」里点选添加，或把图片 / 视频拖进来；加入后可在画布上拖动、缩放、旋转。" />
+          <div className="section">
+            <div className="section-title">绘制图形</div>
+            <div className="inline" style={{ flexWrap: 'wrap' }}>
+              {SHAPES.map((s) => <button key={s.key} type="button" className={`btn sm ${drawingShape === s.key ? 'primary' : ''}`} onClick={() => setDrawingShape(drawingShape === s.key ? null : s.key)}>{s.label}</button>)}
+            </div>
+            <div className="hint">选一种图形，在预览画布按住鼠标拖动画出；再次点击工具退出绘制。</div>
+          </div>
+          <LayerList type="shape" emptyHint="还没有图形。选择上方工具并在预览画布拖动。" />
+          {selected?.type === 'shape' && <div className="section">
+            <div className="section-title">图形外观</div>
+            <div className="stack">
+              <label className="field">形状
+                <select className="input" value={selected.shape} onChange={(e) => updateSelectedShapeStyle({ shape: e.target.value as ShapeLayer['shape'] })}>{SHAPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}</select>
+              </label>
+              {selected.shape !== 'line' && selected.shape !== 'arrow' && <label className="field">填充颜色 <input type="color" value={selected.fill} onChange={(e) => updateSelectedShapeStyle({ fill: e.target.value })} /></label>}
+              <label className="field">描边颜色 <input type="color" value={selected.stroke} onChange={(e) => updateSelectedShapeStyle({ stroke: e.target.value })} /></label>
+              <label className="field">描边粗细 <input className="input" type="number" min="0" max="0.1" step="0.001" value={selected.stroke_width} onChange={(e) => updateSelectedShapeStyle({ stroke_width: Number(e.target.value) })} /></label>
+              {selected.shape === 'rect' && <label className="field">圆角 <input className="input" type="number" min="0" max="0.5" step="0.01" value={selected.radius} onChange={(e) => updateSelectedShapeStyle({ radius: Number(e.target.value) })} /></label>}
+            </div>
+          </div>}
           {selected && <LayerProps key={selected.id} layer={selected} />}
         </div>
       ) : (

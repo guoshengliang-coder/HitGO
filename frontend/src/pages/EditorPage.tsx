@@ -134,7 +134,7 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
         else if (s.selectedLayerId) {
           // 剪切 = 复制 + 删除
           s.copyLayer();
-          s.removeLayer(s.selectedLayerId);
+          s.removeSelectedLayers();
           useEditor.getState().setToast('已剪切图层');
         }
         return;
@@ -149,7 +149,7 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
       case 'KeyD':
         if (layerStep && s.selectedLayerId) {
           e.preventDefault();
-          s.duplicateLayer(s.selectedLayerId);
+          s.duplicateSelectedLayers();
         }
         return;
       default:
@@ -252,7 +252,7 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
       case 'Backspace':
         if (layer) {
           e.preventDefault();
-          s.removeLayer(layer.id);
+          s.removeSelectedLayers();
         }
         return;
       case 'Escape':

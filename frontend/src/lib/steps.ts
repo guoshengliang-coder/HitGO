@@ -24,13 +24,13 @@ export function layerTypesForStep(step: Step): Layer['type'][] {
   // 改语言套用后生成的译文字幕、大字报的滚动文案也是文字图层，同样沿用。
   if (step === 'text' || step === 'localize' || step === 'poster') return ['text'];
   if (step === 'subtitle') return ['text', 'mask'];
-  if (step === 'sticker') return ['sticker'];
+  if (step === 'sticker') return ['sticker', 'shape'];
   return [];
 }
 
 /** 画布和时间线选中图层后，打开实际能编辑该对象的面板（HIG-72）。 */
 export function stepForLayer(layer: Layer): Step {
-  if (layer.type === 'sticker') return 'sticker';
+  if (layer.type === 'sticker' || layer.type === 'shape') return 'sticker';
   if (layer.type === 'mask') return 'subtitle';
   if (layer.scroll) return 'poster';
   return 'text';

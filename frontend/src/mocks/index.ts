@@ -595,11 +595,12 @@ function tickJobs() {
           const configured = v?.edit_spec?.outputs.find((o) => o.variant_key === j.variant_key);
           const [w, h] = configured?.variant_key === 'custom' && configured.width && configured.height
             ? [configured.width, configured.height] : dims[j.variant_key] ?? [1080, 1920];
-          j.output_url = v?.proxy_url || '';
-          j.output = { width: w, height: h, duration: v?.duration ?? 0, size: 5832211, codec: 'h264/aac' };
+          const still = j.output_format === 'png' || j.output_format === 'jpg';
+          j.output_url = still ? (v?.poster_url || '') : (v?.proxy_url || '');
+          j.output = { width: w, height: h, duration: still ? 0 : (v?.duration ?? 0), size: 5832211, codec: still ? j.output_format! : 'h264/aac' };
           // 同 worker（契约 §1 Job output.audio，HIG-26）：spec 带 audio 块时记下实际混进的音轨，素材不在的算跳过
           const audio = v?.edit_spec?.audio;
-          if (audio) {
+          if (audio && !still) {
             // 关掉眼睛的音轨（HIG-33）既不混入也不算跳过
             const found = audio.tracks.filter((t) => !t.hidden).map((t) => ({ t, a: assets.find((x) => x.id === t.asset_id && x.type === 'audio') }));
             const skipped = found.filter((x) => !x.a).map((x) => x.t.id);
@@ -1064,7 +1065,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return { url, width: dims[0], height: dims[1] };
   }
   if (path === '/api/render') {
-    const { video_ids, items, name, variant_keys } = body as { video_ids?: string[]; items?: { video_id: string; lang?: string | null; edit_spec?: EditSpec }[]; name?: string; variant_keys?: string[] };
+    const { video_ids, items, name, variant_keys, output_format } = body as { video_ids?: string[]; items?: { video_id: string; lang?: string | null; edit_spec?: EditSpec }[]; name?: string; variant_keys?: string[]; output_format?: 'source' | 'mp4' | 'mov' | 'png' | 'jpg' };
     const created: Job[] = [];
     for (const item of items ?? (video_ids ?? []).map((video_id) => ({ video_id, lang: null, edit_spec: undefined }))) {
       const v = videos.find((x) => x.id === item.video_id);
@@ -1073,7 +1074,10 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
       const missing = (variant_keys ?? []).filter((k) => !spec.outputs.some((o) => o.variant_key === k));
       if (missing.length) throw new ApiError(400, `视频 ${v.name} 的编辑参数里没有输出 ${missing.join(', ')}`);
       for (const o of spec.outputs.filter((x) => !variant_keys || variant_keys.includes(x.variant_key))) {
-        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, name: name?.trim() || null, lang: item.lang ?? null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
+        const sourceExt = v.original_ext ?? v.name.split('.').pop()?.toLowerCase();
+        const resolved = output_format === 'source' ? (sourceExt === 'jpeg' ? 'jpg' : sourceExt) : output_format;
+        const format = resolved === 'mov' || resolved === 'png' || resolved === 'jpg' ? resolved : 'mp4';
+        const j: Job = { id: nid('j'), batch_id: v.batch_id, video_id: v.id, variant_key: o.variant_key, output_format: format, name: name?.trim() || null, lang: item.lang ?? null, status: 'queued', progress: 0, error: null, output_url: null, output: null, callback: null, created_at: now(), started_at: null, finished_at: null };
         jobs.push(j);
         created.push(j);
       }

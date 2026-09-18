@@ -8,7 +8,7 @@ describe('layerTypesForStep', () => {
     expect(layerTypesForStep('localize')).toEqual(['text']);
     expect(layerTypesForStep('poster')).toEqual(['text']);
     expect(layerTypesForStep('subtitle')).toEqual(['text', 'mask']);
-    expect(layerTypesForStep('sticker')).toEqual(['sticker']);
+    expect(layerTypesForStep('sticker')).toEqual(['sticker', 'shape']);
   });
   it('不管图层的模块返回空', () => {
     expect(layerTypesForStep('trim')).toEqual([]);
@@ -27,11 +27,12 @@ describe('stepForLayer（HIG-72）', () => {
   });
   it('贴纸与遮盖分别打开自己的属性面板', () => {
     expect(stepForLayer(layer('sticker'))).toBe('sticker');
+    expect(stepForLayer(layer('shape'))).toBe('sticker');
     expect(stepForLayer(layer('mask'))).toBe('subtitle');
   });
   it('返回值一定是真实存在的模块', () => {
     const keys = STEPS.map((s) => s.key);
-    for (const type of ['text', 'sticker', 'mask'] as const) expect(keys).toContain(stepForLayer(layer(type)));
+    for (const type of ['text', 'sticker', 'mask', 'shape'] as const) expect(keys).toContain(stepForLayer(layer(type)));
   });
 });
 

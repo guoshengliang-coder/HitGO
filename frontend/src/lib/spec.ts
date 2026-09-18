@@ -83,6 +83,7 @@ export function layerName(layer: Layer, assets: Asset[]): string {
   if (own) return own;
   if (layer.type === 'text') return layer.text.replace(/\n/g, ' ').slice(0, 12) || '文字';
   if (layer.type === 'mask') return '遮盖';
+  if (layer.type === 'shape') return ({ rect: '矩形', ellipse: '圆形', triangle: '三角形', line: '直线', arrow: '箭头', star: '星形' })[layer.shape];
   const a = assets.find((x) => x.id === layer.asset_id);
   return a ? a.name.replace(/\.[a-z0-9]+$/i, '') : '贴纸';
 }
@@ -93,6 +94,7 @@ export function layerAspect(layer: Layer, assets: Asset[]): number {
     if (!(layer.width > 0) || !(layer.height > 0)) return 1;
     return (layer.width * 1080) / (layer.height * 1920);
   }
+  if (layer.type === 'shape') return (layer.width * 1080) / Math.max(1, layer.height * 1920);
   if (layer.type === 'sticker') {
     const a = assets.find((x) => x.id === layer.asset_id);
     if (a?.width && a?.height) return a.width / a.height;

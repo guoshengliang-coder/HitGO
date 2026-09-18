@@ -241,7 +241,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         collect_assets(db, spec),
         variant,
         source_path=str(storage.source_path(video.batch_id, video.id, video.source_ext)),
-        output_path=str(storage.tmp_output_path(job.id)),
+        output_path=str(storage.tmp_output_path(job.id, "mp4" if job.output_format in {"png", "jpg"} else job.output_format)),
         resolve_image_url=resolve_image_url,
         ffmpeg_bin=settings.ffmpeg_bin,
         audio_assets=collect_audio(db, spec),
@@ -258,7 +258,7 @@ def build_callback(job: Job, video: Video, batch: Batch, output: dict[str, Any])
         "variant_key": job.variant_key,
         "status": "done",
         "output": {
-            "url": settings.public_base_url + storage.media_url(storage.output_path(job.id)),
+            "url": settings.public_base_url + storage.media_url(storage.output_path(job.id, job.output_format)),
             "duration": output["duration"],
             "width": output["width"],
             "height": output["height"],
@@ -290,7 +290,11 @@ def render_job(db: Session, job_id: str) -> None:
     job.finished_at = None
     db.commit()
 
-    tmp_out = storage.tmp_output_path(job.id)
+    fmt = job.output_format or "mp4"
+    # A still must reflect the fully edited first frame, so render a short-lived MP4 first.
+    render_fmt = "mp4" if fmt in {"png", "jpg"} else fmt
+    tmp_out = storage.tmp_output_path(job.id, render_fmt)
+    tmp_image = storage.tmp_output_path(job.id, fmt) if render_fmt != fmt else None
     try:
         if video.status != "ready" or not job_spec(job, video) or not video.duration:
             raise RenderError("视频尚未就绪或没有编辑参数")
@@ -303,10 +307,25 @@ def render_job(db: Session, job_id: str) -> None:
 
         run_ffmpeg(plan.argv, plan.expected_duration, on_progress)
 
-        meta = ffprobe.probe(tmp_out)
-        final = storage.output_path(job.id)
-        storage.move_atomic(tmp_out, final)
-        codec = "h264/aac" if meta.get("has_audio") else "h264"
+        if tmp_image is not None:
+            cmd = [settings.ffmpeg_bin, "-y", "-i", str(tmp_out), "-frames:v", "1"]
+            if fmt == "jpg":
+                cmd += ["-q:v", "2"]
+            cmd.append(str(tmp_image))
+            result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if result.returncode != 0:
+                raise RenderError(f"提取成片首帧失败：{result.stderr[-1000:]}")
+            with Image.open(tmp_image) as frame:
+                width, height = frame.size
+            meta = {"width": width, "height": height, "duration": 0.0, "has_audio": False}
+            storage.remove_file(tmp_out)
+            produced = tmp_image
+        else:
+            meta = ffprobe.probe(tmp_out)
+            produced = tmp_out
+        final = storage.output_path(job.id, fmt)
+        storage.move_atomic(produced, final)
+        codec = fmt if fmt in {"png", "jpg"} else ("h264/aac" if meta.get("has_audio") else "h264")
         output = {
             "width": meta["width"],
             "height": meta["height"],
@@ -314,7 +333,7 @@ def render_job(db: Session, job_id: str) -> None:
             "size": storage.file_size(final),
             "codec": codec,
         }
-        if plan.audio is not None:
+        if plan.audio is not None and fmt not in {"png", "jpg"}:
             output["audio"] = plan.audio
         job.output = output
         job.callback = build_callback(job, video, batch, output)
@@ -325,6 +344,8 @@ def render_job(db: Session, job_id: str) -> None:
         db.commit()
     except Exception as exc:  # noqa: BLE001 - every failure must land in the DB
         storage.remove_file(tmp_out)
+        if tmp_image is not None:
+            storage.remove_file(tmp_image)
         db.rollback()
         job = db.get(Job, job_id)
         if job is not None:

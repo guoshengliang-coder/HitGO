@@ -19,7 +19,7 @@ CHUNK = 1 << 20
 # Same rule as frontend lib/outputs.ts outputFileName: Windows / macOS-unsafe characters -> "_".
 _UNSAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
 _PART_MAX = 80
-_VIDEO_EXT = re.compile(r"\.(mp4|mov)$", re.IGNORECASE)
+_VIDEO_EXT = re.compile(r"\.(mp4|mov|png|jpg|jpeg)$", re.IGNORECASE)
 
 
 def _safe_part(value: str | None) -> str:
@@ -35,15 +35,16 @@ def output_file_name(
     batch_name: str | None,
     video_name: str | None,
     lang_label: str | None = None,
+    output_format: str = "mp4",
 ) -> str:
-    """``导出名称_视频名[_语言名]_规格.mp4``; batch name when there is no export name; job id when all are empty."""
+    """A safe download name with the actual job extension."""
     video = _VIDEO_EXT.sub("", video_name or "")
     parts = [
         p
         for p in (_safe_part(export_name or batch_name), _safe_part(video), _safe_part(lang_label), _safe_part(variant_key))
         if p
     ]
-    return f"{'_'.join(parts) if parts else job_id}.mp4"
+    return f"{'_'.join(parts) if parts else job_id}.{output_format}"
 
 
 def dedupe_names(names: list[str]) -> list[str]:

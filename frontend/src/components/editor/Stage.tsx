@@ -21,7 +21,7 @@ import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect,
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { marginFromBox, placeLayer, round4, type LayerBox } from '../../lib/layout';
-import { cloneSpec, layerAspect, outputFor } from '../../lib/spec';
+import { cloneSpec, layerAspect, newLayerId, outputFor } from '../../lib/spec';
 import { blurFillFilter } from '../../lib/blurFill';
 import { resolveLayerBox } from '../../lib/variantLayout';
 import { layerTypesForStep } from '../../lib/steps';
@@ -43,6 +43,7 @@ import { REST, enterDelay, hasAnimation, sampleAnimation } from '../../lib/textA
 import { CURSOR_TAIL, buildGlyphLayout, paintReveal, revealTiming, unitCount } from '../../lib/textReveal';
 import { InlineTextEditor } from './InlineTextEditor';
 import { useCanvasImageDrop } from './useCanvasImageDrop';
+import { renderShapeCanvas } from '../../lib/shapeImage';
 import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
@@ -263,6 +264,7 @@ function LayerNode({
   registerNode,
   geom,
   onCommitVariant,
+  onGroupMove,
   activeAnchor,
 }: {
   layer: Layer;
@@ -281,6 +283,7 @@ function LayerNode({
   geom?: StageGeom;
   /** 预览非 9:16 画幅时松手写回该画幅的覆盖。 */
   onCommitVariant?: (box: LayerBox, rotate?: number, history?: boolean) => void;
+  onGroupMove?: (dx: number, dy: number) => void;
   /** 正在拖的 Transformer 把手名（middle-left 等），没有时 null。 */
   activeAnchor: () => string | null;
 }) {
@@ -300,6 +303,7 @@ function LayerNode({
   );
   // 视频还没就绪时先画首帧，避免画布上突然空一块
   const stickerPoster = useImage(stickerIsVideo && !videoReady ? sticker?.poster_url : undefined);
+  const shapeCanvas = useMemo(() => layer.type === 'shape' ? renderShapeCanvas(layer) : undefined, [layer]);
   const [, bump] = useState(0);
   // 逐字显现（HIG-45）的合成画布：每帧按遮罩把文字 PNG 画进来，复用同一块
   const revealCanvas = useRef<HTMLCanvasElement | null>(null);
@@ -380,7 +384,8 @@ function LayerNode({
   const textRendered = layer.type === 'text' ? getCachedText(layer as TextLayer) : undefined;
   if (textRendered) lastText.current = textRendered;
   let image: CanvasImageSource | undefined;
-  if (layer.type !== 'sticker') image = lastText.current?.canvas;
+  if (layer.type === 'shape') image = shapeCanvas;
+  else if (layer.type !== 'sticker') image = lastText.current?.canvas;
   else if (!stickerIsVideo) image = stickerImg;
   else image = videoReady ? stickerVideo : stickerPoster;
   // 拖边改换行宽度 / 框高：开始时的 spec 快照（松手时压一条历史）、舞台像素 / PNG 像素的比例、拖的轴和方向、
@@ -450,8 +455,8 @@ function LayerNode({
     if (layer.type === 'text' && selectable && !layer.locked) onEdit();
   };
 
-  const commitBox = (node: Konva.Image, newW: number, rotate?: number) => {
-    const h = newW / aspect;
+  const commitBox = (node: Konva.Image, newW: number, rotate?: number, newH?: number) => {
+    const h = newH ?? newW / aspect;
     const cx = node.x() - anim.dx * H;
     const cy = node.y() - anim.dy * H;
     const nb = { x: cx - newW / 2, y: cy - h / 2, w: newW, h };
@@ -466,6 +471,7 @@ function LayerNode({
     updateLayer(layer.id, (l) => {
       l.margin = m;
       l.width = w;
+      if (l.type === 'shape') l.height = round4(h / H);
       if (r !== undefined) l.rotate = r;
       if (l.type === 'text' && Math.abs(newW - box.w) > 0.5) l.width_manual = true;
     });
@@ -530,6 +536,11 @@ function LayerNode({
       onDragMove={onDragMove}
       onDragEnd={(e) => {
         onGuides(NO_GUIDES);
+        if (onGroupMove) {
+          const node = e.target as Konva.Image;
+          onGroupMove((node.x() - (box.x + box.w / 2 + anim.dx * H)) / W, (node.y() - (box.y + box.h / 2 + anim.dy * H)) / H);
+          return;
+        }
         commitBox(e.target as Konva.Image, box.w);
       }}
       onTransformStart={() => {
@@ -583,9 +594,10 @@ function LayerNode({
           return;
         }
         const newW = Math.max(8, (node.width() * node.scaleX()) / anim.scale);
+        const newH = layer.type === 'shape' ? Math.max(8, (node.height() * node.scaleY()) / anim.scale) : undefined;
         node.scaleX(anim.scale);
         node.scaleY(anim.scale);
-        commitBox(node, newW, node.rotation());
+        commitBox(node, newW, node.rotation(), newH);
       }}
       stroke={selected ? GUIDE_COLOR : undefined}
       strokeWidth={selected ? 1 : 0}
@@ -636,16 +648,22 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const zone = useEditor((s) => s.safeZones.find((z) => z.key === s.safeZoneKey));
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
+  const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
+  const moveSelectedLayersOnCanvas = useEditor((s) => s.moveSelectedLayersOnCanvas);
+  const drawingShape = useEditor((s) => s.drawingShape);
+  const addLayer = useEditor((s) => s.addLayer);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const focusLayer = useEditor((s) => s.focusLayer);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
+  const postDuration = usePostDuration();
   const preroll = useCoverDuration();
   const coverActive = useInCover();
   const [hitGuides, setHitGuides] = useState<Guides>(NO_GUIDES);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   // 正在拖动 / 拉伸的遮盖的实时框：预览 div 跟着它走，松手后回到 spec 算出的框
   const [liveMask, setLiveMask] = useState<{ id: string; box: LayerBox } | null>(null);
+  const [shapeDraft, setShapeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const backdrop = useMemo(supportsBackdropBlur, []);
 
   // 换选中 / 换视频 / 换步骤时退出内联编辑
@@ -748,10 +766,37 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   const onStageMouseDown = useCallback(
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+      if (drawingShape && spec && video && !coverActive) {
+        const p = e.target.getStage()?.getPointerPosition();
+        if (p) setShapeDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        return;
+      }
       if (e.target === e.target.getStage()) setSelectedLayer(null);
     },
-    [setSelectedLayer],
+    [setSelectedLayer, drawingShape, spec, video, coverActive],
   );
+  const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (!shapeDraft) return;
+    const p = e.target.getStage()?.getPointerPosition();
+    if (p) setShapeDraft((d) => d && { ...d, x1: Math.max(0, Math.min(W, p.x)), y1: Math.max(0, Math.min(H, p.y)) });
+  };
+  const onStageMouseUp = () => {
+    const d = shapeDraft;
+    setShapeDraft(null);
+    if (!d || !drawingShape || Math.abs(d.x1 - d.x0) < 8 || Math.abs(d.y1 - d.y0) < 8) return;
+    const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1);
+    const start = Math.max(0, Math.min(postTime, Math.max(0, postDuration - 0.1)));
+    const end = Math.min(postDuration, start + 3);
+    addLayer({
+      id: newLayerId(), type: 'shape', shape: drawingShape, anchor: 'top-left',
+      margin: [round4(x / W), round4(y / H)],
+      width: round4(Math.min(1, Math.abs(d.x1 - d.x0) / W)),
+      height: round4(Math.min(1, Math.abs(d.y1 - d.y0) / H)),
+      rotate: 0, opacity: 1, t: end > start ? [start, end] : 'all',
+      fill: '#E3312B', stroke: '#FFFFFF', stroke_width: 0.004, radius: 0.08,
+      flip_x: d.x1 < d.x0, flip_y: d.y1 < d.y0,
+    });
+  };
 
   // 缩放角点吸附到参考线（旋转把手不吸附；按住 ⌘/Ctrl 关闭）
   const anchorDragBoundFunc = useCallback((_oldPos: Konva.Vector2d, newPos: Konva.Vector2d, evt: MouseEvent | TouchEvent | undefined) => {
@@ -803,15 +848,15 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
             return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
           })}
-        <div className="konva-layer">
-          <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown}>
+        <div className="konva-layer" style={drawingShape ? { cursor: 'crosshair' } : undefined}>
+          <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown} onMouseMove={onStageMouseMove} onTouchMove={onStageMouseMove} onMouseUp={onStageMouseUp} onTouchEnd={onStageMouseUp}>
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
             <KLayer>
               {layers.map((l) => {
                 if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
                 // 图层无论当前模块为何都能命中；点选后由 focusLayer 切到对应属性面板。
-                const selectable = true;
+                const selectable = !drawingShape;
                 if (l.type === 'mask') {
                   return (
                     <MaskNode
@@ -820,11 +865,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                       W={W}
                       H={H}
                       selectable={selectable}
-                      selected={selectedLayerId === l.id && layerTypes.includes(l.type)}
+                      selected={selectedLayerIds.includes(l.id) && layerTypes.includes(l.type)}
                       outlined={layerTypes.includes(l.type)}
                       backdrop={backdrop}
                       guides={guides}
-                      onSelect={() => focusLayer(l)}
+                      onSelect={() => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); }}
                       onGuides={setHitGuides}
                       onLive={(box) => setLiveMask(box ? { id: l.id, box } : null)}
                       registerNode={(n) => {
@@ -842,10 +887,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     W={W}
                     H={H}
                     selectable={selectable}
-                    selected={selectedLayerId === l.id && layerTypes.includes(l.type)}
+                    selected={selectedLayerIds.includes(l.id) && layerTypes.includes(l.type)}
                     hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
-                    onSelect={() => focusLayer(l)}
+                    onSelect={() => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); }}
                     onEdit={() => isRef && setEditingLayerId(l.id)}
                     onGuides={setHitGuides}
                     registerNode={(n) => {
@@ -853,6 +898,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     }}
                     geom={geomOf(l)}
                     onCommitVariant={commitOnVariant(l)}
+                    onGroupMove={isRef && selectedLayerIds.length > 1 && selectedLayerIds.includes(l.id) ? moveSelectedLayersOnCanvas : undefined}
                     activeAnchor={activeAnchor}
                   />
                 );
@@ -860,8 +906,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               {layerTypes.length > 0 && (
                 <Transformer
                   ref={trRef}
-                  keepRatio={!selectedIsMask}
-                  enabledAnchors={selectedIsMask ? ALL_ANCHORS : selectedType === 'text' ? TEXT_ANCHORS : CORNER_ANCHORS}
+                  keepRatio={!selectedIsMask && (selectedType !== 'shape' || !isRef)}
+                  enabledAnchors={selectedIsMask || selectedType === 'shape' ? ALL_ANCHORS : selectedType === 'text' ? TEXT_ANCHORS : CORNER_ANCHORS}
                   rotateEnabled={!selectedIsMask}
                   anchorSize={8}
                   anchorStroke={GUIDE_COLOR}
@@ -874,6 +920,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               )}
             </KLayer>
             <KLayer listening={false}>
+              {shapeDraft && <Rect x={Math.min(shapeDraft.x0, shapeDraft.x1)} y={Math.min(shapeDraft.y0, shapeDraft.y1)} width={Math.abs(shapeDraft.x1 - shapeDraft.x0)} height={Math.abs(shapeDraft.y1 - shapeDraft.y0)} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 4]} />}
               {overlayUrl && <SafeZoneOverlay url={overlayUrl} W={W} H={H} />}
               {hitGuides.xs.map((x) => (
                 <KLine key={`x${x}`} points={[x, 0, x, H]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />

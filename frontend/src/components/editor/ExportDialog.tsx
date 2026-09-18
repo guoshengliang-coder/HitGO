@@ -27,6 +27,7 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
   const [langs, setLangs] = useState<string[]>(request?.langs ?? []);
   const batchName = useEditor((s) => s.batch?.name ?? '');
   const [name, setName] = useState('');
+  const [outputFormat, setOutputFormat] = useState<'source' | 'mp4' | 'mov' | 'png' | 'jpg'>('source');
   const setExportVariants = useEditor((s) => s.setExportVariants);
   const [fallbackKeys, setFallbackKeys] = useState<VariantKey[]>(() => loadExportVariants());
   const variantKeys = dialogExportKeys(currentSpec, fallbackKeys);
@@ -69,7 +70,7 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
             className="btn primary"
             disabled={rendering || targets.ids.length === 0 || (!!langPlan && langPlan.items.length === 0)}
             onClick={() => {
-              void saveAndRender(targets.ids, { name, variantKeys, langs: activeLangs });
+              void saveAndRender(targets.ids, { name, variantKeys, langs: activeLangs, outputFormat });
               onClose();
             }}
           >
@@ -93,7 +94,18 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
           placeholder={`例如：${batchName ? `${batchName} ` : ''}${exportDateLabel()} 版`}
           onChange={(e) => setName(e.target.value)}
         />
-        <span className="hint">产物页可按名称搜索；下载的文件名为「名称_视频名_画幅.mp4」（多语言时为「名称_视频名_语言_画幅.mp4」），不填时用批次名。</span>
+        <span className="hint">产物页可按名称搜索；下载的文件名包含名称、视频名、语言和画幅，扩展名为所选格式。不填名称时用批次名。</span>
+      </label>
+      <label className="field" style={{ marginBottom: 12 }}>
+        文件类型
+        <select className="input" value={outputFormat} onChange={(e) => setOutputFormat(e.target.value as typeof outputFormat)}>
+          <option value="source">跟随原文件（默认）</option>
+          <option value="mp4">MP4 视频</option>
+          <option value="mov">MOV 视频</option>
+          <option value="png">PNG 图片</option>
+          <option value="jpg">JPG 图片</option>
+        </select>
+        <span className="hint">混合批次选“跟随原文件”时，每条分别采用其导入格式；图片输出取编辑后成片的首帧。</span>
       </label>
       <div className="field" style={{ marginBottom: 12 }}>
         画幅
