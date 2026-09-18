@@ -6,7 +6,7 @@ import { useEditor, usePostDuration } from '../../store/editor';
 import { api } from '../../api';
 import { formatSeconds } from '../../lib/time';
 import { BUCKET_LABEL, filterAssets, type AssetBucket } from '../../lib/assets';
-import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, stickerAudioLayers } from '../../lib/audioTracks';
+import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, SPEED_MAX, SPEED_MIN, stickerAudioLayers } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { layerName } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
@@ -98,12 +98,24 @@ const LOOP_MODES: SegOption<boolean>[] = [
   { v: false, label: '播一遍' },
 ];
 
+/** 常用倍速；「倍速」数字框可以填之间的任意值，Seg 只在正好等于某一档时高亮。 */
+const SPEED_PRESETS: SegOption<number>[] = [
+  { v: 0.75, label: '0.75×' },
+  { v: 1, label: '1×' },
+  { v: 1.25, label: '1.25×' },
+  { v: 1.5, label: '1.5×' },
+  { v: 2, label: '2×' },
+];
+
+const nearestSpeed = (v: number) => SPEED_PRESETS.find((o) => Math.abs(o.v - v) < 1e-6)?.v ?? v;
+
 function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }) {
   const assets = useEditor((s) => s.assets);
   const update = useEditor((s) => s.updateAudioTrack);
   const remove = useEditor((s) => s.removeAudioTrack);
   const toggleHidden = useEditor((s) => s.toggleTrackHidden);
   const select = useEditor((s) => s.setSelectedTrack);
+  const setSpeed = useEditor((s) => s.setTrackSpeed);
   const postDuration = usePostDuration();
   const r = resolveTrack(track);
   const asset = assets.find((a) => a.id === track.asset_id);
@@ -141,12 +153,17 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
           )}
           <Slider label="音量" value={r.volume} onChange={(v) => update(track.id, { volume: Math.round(v * 100) / 100 })} />
           {r.align === 'source' ? (
-            <div className="hint">按源视频时间轴播放，删除的区间会一起跳过；不能循环或偏移。</div>
+            <div className="hint">按源视频时间轴播放，删除的区间会一起跳过；不能循环、偏移或变速。</div>
           ) : (
             <>
               <div className="g2">
                 <Seg label="循环" options={LOOP_MODES} value={r.loop} onChange={(loop) => update(track.id, { loop })} />
                 <Num label="起点" value={r.offset} scale={1} step={0.5} min={0} max={mediaDuration > 0 ? Math.max(0, mediaDuration - 0.1) : undefined} suffix="s" title={r.loop ? '第一遍从素材第几秒开始，之后从头循环' : '从素材第几秒开始播'} onChange={(v) => update(track.id, { offset: Math.round(v * 100) / 100 })} />
+              </div>
+              {/* 变速（HIG-75）：atempo，音调不变；改速度时时段跟着调，播的素材内容不变 */}
+              <div className="g2">
+                <Seg label="速度" options={SPEED_PRESETS} value={nearestSpeed(r.speed)} onChange={(v) => setSpeed(track.id, v)} />
+                <Num label="倍速" value={r.speed} scale={1} step={0.05} min={SPEED_MIN} max={SPEED_MAX} suffix="×" title="atempo 变速，音调不变。改速度时时段跟着调，播的素材内容不变" onChange={(v) => setSpeed(track.id, v)} />
               </div>
               {r.loop && (
                 <Field label="拆分后" title="拆分出来的后半段默认接着前半段放；也可以改成从素材开头重新放">

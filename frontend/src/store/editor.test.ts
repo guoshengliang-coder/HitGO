@@ -842,74 +842,39 @@ describe('大字报（HIG-50）', () => {
   });
 });
 
-// --- 多选与批量编辑（HIG-77）-------------------------------------------------------
+// --- 多选下的样式粘贴（HIG-77 在 HIG-63 的多选之上补的一点）----------------------
 
-describe('图层多选', () => {
-  const twoLayers = () => {
+describe('多选时粘贴文字样式', () => {
+  it('贴到全部选中的文字图层，只记一步历史', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [textLayer('一'), { ...textLayer('二'), id: 'L2' }, { ...textLayer('三'), id: 'L3' }] };
     useEditor.getState().replaceSpec('v1', spec);
-  };
-
-  it('单选时主选中与集合一致；多选时 ids[0] 是主选中', () => {
-    twoLayers();
-    useEditor.getState().setSelectedLayer('L2');
-    expect(useEditor.getState().selectedLayerIds).toEqual(['L2']);
-    expect(useEditor.getState().selectedLayerId).toBe('L2');
-
-    useEditor.getState().setSelectedLayers(['L2', 'L3']);
-    expect(useEditor.getState().selectedLayerId).toBe('L2');
-
-    useEditor.getState().setSelectedLayer(null);
-    expect(useEditor.getState().selectedLayerIds).toEqual([]);
-  });
-
-  it('Shift 点击翻转一条，取消掉主选中时下一条顶上', () => {
-    twoLayers();
-    useEditor.getState().setSelectedLayers(['L1', 'L2']);
-    useEditor.getState().toggleSelectedLayer('L3');
-    expect(useEditor.getState().selectedLayerIds).toEqual(['L1', 'L2', 'L3']);
-    useEditor.getState().toggleSelectedLayer('L1');
-    expect(useEditor.getState().selectedLayerIds).toEqual(['L2', 'L3']);
-    expect(useEditor.getState().selectedLayerId).toBe('L2');
-  });
-
-  it('切模块、切视频、删掉图层都会把集合清干净', () => {
-    twoLayers();
-    useEditor.getState().setSelectedLayers(['L1', 'L2']);
-    useEditor.getState().setStep('audio');
-    expect(useEditor.getState().selectedLayerIds).toEqual([]);
-
-    useEditor.getState().setSelectedLayers(['L1', 'L2']);
-    useEditor.getState().removeLayer('L1');
-    expect(useEditor.getState().selectedLayerIds).toEqual(['L2']);
-    expect(useEditor.getState().selectedLayerId).toBe('L2');
-  });
-
-  it('updateLayers 改三条只记一步历史——逐条改要按三次撤销才回得去', () => {
-    twoLayers();
-    const before = useEditor.getState().canUndo();
-    useEditor.getState().updateLayers(['L1', 'L2', 'L3'], (l) => {
-      if (l.type === 'text') l.style.color = '#ff0000';
-    });
-    const colors = () => (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
-    expect(colors()).toEqual(['#ff0000', '#ff0000', '#ff0000']);
-    expect(before).toBe(false);
-    useEditor.getState().undo();
-    expect(colors().every((c) => c !== '#ff0000')).toBe(true);
-    expect(useEditor.getState().canUndo()).toBe(false); // 只压了一条
-  });
-
-  it('多选时粘贴样式贴到全部选中的文字图层上', () => {
-    twoLayers();
     useEditor.getState().setSelectedLayer('L1');
     useEditor.getState().updateLayer('L1', (l) => {
       if (l.type === 'text') l.style.color = '#00ff00';
     });
     useEditor.getState().copyStyle();
-    useEditor.getState().setSelectedLayers(['L2', 'L3']);
+    useEditor.getState().selectLayers(['L2', 'L3']);
+    const undoDepthBefore = useEditor.getState().canUndo();
+    useEditor.getState().pasteStyle();
+    const colors = () => (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
+    expect(colors()).toEqual(['#00ff00', '#00ff00', '#00ff00']);
+    expect(undoDepthBefore).toBe(true);
+    useEditor.getState().undo(); // 一步就回到只有 L1 是绿的
+    expect(colors().slice(1).every((c) => c !== '#00ff00')).toBe(true);
+  });
+
+  it('单选时只贴当前一条', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [textLayer('一'), { ...textLayer('二'), id: 'L2' }] };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().updateLayer('L1', (l) => {
+      if (l.type === 'text') l.style.color = '#123456';
+    });
+    useEditor.getState().copyStyle();
+    useEditor.getState().setSelectedLayer('L2');
     useEditor.getState().pasteStyle();
     const colors = (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
-    expect(colors).toEqual(['#00ff00', '#00ff00', '#00ff00']);
+    expect(colors[1]).toBe('#123456');
   });
 });
 

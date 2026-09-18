@@ -230,6 +230,8 @@ function VoiceSection({ layer, voice }: { layer: TextLayer; voice: { track: Audi
   const assets = useEditor((s) => s.assets);
   const removeAudioTrack = useEditor((s) => s.removeAudioTrack);
   const setScroll = useEditor((s) => s.setScroll);
+  // 生成朗读后自动按朗读时长调滚动速度（HIG-75）；实际调速在 store 的素材就绪回调里
+  const [fitVoice, setFitVoice] = useState(() => loadFeaturePrefs().posterFitVoiceSpeed);
   useEffect(() => {
     void loadLocalizeOptions();
   }, [loadLocalizeOptions]);
@@ -301,6 +303,17 @@ function VoiceSection({ layer, voice }: { layer: TextLayer; voice: { track: Audi
           配合朗读调速
         </button>
       </div>
+      <label className="inline small" title="生成朗读后自动把滚动全程调成朗读时长；之后改音频速度或拖速度滑杆都不会再被覆盖，要重调按上面的按钮">
+        <input
+          type="checkbox"
+          checked={fitVoice}
+          onChange={(e) => {
+            setFitVoice(e.target.checked);
+            saveFeaturePrefs({ posterFitVoiceSpeed: e.target.checked });
+          }}
+        />
+        生成朗读后自动调速
+      </label>
       {readyAsset && voice && (
         <div className="inline">
           <span className="small muted ellip" title={readyAsset.name}>

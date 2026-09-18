@@ -22,6 +22,13 @@ export interface FeaturePrefs {
 export const FEATURE_DEFAULTS: FeaturePrefs = { autoApplyDub: true, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'keep', timelineWheelVertical: true, posterFitVoiceSpeed: true };
 
 const KEY = 'hitgo.prefs';
+
+/**
+ * 偏好改动的广播（同一套路子见 transportKeys.TIMELINE_ZOOM_EVENT）：开关在一个组件里改，
+ * 读它的在另一个组件里（滚轮方向的开关在 Transport，用它的是 Timeline 的 wheel 监听）。
+ * localStorage 的 storage 事件只跨标签页发，同页改不通知，所以自己发一条。
+ */
+export const PREFS_EVENT = 'hitgo:feature-prefs';
 const PUNCT_MODES: PunctMode[] = ['keep', 'drop-pause', 'drop-all'];
 
 type Getter = Pick<Storage, 'getItem'> | null;
@@ -57,6 +64,11 @@ export function saveFeaturePrefs(patch: Partial<FeaturePrefs>, storage: Setter =
     storage?.setItem(KEY, JSON.stringify(next));
   } catch {
     /* 隐私模式等：忽略，本次会话照常用 next */
+  }
+  try {
+    window.dispatchEvent(new CustomEvent<FeaturePrefs>(PREFS_EVENT, { detail: next }));
+  } catch {
+    /* 没有 window（测试 / SSR）：广播可有可无，读的一方自己会在挂载时取一次 */
   }
   return next;
 }

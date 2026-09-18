@@ -2,11 +2,13 @@
 // [上一帧 | 播放 | 下一帧] 成片时间 / 总时长 · 时间线工具（删左 / 删右 / 拆分 / 删除） · 源时间 · 缩放。
 // 原来时间线自己的表头（缩放滑杆 + 快捷键提示）并进这里，时间线省出一行。
 // 时间用 m:ss.cc（§8.1 A3），不再显示帧号；快捷键提示收进「?」弹窗。
+import { useState } from 'react';
 import { useCoverDuration, useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime, frameDuration } from '../../lib/time';
 import { outputTime } from '../../lib/cover';
 import { hintFor } from '../../lib/shortcuts';
+import { loadFeaturePrefs, saveFeaturePrefs } from '../../lib/featurePrefs';
 import { MAX_PPS, MIN_PPS, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { IconFit, IconPause, IconPlay, IconStepBack, IconStepFwd } from '../ui/Icons';
 import { TimelineTools } from './TimelineTools';
@@ -26,6 +28,8 @@ export function Transport() {
   const zoomSlider = Math.round((Math.log(viewPps / MIN_PPS) / Math.log(MAX_PPS / MIN_PPS)) * 1000);
   // 滑杆只发事件，围绕视口中心缩放的逻辑在 Timeline 里（它才知道滚动位置）
   const onSlider = (v: number) => window.dispatchEvent(new CustomEvent(TIMELINE_ZOOM_EVENT, { detail: { pps: MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, v / 1000) } }));
+  // 滚轮方向（HIG-79）：本机偏好，Timeline 的 wheel 监听靠 saveFeaturePrefs 的广播收到改动
+  const [wheelVertical, setWheelVertical] = useState(() => loadFeaturePrefs().timelineWheelVertical);
 
   return (
     <div className="transport">
@@ -55,6 +59,17 @@ export function Transport() {
         <button className="btn ghost sm" onClick={() => setTimelinePps(null)} disabled={timelinePps === null} title={hintFor('tl-fit')}>
           <IconFit /> 适应
         </button>
+        <label className="inline small" title="开：滚轮上下看轨道、⇧ 滚轮左右看时间；关：滚轮左右看时间（⌘/Ctrl 滚轮缩放不受影响）">
+          <input
+            type="checkbox"
+            checked={wheelVertical}
+            onChange={(e) => {
+              setWheelVertical(e.target.checked);
+              saveFeaturePrefs({ timelineWheelVertical: e.target.checked });
+            }}
+          />
+          滚轮上下
+        </label>
       </span>
     </div>
   );

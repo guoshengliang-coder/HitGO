@@ -28,6 +28,7 @@ import { layerTypesForStep } from '../../lib/steps';
 import { windowContains } from '../../lib/time';
 import { clipAt, clipWindows, sequenceSourceGain } from '../../lib/sequence';
 import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
+import { boxFromTransform, boxToStage } from '../../lib/scrollBoxDrag';
 import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
 import { boxHeightFromStage, edgeOfAnchor, keepOppositeEdge, wrapWidthFromStage } from '../../lib/textBoxDrag';
@@ -278,7 +279,8 @@ function LayerNode({
   onSelect: () => void;
   onEdit: () => void;
   onGuides: (g: Guides) => void;
-  registerNode: (node: Konva.Image | null) => void;
+  /** 交给 Transformer 的节点：贴纸 / 文字是图片节点，大字报是它的裁切框（HIG-75）。 */
+  registerNode: (node: Konva.Image | Konva.Rect | null) => void;
   /** 预览非 9:16 画幅时由 Stage 算好的舞台框 / 旋转 / 不透明度（HIG-29）。 */
   geom?: StageGeom;
   /** 预览非 9:16 画幅时松手写回该画幅的覆盖。 */
@@ -290,6 +292,7 @@ function LayerNode({
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
   const syncPosterLayer = useEditor((s) => s.syncPosterLayer);
+  const setScroll = useEditor((s) => s.setScroll);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const postDuration = usePostDuration();
   const postTime = usePostTime();
@@ -373,11 +376,7 @@ function LayerNode({
     };
   }, [textKey, widthManual]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 滚动文字（HIG-50）没有可变换的节点：把 Transformer 里的引用清掉，免得留着旧节点
-  const isScroll = layer.type === 'text' && !!layer.scroll;
-  useEffect(() => {
-    if (isScroll) registerNode(null);
-  }, [isScroll]); // eslint-disable-line react-hooks/exhaustive-deps
+
 
   // 改了文字 / 样式、新 PNG 还没渲染好时先沿用上一张：拖边改换行宽度时节点不会中途消失
   const lastText = useRef<RenderedText | undefined>(undefined);
@@ -403,21 +402,51 @@ function LayerNode({
     const imgH = imgW / aspect;
     const [a] = windowRange(layer.t, postDuration);
     const y = sampleScrollY(scrollPath(sc, imgH / H), postTime - a);
+    const boxDraggable = selectable && !layer.locked;
+    const commitBox = (node: Konva.Rect) => {
+      const next = boxFromTransform(node, { w: W, h: H });
+      node.scaleX(1);
+      node.scaleY(1);
+      // 夹过之后的框可能和拖到的位置不完全一样（贴边、最小尺寸），把节点摆回真正生效的位置
+      node.setAttrs(boxToStage(next, { w: W, h: H }));
+      setScroll(layer.id, { box: next });
+    };
     return (
-      <Group clipX={bx.x} clipY={bx.y} clipWidth={bx.w} clipHeight={bx.h} visible={!hidden}>
-        <KImage
-          image={image}
-          x={bx.x + (bx.w - imgW) / 2}
-          y={bx.y + bx.h - y * H}
-          width={imgW}
-          height={imgH}
-          opacity={geom?.opacity ?? layer.opacity}
-          listening={selectable}
-          onClick={onSelect}
-          onTap={onSelect}
-        />
-        {selected && !playing && <Rect x={bx.x + 0.5} y={bx.y + 0.5} width={bx.w - 1} height={bx.h - 1} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} listening={false} />}
-      </Group>
+      <>
+        <Group clipX={bx.x} clipY={bx.y} clipWidth={bx.w} clipHeight={bx.h} visible={!hidden}>
+          <KImage
+            image={image}
+            x={bx.x + (bx.w - imgW) / 2}
+            y={bx.y + bx.h - y * H}
+            width={imgW}
+            height={imgH}
+            opacity={geom?.opacity ?? layer.opacity}
+            listening={selectable}
+            onClick={onSelect}
+            onTap={onSelect}
+          />
+        </Group>
+        {/* 裁切框本身可拖可缩放（HIG-75）：以前只是一条只读虚线，框只能靠右栏四个数字改 */}
+        {!hidden && (
+          <Rect
+            ref={(n) => registerNode(n)}
+            x={bx.x}
+            y={bx.y}
+            width={bx.w}
+            height={bx.h}
+            stroke={GUIDE_COLOR}
+            strokeWidth={1}
+            dash={[4, 3]}
+            // 透明填充才拖得动：没有 fill 的 Rect 只有描边能命中
+            fill="rgba(0,0,0,0.001)"
+            visible={selected && !playing}
+            listening={boxDraggable && selected && !playing}
+            draggable={boxDraggable}
+            onDragEnd={(e) => commitBox(e.target as Konva.Rect)}
+            onTransformEnd={(e) => commitBox(e.target as Konva.Rect)}
+          />
+        )}
+      </>
     );
   }
   const box = geom?.box ?? placeLayer(layer, aspect, { W, H });
@@ -816,8 +845,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   const layers = spec?.layers ?? [];
   const editingLayer = layerTypes.includes('text') && editingLayerId ? (layers.find((l) => l.id === editingLayerId && l.type === 'text') as TextLayer | undefined) : undefined;
-  const selectedType = selectedLayerId ? layers.find((l) => l.id === selectedLayerId)?.type : undefined;
+  const selectedLayer = selectedLayerId ? layers.find((l) => l.id === selectedLayerId) : undefined;
+  const selectedType = selectedLayer?.type;
   const selectedIsMask = selectedType === 'mask';
+  // 大字报拖的是裁切框（HIG-75）：八向、不锁比例、不旋转，与遮盖同一档
+  const selectedIsScrollBox = selectedType === 'text' && !!(selectedLayer as TextLayer | undefined)?.scroll;
   const activeAnchor = useCallback(() => trRef.current?.getActiveAnchor() ?? null, []);
   const hasSrc = !!video?.proxy_url;
   const overlayUrl = isRef && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
@@ -906,9 +938,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               {layerTypes.length > 0 && (
                 <Transformer
                   ref={trRef}
-                  keepRatio={!selectedIsMask && (selectedType !== 'shape' || !isRef)}
-                  enabledAnchors={selectedIsMask || selectedType === 'shape' ? ALL_ANCHORS : selectedType === 'text' ? TEXT_ANCHORS : CORNER_ANCHORS}
-                  rotateEnabled={!selectedIsMask}
+                  keepRatio={!selectedIsMask && !selectedIsScrollBox && (selectedType !== 'shape' || !isRef)}
+                  enabledAnchors={selectedIsMask || selectedIsScrollBox || selectedType === 'shape' ? ALL_ANCHORS : selectedType === 'text' ? TEXT_ANCHORS : CORNER_ANCHORS}
+                  rotateEnabled={!selectedIsMask && !selectedIsScrollBox}
                   anchorSize={8}
                   anchorStroke={GUIDE_COLOR}
                   anchorFill="#fff"

@@ -327,11 +327,6 @@ export interface EditorState {
   /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
   addLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
-  /**
-   * 一次改多条图层（HIG-77 多选批量编辑）：全部改动包在同一次 updateSpec 里，所以只记一步历史——
-   * 逐条调 updateLayer 会记 N 步，用户得按 N 次撤销才回得去。
-   */
-  updateLayers: (ids: string[], patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
   /** 在播放头处把图层拆成两条（HIG-79，契约 §2「拆分图层」）；拆不了时弹提示。 */
   splitLayer: (id: string) => void;
   removeLayer: (id: string) => void;
@@ -2000,21 +1995,6 @@ export const useEditor = create<EditorState>((set, get) => {
       // 眼睛开关（HIG-33）碰到滚动文案（HIG-50）：隐藏的不算进成片时长
       if (typeof patch === 'object' && 'hidden' in patch) get().syncPosterDuration();
     },
-    updateLayers: (ids, patch, history = true) => {
-      if (!ids.length) return;
-      const set_ = new Set(ids);
-      get().updateSpec(
-        (spec) => {
-          for (const l of spec.layers) {
-            if (!set_.has(l.id)) continue;
-            if (typeof patch === 'function') patch(l);
-            else Object.assign(l, patch);
-          }
-        },
-        { history },
-      );
-      if (typeof patch === 'object' && 'hidden' in patch) get().syncPosterDuration();
-    },
     splitLayer: (id) => {
       const ctx = playheadPost();
       const layer = ctx?.spec.layers.find((l) => l.id === id);
@@ -2154,11 +2134,11 @@ export const useEditor = create<EditorState>((set, get) => {
         set({ toast: '只能把样式粘贴到文字图层', toastAction: null });
         return;
       }
-      // 多选时一次贴到全部选中的文字图层上（HIG-77），只记一步历史
-      const ids = get().selectedLayerIds.length > 1 ? get().selectedLayerIds : [target.id];
-      const texts = (get().currentSpec()?.layers ?? []).filter((l) => ids.includes(l.id) && l.type === 'text').map((l) => l.id);
-      get().updateLayers(texts, (l) => {
-        if (l.type === 'text') l.style = { ...style };
+      // 多选时一次贴到全部选中的文字图层上，包在同一次 updateSpec 里 = 一步撤销
+      // （与 HIG-63 的 updateSelectedTextStyle 同一个路子，只是贴的是整份样式而不是某几个字段）
+      const ids = new Set(get().selectedLayerIds.length > 1 ? get().selectedLayerIds : [target.id]);
+      get().updateSpec((spec) => {
+        for (const l of spec.layers) if (l.type === 'text' && ids.has(l.id) && !l.locked) l.style = { ...style };
       });
     },
     nudgeLayer: (id, dx, dy, history = true) => {
