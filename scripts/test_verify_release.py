@@ -20,6 +20,15 @@ ASSET = b"console.log('new release');\n"
 
 
 class ReleaseReceiptTests(unittest.TestCase):
+    def test_public_request_uses_curl_and_identifies_release_verifier(self):
+        with patch.object(verify_release, "run", return_value=b"ok") as fetch:
+            self.assertEqual(verify_release.public("https://example.test", "/api/health"), b"ok")
+        args = fetch.call_args.args
+        self.assertEqual(args[0], "curl")
+        self.assertIn("--fail", args)
+        self.assertIn("HitGO-release-verifier/1.0", args)
+        self.assertEqual(args[-1], "https://example.test/api/health")
+
     def args(self):
         return SimpleNamespace(
             origin="https://example.test", ssh_target="deploy@example.test",

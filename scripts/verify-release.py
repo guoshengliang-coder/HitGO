@@ -15,7 +15,6 @@ import shlex
 import subprocess
 import sys
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
 
 
 def sha256(data: bytes) -> str:
@@ -31,11 +30,12 @@ def remote(target: str, app_dir: str, ssh_opts: str, command: str) -> bytes:
 
 
 def public(origin: str, path: str) -> bytes:
-    req = Request(urljoin(origin + "/", path.lstrip("/")), headers={"Cache-Control": "no-cache"})
-    with urlopen(req, timeout=20) as response:
-        if response.status != 200:
-            raise ValueError(f"public {path} returned HTTP {response.status}")
-        return response.read()
+    url = urljoin(origin + "/", path.lstrip("/"))
+    return run(
+        "curl", "--fail", "--silent", "--show-error", "--max-time", "20",
+        "--proto", "=https", "-H", "Cache-Control: no-cache",
+        "-A", "HitGO-release-verifier/1.0", url,
+    )
 
 
 def resolve_commit(short_or_full: str) -> str | None:

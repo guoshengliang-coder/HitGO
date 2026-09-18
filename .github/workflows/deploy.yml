@@ -72,6 +72,7 @@ jobs:
           HITGO_PUBLIC_ORIGIN: ${{ vars.HITGO_PUBLIC_ORIGIN }}
           SKIP_SMOKE: '1'
         run: |
+          set -o pipefail
           scripts/deploy.sh --notice-origin "$HITGO_PUBLIC_ORIGIN" | tee deploy.log
           tail -n 1 deploy.log | python3 -m json.tool > release-receipt.json
 
