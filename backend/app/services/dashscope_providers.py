@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -34,6 +35,14 @@ from app.services.highlight import parse_phrase_json
 from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_boost_for, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
+
+# MiniMax is metered at 20 RPM (its model card), while dubbing synthesizes cues back to back at
+# roughly 40/min — so it would hit the limit steadily and only get through on retry backoff. Pace
+# the calls instead of walking into the wall: this is per worker process, so with several workers
+# the real rate is a multiple of it; raising the account's RPM quota is the other half of the fix.
+MINIMAX_MIN_INTERVAL = 3.1
+_minimax_last_call = 0.0
+_minimax_gate = threading.Lock()
 
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = (1.0, 2.0, 4.0)
@@ -76,6 +85,16 @@ def _with_retry(what: str, call: Callable[[], Any]) -> Any:
     raise LocalizeError(f"{what}失败（{_status(last)}）：{_message(last)}")
 
 
+def _minimax_pace() -> None:
+    """Block until ``MINIMAX_MIN_INTERVAL`` has passed since this process's last MiniMax call."""
+    global _minimax_last_call  # noqa: PLW0603 - one gate per worker process
+    with _minimax_gate:
+        wait = _minimax_last_call + MINIMAX_MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _minimax_last_call = time.monotonic()
+
+
 def _clamp_rate(speech_rate: float) -> float:
     """The vendor's documented range, shared by cosyvoice ``speech_rate`` and MiniMax ``speed``."""
     return max(0.5, min(2.0, float(speech_rate)))
@@ -109,6 +128,10 @@ def _minimax_input(text: str, voice: str, speech_rate: float, lang: str | None, 
     if emotion:
         voice_setting["emotion"] = emotion
     return {
+        # "action" and "stream" are in the console's own curl sample for this model card; the API
+        # reference page leaves them out. Send them the way the console does.
+        "action": "tts",
+        "stream": False,
         "text": text,
         "voice_setting": voice_setting,
         "audio_setting": dict(MINIMAX_AUDIO_SETTING),
@@ -317,6 +340,7 @@ class DashScopeTts:
         payload = _minimax_input(text, voice, speech_rate, lang, emotion)
 
         def call() -> Any:
+            _minimax_pace()
             return BaseApi.call(
                 model=model,
                 input=payload,

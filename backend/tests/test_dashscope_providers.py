@@ -56,6 +56,7 @@ def fake_sdk(monkeypatch):
     monkeypatch.setitem(sys.modules, "dashscope.client", client)
     monkeypatch.setitem(sys.modules, "dashscope.client.base_api", base_api)
     monkeypatch.setattr(dp.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(dp, "_minimax_last_call", 0.0)  # the pacing gate is module state
 
     class Resp:
         def __init__(self, data: bytes) -> None:
@@ -98,6 +99,8 @@ def test_minimax_input_nests_the_settings_the_vendor_wants():
     # wav is not the vendor default (mp3); getting it wrong only surfaces later as "合成结果为空"
     assert body["audio_setting"] == {"format": "wav", "sample_rate": 22050, "channel": 1}
     assert body["output_format"] == "hex"
+    # the console's curl sample for this model card carries both; the API reference page omits them
+    assert body["action"] == "tts" and body["stream"] is False
 
 
 def test_minimax_input_omits_emotion_and_clamps_speed():
@@ -215,3 +218,45 @@ def test_qwen3_reports_a_missing_url(fake_sdk):
     fake_sdk.results = [_response(types.SimpleNamespace(audio={}))]
     with pytest.raises(LocalizeError, match="音频地址"):
         _tts().synthesize("t", "Cherry", 1.0, model="qwen3-tts-flash", lang="es")
+
+
+# --- 限流节流（HIG-59）------------------------------------------------------------
+
+
+def test_minimax_paces_itself_to_stay_under_the_models_rpm(monkeypatch):
+    """MiniMax 限 20 RPM，而配音是逐句连着调的：主动排队，别撞了墙再靠重试爬回来。"""
+    now = [1000.0]
+    slept: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(dp, "_minimax_last_call", 0.0)
+    monkeypatch.setattr(dp.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(dp.time, "sleep", fake_sleep)
+
+    dp._minimax_pace()  # 第一次不等
+    assert slept == []
+    now[0] += 1.0  # 一次合成大约这么久
+    dp._minimax_pace()
+    assert slept == [pytest.approx(dp.MINIMAX_MIN_INTERVAL - 1.0)]
+    # 排过队之后间隔正好是一个周期，所以连着跑的稳态速率不会超过配额
+    assert dp.MINIMAX_MIN_INTERVAL * 20 > 60  # 20 次/分钟以内
+
+    slept.clear()
+    now[0] += dp.MINIMAX_MIN_INTERVAL + 5  # 自己已经等够了就不该再睡
+    dp._minimax_pace()
+    assert slept == []
+
+
+def test_only_minimax_is_paced(fake_sdk, monkeypatch):
+    """cosyvoice 与 qwen3 的配额和这个无关，别顺手把它们也拖慢。"""
+    called: list[str] = []
+    monkeypatch.setattr(dp, "_minimax_pace", lambda: called.append("paced"))
+    fake_sdk.results = [_response(types.SimpleNamespace(audio={"url": "https://example.test/q.wav"}))]
+    _tts().synthesize("t", "Cherry", 1.0, model="qwen3-tts-flash", lang="es")
+    assert called == []
+    fake_sdk.results = [_response({"data": {"audio": WAV.hex()}})]
+    _tts().synthesize("t", "v", 1.0, model=MINIMAX_MODEL)
+    assert called == ["paced"]

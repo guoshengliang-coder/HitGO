@@ -821,6 +821,8 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      超长只靠下一步的 `atempo`），MiniMax 音色用 `MINIMAX_TTS_MODEL`（缺省留空 = 不启用，建议 `MiniMax/speech-2.8-hd`，仅华北2 北京地域且需单独开通）——
      与 qwen3 同一个 `multimodal-generation` 端点，但参数嵌在 `input.voice_setting{voice_id, speed, language_boost[, emotion]}`
      与 `input.audio_setting{format: wav, sample_rate: 22050, channel: 1}` 里，音频按 `output_format: hex` 回 hex 串，有语速。
+     这个模型限 20 RPM，而配音是逐句连着合成的，所以 worker 每个进程对 MiniMax 的调用之间强制留 3.1 秒间隔
+     （主动排队，而不是撞了 429 再靠重试爬回来）；多个 worker 进程各管各的，实际速率是进程数的倍数。
      泰语 / 越南语 / 阿拉伯语只有 MiniMax 音色——`MINIMAX_TTS_MODEL` 留空（缺省）时这三种语言没有音色，`voice_table()` 把它们整个过滤掉，
      于是不出现在 `target_langs` 里（界面与接 MiniMax 之前完全一致）。音色表条目内部可带 `voice`（真实的厂商 voice_id，缺省 = `id`）
      与 `emotion`（同一个厂商音色的「情绪版」条目，`id` 形如 `<voice>~happy` 以保证音色 id 唯一），两者都不外泄。

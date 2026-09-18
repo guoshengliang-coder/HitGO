@@ -105,7 +105,10 @@ def main() -> int:
                 ok.setdefault(lang, []).append((voice, label))
                 if keep:
                     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in f"{lang}-{model.split('/')[-1]}-{voice}")
-                    (keep / f"{safe}.wav").write_bytes(data)
+                    try:
+                        (keep / f"{safe}.wav").write_bytes(data)
+                    except OSError as exc:  # noqa: PERF203 - the audio is already paid for; never lose the sweep over a file write
+                        print(f"  （留存失败，继续：{exc}）")
             time.sleep(args.sleep)
 
     print("\n=== 可用 ===")
