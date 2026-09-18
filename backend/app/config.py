@@ -46,6 +46,8 @@ class Settings:
     localize_timeout_seconds: int
     # "ko=loongkyong_v3,ja=loongtomoka_v3": per-language default voice overrides.
     localize_voices: str
+    # HIG-59: DashScope-hosted MiniMax voice model; empty (the default) = no MiniMax voices at all.
+    minimax_tts_model: str
     # Chat model that picks the phrases worth highlighting in poster copy (HIG-50); shares
     # DASHSCOPE_API_KEY / LOCALIZE_PROVIDER with localization.
     highlight_model: str
@@ -94,6 +96,11 @@ def load_settings() -> Settings:
         localize_max_tempo=float(_env("LOCALIZE_MAX_TEMPO", "1.3")),
         localize_timeout_seconds=int(_env("LOCALIZE_TIMEOUT_SECONDS", "900")),
         localize_voices=_env("LOCALIZE_VOICES", "").strip(),
+        # Empty by default on purpose: the MiniMax models are activated separately in the Bailian
+        # console (an un-activated one answers 400 "The product is not activated"), and the backend
+        # cannot tell whether that was done without spending a call. So MiniMax voices are opt-in —
+        # until this is set, the voice table and the target languages are exactly as they were.
+        minimax_tts_model=_env("MINIMAX_TTS_MODEL", "").strip(),
         highlight_model=_env("HIGHLIGHT_MODEL", "qwen-plus").strip(),
     )
 

@@ -1168,6 +1168,7 @@ class VoiceOut(BaseModel):
     gender: Literal["female", "male", "neutral"] | None = None  # 分组用；neutral = 童声 / 角色音；env 加的音色为 None
     style: str | None = None  # 一句话风格（知性积极 / 美式）
     speech_rate: bool = True  # 该音色的模型是否接受 speech_rate（qwen3-tts 不接受，前端禁用语速）
+    provider: Literal["aliyun", "minimax"] = "aliyun"  # 音色来源厂商（HIG-59）；前端只在一种语言同时有两家时才标注分组
 
 
 class TargetLangOut(LangOut):

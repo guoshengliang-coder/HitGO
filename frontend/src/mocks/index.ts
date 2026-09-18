@@ -189,23 +189,30 @@ const LOCALIZE_OPTIONS: LocalizeOptions = {
   ],
   target_langs: [
     // 中文放第一位：大字报（HIG-50）朗读缺省取它。id / 标签与后端 DEFAULT_VOICES 一致（HIG-42），带性别 / 风格 / 语速标识
+    // 后三条是 MiniMax 音色（HIG-59），所以中文下拉在 mock 里也会出现「阿里云 · / MiniMax · 」的分组前缀
     {
       code: 'zh',
       label: '中文',
       voices: [
-        { id: 'longxiaochun_v3', label: '龙小淳', gender: 'female', style: '知性积极', speech_rate: true },
-        { id: 'longcheng_v3', label: '龙橙', gender: 'male', style: '智慧青年', speech_rate: true },
-        { id: 'loongbella_v3', label: 'Bella', gender: 'female', style: '精准干练', speech_rate: true },
-        { id: 'longanran_v3', label: '龙安燃', gender: 'female', style: '活泼质感·直播', speech_rate: true },
-        { id: 'longfei_v3', label: '龙飞', gender: 'male', style: '热血磁性', speech_rate: true },
-        { id: 'longjiqi_v3', label: '龙机器', gender: 'neutral', style: '呆萌机器人', speech_rate: true },
+        { id: 'longxiaochun_v3', label: '龙小淳', gender: 'female', style: '知性积极', speech_rate: true, provider: 'aliyun' },
+        { id: 'longcheng_v3', label: '龙橙', gender: 'male', style: '智慧青年', speech_rate: true, provider: 'aliyun' },
+        { id: 'loongbella_v3', label: 'Bella', gender: 'female', style: '精准干练', speech_rate: true, provider: 'aliyun' },
+        { id: 'longanran_v3', label: '龙安燃', gender: 'female', style: '活泼质感·直播', speech_rate: true, provider: 'aliyun' },
+        { id: 'longfei_v3', label: '龙飞', gender: 'male', style: '热血磁性', speech_rate: true, provider: 'aliyun' },
+        { id: 'longjiqi_v3', label: '龙机器', gender: 'neutral', style: '呆萌机器人', speech_rate: true, provider: 'aliyun' },
+        { id: 'Chinese (Mandarin)_News_Anchor', label: '新闻女声', gender: 'female', style: '新闻播报', speech_rate: true, provider: 'minimax' },
+        { id: 'Chinese (Mandarin)_Sweet_Lady~happy', label: '甜美女声·欢快', gender: 'female', style: '甜美亲和', speech_rate: true, provider: 'minimax' },
+        { id: 'Chinese (Mandarin)_Reliable_Executive', label: '沉稳高管', gender: 'male', style: '沉稳高管', speech_rate: true, provider: 'minimax' },
       ],
     },
     { code: 'ko', label: '韩语', voices: [{ id: 'loongkyong_v3', label: 'Kyong', gender: 'female', style: '韩语', speech_rate: true }, { id: 'loongjihun_v3', label: 'Jihun', gender: 'male', style: '韩语', speech_rate: true }] },
     { code: 'ja', label: '日语', voices: [{ id: 'loongtomoka_v3', label: 'Tomoka', gender: 'female', style: '日语', speech_rate: true }] },
     { code: 'en', label: '英语', voices: [{ id: 'loongabby_v3', label: 'Abby', gender: 'female', style: '美式', speech_rate: true }, { id: 'loongandy_v3', label: 'Andy', gender: 'male', style: '美式', speech_rate: true }] },
     // qwen3-tts 音色：没有语速
-    { code: 'es', label: '西班牙语', voices: [{ id: 'Cherry', label: 'Cherry', gender: 'female', style: '亲切', speech_rate: false }, { id: 'Ethan', label: 'Ethan', gender: 'male', style: '阳光', speech_rate: false }] },
+    { code: 'es', label: '西班牙语', voices: [{ id: 'Cherry', label: 'Cherry', gender: 'female', style: '亲切', speech_rate: false, provider: 'aliyun' }, { id: 'Ethan', label: 'Ethan', gender: 'male', style: '阳光', speech_rate: false, provider: 'aliyun' }] },
+    // 只有 MiniMax 音色的语言（HIG-59）：泰语有语速、阿拉伯语还带 rtl；这两种语言的下拉不加厂商前缀
+    { code: 'th', label: '泰语', clone: true, voices: [{ id: 'Thai_female_1_sample1', label: '泰语女声 1', gender: 'female', style: '自信女声', speech_rate: true, provider: 'minimax' }, { id: 'Thai_male_1_sample8', label: '泰语男声 1', gender: 'male', style: '沉静男声', speech_rate: true, provider: 'minimax' }] },
+    { code: 'ar', label: '阿拉伯语', rtl: true, voices: [{ id: 'Arabic_CalmWoman', label: 'Calm Woman', gender: 'female', style: '沉静女声', speech_rate: true, provider: 'minimax' }, { id: 'Arabic_FriendlyGuy', label: 'Friendly Guy', gender: 'male', style: '亲和男声', speech_rate: true, provider: 'minimax' }] },
   ],
 };
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BUILTIN_WEB_FONTS } from './fonts';
 import {
   cleanCueText,
   setLayerWrapWidth,
@@ -168,6 +169,12 @@ describe('字体', () => {
     expect(fontForLang('ja')).toBe('Noto Sans JP');
     expect(fontForLang('en')).toBe('Noto Sans SC');
     expect(fontForLang('zz')).toBe('Noto Sans SC');
+  });
+  it('越南语要拉丁 Noto（HIG-59）：Noto Sans SC 没有 vietnamese 子集，ế ộ ữ 会缺字', () => {
+    expect(fontForLang('vi')).toBe('Noto Sans');
+    expect(fontForLang('vi')).not.toBe('Noto Sans SC');
+    // index.html 与 BUILTIN_WEB_FONTS 必须真的引了它，否则只是换了个不存在的字体名
+    expect(BUILTIN_WEB_FONTS.map((f) => f.family)).toContain('Noto Sans');
   });
   it('localizeTextStyle：字幕条预设 + 目标语言字体', () => {
     const st = localizeTextStyle('ko');
@@ -510,13 +517,44 @@ describe('音色（HIG-42）', () => {
 
   it('groupVoices：女声 / 男声 / 特色，组内保持顺序，没 gender 的单独排最前', () => {
     const groups = groupVoices(V);
+    // 只有一家厂商时组名是纯「女声」，与接 MiniMax 之前逐字相同（key 带上了厂商，只用于 React list key）
     expect(groups.map((g) => [g.key, g.label, g.voices.map((v) => v.id)])).toEqual([
       ['all', '', ['env']],
-      ['female', '女声', ['a', 'c', 'e']],
-      ['male', '男声', ['b']],
-      ['neutral', '特色', ['d']],
+      ['aliyun:female', '女声', ['a', 'c', 'e']],
+      ['aliyun:male', '男声', ['b']],
+      ['aliyun:neutral', '特色', ['d']],
     ]);
-    expect(groupVoices(V.slice(1, 3)).map((g) => g.key)).toEqual(['female', 'male']); // 空组不出
+    expect(groupVoices(V.slice(1, 3)).map((g) => g.label)).toEqual(['女声', '男声']); // 空组不出
+  });
+
+  it('groupVoices（HIG-59）：一种语言有两家厂商时组名才加厂商前缀，原有音色的组排在前面', () => {
+    const mixed: VoiceOption[] = [
+      { id: 'a', label: '龙小淳', gender: 'female', style: '知性积极', provider: 'aliyun' },
+      { id: 'b', label: '龙橙', gender: 'male', style: '智慧青年', provider: 'aliyun' },
+      { id: 'm1', label: '新闻女声', gender: 'female', style: '新闻播报', provider: 'minimax' },
+      { id: 'm2', label: '沉稳高管', gender: 'male', style: '沉稳高管', provider: 'minimax' },
+    ];
+    expect(groupVoices(mixed).map((g) => [g.key, g.label, g.voices.map((v) => v.id)])).toEqual([
+      ['aliyun:female', '阿里云 · 女声', ['a']],
+      ['aliyun:male', '阿里云 · 男声', ['b']],
+      ['minimax:female', 'MiniMax · 女声', ['m1']],
+      ['minimax:male', 'MiniMax · 男声', ['m2']],
+    ]);
+    // 只有 MiniMax 的语言（泰 / 越 / 阿）同样不加前缀：没有歧义就不标注
+    const onlyMinimax = mixed.filter((v) => v.provider === 'minimax');
+    expect(groupVoices(onlyMinimax).map((g) => g.label)).toEqual(['女声', '男声']);
+    // 缺 provider（旧后端）按 aliyun 算，不会自己变成一个新分组
+    expect(groupVoices([{ id: 'x', label: 'x', gender: 'female' }, ...onlyMinimax]).map((g) => g.label)).toEqual([
+      '阿里云 · 女声', 'MiniMax · 女声', 'MiniMax · 男声',
+    ]);
+  });
+
+  it('groupVoices（HIG-59）：没见过的厂商原样显示，不崩', () => {
+    const groups = groupVoices([
+      { id: 'a', label: 'a', gender: 'female', provider: 'aliyun' },
+      { id: 'z', label: 'z', gender: 'female', provider: 'someone-new' },
+    ]);
+    expect(groups.map((g) => g.label)).toEqual(['阿里云 · 女声', 'someone-new · 女声']);
   });
 
   it('groupVoices：全都没有 gender 时不分组；空列表没有组', () => {

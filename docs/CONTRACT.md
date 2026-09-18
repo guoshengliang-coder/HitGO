@@ -645,12 +645,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   选择，HIG-58）：true 用复刻的原声合成，该语言必须 `clone = true` 否则 400；false 改回系统音色，此时没带 `voice` 就取
   该语言缺省音色。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。
 - `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
-- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, clone, voices: [{ id, label, gender?, style?, speech_rate }] }] }`。
+- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, clone, voices: [{ id, label, gender?, style?, speech_rate, provider }] }] }`。
   `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。`clone`（可选，缺省 false，HIG-58）= 该语言能不能用复刻的
   原声合成——复刻音色绑在 `LOCALIZE_TTS_MODEL` 上，只覆盖该模型支持的语言，西班牙语 / 意大利语 / 阿拉伯语目前不在其中。
   音色（HIG-42）：`label` 是名字（龙小淳 / Abby），`gender` = `female | male | neutral`（`neutral` 是童声 / 角色音，前端按它分组；
   `LOCALIZE_VOICES` 加进来的音色为 null，不分组），`style` 是一句话风格（可为 null），`speech_rate`（缺省 true）= 该音色的模型接受语速
-  参数——qwen3-tts 的音色为 false，前端应禁用语速，后端合成时也会忽略。每种语言第一个音色是缺省音色。
+  参数——qwen3-tts 的音色为 false，前端应禁用语速，后端合成时也会忽略。`provider`（可选，缺省 `"aliyun"`，HIG-59）= 音色来源厂商，
+  `aliyun` = CosyVoice / Qwen3-TTS，`minimax` = 百炼托管的 MiniMax 语音；前端只在一种语言同时有两家音色时才给分组名加厂商前缀
+  （`MiniMax · 女声`），具体模型名不外泄。每种语言第一个音色是缺省音色。
   `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
 - `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）。
   该视频有 queued / running 的渲染任务时 409（worker 还会往它的路径写文件），等任务结束再删。
@@ -765,7 +767,8 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 /data/tmp/                                    worker 临时文件
 /data/tmp/{video_id}.loc/                     改语言运行中的临时目录（16 kHz wav、逐句配音片段），结束即删
 /data/tmp/{asset_id}.tts/                     朗读合成中的临时目录（分段 wav），结束即删
-/data/tts-preview/{lang}-{voice}-{hash}.wav   音色试听缓存（HIG-42，hash 取自模型 + 试听文案），可随时整目录清空
+/data/tts-preview/{lang}-{voice}-{hash}.wav   音色试听缓存（HIG-42，hash 取自音色 + 模型 + 试听文案；文件名里的 lang / voice 只保留
+                                              [A-Za-z0-9_-]，其余字符换 `_`，唯一性靠 hash），可随时整目录清空
 /data/voice-samples/{video_id}.{m4a|wav}      声音复刻的样本（HIG-58），复刻接口要拉它，复刻成功后留着备查
 ```
 `/media` 直接映射到 `DATA_DIR`（`hitgo.db` 和 `tmp/` 不对外）。
@@ -811,10 +814,17 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
      回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。`dub = false` 的版本到此为止：
      `status = done`、`stage = null`，有旧配音则 `voice_stale = true`，不进 tts / mix。
-   - tts：每句用版本的 `voice` 出 wav（`source_voice = true` 的版本用 `clone_voice.voice_id` 与 `LOCALIZE_TTS_MODEL`）。音色表写在 `services/localize.py` `DEFAULT_VOICES`（照官方 cosyvoice 音色表，HIG-42 起中文约 30 个、
-     英文 14 个，每条带 gender / style），`GET /api/localize/options` 原样下发。音色各自属于某个 TTS 模型：中 / 英 / 日 / 韩 / 粤 / 印尼用 `cosyvoice-v3-flash`（每句一个新实例），
+   - tts：每句用版本的 `voice` 出 wav（`source_voice = true` 的版本用 `clone_voice.voice_id` 与 `LOCALIZE_TTS_MODEL`）。音色表写在 `services/localize.py`：`DEFAULT_VOICES` = 内置的 cosyvoice / qwen3 表（HIG-42 起中文约 30 个、
+     英文 14 个）+ `MINIMAX_VOICES` 追加在各语言末尾（HIG-59），每条带 gender / style，`GET /api/localize/options` 原样下发。
+     音色各自属于某个 TTS 模型，按 `model` 前缀分派到三条调用路径：中 / 英 / 日 / 韩 / 粤 / 印尼的内置音色用 `cosyvoice-v3-flash`（每句一个新实例），
      西 / 葡 / 法 / 德 / 意 / 俄用 `qwen3-tts-flash`（HTTP 调用，返回 24 小时有效的 wav 地址，worker 立即下载；这个模型没有语速参数，
-     超长只靠下一步的 `atempo`）；`LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），
+     超长只靠下一步的 `atempo`），MiniMax 音色用 `MINIMAX_TTS_MODEL`（缺省留空 = 不启用，建议 `MiniMax/speech-2.8-hd`，仅华北2 北京地域且需单独开通）——
+     与 qwen3 同一个 `multimodal-generation` 端点，但参数嵌在 `input.voice_setting{voice_id, speed, language_boost[, emotion]}`
+     与 `input.audio_setting{format: wav, sample_rate: 22050, channel: 1}` 里，音频按 `output_format: hex` 回 hex 串，有语速。
+     泰语 / 越南语 / 阿拉伯语只有 MiniMax 音色——`MINIMAX_TTS_MODEL` 留空（缺省）时这三种语言没有音色，`voice_table()` 把它们整个过滤掉，
+     于是不出现在 `target_langs` 里（界面与接 MiniMax 之前完全一致）。音色表条目内部可带 `voice`（真实的厂商 voice_id，缺省 = `id`）
+     与 `emotion`（同一个厂商音色的「情绪版」条目，`id` 形如 `<voice>~happy` 以保证音色 id 唯一），两者都不外泄。
+     `LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），
      一句配音超过它到下一句起点的间隔时，按比例用 `speech_rate`（上限 2.0）加速重合成一次，剩余再交给下一步的 `atempo`。
    - mix：每句放在模板里该句的源起点；配音比到下一句起点的间隔长时 `atempo` 加速，上限 `LOCALIZE_MAX_TEMPO`（缺省 1.3），
      仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`
@@ -824,8 +834,9 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    合成 / 复刻都用假实现（静音配音、固定 voice_id），只给测试 / 演示。
 
 ### 朗读（`POST /api/tts` 之后，普通 worker，HIG-50）
-任务 `hitgo.synthesize_tts`，软超时同改语言。文案按句读切成 ≤ 500 字的段，每段用改语言同一套 TTS（音色决定模型，`speech_rate`
-只对 cosyvoice 生效）出 wav 到 `tmp/{asset_id}.tts/`，按顺序首尾相接（`adelay` + `amix`，同改语言的 mix）→ `{asset_id}.m4a`
+任务 `hitgo.synthesize_tts`，软超时同改语言。文案按句读切段，每段的字数上限取自音色所属模型（cosyvoice / qwen3-tts 500 字，MiniMax 2000 字——
+厂商上限是 10000，但超过 3000 字官方建议改用流式，这里留足余量），每段用改语言同一套 TTS（音色决定模型，`speech_rate`
+qwen3-tts 不接受、cosyvoice 与 MiniMax 生效）出 wav 到 `tmp/{asset_id}.tts/`，按顺序首尾相接（`adelay` + `amix`，同改语言的 mix）→ `{asset_id}.m4a`
 （aac 192k，44.1 kHz 立体声），`ffprobe` 时长写回素材并转 `ready`；任何一步失败转 `failed` 并写 `error`，临时目录结束即删。
 
 ### 预处理（每条视频入库后）
@@ -919,5 +930,6 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 - 容器：单一镜像 `hitgo`（多阶段：node 构建前端 → python:3.12-slim + apt ffmpeg + uv），`api` 与 `worker` 两个服务共用；`redis:7-alpine`。API 同时托管前端静态文件（`/` → `frontend/dist`，SPA fallback）。
 - 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）、`UPLOAD_BASE_URL`（可选，上传子域名，如 `https://hitgo-upload.mrlgs.net`；空 = 不启用）、
   `HIGHLIGHT_MODEL`（HIG-50 重点词挑选用的百炼对话模型，默认 `qwen-plus`；`DASHSCOPE_API_KEY` / `LOCALIZE_PROVIDER` 与改语言共用）、
+  `MINIMAX_TTS_MODEL`（HIG-59 百炼托管的 MiniMax 语音模型，**缺省留空 = 不启用**，需先在百炼控制台开通该模型；留空时 MiniMax 音色全部不下发，泰 / 越 / 阿 随之退出目标语言）、
   `MEDIA_TICKET_TTL_SECONDS`（HIG-58 只读媒体票据的有效期，默认 1800 秒）。
 - 服务器：`docker compose` 监听 `127.0.0.1:8790`，nginx `hitgo.mrlgs.net` 反代，见 `docs/DEPLOY.md`。

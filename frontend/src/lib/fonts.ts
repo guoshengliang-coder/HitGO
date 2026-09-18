@@ -40,4 +40,6 @@ export const BUILTIN_WEB_FONTS: { family: string; label: string }[] = [
   { family: 'Noto Sans JP', label: '日文' },
   { family: 'Noto Sans Thai', label: '泰文' },
   { family: 'Noto Sans Arabic', label: '阿拉伯文' },
+  // 越南语（HIG-59 起可作目标语言）：Noto Sans SC 没有 vietnamese 子集，ế ộ ữ 会缺字。
+  { family: 'Noto Sans', label: '越南文 / 拉丁' },
 ];

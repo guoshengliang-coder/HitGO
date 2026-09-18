@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -117,7 +118,7 @@ def test_run_tts_soft_time_limit_marks_failed_and_reraises(db, stub_ffmpeg):
     _add_asset(db)
 
     class SlowTts:
-        def synthesize(self, text, voice, speech_rate=1.0, *, model=None, lang=None):  # noqa: ANN001
+        def synthesize(self, text, voice, speech_rate=1.0, *, model=None, lang=None, emotion=None):  # noqa: ANN001
             raise SoftTimeLimitExceeded()
 
     providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=SlowTts())
@@ -184,3 +185,62 @@ def test_preview_wav_fails_loudly_and_leaves_no_file():
     with pytest.raises(localize.LocalizeError):
         tts.preview_wav("zh", "longcheng_v3", providers)
     assert not path.exists()
+
+
+# --- MiniMax 音色的朗读与试听（HIG-59）---------------------------------------------
+
+
+def test_chunk_limit_follows_the_voices_model(db, stub_ffmpeg):
+    """一段 1500 字的文案：MiniMax 音色一次调用就够，cosyvoice 音色要切成 3 段。"""
+    text = "。".join(["满二十减五" * 20] * 15)
+    assert 1000 < len(text) < 2000
+
+    _add_asset(db, text=text, derived_from={"lang": "th", "voice": "Thai_female_1_sample1"})
+    fake = localize.FakeTts(seconds=1.0)
+    tts.run_tts(db, ASSET, localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake))
+    assert len(fake.calls) == 1 and fake.models == [settings.minimax_tts_model]
+
+    db.query(Asset).delete()
+    db.commit()
+    _add_asset(db, text=text)
+    slow = localize.FakeTts(seconds=1.0)
+    tts.run_tts(db, ASSET, localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=slow))
+    assert len(slow.calls) == 4 and all(len(c[0]) <= 500 for c in slow.calls)
+
+
+def test_reading_an_emotion_variant_sends_the_vendor_id_and_the_emotion(db, stub_ffmpeg):
+    _add_asset(db, derived_from={"lang": "zh", "voice": "Chinese (Mandarin)_Sweet_Lady~happy", "speech_rate": 1.5})
+    fake = localize.FakeTts(seconds=1.0)
+    tts.run_tts(db, ASSET, localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake))
+    # the "~happy" part never reaches the vendor; it becomes voice_setting.emotion
+    assert all(c[1] == "Chinese (Mandarin)_Sweet_Lady" for c in fake.calls)
+    assert fake.emotions == ["happy"] * len(fake.calls)
+    assert all(c[2] == 1.5 for c in fake.calls)  # MiniMax honours speech_rate
+
+
+def test_every_selectable_language_has_its_own_preview_sentence():
+    """否则 preview_text 会静默回退成英文——用泰语音色读英文句子毫无意义。"""
+    assert set(localize.voice_table(settings)) <= set(tts.PREVIEW_TEXT)
+
+
+def test_preview_survives_a_voice_id_with_spaces_parens_and_a_tilde():
+    fake = localize.FakeTts(seconds=1.0)
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake)
+    for lang, voice in (("yue", "Cantonese_ProfessionalHost（F)"), ("zh", "Chinese (Mandarin)_Sweet_Lady~happy")):
+        path = tts.preview_wav(lang, voice, providers)
+        assert path.is_file() and path.parent == storage.data_dir() / tts.PREVIEW_DIR
+        assert re.fullmatch(r"[A-Za-z0-9_-]+\.wav", path.name), path.name
+    # the emotion variant asked the vendor for the plain id plus an emotion
+    assert fake.calls[-1][1] == "Chinese (Mandarin)_Sweet_Lady" and fake.emotions[-1] == "happy"
+
+
+def test_two_voices_that_sanitize_alike_still_get_two_cache_files():
+    a = tts.preview_path("zh", "a b", "m")
+    b = tts.preview_path("zh", "a_b", "m")
+    assert a.name.startswith("zh-a_b-") and b.name.startswith("zh-a_b-") and a != b
+
+
+def test_preview_file_name_cannot_escape_the_cache_directory():
+    path = tts.preview_path("../../etc", "../../../passwd", "m")
+    assert path.parent == storage.data_dir() / tts.PREVIEW_DIR
+    assert ".." not in path.name and "/" not in path.name

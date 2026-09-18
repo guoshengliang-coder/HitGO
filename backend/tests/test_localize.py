@@ -113,18 +113,20 @@ def test_voice_models_and_env_overrides_with_model():
     assert localize.voice_model("ko", "loongkyong_v3", table) == "cosyvoice-v3-flash"
     assert localize.voice_model("es", "Cherry", table) == "qwen3-tts-flash"
     assert {"es", "pt", "fr", "de", "it", "ru"} <= set(table)
-    assert "ar" not in table  # no Bailian Arabic voice yet: only via LOCALIZE_VOICES
+    assert localize.voice_model("ar", "Arabic_CalmWoman", table) == settings.minimax_tts_model  # HIG-59
     assert localize.parse_voice_overrides("ar=loongmary@qwen-audio-3.0-tts-flash, ko=loongjihun_v3,junk") == {
         "ar": {"id": "loongmary", "model": "qwen-audio-3.0-tts-flash"},
         "ko": {"id": "loongjihun_v3"},
     }
     cfg = replace(settings, localize_voices="ar=loongmary@qwen-audio-3.0-tts-flash")
     table = localize.voice_table(cfg)
+    # The override goes to the front; Arabic's built-in MiniMax voices stay behind it (HIG-59).
     assert table["ar"][0] == {"id": "loongmary", "label": "loongmary", "model": "qwen-audio-3.0-tts-flash"}
+    assert [v["id"] for v in table["ar"][1:]] == ["Arabic_CalmWoman", "Arabic_FriendlyGuy"]
     assert localize.voice_model("ar", "loongmary", table, cfg) == "qwen-audio-3.0-tts-flash"
     ar = next(t for t in localize.target_langs(cfg) if t["code"] == "ar")
     # model stays internal; an env-added voice has no gender / style; qwen-audio goes through tts_v2 → speech_rate ok
-    assert ar["rtl"] is True and ar["voices"] == [{"id": "loongmary", "label": "loongmary", "gender": None, "style": None, "speech_rate": True}]
+    assert ar["rtl"] is True and ar["voices"][0] == {"id": "loongmary", "label": "loongmary", "gender": None, "style": None, "speech_rate": True, "provider": "aliyun"}
     assert localize.tts_api_for("qwen3-tts-flash") == "qwen3" and localize.tts_api_for("cosyvoice-v3-flash") == "tts_v2"
     assert localize.supports_speech_rate("qwen-audio-3.0-tts-flash") and not localize.supports_speech_rate("qwen3-tts-flash")
     assert localize.language_type_for("es") == "Spanish" and localize.language_type_for("ar") == "Auto"
@@ -272,26 +274,28 @@ def test_default_voice_table_is_well_formed_and_keeps_its_defaults():
     assert {v["gender"] for v in table["zh"]} == set(localize.GENDERS)
     out = {t["code"]: t for t in localize.target_langs(settings)}
     zh = out["zh"]["voices"][0]
-    assert zh == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True}
-    assert all(v["speech_rate"] is False for v in out["es"]["voices"])  # qwen3-tts has no speech_rate
+    assert zh == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True, "provider": "aliyun"}
+    # Spanish now mixes both vendors: the qwen3-tts voices have no speech_rate, the MiniMax ones do.
+    assert all(v["speech_rate"] is False for v in out["es"]["voices"] if v["provider"] == "aliyun")
+    assert all(v["speech_rate"] is True for v in out["es"]["voices"] if v["provider"] == "minimax")
     assert all(v["speech_rate"] is True for v in out["zh"]["voices"])
-    assert set(out["zh"]["voices"][0]) == {"id", "label", "gender", "style", "speech_rate"}  # model stays internal
+    # model / vendor voice id / emotion all stay internal (HIG-59)
+    assert set(out["zh"]["voices"][0]) == {"id", "label", "gender", "style", "speech_rate", "provider"}
 
 
 def test_voice_table_and_resolve_voice(monkeypatch):
     table = localize.voice_table(settings)
     assert table["ko"][0]["id"] == KO_VOICE and table["ja"][0]["id"] == JA_VOICE
-    assert "ar" not in table  # no confirmed cosyvoice-v3-flash voice yet
     assert localize.resolve_voice("ko", None, table) == KO_VOICE
     assert localize.resolve_voice("ko", "loongjihun_v3", table) == "loongjihun_v3"
     with pytest.raises(ValueError):
         localize.resolve_voice("ko", JA_VOICE, table)
     with pytest.raises(ValueError):
-        localize.resolve_voice("ar", None, table)
+        localize.resolve_voice("ar", None, localize.voice_table(replace(settings, minimax_tts_model="")))
     monkeypatch.setattr(settings, "localize_voices", "ar=some_ar_voice, ko=loongjihun_v3,bogus,xx=1")
     table = localize.voice_table(settings)
-    assert table["ar"] == [{"id": "some_ar_voice", "label": "some_ar_voice"}]
-    assert [v["id"] for v in table["ko"]] == ["loongjihun_v3", KO_VOICE]
+    assert table["ar"][0] == {"id": "some_ar_voice", "label": "some_ar_voice"}
+    assert [v["id"] for v in table["ko"]][:2] == ["loongjihun_v3", KO_VOICE]
     codes = [t["code"] for t in localize.target_langs(settings)]
     assert codes.index("ar") > codes.index("ko")  # LANGS order, not env order
 
@@ -604,7 +608,7 @@ def test_options_lists_languages_and_voices(client, monkeypatch):
     assert body["source_langs"][0] == {"code": "auto", "label": "自动识别"}
     assert {s["code"] for s in body["source_langs"]} == {"auto", "zh", "en", "ja", "ko", "yue", "de", "fr", "ru"}
     ko = next(t for t in body["target_langs"] if t["code"] == "ko")
-    assert ko["label"] == "韩语" and ko["voices"][0] == {"id": KO_VOICE, "label": "Kyong", "gender": "female", "style": "韩语", "speech_rate": True}
+    assert ko["label"] == "韩语" and ko["voices"][0] == {"id": KO_VOICE, "label": "Kyong", "gender": "female", "style": "韩语", "speech_rate": True, "provider": "aliyun"}
     assert all(t["voices"] for t in body["target_langs"])
     monkeypatch.setattr(settings, "localize_provider", "dashscope")
     monkeypatch.setattr(settings, "dashscope_api_key", "")
@@ -660,7 +664,6 @@ def test_localize_endpoint_reuses_a_done_transcript_and_carries_queued_languages
 def test_localize_endpoint_validates_languages_voices_and_readiness(client, ready_video, enqueued, db):
     post = lambda body: client.post(f"/api/videos/{VIDEO}/localize", json=body)  # noqa: E731
     assert post({"target_langs": ["xx"]}).status_code == 400
-    assert post({"target_langs": ["ar"]}).status_code == 400  # no voice yet
     assert post({"target_langs": []}).status_code == 400
     assert post({"target_langs": ["ko"] * 6}).status_code == 400
     assert post({"target_langs": ["ko"], "source_lang": "th"}).status_code == 400  # ASR cannot do Thai
@@ -1086,3 +1089,109 @@ def test_put_version_refuses_source_voice_for_an_unclonable_language(client, rea
                                                           "error": None, "warnings": [], "voice_asset_id": None}))  # fmt: skip
     r = client.put(f"/api/videos/{VIDEO}/localize/versions/it", json={"use_source_voice": True})
     assert r.status_code == 400 and "意大利语" in r.json()["detail"]
+
+
+# --- MiniMax 作为第二家音色来源（HIG-59）-------------------------------------------
+
+
+def test_tts_api_for_leaves_every_non_minimax_model_exactly_where_it_was():
+    """三分支的不变量：只有 MiniMax/ 前缀改变路由，其余模型名的行为逐字不变。"""
+    for model in ("cosyvoice-v3-flash", "cosyvoice-v2", "qwen-audio-3.0-tts-flash", "", "minimax-but-not-a-path"):
+        assert localize.tts_api_for(model) == "tts_v2", model
+    assert localize.tts_api_for("qwen3-tts-flash") == "qwen3"
+    # 大小写不敏感：LOCALIZE_VOICES 里人手写成 minimax/ 也要认，否则会静默落到 tts_v2
+    for model in ("MiniMax/speech-2.8-hd", "minimax/speech-02-turbo", "MINIMAX/speech-2.8-turbo"):
+        assert localize.tts_api_for(model) == "minimax", model
+
+
+def test_minimax_speaks_speech_rate_but_cannot_hold_a_cloned_voice():
+    assert localize.supports_speech_rate("MiniMax/speech-2.8-hd")
+    assert localize.supports_speech_rate("cosyvoice-v3-flash")
+    assert not localize.supports_speech_rate("qwen3-tts-flash")
+    # clone_supported must NOT be written in terms of supports_speech_rate: the two were equivalent
+    # before MiniMax, and conflating them would advertise clone: true for a MiniMax default model.
+    cfg = replace(settings, localize_tts_model="MiniMax/speech-2.8-hd")
+    assert localize.clone_supported("zh", cfg) is False
+    assert localize.clone_supported("zh", settings) is True
+
+
+def test_language_boost_is_its_own_table():
+    assert localize.language_boost_for("yue") == "Chinese,Yue"  # comma-bearing, unlike qwen3
+    assert [localize.language_boost_for(c) for c in ("th", "vi", "ar")] == ["Thai", "Vietnamese", "Arabic"]
+    assert localize.language_boost_for("xx") == "auto" and localize.language_boost_for(None) == "auto"
+    assert localize.language_type_for("th") == "Auto"  # the qwen3 table is untouched by any of this
+    assert set(localize.MINIMAX_LANGUAGE_BOOST) == set(localize.LANGS)
+
+
+def test_max_tts_chars_follows_the_model():
+    assert localize.max_tts_chars("MiniMax/speech-2.8-hd") == 2000
+    assert localize.max_tts_chars("cosyvoice-v3-flash") == localize.max_tts_chars("qwen3-tts-flash") == 500
+
+
+def test_merge_voices_appends_and_leaves_the_base_alone():
+    base = {"zh": [{"id": "a"}], "en": [{"id": "b"}]}
+    merged = localize._merge_voices(base, {"zh": [{"id": "c"}], "th": [{"id": "d"}]})
+    assert [v["id"] for v in merged["zh"]] == ["a", "c"]  # appended, so the default stays first
+    assert [v["id"] for v in merged["en"]] == ["b"]
+    assert [v["id"] for v in merged["th"]] == ["d"]
+    assert base == {"zh": [{"id": "a"}], "en": [{"id": "b"}]}
+
+
+def test_minimax_voices_unlock_thai_vietnamese_and_arabic():
+    table = localize.voice_table(settings)
+    assert set(table) == set(localize.LANGS)  # all 15 target languages now have at least one voice
+    for lang in ("th", "vi", "ar"):
+        assert table[lang], lang
+        assert all(v["model"] == settings.minimax_tts_model for v in table[lang]), lang
+    out = {t["code"]: t for t in localize.target_langs(settings)}
+    assert all(v["provider"] == "minimax" and v["speech_rate"] is True for v in out["ar"]["voices"])
+    assert out["ar"]["rtl"] is True
+    # CLONE_MODEL_LANGS already contained th / vi, so "用原声配音" turns on for them by itself (HIG-58)
+    assert out["th"]["clone"] is True and out["vi"]["clone"] is True and out["ar"]["clone"] is False
+
+
+def test_minimax_table_is_well_formed_and_never_leaks_its_internals():
+    table = localize.voice_table(settings)
+    seen: set[str] = set()
+    for lang, voices in table.items():
+        for v in voices:
+            if not str(v.get("model", "")).startswith("MiniMax/"):
+                continue
+            assert v["gender"] in localize.GENDERS and v["style"], (lang, v)
+            assert v["voice"] and not v["voice"].startswith("MiniMax/"), v
+            # ids are globally unique too: the vendor's multilingual voices are easy to repeat
+            assert v["id"] not in seen, v["id"]
+            seen.add(v["id"])
+            if "~" in v["id"]:
+                assert v["id"] == f"{v['voice']}~{v['emotion']}", v
+    assert len(seen) >= 80
+    assert all(set(v) == {"id", "label", "gender", "style", "speech_rate", "provider"} for t in localize.target_langs(settings) for v in t["voices"])
+
+
+def test_voice_spec_splits_an_emotion_variant_back_apart():
+    spec = localize.voice_spec("zh", "Chinese (Mandarin)_Sweet_Lady~happy")
+    assert spec == {"voice": "Chinese (Mandarin)_Sweet_Lady", "model": settings.minimax_tts_model, "emotion": "happy"}
+    plain = localize.voice_spec("zh", "Chinese (Mandarin)_Sweet_Lady")
+    assert plain["voice"] == "Chinese (Mandarin)_Sweet_Lady" and plain["emotion"] is None
+    assert localize.voice_spec("zh", "longxiaochun_v3") == {"voice": "longxiaochun_v3", "model": settings.localize_tts_model, "emotion": None}
+    # an id that is not in the table falls back to itself on the configured default model
+    assert localize.voice_spec("zh", "nope") == {"voice": "nope", "model": settings.localize_tts_model, "emotion": None}
+
+
+def test_empty_minimax_tts_model_puts_the_voice_table_back_as_it_was():
+    cfg = replace(settings, minimax_tts_model="")
+    table = localize.voice_table(cfg)
+    assert {"th", "vi", "ar"}.isdisjoint(table)
+    assert not [v for voices in table.values() for v in voices if "MiniMax/" in str(v.get("model", ""))]
+    assert table == localize.voice_table(replace(cfg, minimax_tts_model=""))
+    assert [t["code"] for t in localize.target_langs(cfg)] == [c for c in localize.LANGS if c not in ("th", "vi", "ar")]
+
+
+def test_minimax_is_off_unless_the_env_asks_for_it(monkeypatch):
+    """开通与否后端探不到，所以缺省必须是关的——否则界面出现音色而每次合成都 502。"""
+    from app.config import load_settings
+
+    monkeypatch.delenv("MINIMAX_TTS_MODEL", raising=False)
+    assert load_settings().minimax_tts_model == ""
+    monkeypatch.setenv("MINIMAX_TTS_MODEL", "MiniMax/speech-02-turbo")
+    assert load_settings().minimax_tts_model == "MiniMax/speech-02-turbo"

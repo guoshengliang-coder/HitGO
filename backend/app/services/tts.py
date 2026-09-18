@@ -25,7 +25,12 @@ from app.services import ffprobe, localize, storage
 log = logging.getLogger(__name__)
 
 STEM_TTS = "tts"
+# Conservative default / the per-request limit of cosyvoice and qwen3-tts. The limit actually used
+# comes from the voice's model (localize.max_tts_chars); MiniMax takes far longer texts.
 MAX_CHUNK_CHARS = 500
+# Everything outside this set becomes "_" in a cache file name; uniqueness rests on the hash. The
+# dot is deliberately not allowed, so a sanitized name can never contain "..".
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_-]")
 # Sentence ends (kept on the sentence); commas / spaces are only used to soften a hard split.
 _SENTENCE_BREAK = re.compile(r"(?<=[。！？!?；;\n])")
 _SOFT_BREAK = re.compile(r"[，,、\s]")
@@ -53,6 +58,12 @@ PREVIEW_TEXT: dict[str, str] = {
     "de": "Hallo, so klinge ich, wenn ich Ihr Video vorlese.",
     "it": "Ciao, ecco come suono leggendo il tuo video.",
     "ru": "Здравствуйте, вот как звучит мой голос в вашем видео.",
+    # Thai / Vietnamese / Arabic only have MiniMax voices (HIG-59). The Arabic line is written in
+    # logical order (Python does not care about display direction) and keeps Latin words out, so an
+    # editor showing it right-to-left cannot tempt anyone into "fixing" it into something wrong.
+    "th": "สวัสดีค่ะ นี่คือเสียงพากย์สำหรับวิดีโอของคุณ",
+    "vi": "Xin chào, đây là giọng đọc cho video của bạn.",
+    "ar": "مرحبا، هذا هو صوتي عند قراءة الفيديو الخاص بك.",
 }
 PREVIEW_DIR = "tts-preview"
 
@@ -61,20 +72,35 @@ def preview_text(lang: str) -> str:
     return PREVIEW_TEXT.get(lang) or PREVIEW_TEXT["en"]
 
 
+def _safe_name(value: str, fallback: str) -> str:
+    """``value`` reduced to characters that are safe in a file name, or ``fallback`` if nothing is left."""
+    return _UNSAFE_NAME.sub("_", value)[:40] or fallback
+
+
 def preview_path(lang: str, voice: str, model: str) -> Path:
-    """Cache file under ``data/tts-preview/`` (contract §5); the hash ties it to model + sentence,
-    so changing either simply produces a new file and the old one becomes dead weight to clean."""
-    digest = hashlib.sha1(f"{model}\n{preview_text(lang)}".encode()).hexdigest()[:8]  # noqa: S324 - cache key, not security
-    return storage.data_dir() / PREVIEW_DIR / f"{lang}-{voice}-{digest}.wav"
+    """Cache file under ``data/tts-preview/`` (contract §5); the hash ties it to voice + model +
+    sentence, so changing any of them simply produces a new file and the old one becomes dead
+    weight to clean.
+
+    ``lang`` and ``voice`` arrive from the request path, and a MiniMax voice id is not tame:
+    ``Chinese (Mandarin)_Sweet_Lady``, ``Cantonese_ProfessionalHost（F)``, an emotion variant's
+    ``~happy``. They are sanitized for the visible part of the name, and the raw voice id goes into
+    the hash — so two ids that sanitize to the same string still get two different files.
+    """
+    digest = hashlib.sha1(f"{voice}\n{model}\n{preview_text(lang)}".encode()).hexdigest()[:8]  # noqa: S324 - cache key, not security
+    return storage.data_dir() / PREVIEW_DIR / f"{_safe_name(lang, 'lang')}-{_safe_name(voice, 'voice')}-{digest}.wav"
 
 
 def preview_wav(lang: str, voice: str, providers: localize.Providers) -> Path:
     """The cached preview wav for one voice, synthesizing it on first use. Raises on vendor failure."""
-    model = localize.voice_model(lang, voice)
+    spec = localize.voice_spec(lang, voice)
+    model = str(spec["model"])
     dst = preview_path(lang, voice, model)
     if dst.is_file() and dst.stat().st_size > 0:
         return dst
-    data = providers.tts.synthesize(preview_text(lang), voice, 1.0, model=model, lang=lang)
+    data = providers.tts.synthesize(
+        preview_text(lang), str(spec["voice"]), 1.0, model=model, lang=lang, emotion=spec["emotion"]
+    )
     if not data:
         raise localize.LocalizeError(f"合成失败（音色 {voice}）：音频为空")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -127,16 +153,19 @@ def _synthesize(asset: Asset, providers: localize.Providers, tmp: Path, dst: Pat
         raise localize.LocalizeError("没有可朗读的文案")
     lang = str(info.get("lang") or "zh")
     voice = str(info.get("voice") or localize.resolve_voice(lang, None))
-    model = localize.voice_model(lang, voice)
-    # The contract lets speech_rate through only where the model honours it (cosyvoice).
+    spec = localize.voice_spec(lang, voice)
+    model = str(spec["model"])
+    # The contract lets speech_rate through only where the model honours it (not qwen3-tts).
     rate = float(info.get("speech_rate") or 1.0) if localize.supports_speech_rate(model) else 1.0
 
     tmp.mkdir(parents=True, exist_ok=True)
     clips: list[tuple[Path, float, float]] = []
     cursor = 0.0
-    for i, chunk in enumerate(split_tts_text(text)):
+    for i, chunk in enumerate(split_tts_text(text, localize.max_tts_chars(model))):
         clip = tmp / f"{i:04d}.wav"
-        clip.write_bytes(providers.tts.synthesize(chunk, voice, rate, model=model, lang=lang))
+        clip.write_bytes(
+            providers.tts.synthesize(chunk, str(spec["voice"]), rate, model=model, lang=lang, emotion=spec["emotion"])
+        )
         seconds = localize.wav_duration(clip)
         if seconds <= 0:
             raise localize.LocalizeError(f"第 {i + 1} 段合成结果为空")
