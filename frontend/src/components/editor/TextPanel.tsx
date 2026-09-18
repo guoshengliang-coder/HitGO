@@ -32,11 +32,17 @@ export function TextPanel() {
   // 「文字」页双击新建的图层 id：它被自动选中时不切页
   const createdIdRef = useRef<string | null>(null);
   const selectedId = selected?.id ?? null;
+  const layerFocusVersion = useEditor((s) => s.layerFocusVersion);
   useEffect(() => {
     if (selectedId && selectedId === createdIdRef.current) return;
     createdIdRef.current = null; // 选中别的或取消选中后，再选回这条就算主动选中
     if (selectedId) setTab('layers');
   }, [selectedId]);
+  useEffect(() => {
+    if (!selectedId) return;
+    createdIdRef.current = null;
+    setTab('layers');
+  }, [layerFocusVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFromGallery = (item: GalleryItem) => {
     const { style, text } = galleryLayerSeed(item);

@@ -4,7 +4,7 @@
 // 画布比例跟着「成片画面」页签的预览画幅（HIG-29，缺省 9:16）；源画面比例不同时按该画幅的填充方式（模糊 / 纯色 / 裁切）画底。
 // 非 9:16 预览时图层位置由 lib/variantLayout 算（跟随视频或已微调），拖动 / 缩放写回该画幅的 layer_overrides；
 // 安全区只在 9:16 显示，内联文字编辑也只在 9:16 上进行。
-// 只有当前模块管理的那几类图层（文本 / 贴纸；字幕管文字 + 遮盖）能选中、拖动；其它类照常显示。
+// 所有当前可见图层都能点选；点中后自动切到该对象的编辑模块。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
 // 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
 // 拉伸不锁比例、没有旋转把手。
@@ -637,6 +637,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const safeZoneView = useEditor((s) => s.safeZoneView);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
+  const focusLayer = useEditor((s) => s.focusLayer);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
   const preroll = useCoverDuration();
@@ -809,7 +810,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               {layers.map((l) => {
                 if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
-                const selectable = layerTypes.includes(l.type);
+                // 图层无论当前模块为何都能命中；点选后由 focusLayer 切到对应属性面板。
+                const selectable = true;
                 if (l.type === 'mask') {
                   return (
                     <MaskNode
@@ -818,10 +820,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                       W={W}
                       H={H}
                       selectable={selectable}
-                      selected={selectedLayerId === l.id && selectable}
+                      selected={selectedLayerId === l.id && layerTypes.includes(l.type)}
+                      outlined={layerTypes.includes(l.type)}
                       backdrop={backdrop}
                       guides={guides}
-                      onSelect={() => setSelectedLayer(l.id)}
+                      onSelect={() => focusLayer(l)}
                       onGuides={setHitGuides}
                       onLive={(box) => setLiveMask(box ? { id: l.id, box } : null)}
                       registerNode={(n) => {
@@ -839,10 +842,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     W={W}
                     H={H}
                     selectable={selectable}
-                    selected={selectedLayerId === l.id && selectable}
+                    selected={selectedLayerId === l.id && layerTypes.includes(l.type)}
                     hidden={!!editingLayer && editingLayer.id === l.id}
                     guides={guides}
-                    onSelect={() => setSelectedLayer(l.id)}
+                    onSelect={() => focusLayer(l)}
                     onEdit={() => isRef && setEditingLayerId(l.id)}
                     onGuides={setHitGuides}
                     registerNode={(n) => {

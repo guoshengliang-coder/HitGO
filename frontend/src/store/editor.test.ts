@@ -39,6 +39,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('focusLayer（HIG-72）', () => {
+  it('跨模块切到图层的编辑面板，并在重复点选时继续发出属性聚焦意图', () => {
+    const layer = useEditor.getState().currentSpec()!.layers[0];
+    useEditor.setState({ step: 'audio', selectedTrackId: 'track', layerFocusVersion: 0 });
+    useEditor.getState().focusLayer(layer);
+    expect(useEditor.getState()).toMatchObject({ step: 'text', selectedLayerId: layer.id, selectedTrackId: null, layerFocusVersion: 1 });
+    useEditor.getState().focusLayer(layer);
+    expect(useEditor.getState().layerFocusVersion).toBe(2);
+  });
+});
+
 describe('pushHistorySnapshot', () => {
   it('HIG-39 合成后 I/O、删左/右、拖动删除区间与撤销都使用完整合成时长', () => {
     const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: '1', video_id: 'v1', in: 0, out: 10 }, { id: '2', video_id: 'v2', in: 0, out: 20 }] } };

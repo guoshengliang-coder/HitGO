@@ -46,6 +46,7 @@ export function MaskNode({
   H,
   selectable,
   selected,
+  outlined,
   backdrop,
   guides,
   onSelect,
@@ -60,6 +61,8 @@ export function MaskNode({
   H: number;
   selectable: boolean;
   selected: boolean;
+  /** 仅在遮盖所属模块显示常驻虚线，跨模块仍可点选。 */
+  outlined: boolean;
   /** 页面能用 backdrop-filter 预览模糊；否则模糊模式在这里画磨砂填充 */
   backdrop: boolean;
   guides: Guides;
@@ -127,8 +130,8 @@ export function MaskNode({
         node.height(nb.h);
         commit(nb);
       }}
-      stroke={selected ? GUIDE_COLOR : selectable ? 'rgba(255,255,255,0.6)' : undefined}
-      strokeWidth={selected || selectable ? 1 : 0}
+      stroke={selected ? GUIDE_COLOR : outlined ? 'rgba(255,255,255,0.6)' : undefined}
+      strokeWidth={selected || outlined ? 1 : 0}
       dash={selected ? undefined : [4, 3]}
       strokeScaleEnabled={false}
     />
