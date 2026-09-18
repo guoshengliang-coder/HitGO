@@ -571,6 +571,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .panel-head { padding: 10px 12px; border-bottom: 1px solid var(--line-soft); font-weight: 500; display: flex; align-items: center; justify-content: space-between; }
 /* 只允许纵向滚动：内容偶尔比面板宽一点时，横向滚动条会和纵向滚动条互相触发，面板不停抖动 */
 .panel-body { flex: 1; overflow-x: hidden; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.panel-body[hidden] { display: none; }
 .panel-foot { padding: 10px 12px; border-top: 1px solid var(--line-soft); }
 .panel-foot .btn { width: 100%; justify-content: center; }
 .section { display: flex; flex-direction: column; gap: 6px; }
