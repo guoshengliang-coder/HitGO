@@ -56,7 +56,8 @@ export function voiceOptionLabel(v: Pick<VoiceOption, 'label' | 'style'>): strin
 }
 
 export interface VoiceGroup {
-  key: VoiceGender | 'all';
+  /** 'all'（没有 gender 的那组）或 `${provider}:${gender}`。 */
+  key: string;
   /** optgroup 标题；'all' 时为空串（不分组）。 */
   label: string;
   voices: VoiceOption[];
@@ -65,10 +66,20 @@ export interface VoiceGroup {
 const GENDER_LABEL: Record<VoiceGender, string> = { female: '女声', male: '男声', neutral: '特色' };
 const GENDER_ORDER: VoiceGender[] = ['female', 'male', 'neutral'];
 
+/** 音色厂商的显示名（HIG-59）；没列出来的原样显示，新后端 + 旧前端不会炸。 */
+export const PROVIDER_LABEL: Record<string, string> = { aliyun: '阿里云', minimax: 'MiniMax' };
+
+const providerLabel = (provider: string): string => PROVIDER_LABEL[provider] ?? provider;
+const providerOf = (v: VoiceOption): string => v.provider || 'aliyun';
+
 /**
  * 按性别把音色分成 optgroup：女声 / 男声 / 特色，组内保持后端顺序，空组不出。
  * 没有任何音色带 gender（旧后端 / 全是 env 加的）时只有一组 'all'，不分组；
  * 部分没有 gender 的（LOCALIZE_VOICES 加的）排在最前面单独一组 'all'，别把它们藏进某个性别里。
+ *
+ * 一种语言同时有两家厂商的音色时（HIG-59），组名前面加厂商：「MiniMax · 女声」。**只有多家时才加**——
+ * 只有一家的语言（今天绝大多数）组名仍是纯「女声」，下拉与接 MiniMax 之前逐字相同。厂商的先后按它
+ * 在后端列表里首次出现的顺序，所以原有音色在前、MiniMax 在后，缺省音色一眼就能看到。
  */
 export function groupVoices(voices: VoiceOption[]): VoiceGroup[] {
   const tagged = voices.filter((v) => !!v.gender);
@@ -76,9 +87,14 @@ export function groupVoices(voices: VoiceOption[]): VoiceGroup[] {
   const out: VoiceGroup[] = [];
   const untagged = voices.filter((v) => !v.gender);
   if (untagged.length) out.push({ key: 'all', label: '', voices: untagged });
-  for (const g of GENDER_ORDER) {
-    const vs = tagged.filter((v) => v.gender === g);
-    if (vs.length) out.push({ key: g, label: GENDER_LABEL[g], voices: vs });
+  const providers = [...new Set(tagged.map(providerOf))];
+  for (const p of providers) {
+    for (const g of GENDER_ORDER) {
+      const vs = tagged.filter((v) => providerOf(v) === p && v.gender === g);
+      if (!vs.length) continue;
+      const label = providers.length > 1 ? `${providerLabel(p)} · ${GENDER_LABEL[g]}` : GENDER_LABEL[g];
+      out.push({ key: `${p}:${g}`, label, voices: vs });
+    }
   }
   return out;
 }
@@ -234,6 +250,8 @@ export const FONT_BY_LANG: Record<string, string> = {
   ja: 'Noto Sans JP',
   th: 'Noto Sans Thai',
   ar: 'Noto Sans Arabic',
+  // 越南语的预组合变音（ế ộ ữ）不在 Noto Sans SC 的子集里，必须用带 vietnamese 子集的拉丁 Noto。
+  vi: 'Noto Sans',
 };
 
 export function fontForLang(lang: string): string {

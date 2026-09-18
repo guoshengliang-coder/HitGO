@@ -17,6 +17,7 @@ os.environ["SAMPLES_DIR"] = "-"
 os.environ["ENV"] = "dev"
 os.environ["FRONTEND_DIST"] = str(_TMP / "no-dist")
 os.environ["LOCALIZE_PROVIDER"] = "fake"  # never dashscope / the network in tests
+os.environ["MINIMAX_TTS_MODEL"] = "MiniMax/speech-2.8-hd"  # opt-in in prod (HIG-59); tests cover it on
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

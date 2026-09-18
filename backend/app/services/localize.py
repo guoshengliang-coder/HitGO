@@ -98,7 +98,9 @@ LANGS: dict[str, dict[str, Any]] = {
     "pt": {"label": "葡萄牙语", "mt_name": "Portuguese", "asr": False, "font_hint": "Noto Sans SC"},
     "th": {"label": "泰语", "mt_name": "Thai", "asr": False, "font_hint": "Noto Sans Thai"},
     "id": {"label": "印尼语", "mt_name": "Indonesian", "asr": False, "font_hint": "Noto Sans SC"},
-    "vi": {"label": "越南语", "mt_name": "Vietnamese", "asr": False, "font_hint": "Noto Sans SC"},
+    # Noto Sans SC has no vietnamese subset (its precomposed ế ộ ữ would fall back), so Vietnamese
+    # asks for the Latin Noto instead — it became a selectable target language in HIG-59.
+    "vi": {"label": "越南语", "mt_name": "Vietnamese", "asr": False, "font_hint": "Noto Sans"},
     "es": {"label": "西班牙语", "mt_name": "Spanish", "asr": False, "font_hint": "Noto Sans SC"},
     "it": {"label": "意大利语", "mt_name": "Italian", "asr": False, "font_hint": "Noto Sans SC"},
     "ar": {"label": "阿拉伯语", "mt_name": "Arabic", "asr": False, "font_hint": "Noto Sans Arabic", "rtl": True},
@@ -110,19 +112,50 @@ LANGS: dict[str, dict[str, Any]] = {
 QWEN3_TTS_PREFIX = "qwen3-tts"
 # Qwen3-TTS language_type values; anything else is sent as "Auto".
 QWEN3_TTS_LANGUAGE_TYPES = {"zh": "Chinese", "en": "English", "de": "German", "it": "Italian", "pt": "Portuguese", "es": "Spanish", "ja": "Japanese", "ko": "Korean", "fr": "French", "ru": "Russian"}
+# MiniMax hosted on DashScope (HIG-59). Same multimodal-generation endpoint as qwen3-tts, but the
+# parameters sit in input.voice_setting / input.audio_setting, so it needs its own request shape.
+# Matched case-insensitively: a hand-typed LOCALIZE_VOICES=th=x@minimax/speech-2.8-hd would
+# otherwise fall through to tts_v2 and fail with a confusing WebSocket error.
+MINIMAX_TTS_PREFIX = "minimax/"
+# language_boost values (help.aliyun.com/zh/model-studio/minimax-synchronous-speech-synthesis-api,
+# checked 2026-09-18). Deliberately NOT merged with QWEN3_TTS_LANGUAGE_TYPES: the vocabularies
+# differ (th / vi / ar exist only here), Cantonese is the comma-bearing "Chinese,Yue", and the
+# fallback spelling differs ("auto" vs "Auto"). One table per API, like tts_api_for itself.
+MINIMAX_LANGUAGE_BOOST = {"zh": "Chinese", "yue": "Chinese,Yue", "en": "English", "ja": "Japanese", "ko": "Korean", "de": "German", "fr": "French", "ru": "Russian", "pt": "Portuguese", "th": "Thai", "id": "Indonesian", "vi": "Vietnamese", "es": "Spanish", "it": "Italian", "ar": "Arabic"}
+# Which vendor a voice comes from, as GET /api/localize/options reports it (contract §3 ``provider``).
+VOICE_PROVIDERS = {"tts_v2": "aliyun", "qwen3": "aliyun", "minimax": "minimax"}
+# Characters per synthesis request, per API. MiniMax allows 10,000 but recommends streaming above
+# 3,000; a long request also risks the Celery soft limit and costs a whole segment on retry.
+TTS_MAX_CHARS = {"tts_v2": 500, "qwen3": 500, "minimax": 2000}
 
 
 def tts_api_for(model: str) -> str:
-    """``"qwen3"`` (MultiModalConversation, URL result) or ``"tts_v2"`` (SpeechSynthesizer bytes)."""
+    """``"minimax"``, ``"qwen3"`` (MultiModalConversation, URL result) or ``"tts_v2"`` (SpeechSynthesizer bytes)."""
+    if model.casefold().startswith(MINIMAX_TTS_PREFIX):
+        return "minimax"
     return "qwen3" if model.startswith(QWEN3_TTS_PREFIX) else "tts_v2"
 
 
 def supports_speech_rate(model: str) -> bool:
-    return tts_api_for(model) == "tts_v2"
+    """Whether the model honours ``speech_rate``; MiniMax calls it ``speed``, same 0.5–2 range."""
+    return tts_api_for(model) in ("tts_v2", "minimax")
 
 
 def language_type_for(lang: str) -> str:
     return QWEN3_TTS_LANGUAGE_TYPES.get(lang, "Auto")
+
+
+def language_boost_for(lang: str | None) -> str:
+    """MiniMax ``voice_setting.language_boost``; anything unlisted is sent as ``"auto"``."""
+    return MINIMAX_LANGUAGE_BOOST.get(lang or "", "auto")
+
+
+def voice_provider(model: str) -> str:
+    return VOICE_PROVIDERS[tts_api_for(model)]
+
+
+def max_tts_chars(model: str) -> int:
+    return TTS_MAX_CHARS[tts_api_for(model)]
 
 GENDERS = ("female", "male", "neutral")
 
@@ -135,13 +168,28 @@ def _v(id_: str, label: str, gender: str, style: str, model: str | None = None) 
     return entry
 
 
+def _mv(voice: str, label: str, gender: str, style: str, emotion: str | None = None) -> dict[str, str]:
+    """One MINIMAX_VOICES entry (HIG-59); ``model`` is stamped on later by :func:`voice_table`.
+
+    ``voice`` is the vendor's voice_id. With ``emotion`` the entry becomes an "emotion variant" of
+    that same voice and gets its own ``id`` (``"<voice>~<emotion>"``), because voice ids must stay
+    unique within a language; ``~`` is RFC 3986 unreserved, so it is safe in the preview URL and in
+    a filename, and it is not ``@`` (which LOCALIZE_VOICES already uses to mean "model").
+    """
+    entry = {"id": f"{voice}~{emotion}" if emotion else voice, "voice": voice,
+             "label": label, "gender": gender, "style": style}
+    if emotion:
+        entry["emotion"] = emotion
+    return entry
+
+
 # cosyvoice-v3-flash voices per language (help.aliyun.com/zh/model-studio/cosyvoice-voice-list;
 # ids and 特质 checked against the page on 2026-09-17, HIG-42). The first entry is the default and
 # must stay put: existing videos synthesize with it when no voice is stored. ``label`` is the name,
 # ``style`` the vendor's one-line character, ``gender`` groups the picker (``neutral`` = child /
 # character voices, shown as 特色). Chinese is a curated ad-copy set, not the vendor's full 60+.
-# Languages without a confirmed voice (th / vi / ar) are not offered until LOCALIZE_VOICES adds one.
-DEFAULT_VOICES: dict[str, list[dict[str, str]]] = {
+# Thai / Vietnamese / Arabic have no entry here; MINIMAX_VOICES below is what makes them selectable.
+_BASE_VOICES: dict[str, list[dict[str, str]]] = {
     "zh": [
         _v("longxiaochun_v3", "龙小淳", "female", "知性积极"),
         _v("longcheng_v3", "龙橙", "male", "智慧青年"),
@@ -225,6 +273,162 @@ DEFAULT_VOICES: dict[str, list[dict[str, str]]] = {
     },
 }
 # Voices without a "model" key belong to the configured default (LOCALIZE_TTS_MODEL, cosyvoice-v3-flash).
+# MiniMax system voices reachable through DashScope (HIG-59; ids and names from MiniMax's official
+# System Voice ID List, platform.minimax.io/docs/faq/system-voice-id, checked 2026-09-18). The
+# vendor publishes 327 ids across 24 languages; this is a curated subset per language (male / female
+# / character coverage, no duplicate character, holiday novelty voices such as Santa_Claus left out)
+# rather than the full list, so the picker stays usable — the same choice CapCut makes.
+# ``style`` is ours (the vendor has no equivalent column); ``label`` translates the vendor's name.
+# These entries carry no "model": voice_table() stamps MINIMAX_TTS_MODEL on them, so the whole
+# family can be switched to turbo, or removed entirely, from the environment.
+# ids are NOT [A-Za-z0-9_]: they contain spaces, ASCII and full-width parentheses and hyphens
+# ("Chinese (Mandarin)_Mature_Woman", "Cantonese_ProfessionalHost（F)", "French_Female_News Anchor").
+# An "<id>~<emotion>" entry is the same vendor voice with voice_setting.emotion pinned — that is how
+# emotion is offered (picked from the list, as in CapCut), so there is no separate emotion control.
+MINIMAX_VOICES: dict[str, list[dict[str, str]]] = {
+    "zh": [
+        _mv("Chinese (Mandarin)_News_Anchor", "新闻女声", "female", "新闻播报"),
+        _mv("Chinese (Mandarin)_Sweet_Lady", "甜美女声", "female", "甜美亲和"),
+        _mv("Chinese (Mandarin)_Warm_Bestie", "温暖闺蜜", "female", "温暖闺蜜"),
+        _mv("Chinese (Mandarin)_Wise_Women", "阅历姐姐", "female", "阅历知性"),
+        _mv("Chinese (Mandarin)_Warm_Girl", "温暖少女", "female", "温暖少女"),
+        _mv("Chinese (Mandarin)_Reliable_Executive", "沉稳高管", "male", "沉稳高管"),
+        _mv("Chinese (Mandarin)_Male_Announcer", "播报男声", "male", "播报男声"),
+        _mv("Chinese (Mandarin)_Gentleman", "温润男声", "male", "温润男声"),
+        _mv("Chinese (Mandarin)_Radio_Host", "电台男主播", "male", "电台主播"),
+        _mv("Chinese (Mandarin)_Sincere_Adult", "真诚青年", "male", "真诚青年"),
+        _mv("Chinese (Mandarin)_Cute_Spirit", "憨憨萌兽", "neutral", "憨萌角色"),
+        _mv("lovely_girl", "萌萌女童", "neutral", "萌趣女童"),
+        _mv("Chinese (Mandarin)_Sweet_Lady", "甜美女声·欢快", "female", "甜美亲和", emotion="happy"),
+        _mv("Chinese (Mandarin)_News_Anchor", "新闻女声·平稳", "female", "新闻播报", emotion="calm"),
+        _mv("Chinese (Mandarin)_Reliable_Executive", "沉稳高管·欢快", "male", "沉稳高管", emotion="happy"),
+    ],
+    "en": [
+        _mv("English_Graceful_Lady", "Graceful Lady", "female", "优雅女声"),
+        _mv("Serene_Woman", "Serene Woman", "female", "沉静女声"),
+        _mv("Attractive_Girl", "Attractive Girl", "female", "明亮女声"),
+        _mv("English_Whispering_girl", "Whispering Girl", "female", "轻声耳语"),
+        _mv("English_Trustworthy_Man", "Trustworthy Man", "male", "可信男声"),
+        _mv("English_Diligent_Man", "Diligent Man", "male", "干练男声"),
+        _mv("English_Gentle-voiced_man", "Gentle-voiced Man", "male", "温和男声"),
+        _mv("English_Aussie_Bloke", "Aussie Bloke", "male", "澳洲口音"),
+        _mv("English_Graceful_Lady", "Graceful Lady·欢快", "female", "优雅女声", emotion="happy"),
+        _mv("English_Trustworthy_Man", "Trustworthy Man·平稳", "male", "可信男声", emotion="calm"),
+    ],
+    "ja": [
+        _mv("Japanese_KindLady", "Kind Lady", "female", "亲切女声"),
+        _mv("Japanese_CalmLady", "Calm Lady", "female", "沉静女声"),
+        _mv("Japanese_DependableWoman", "Dependable Woman", "female", "可靠女声"),
+        _mv("Japanese_GracefulMaiden", "Graceful Maiden", "female", "优雅少女"),
+        _mv("Japanese_IntellectualSenior", "Intellectual Senior", "male", "知性前辈"),
+        _mv("Japanese_GentleButler", "Gentle Butler", "male", "温和管家"),
+        _mv("Japanese_OptimisticYouth", "Optimistic Youth", "male", "开朗青年"),
+        _mv("Japanese_InnocentBoy", "Innocent Boy", "neutral", "清澈少年"),
+    ],
+    "ko": [
+        _mv("Korean_ReliableSister", "Reliable Sister", "female", "可靠姐姐"),
+        _mv("Korean_CalmLady", "Calm Lady", "female", "沉静女声"),
+        _mv("Korean_SoothingLady", "Soothing Lady", "female", "舒缓女声"),
+        _mv("Korean_FriendlyBigSister", "Friendly Big Sister", "female", "亲切大姐"),
+        _mv("Korean_CaringWoman", "Caring Woman", "female", "体贴女声"),
+        _mv("Korean_CalmGentleman", "Calm Gentleman", "male", "沉稳绅士"),
+        _mv("Korean_IntellectualMan", "Intellectual Man", "male", "知性男声"),
+        _mv("Korean_ReliableYouth", "Reliable Youth", "male", "可靠青年"),
+    ],
+    "yue": [
+        _mv("Cantonese_ProfessionalHost（F)", "专业女主持", "female", "专业主持"),
+        _mv("Cantonese_GentleLady", "温柔女声", "female", "温柔女声"),
+        _mv("Cantonese_KindWoman", "善良女声", "female", "亲和女声"),
+        _mv("Cantonese_CuteGirl", "可爱女孩", "female", "可爱女孩"),
+        _mv("Cantonese_ProfessionalHost（M)", "专业男主持", "male", "专业主持"),
+        _mv("Cantonese_PlayfulMan", "活泼男声", "male", "活泼男声"),
+    ],
+    "id": [
+        _mv("Indonesian_CalmWoman", "Calm Woman", "female", "沉静女声"),
+        _mv("Indonesian_ConfidentWoman", "Confident Woman", "female", "自信女声"),
+        _mv("Indonesian_GentleGirl", "Gentle Girl", "female", "温柔女声"),
+        _mv("Indonesian_SweetGirl", "Sweet Girl", "female", "甜美女声"),
+        _mv("Indonesian_CaringMan", "Caring Man", "male", "亲和男声"),
+        _mv("Indonesian_ReservedYoungMan", "Reserved Young Man", "male", "内敛青年"),
+    ],
+    "es": [
+        _mv("Spanish_SereneWoman", "Serene Woman", "female", "沉静女声"),
+        _mv("Spanish_ConfidentWoman", "Confident Woman", "female", "自信女声"),
+        _mv("Spanish_SophisticatedLady", "Sophisticated Lady", "female", "优雅女声"),
+        _mv("Spanish_ThoughtfulLady", "Thoughtful Lady", "female", "娓娓女声"),
+        _mv("Spanish_Narrator", "Narrator", "male", "解说男声"),
+        _mv("Spanish_RationalMan", "Rational Man", "male", "理性男声"),
+        _mv("Spanish_ReliableMan", "Reliable Man", "male", "可靠男声"),
+        _mv("Spanish_Steadymentor", "Steady Mentor", "male", "沉稳讲述"),
+    ],
+    "pt": [
+        _mv("Portuguese_ConfidentWoman", "Confident Woman", "female", "自信女声"),
+        _mv("Portuguese_SereneWoman", "Serene Woman", "female", "沉静女声"),
+        _mv("Portuguese_GentleTeacher", "Gentle Teacher", "female", "温和讲述"),
+        _mv("Portuguese_ThoughtfulLady", "Thoughtful Lady", "female", "娓娓女声"),
+        _mv("Portuguese_Narrator", "Narrator", "male", "解说男声"),
+        _mv("Portuguese_ReliableMan", "Reliable Man", "male", "可靠男声"),
+        _mv("Portuguese_RationalMan", "Rational Man", "male", "理性男声"),
+        _mv("Portuguese_Steadymentor", "Steady Mentor", "male", "沉稳讲述"),
+    ],
+    "fr": [
+        _mv("French_FemaleAnchor", "Female Anchor", "female", "女主播"),
+        _mv("French_Female_News Anchor", "News Anchor", "female", "新闻女声"),
+        _mv("French_MovieLeadFemale", "Movie Lead Female", "female", "电影女主"),
+        _mv("French_MaleNarrator", "Male Narrator", "male", "解说男声"),
+        _mv("French_Male_Speech_New", "Level-Headed Man", "male", "沉稳男声"),
+    ],
+    "de": [
+        _mv("German_SweetLady", "Sweet Lady", "female", "甜美女声"),
+        _mv("German_FriendlyMan", "Friendly Man", "male", "亲和男声"),
+        _mv("German_PlayfulMan", "Playful Man", "male", "活泼男声"),
+    ],
+    "it": [
+        _mv("Italian_BraveHeroine", "Brave Heroine", "female", "英气女声"),
+        _mv("Italian_DiligentLeader", "Diligent Leader", "male", "干练男声"),
+        _mv("Italian_Narrator", "Narrator", "male", "解说男声"),
+        _mv("Italian_WanderingSorcerer", "Wandering Sorcerer", "neutral", "游吟角色"),
+    ],
+    "ru": [
+        _mv("Russian_BrightHeroine", "Bright Queen", "female", "明亮女声"),
+        _mv("Russian_AmbitiousWoman", "Ambitious Woman", "female", "进取女声"),
+        _mv("Russian_ReliableMan", "Reliable Man", "male", "可靠男声"),
+        _mv("Russian_AttractiveGuy", "Attractive Guy", "male", "有魅力男声"),
+        _mv("Russian_HandsomeChildhoodFriend", "Handsome Childhood Friend", "male", "清朗青年"),
+    ],
+    # Thai / Vietnamese / Arabic have no CosyVoice or Qwen3-TTS voice at all, so these entries are
+    # what makes them selectable as target languages (voice_table drops a language with no voices).
+    # The vendor only publishes 4 / 1 / 2 ids for them; all are taken.
+    "th": [
+        _mv("Thai_female_1_sample1", "泰语女声 1", "female", "自信女声"),
+        _mv("Thai_female_2_sample2", "泰语女声 2", "female", "活力女声"),
+        _mv("Thai_male_1_sample8", "泰语男声 1", "male", "沉静男声"),
+        _mv("Thai_male_2_sample2", "泰语男声 2", "male", "亲和男声"),
+    ],
+    "vi": [
+        _mv("Vietnamese_kindhearted_girl", "越南语女声", "female", "亲切女声"),
+    ],
+    "ar": [
+        _mv("Arabic_CalmWoman", "Calm Woman", "female", "沉静女声"),
+        _mv("Arabic_FriendlyGuy", "Friendly Guy", "male", "亲和男声"),
+    ],
+}
+
+
+def _merge_voices(base: dict[str, list[dict[str, str]]], extra: dict[str, list[dict[str, str]]]) -> dict[str, list[dict[str, str]]]:
+    """``base`` with ``extra`` appended per language; a language only in ``extra`` keeps its order.
+
+    Appending (never inserting) is what keeps "the first voice of each language is the default"
+    true for every language that already had one — existing videos synthesize with it when no
+    voice is stored (contract §3). ``base`` is not modified.
+    """
+    out = {lang: list(voices) for lang, voices in base.items()}
+    for lang, voices in extra.items():
+        out.setdefault(lang, []).extend(voices)
+    return out
+
+
+DEFAULT_VOICES: dict[str, list[dict[str, str]]] = _merge_voices(_BASE_VOICES, MINIMAX_VOICES)
 
 
 def source_langs() -> list[dict[str, str]]:
@@ -255,11 +459,19 @@ def parse_voice_overrides(raw: str) -> dict[str, dict[str, str]]:
 def voice_table(cfg: Settings | None = None) -> dict[str, list[dict[str, str]]]:
     """Voices per target language: defaults with the env override moved to (or added at) the front.
 
-    Each entry is ``{id, label[, gender, style, model]}``; no ``model`` = the configured default TTS
-    model. Env-added voices carry no gender / style (the picker lists them ungrouped).
+    Each entry is ``{id, label[, gender, style, model, voice, emotion]}``; no ``model`` = the
+    configured default TTS model. ``voice`` (the vendor's id, when it differs from ``id``) and
+    ``emotion`` are MiniMax-only and never leave the backend. Env-added voices carry no gender /
+    style (the picker lists them ungrouped).
     """
     cfg = cfg or settings
-    table = {lang: list(voices) for lang, voices in DEFAULT_VOICES.items()}
+    table = {lang: list(voices) for lang, voices in _BASE_VOICES.items()}
+    if cfg.minimax_tts_model:
+        # The MiniMax entries carry no model of their own, so stamp the configured one on here.
+        # An empty MINIMAX_TTS_MODEL leaves them out entirely: th / vi / ar then have no voices and
+        # drop out of target_langs, i.e. the whole family is switched off from the environment.
+        stamped = {lang: [{**v, "model": cfg.minimax_tts_model} for v in voices] for lang, voices in MINIMAX_VOICES.items()}
+        table = _merge_voices(table, stamped)
     for lang, override in parse_voice_overrides(cfg.localize_voices).items():
         voice = override["id"]
         voices = [v for v in table.get(lang, []) if v["id"] != voice]
@@ -279,9 +491,26 @@ def voice_model(lang: str, voice: str, table: dict[str, list[dict[str, str]]] | 
     return str((entry or {}).get("model") or cfg.localize_tts_model)
 
 
+def voice_spec(lang: str, voice: str, table: dict[str, list[dict[str, str]]] | None = None, cfg: Settings | None = None) -> dict[str, Any]:
+    """What it takes to synthesize one voice-table id: ``{voice, model, emotion}``.
+
+    ``voice`` here is the id the API speaks (contract §3), which for a MiniMax emotion variant is
+    ``"<vendor id>~<emotion>"``; the returned ``voice`` is always the vendor's own id.
+    """
+    cfg = cfg or settings
+    table = table if table is not None else voice_table(cfg)
+    entry = next((v for v in table.get(lang, []) if v["id"] == voice), None) or {}
+    return {
+        "voice": str(entry.get("voice") or voice),
+        "model": str(entry.get("model") or cfg.localize_tts_model),
+        "emotion": entry.get("emotion") or None,
+    }
+
+
 def voice_out(lang: str, voice: dict[str, str], cfg: Settings | None = None) -> dict[str, Any]:
     """One ``voices[]`` element of ``GET /api/localize/options`` (contract §3): id, label, gender,
-    style and whether its model honours ``speech_rate`` (cosyvoice yes, qwen3-tts no)."""
+    style, whether its model honours ``speech_rate`` (cosyvoice and MiniMax yes, qwen3-tts no) and
+    which vendor it comes from. The model name, the vendor id and the emotion stay in the backend."""
     cfg = cfg or settings
     model = str(voice.get("model") or cfg.localize_tts_model)
     return {
@@ -290,6 +519,7 @@ def voice_out(lang: str, voice: dict[str, str], cfg: Settings | None = None) -> 
         "gender": voice.get("gender"),
         "style": voice.get("style"),
         "speech_rate": supports_speech_rate(model),
+        "provider": voice_provider(model),
     }
 
 
@@ -298,6 +528,11 @@ def clone_supported(lang: str, cfg: Settings | None = None) -> bool:
 
     The clone is bound to ``LOCALIZE_TTS_MODEL``; a language whose own voice belongs to a
     different model can still be cloned, as long as the clone's model speaks it.
+
+    The ``tts_v2`` test below is deliberately spelled out rather than written as
+    ``supports_speech_rate(...)``: the two were equivalent until MiniMax arrived (HIG-59), and
+    reusing that helper here would report ``clone: true`` for anyone who points
+    LOCALIZE_TTS_MODEL at a MiniMax model, which cannot enrol a cloned voice at all.
     """
     cfg = cfg or settings
     return lang in CLONE_MODEL_LANGS and tts_api_for(cfg.localize_tts_model) == "tts_v2"
@@ -719,7 +954,7 @@ class TranslateProvider(Protocol):
 
 
 class TtsProvider(Protocol):
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes: ...
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None, emotion: str | None = None) -> bytes: ...
 
 
 class VoiceCloneProvider(Protocol):
@@ -795,10 +1030,12 @@ class FakeTts:
     calls: list[tuple[str, str]] = field(default_factory=list)
 
     models: list[str | None] = field(default_factory=list)
+    emotions: list[str | None] = field(default_factory=list)
 
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes:
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None, emotion: str | None = None) -> bytes:
         self.calls.append((text, voice) if speech_rate == 1.0 else (text, voice, speech_rate))
         self.models.append(model)
+        self.emotions.append(emotion)
         if voice in self.fail_voices:
             raise LocalizeError(f"音色 {voice} 合成失败")
         return silent_wav(self.seconds / speech_rate)
@@ -1038,11 +1275,12 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         # The clone is not in the voice table; it belongs to the configured TTS model (HIG-58).
         voice = str(clone_voice_id(loc) or "")
         model = settings.localize_tts_model
+        emotion: str | None = None
         if not voice:
             raise LocalizeError("音色复刻还没有完成，无法用原声合成")
     else:
-        voice = str(version.get("voice") or resolve_voice(lang, None))
-        model = voice_model(lang, voice)
+        spec = voice_spec(lang, str(version.get("voice") or resolve_voice(lang, None)))
+        voice, model, emotion = str(spec["voice"]), str(spec["model"]), spec["emotion"]
     spoken: list[dict[str, Any]] = []
     clip_paths: list[Path] = []
     clip_durations: list[float] = []
@@ -1054,13 +1292,13 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         if not text:
             continue
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
-        clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang))
+        clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
         seconds = wav_duration(clip)
         # Translations often run longer than the source (Korean ≈ 2× English): ask the model to
         # speak faster before falling back to atempo, which only sounds fine up to ~1.3×.
         rate = speech_rate_for(seconds, slots[int(cue["i"])]) if supports_speech_rate(model) else 1.0
         if rate > 1.0:
-            clip.write_bytes(providers.tts.synthesize(text, voice, rate, model=model, lang=lang))
+            clip.write_bytes(providers.tts.synthesize(text, voice, rate, model=model, lang=lang, emotion=emotion))
             seconds = wav_duration(clip)
         spoken.append(cue)
         clip_paths.append(clip)

@@ -9,8 +9,10 @@
 流程：用 cosyvoice 把一句英文合成 wav → 用 paraformer 把这段 wav 听写回来 → 用 qwen-mt 翻成目标语言。
 每步打印耗时和结果；哪一步失败就打印百炼返回的原因（通常是 key 无效、模型没开通、余额不足）。
 模型名默认与 .env.example 一致，可用 --asr / --mt / --tts 覆盖。
-西 / 葡 / 法 / 德 / 意 / 俄走 Qwen3-TTS（音色 Cherry / Serena / Ethan）；试没有默认音色的语言（如阿拉伯语）：
-    ... check_dashscope.py --target ar --voice loongmary --tts-model qwen-audio-3.0-tts-flash
+西 / 葡 / 法 / 德 / 意 / 俄走 Qwen3-TTS（音色 Cherry / Serena / Ethan）；泰 / 越 / 阿走百炼托管的 MiniMax
+（HIG-59，音色表里已有默认音色）。要逐个核对 MiniMax 的 voice_id 是否可用，用 check_minimax_voices.py。
+试一个表外的音色 / 模型组合：
+    ... check_dashscope.py --target ko --voice loongjihun_v3 --tts-model cosyvoice-v3-flash
 """
 
 from __future__ import annotations

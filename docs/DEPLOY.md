@@ -157,6 +157,7 @@ Cloudflare 免费版单次上传上限 100 MB（超过直接回 413，到不了�
 | `LOCALIZE_MAX_TEMPO` | `1.3` | 译文配音塞不进原句时段时最多加速几倍；仍超出时写进版本 `warnings` |
 | `LOCALIZE_TIMEOUT_SECONDS` | `900` | 一次改语言任务的软超时（秒）；超时后进行中的版本记 failed |
 | `LOCALIZE_VOICES` | 空 | `lang=voice[@model]`，如 `ko=loongjihun_v3,ar=loongmary@qwen-audio-3.0-tts-flash`：按语言覆盖默认音色或给还没有默认音色的语言加一个（该语言随即出现在目标语言列表）；`@model` 缺省为 `LOCALIZE_TTS_MODEL` |
+| `MINIMAX_TTS_MODEL` | 空 | 百炼托管的 MiniMax 语音模型（HIG-59），第二家系统音色来源，仍用 `DASHSCOPE_API_KEY`。**缺省留空 = 不启用**；开启前必须先在百炼控制台开通 MiniMax 语音模型（只有华北2（北京）提供），没开通时百炼回 400 `The product is not activated`，而后端无法预先判断，界面上会出现音色但每次合成都 502。建议值 `MiniMax/speech-2.8-hd`；也可 `speech-2.8-turbo` / `speech-02-hd` / `speech-02-turbo`（turbo 2 元/万字符、hd 3.5 元/万字符，cosyvoice 约 0.8–1 元）。留空则泰 / 越 / 阿 不出现在目标语言列表。**该模型限 20 RPM**，worker 每进程已强制 3.1 秒间隔自我节流，`WORKER_CONCURRENCY` 调大或多语言并行配音时建议在百炼控制台申请提高 RPM 配额 |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 

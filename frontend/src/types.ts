@@ -179,6 +179,11 @@ export interface VoiceOption {
   style?: string | null;
   /** 缺省 true；false = 该音色的模型不接受语速（qwen3-tts），前端禁用语速。 */
   speech_rate?: boolean;
+  /**
+   * 音色来源厂商（HIG-59）：'aliyun'（CosyVoice / Qwen3-TTS）或 'minimax'（百炼托管的 MiniMax）。
+   * 故意放宽成 string 而不是联合字面量——后端将来加第三家时前端不该直接 typecheck 红。
+   */
+  provider?: string;
 }
 
 export interface TargetLangOption extends LangOption {

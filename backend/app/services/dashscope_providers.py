@@ -7,13 +7,21 @@ worker when a localization actually runs, and tests must never touch it or the n
     MT   qwen-mt-plus            Generation.call(translation_options={source_lang, target_lang, terms})
     TTS  cosyvoice-v3-flash      SpeechSynthesizer(model, voice, WAV 22.05 kHz mono).call(text) → bytes
          qwen3-tts-flash         MultiModalConversation.call(text, voice, language_type) → wav URL → bytes
+         MiniMax/speech-2.8-hd   BaseApi.call(input={text, voice_setting, audio_setting}) → hex wav (HIG-59;
+                                 same multimodal-generation endpoint as qwen3-tts, but the parameters live
+                                 inside ``input``, which MultiModalConversation.call cannot express — it puts
+                                 anything beyond text / voice / language_type into ``parameters``.
+                                 Only in cn-beijing, which is dashscope's default endpoint anyway.)
     HL   qwen-plus               Generation.call(system prompt + copy) → JSON array of phrases (HIG-50)
     CLONE  voice-enrollment      VoiceEnrollmentService.create_voice(target_model, prefix, url) → voice_id (HIG-58)
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,9 +32,17 @@ from typing import Any
 
 from app.config import Settings
 from app.services.highlight import parse_phrase_json
-from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_type_for, tts_api_for
+from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_boost_for, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
+
+# MiniMax is metered at 20 RPM (its model card), while dubbing synthesizes cues back to back at
+# roughly 40/min — so it would hit the limit steadily and only get through on retry backoff. Pace
+# the calls instead of walking into the wall: this is per worker process, so with several workers
+# the real rate is a multiple of it; raising the account's RPM quota is the other half of the fix.
+MINIMAX_MIN_INTERVAL = 3.1
+_minimax_last_call = 0.0
+_minimax_gate = threading.Lock()
 
 RETRY_ATTEMPTS = 3
 RETRY_BACKOFF = (1.0, 2.0, 4.0)
@@ -67,6 +83,113 @@ def _with_retry(what: str, call: Callable[[], Any]) -> Any:
     if isinstance(last, Exception):
         raise LocalizeError(f"{what}失败：{last}") from last
     raise LocalizeError(f"{what}失败（{_status(last)}）：{_message(last)}")
+
+
+def _minimax_pace() -> None:
+    """Block until ``MINIMAX_MIN_INTERVAL`` has passed since this process's last MiniMax call."""
+    global _minimax_last_call  # noqa: PLW0603 - one gate per worker process
+    with _minimax_gate:
+        wait = _minimax_last_call + MINIMAX_MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _minimax_last_call = time.monotonic()
+
+
+def _clamp_rate(speech_rate: float) -> float:
+    """The vendor's documented range, shared by cosyvoice ``speech_rate`` and MiniMax ``speed``."""
+    return max(0.5, min(2.0, float(speech_rate)))
+
+
+def _download_audio(url: str, voice: str) -> bytes:
+    """Fetch a vendor-issued audio URL (qwen3-tts always, MiniMax when it answers with one)."""
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 - vendor-issued https URL
+            data = resp.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise LocalizeError(f"下载合成音频失败：{exc}") from exc
+    if not data:
+        raise LocalizeError(f"合成失败（音色 {voice}）：音频为空")
+    return bytes(data)
+
+
+# MiniMax wants wav explicitly (the vendor default is mp3) at the same 22.05 kHz mono as cosyvoice.
+# Getting this wrong fails late and confusingly: localize.wav_duration reads the RIFF header with
+# ``wave.open``, so a non-wav clip measures 0 seconds and surfaces as "第 N 段合成结果为空".
+MINIMAX_AUDIO_SETTING = {"format": "wav", "sample_rate": 22050, "channel": 1}
+
+
+def _minimax_input(text: str, voice: str, speech_rate: float, lang: str | None, emotion: str | None) -> dict[str, Any]:
+    """The ``input`` object of one MiniMax synthesis request (百炼 MiniMax 同步语音合成 API 参考)."""
+    voice_setting: dict[str, Any] = {
+        "voice_id": voice,
+        "speed": _clamp_rate(speech_rate),
+        "language_boost": language_boost_for(lang),
+    }
+    if emotion:
+        voice_setting["emotion"] = emotion
+    return {
+        # "action" and "stream" are in the console's own curl sample for this model card; the API
+        # reference page leaves them out. Send them the way the console does.
+        "action": "tts",
+        "stream": False,
+        "text": text,
+        "voice_setting": voice_setting,
+        "audio_setting": dict(MINIMAX_AUDIO_SETTING),
+        "output_format": "hex",
+    }
+
+
+def _minimax_decode(value: str) -> bytes | None:
+    """``output.data.audio`` as bytes: hex per the docs, base64 tolerated in case the gateway switches."""
+    try:
+        return bytes.fromhex(value)
+    except ValueError:
+        pass
+    try:
+        return base64.b64decode(value, validate=True)
+    except (ValueError, binascii.Error):
+        return None
+
+
+def _minimax_audio_bytes(result: Any, voice: str) -> bytes:
+    """Pull the wav out of a MiniMax response, whichever shape it arrives in.
+
+    The documented answer is ``output.data.audio`` as a hex string, but ``output_format`` can also
+    yield a URL, and ``output`` comes back as a dict from some SDK versions and as an object from
+    others — so every step accepts both and the failures are explicit. A clip that is not RIFF is
+    rejected here rather than left for ``wav_duration`` to silently measure as 0 seconds.
+    """
+    output = getattr(result, "output", None)
+    if output is None and isinstance(result, dict):
+        output = result.get("output")
+
+    def field(obj: Any, name: str) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(name)
+        return getattr(obj, name, None)
+
+    base_resp = field(output, "base_resp")
+    vendor_status = field(base_resp, "status_code") if base_resp is not None else None
+    if vendor_status not in (None, 0):
+        raise LocalizeError(f"合成失败（音色 {voice}）：{field(base_resp, 'status_msg') or vendor_status}")
+
+    audio = field(field(output, "data"), "audio") if field(output, "data") is not None else field(output, "audio")
+    if audio is not None and not isinstance(audio, str):
+        for key in ("url", "data", "hex", "audio"):
+            found = field(audio, key)
+            if isinstance(found, str) and found:
+                audio = found
+                break
+    if not isinstance(audio, str) or not audio:
+        keys = sorted(output.keys()) if isinstance(output, dict) else sorted(vars(output)) if output is not None else []
+        raise LocalizeError(f"合成失败（音色 {voice}）：百炼没有返回音频（output 字段：{keys}）")
+
+    data = _download_audio(audio, voice) if audio.startswith("http") else _minimax_decode(audio)
+    if not data:
+        raise LocalizeError(f"合成失败（音色 {voice}）：音频为空或无法解码")
+    if not data.startswith(b"RIFF"):
+        raise LocalizeError(f"合成失败（音色 {voice}）：返回的不是 wav（前 4 字节 {data[:4]!r}），检查 audio_setting.format")
+    return data
 
 
 def _import_dashscope() -> Any:
@@ -147,9 +270,12 @@ class DashScopeTts:
     api_key: str
     model: str
 
-    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes:
+    def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None, emotion: str | None = None) -> bytes:
         model = model or self.model
-        if tts_api_for(model) == "qwen3":
+        api = tts_api_for(model)
+        if api == "minimax":
+            return self._synthesize_minimax(text, voice, speech_rate, model, lang, emotion)
+        if api == "qwen3":
             return self._synthesize_qwen3(text, voice, model, lang)
         return self._synthesize_tts_v2(text, voice, speech_rate, model)
 
@@ -159,7 +285,7 @@ class DashScopeTts:
         from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer  # noqa: PLC0415
 
         dashscope.api_key = self.api_key
-        rate = max(0.5, min(2.0, float(speech_rate)))  # the vendor's documented range
+        rate = _clamp_rate(speech_rate)
 
         def call() -> Any:
             # A synthesizer instance is single-use: new one per call.
@@ -196,14 +322,35 @@ class DashScopeTts:
             url = None
         if not url:
             raise LocalizeError(f"合成失败（音色 {voice}）：百炼未返回音频地址")
-        try:
-            with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 - vendor-issued https URL
-                data = resp.read()
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise LocalizeError(f"下载合成音频失败：{exc}") from exc
-        if not data:
-            raise LocalizeError(f"合成失败（音色 {voice}）：音频为空")
-        return data
+        return _download_audio(url, voice)
+
+    def _synthesize_minimax(self, text: str, voice: str, speech_rate: float, model: str, lang: str | None, emotion: str | None) -> bytes:
+        """MiniMax hosted on DashScope: hex wav back, ``speed`` honoured (HIG-59).
+
+        Goes through ``BaseApi.call`` rather than ``MultiModalConversation.call`` because the
+        parameters have to sit inside ``input`` and that wrapper only puts text / voice /
+        language_type there — everything else it hands to ``add_parameters``, i.e. ``parameters``.
+        ``BaseApi`` is the same official SDK entry point MultiModalConversation itself calls, so
+        auth, the endpoint and the ``status_code`` that ``_with_retry`` reads all still apply.
+        """
+        dashscope = _import_dashscope()
+        from dashscope.client.base_api import BaseApi  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        payload = _minimax_input(text, voice, speech_rate, lang, emotion)
+
+        def call() -> Any:
+            _minimax_pace()
+            return BaseApi.call(
+                model=model,
+                input=payload,
+                task_group="aigc",
+                task="multimodal-generation",
+                function="generation",
+                api_key=self.api_key,
+            )
+
+        return _minimax_audio_bytes(_with_retry("合成", call), voice)
 
 
 HIGHLIGHT_PROMPT = (

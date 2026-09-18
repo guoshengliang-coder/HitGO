@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import shutil
+from urllib.parse import quote
 from datetime import timedelta
 
 import pytest
@@ -1793,9 +1794,9 @@ def test_localize_options_carry_voice_tags(client):
     assert r.status_code == 200
     zh = next(t for t in r.json()["target_langs"] if t["code"] == "zh")
     assert len(zh["voices"]) >= 30
-    assert zh["voices"][0] == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True}
+    assert zh["voices"][0] == {"id": "longxiaochun_v3", "label": "龙小淳", "gender": "female", "style": "知性积极", "speech_rate": True, "provider": "aliyun"}
     es = next(t for t in r.json()["target_langs"] if t["code"] == "es")
-    assert es["voices"][0]["speech_rate"] is False
+    assert es["voices"][0]["speech_rate"] is False and es["voices"][0]["provider"] == "aliyun"
 
 
 def test_highlight_endpoint_returns_utf16_ranges(client, monkeypatch):
@@ -1829,3 +1830,30 @@ def test_highlight_endpoint_wraps_provider_errors_as_502(client, monkeypatch):
     monkeypatch.setattr(localize, "make_providers", lambda cfg=None: providers)
     r = client.post("/api/highlight", json={"text": POSTER_COPY})
     assert r.status_code == 502 and r.json()["detail"] == "重点词挑选失败：百炼 429"
+
+
+def test_minimax_voices_reach_the_api_for_thai_and_an_emotion_variant(client, monkeypatch, enqueued):
+    """HIG-59: th / vi / ar are selectable, and the picker's ids pass /api/tts and /api/tts/preview."""
+    from app.services import tts as tts_service
+
+    body = client.get("/api/localize/options").json()
+    langs = {t["code"]: t for t in body["target_langs"]}
+    assert {"th", "vi", "ar"} <= set(langs)
+    assert all(v["provider"] == "minimax" and v["speech_rate"] is True for v in langs["th"]["voices"])
+    assert langs["ar"]["rtl"] is True
+    assert langs["th"]["clone"] is True and langs["ar"]["clone"] is False
+    assert not any("model" in v or "voice" in v or "emotion" in v for t in body["target_langs"] for v in t["voices"])
+
+    r = client.post("/api/tts", json={"text": "สวัสดี", "lang": "th", "voice": "Thai_female_1_sample1", "speech_rate": 1.3})
+    assert r.status_code == 202, r.text
+    assert client.post("/api/tts", json={"text": "x", "lang": "th", "voice": "longcheng_v3"}).status_code == 400
+
+    fake = localize.FakeTts(seconds=1.0)
+    monkeypatch.setattr(localize, "make_providers", lambda cfg=None: localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake))
+    shutil.rmtree(storage.data_dir() / tts_service.PREVIEW_DIR, ignore_errors=True)
+    # an id with a space, parentheses and an emotion suffix has to survive the URL and the file name
+    for lang, voice in (("yue", "Cantonese_ProfessionalHost（F)"), ("zh", "Chinese (Mandarin)_Sweet_Lady~happy")):
+        preview = client.get(f"/api/tts/preview/{lang}/{quote(voice, safe='')}")
+        assert preview.status_code == 200, (voice, preview.text)
+        assert preview.content[:4] == b"RIFF"
+    assert fake.calls[-1][1] == "Chinese (Mandarin)_Sweet_Lady" and fake.emotions[-1] == "happy"
