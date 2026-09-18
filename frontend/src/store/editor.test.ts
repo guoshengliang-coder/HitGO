@@ -34,6 +34,44 @@ beforeEach(() => {
   useEditor.getState().replaceSpec('v1', spec);
 });
 
+describe('时间线轨道锁定（HIG-62）', () => {
+  it('锁定主轨后保留视频片段与剪辑区间，隐藏状态可切换', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] } });
+    useEditor.getState().toggleVideoLocked();
+    useEditor.getState().selectTimelineItems(['clip:c2']);
+    useEditor.getState().deleteTimelineItems();
+    useEditor.getState().addRemoveRange(1, 2);
+    expect(useEditor.getState().currentSpec()?.sequence?.clips).toHaveLength(2);
+    expect(useEditor.getState().currentSpec()?.trim.remove).toEqual([]);
+    useEditor.getState().toggleVideoHidden();
+    expect(useEditor.getState().currentSpec()?.video_hidden).toBe(true);
+  });
+
+  it('锁定音轨和源音轨后阻止修改，保留隐藏开关', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), audio: { source_volume: 1, tracks: [{ id: 'a', asset_id: 'asset', t: 'all' }] } });
+    useEditor.getState().toggleTrackLocked('a');
+    useEditor.getState().updateAudioTrack('a', { volume: 0 });
+    useEditor.getState().removeAudioTrack('a');
+    useEditor.getState().toggleTrackHidden('a');
+    expect(useEditor.getState().currentSpec()?.audio?.tracks[0]).toMatchObject({ locked: true, hidden: true });
+    expect(useEditor.getState().currentSpec()?.audio?.tracks[0]).not.toHaveProperty('volume');
+    useEditor.getState().toggleSourceLocked();
+    useEditor.getState().setSourceVolume(0);
+    useEditor.getState().addSourceMute(1, 2);
+    useEditor.getState().toggleSourceHidden();
+    expect(useEditor.getState().currentSpec()?.audio).toMatchObject({ source_volume: 1, source_locked: true, source_hidden: true });
+    expect(useEditor.getState().currentSpec()?.audio?.source_mute).toBeUndefined();
+  });
+
+  it('锁定图层后阻止属性修改和删除，仍可隐藏', () => {
+    useEditor.getState().updateLayer('L1', { locked: true });
+    useEditor.getState().updateLayer('L1', { opacity: 0 });
+    useEditor.getState().removeLayer('L1');
+    useEditor.getState().updateLayer('L1', { hidden: true });
+    expect(useEditor.getState().currentSpec()?.layers[0]).toMatchObject({ locked: true, hidden: true, opacity: 1 });
+  });
+});
+
 describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
   it('只同步本次样式和位置属性，保留各条文字与时段；关闭后恢复单条编辑', () => {
     const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };

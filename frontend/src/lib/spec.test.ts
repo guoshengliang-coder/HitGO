@@ -40,10 +40,10 @@ describe('toContractSpec · audio', () => {
       tracks: [{ id: 'au_1', asset_id: 'a_bgm', role: 'bgm', t: [0.123, 3], loop: true, volume: 0.6, fade_out: 1 }],
     });
   });
-  it('本地图层字段仍被剔除；name 是契约字段（HIG-48），非空时发送', () => {
+  it('锁定与名字随 spec 保存；空名字省略', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [{ id: 'l', type: 'sticker', asset_id: 'a', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t: 'all', name: ' 角标 ', locked: true }] };
     const out = toContractSpec(spec).layers[0];
-    expect(out).not.toHaveProperty('locked');
+    expect(out).toHaveProperty('locked', true);
     expect(out).toHaveProperty('name', '角标');
     const blank: EditSpec = { ...spec, layers: [{ ...spec.layers[0], name: '  ' }] };
     expect(toContractSpec(blank).layers[0]).not.toHaveProperty('name');
@@ -55,6 +55,23 @@ describe('toContractSpec · audio', () => {
     expect(layers[0]).toHaveProperty('hidden', true);
     expect(layers[1]).not.toHaveProperty('hidden');
     expect(layers[2]).not.toHaveProperty('hidden');
+  });
+});
+
+describe('toContractSpec · 轨道管理（HIG-62）', () => {
+  it('缺省字段不改变旧 spec；隐藏与锁定显式保存', () => {
+    const empty = toContractSpec(emptySpec());
+    expect(empty).not.toHaveProperty('video_hidden');
+    expect(empty).not.toHaveProperty('video_locked');
+    const spec: EditSpec = {
+      ...emptySpec(), video_hidden: true, video_locked: true,
+      audio: { source_volume: 1, source_locked: true, tracks: [{ id: 'a', asset_id: 'asset', t: 'all', locked: true }] },
+    };
+    const out = toContractSpec(spec);
+    expect(out.video_hidden).toBe(true);
+    expect(out.video_locked).toBe(true);
+    expect(out.audio?.source_locked).toBe(true);
+    expect(out.audio?.tracks[0].locked).toBe(true);
   });
 });
 
@@ -148,9 +165,9 @@ describe('遮盖层', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [mask] };
     expect(countSafeZoneOverlaps(spec, zone, [])).toBe(0);
   });
-  it('toContractSpec 剔除本地字段后原样透传遮盖字段', () => {
+  it('toContractSpec 保留遮盖轨道锁定及渲染字段', () => {
     const spec: EditSpec = { ...emptySpec(), layers: [{ ...mask, locked: true, blur: 3, color: '#112233' }] };
-    expect(toContractSpec(spec).layers[0]).toEqual({ ...mask, blur: 3, color: '#112233' });
+    expect(toContractSpec(spec).layers[0]).toEqual({ ...mask, locked: true, blur: 3, color: '#112233' });
   });
 });
 

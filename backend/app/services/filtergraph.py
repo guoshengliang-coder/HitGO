@@ -657,6 +657,11 @@ def build_render_command(
             blur=variant.blur, brightness=variant.bg_brightness,
         )
     current = "[c0]"
+    if spec.video_hidden:
+        # Keep the source stream connected (and its audio intact) while replacing
+        # only the main picture. Layers and cover are composed after this point.
+        chains.append("[c0]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[c0hidden]")
+        current = "[c0hidden]"
 
     # ---- 3. layers ----------------------------------------------------------
     fmap = variant_fit_map(

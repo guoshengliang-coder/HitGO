@@ -10,7 +10,7 @@ import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, SPEED_MAX,
 import { windowRange } from '../../lib/stickerMedia';
 import { layerName } from '../../lib/spec';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
-import { IconEye, IconTrash } from '../ui/Icons';
+import { IconEye, IconLock, IconTrash } from '../ui/Icons';
 import { Modal } from '../ui/Modal';
 import { Field, Num, Slider } from '../ui/Num';
 import { Seg, type SegOption } from '../ui/Seg';
@@ -114,6 +114,7 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
   const update = useEditor((s) => s.updateAudioTrack);
   const remove = useEditor((s) => s.removeAudioTrack);
   const toggleHidden = useEditor((s) => s.toggleTrackHidden);
+  const toggleLocked = useEditor((s) => s.toggleTrackLocked);
   const select = useEditor((s) => s.setSelectedTrack);
   const setSpeed = useEditor((s) => s.setTrackSpeed);
   const postDuration = usePostDuration();
@@ -138,12 +139,13 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
         <button className="btn ghost icon sm" title={track.hidden ? '显示（导出时恢复）' : '隐藏（导出时也不混入，不删除）'} aria-label={track.hidden ? '显示音轨' : '隐藏音轨'} aria-pressed={!!track.hidden} onClick={(e) => { e.stopPropagation(); toggleHidden(track.id); }}>
           <IconEye off={!!track.hidden} />
         </button>
-        <button className="btn ghost icon sm danger" aria-label="删除音轨" onClick={(e) => { e.stopPropagation(); remove(track.id); }}>
+        <button className="btn ghost icon sm" title={track.locked ? '解锁音轨' : '锁定音轨'} aria-label={track.locked ? '解锁音轨' : '锁定音轨'} aria-pressed={!!track.locked} onClick={(e) => { e.stopPropagation(); toggleLocked(track.id); }}><IconLock open={!track.locked} /></button>
+        <button className="btn ghost icon sm danger" aria-label="删除音轨" disabled={!!track.locked} onClick={(e) => { e.stopPropagation(); remove(track.id); }}>
           <IconTrash />
         </button>
       </div>
       {selected && (
-        <div className="track-body" onClick={(e) => e.stopPropagation()}>
+        <fieldset className="track-body" disabled={!!track.locked} onClick={(e) => e.stopPropagation()}>
           <Seg label="时段" options={TIME_MODES} value={r.t === 'all' ? 'all' : 'range'} onChange={(m) => update(track.id, { t: m === 'all' ? 'all' : [0, Math.min(3, postDuration)] })} />
           {r.t !== 'all' && (
             <div className="g2">
@@ -189,7 +191,7 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
           {!notReady && !r.loop && r.align !== 'source' && span < windowLen - 0.05 && (
             <div className="hint">素材只够放 {formatSeconds(span, 1)}，之后到时段结束静音；淡出落在素材播完处。要铺满可改为循环。</div>
           )}
-        </div>
+        </fieldset>
       )}
     </div>
   );
@@ -204,12 +206,13 @@ function SourceSection() {
   const hidden = !!audio?.source_hidden;
   const mutes = audio?.source_mute ?? [];
   const hasAudio = !!video?.has_audio;
+  const sourceLocked = !!audio?.source_locked;
   const summary = !hasAudio ? '无音轨' : hidden ? '已隐藏' : sv === 0 ? '静音' : `${Math.round(sv * 100)}%${mutes.length ? ` · 静音 ${mutes.length} 段` : ''}`;
   return (
     <Section id="audio.source" title="源音轨" bodyClass="stack" summary={<span>{summary}</span>} hint={hasAudio ? '时间线上选中源音轨，Q / W 静音左 / 右侧' : undefined} help={SOURCE_HELP}>
-      <Slider label="音量" value={sv} disabled={!hasAudio} onChange={setSourceVolume} />
+      <Slider label="音量" value={sv} disabled={!hasAudio || sourceLocked} onChange={setSourceVolume} />
       <Field label="整条静音" title="源视频自带的声音整个不要（换 BGM / 口播时常用）">
-        <button type="button" role="switch" aria-checked={sv === 0} aria-label="整条静音" className={`sw ${sv === 0 ? 'on' : ''}`} disabled={!hasAudio} onClick={() => setSourceVolume(sv === 0 ? 1 : 0)} />
+        <button type="button" role="switch" aria-checked={sv === 0} aria-label="整条静音" className={`sw ${sv === 0 ? 'on' : ''}`} disabled={!hasAudio || sourceLocked} onClick={() => setSourceVolume(sv === 0 ? 1 : 0)} />
       </Field>
       {hasAudio && hidden && (
         <div className="inline">
@@ -275,6 +278,7 @@ function SeparateSection() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const assets = useEditor((s) => s.assets);
   const tracks = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio?.tracks : undefined)) ?? [];
+  const sourceLocked = useEditor((s) => !!(s.currentVideoId && s.specs[s.currentVideoId]?.audio?.source_locked));
   const separateVideo = useEditor((s) => s.separateVideo);
   const useStem = useEditor((s) => s.useStem);
   const [model, setModel] = useState<SeparationModel>('htdemucs');
@@ -300,10 +304,10 @@ function SeparateSection() {
       {sep?.status === 'failed' && sep.error && <div className="error-text">{sep.error}</div>}
       {sep?.status === 'done' && (
         <div className="inline">
-          <button className="btn sm" disabled={!vocals || inUse(vocals?.id)} title="源音轨静音，只保留分离出的人声；再加一条新 BGM 即可换配乐" onClick={() => useStem('vocals')}>
+          <button className="btn sm" disabled={!vocals || inUse(vocals?.id) || sourceLocked} title="源音轨静音，只保留分离出的人声；再加一条新 BGM 即可换配乐" onClick={() => useStem('vocals')}>
             {inUse(vocals?.id) ? '已用人声轨' : '只留人声（换 BGM）'}
           </button>
-          <button className="btn sm" disabled={!inst || inUse(inst?.id)} title="源音轨静音，只保留分离出的伴奏；再加一条新口播即可换人声" onClick={() => useStem('instrumental')}>
+          <button className="btn sm" disabled={!inst || inUse(inst?.id) || sourceLocked} title="源音轨静音，只保留分离出的伴奏；再加一条新口播即可换人声" onClick={() => useStem('instrumental')}>
             {inUse(inst?.id) ? '已用伴奏轨' : '只留伴奏（换口播）'}
           </button>
         </div>

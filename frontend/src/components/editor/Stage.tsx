@@ -692,6 +692,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const postDuration = usePostDuration();
   const preroll = useCoverDuration();
   const coverActive = useInCover();
+  const mainVideoHidden = !!spec?.video_hidden && !coverActive;
   const [hitGuides, setHitGuides] = useState<Guides>(NO_GUIDES);
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   // 正在拖动 / 拉伸的遮盖的实时框：预览 div 跟着它走，松手后回到 spec 算出的框
@@ -920,8 +921,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
-      <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
-        {needsFill && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
+      <div className="stage-box" ref={boxRef} style={{ width: W, height: H, background: mainVideoHidden ? '#000' : undefined }}>
+        {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
           src={video?.proxy_url || undefined}
@@ -929,7 +930,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           playsInline
           preload="auto"
           key={video?.id}
-          style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: needsFill && fill === 'crop' ? 'hidden' : undefined }}
+          style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: mainVideoHidden || (needsFill && fill === 'crop') ? 'hidden' : undefined }}
           onLoadedMetadata={(e) => {
             e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
           }}

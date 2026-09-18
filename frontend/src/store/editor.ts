@@ -261,6 +261,8 @@ export interface EditorState {
 
   // 音频（契约 §2 audio）
   selectedTrackId: string | null;
+  toggleVideoHidden: () => void;
+  toggleVideoLocked: () => void;
   setSelectedTrack: (id: string | null) => void;
   setSourceVolume: (v: number) => void;
   /** 加一条音轨（素材须 ready）；按角色套默认值，返回新 id。 */
@@ -272,8 +274,10 @@ export interface EditorState {
   removeAudioTrack: (id: string) => void;
   /** 音轨眼睛（HIG-33）：隐藏 / 显示，进撤销栈（影响成片）。 */
   toggleTrackHidden: (id: string) => void;
+  toggleTrackLocked: (id: string) => void;
   /** 源音轨眼睛（HIG-33）：source_hidden 开关，source_volume 不动。 */
   toggleSourceHidden: () => void;
+  toggleSourceLocked: () => void;
   /** 轨道改名（HIG-48）：空白 = 恢复自动名。进撤销历史。 */
   renameAudioTrack: (id: string, name: string) => void;
   renameSourceAudio: (name: string) => void;
@@ -662,7 +666,7 @@ export const useEditor = create<EditorState>((set, get) => {
   const splitAt = (id: string) => {
     const ctx = playheadPost();
     const track = ctx?.spec.audio?.tracks.find((t) => t.id === id);
-    if (!ctx || !track) return null;
+    if (!ctx || !track || track.locked) return null;
     const media = get().assets.find((a) => a.id === track.asset_id)?.duration ?? 0;
     const parts = splitTrackAt(track, ctx.p, ctx.postDuration, media, newTrackId());
     if (!parts) set({ toast: '播放头不在这条音轨的时段内（离两端至少 0.1 秒），移到要剪的位置再拆分', toastAction: null });
@@ -670,6 +674,7 @@ export const useEditor = create<EditorState>((set, get) => {
   };
   const cutTrack = (id: string, side: 'before' | 'after') => {
     if (id === SOURCE_TRACK_ID) {
+      if (get().currentSpec()?.audio?.source_locked) return;
       const ctx = playheadPost();
       if (!ctx) return;
       if (side === 'before') get().addSourceMute(0, ctx.p);
@@ -1127,7 +1132,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const ids = new Set(get().selectedLayerIds);
       if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);
       if (!ids.size) return;
-      get().updateSpec((spec) => { spec.layers = spec.layers.filter((l) => !ids.has(l.id)); });
+      get().updateSpec((spec) => { spec.layers = spec.layers.filter((l) => !ids.has(l.id) || l.locked); });
       set({ selectedLayerId: null, selectedLayerIds: [] });
       get().syncPosterDuration();
     },
@@ -1138,7 +1143,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const copies: string[] = [];
       get().updateSpec((spec) => {
         spec.layers = spec.layers.flatMap((l) => {
-          if (!ids.has(l.id)) return [l];
+          if (!ids.has(l.id) || l.locked) return [l];
           const copy = { ...cloneSpec({ ...emptySpec(), layers: [l] }).layers[0], id: newLayerId(), margin: [round4(l.margin[0] + 0.03), round4(l.margin[1] + 0.03)] as [number, number] };
           copies.push(copy.id);
           return [l, copy];
@@ -1220,7 +1225,7 @@ export const useEditor = create<EditorState>((set, get) => {
       let next = cloneSpec(spec);
       const ids: string[] = [];
       const at = Math.max(0, get().time);
-      if (source.clips.length) {
+      if (source.clips.length && !spec.video_locked) {
         next = materializeSequence(next, video.id, video.duration);
         const windows = clipWindows(next.sequence!);
         const index = windows.findIndex((w) => at < (w.start + w.end) / 2);
@@ -1251,11 +1256,11 @@ export const useEditor = create<EditorState>((set, get) => {
       const spec = get().currentSpec();
       if (!video || !spec) return;
       const keys = new Set(get().timelineSelection);
-      const clipIds = (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
+      const clipIds = spec.video_locked ? [] : (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
       const clipResult = clipIds.length ? removeClipSet(spec, clipIds) : cloneSpec(spec);
       if (!clipResult) { get().setToast('主轨必须保留至少一个片段'); return; }
       clipResult.layers = clipResult.layers.filter((layer) => !keys.has(`layer:${layer.id}`) || layer.locked);
-      if (clipResult.audio) clipResult.audio.tracks = clipResult.audio.tracks.filter((track) => !keys.has(`track:${track.id}`));
+      if (clipResult.audio) clipResult.audio.tracks = clipResult.audio.tracks.filter((track) => !keys.has(`track:${track.id}`) || track.locked);
       get().replaceSpec(video.id, clipResult, { history: true });
       get().selectTimelineItems([]);
     },
@@ -1264,7 +1269,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const spec = get().currentSpec();
       if (!video || !spec || !Number.isFinite(seconds) || Math.abs(seconds) < 0.001) return;
       const keys = new Set(get().timelineSelection);
-      const clipIds = (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
+      const clipIds = spec.video_locked ? [] : (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
       let next = cloneSpec(spec);
       if (clipIds.length && spec.sequence) {
         const windows = clipWindows(spec.sequence);
@@ -1283,12 +1288,12 @@ export const useEditor = create<EditorState>((set, get) => {
           if (old) layer.t = movedWindow(old.t, layer.t);
         }
         for (const track of next.audio?.tracks ?? []) {
-          if (!keys.has(`track:${track.id}`)) continue;
+          if (!keys.has(`track:${track.id}`) || track.locked) continue;
           const old = spec.audio?.tracks.find((item) => item.id === track.id);
           if (old) track.t = movedWindow(old.t, track.t);
         }
       } else {
-        const timed = [...next.layers.filter((l) => keys.has(`layer:${l.id}`) && !l.locked && l.t !== 'all'), ...(next.audio?.tracks ?? []).filter((t) => keys.has(`track:${t.id}`) && t.t !== 'all')];
+        const timed = [...next.layers.filter((l) => keys.has(`layer:${l.id}`) && !l.locked && l.t !== 'all'), ...(next.audio?.tracks ?? []).filter((t) => keys.has(`track:${t.id}`) && !t.locked && t.t !== 'all')];
         if (!timed.length) return;
         const min = Math.min(...timed.map((item) => item.t === 'all' ? Infinity : item.t[0]));
         const max = Math.max(...timed.map((item) => item.t === 'all' ? 0 : item.t[1]));
@@ -1343,12 +1348,14 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ inPoint: null });
     },
     canRemoveBefore: () => {
+      if (get().currentSpec()?.video_locked) return false;
       const v = get().currentVideo();
       const t = get().time;
       if (!v || t < 0.05) return false;
       return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [0, t], selectSourceDuration(get()));
     },
     canRemoveAfter: () => {
+      if (get().currentSpec()?.video_locked) return false;
       const v = get().currentVideo();
       const t = get().time;
       const duration = selectSourceDuration(get());
@@ -1356,6 +1363,7 @@ export const useEditor = create<EditorState>((set, get) => {
       return !wouldRemoveAll(get().currentSpec()?.trim.remove ?? [], [t, duration], duration);
     },
     removeBefore: () => {
+      if (get().currentSpec()?.video_locked) return;
       const v = get().currentVideo();
       if (!v) return;
       const t = get().time;
@@ -1368,6 +1376,7 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ inPoint: null, toast: `已删除播放头左侧 ${t.toFixed(2)}s`, toastAction: { label: '撤销', run: () => get().undo() } });
     },
     removeAfter: () => {
+      if (get().currentSpec()?.video_locked) return;
       const v = get().currentVideo();
       if (!v) return;
       const t = get().time;
@@ -1466,6 +1475,7 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     addRemoveRange: (a, b) => {
+      if (get().currentSpec()?.video_locked) return;
       const v = get().currentVideo();
       if (!v) return;
       const lo = Math.min(a, b);
@@ -1482,6 +1492,7 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedRangeIndex: idx >= 0 ? idx : null });
     },
     updateRemoveRange: (index, a, b) => {
+      if (get().currentSpec()?.video_locked) return;
       const v = get().currentVideo();
       if (!v) return;
       get().updateSpec((spec) => {
@@ -1491,14 +1502,18 @@ export const useEditor = create<EditorState>((set, get) => {
       });
     },
     deleteRemoveRange: (index) => {
+      if (get().currentSpec()?.video_locked) return;
       get().updateSpec((spec) => {
         spec.trim.remove = spec.trim.remove.filter((_, i) => i !== index);
       });
       set({ selectedRangeIndex: null });
     },
 
+    toggleVideoHidden: () => get().updateSpec((spec) => { spec.video_hidden = !spec.video_hidden; }),
+    toggleVideoLocked: () => get().updateSpec((spec) => { spec.video_locked = !spec.video_locked; }),
     setSelectedTrack: (id) => set(id === SOURCE_TRACK_ID ? { selectedTrackId: id } : { selectedTrackId: id, selectedMuteIndex: null }),
     setSourceVolume: (v) => {
+      if (get().currentSpec()?.audio?.source_locked) return;
       get().updateSpec((spec) => {
         const audio = ensureAudio(spec);
         audio.source_volume = Math.max(0, Math.min(1, Math.round(v * 100) / 100));
@@ -1524,6 +1539,8 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateAudioTrack(id, { speed: next, t: windowForSpeed(track, postDuration, media, next) });
     },
     updateAudioTrack: (id, patch, history = true) => {
+      const current = get().currentSpec()?.audio?.tracks.find((t) => t.id === id);
+      if (current?.locked && !Object.keys(patch).every((key) => key === 'locked' || key === 'hidden')) return;
       get().updateSpec(
         (spec) => {
           const t = spec.audio?.tracks.find((x) => x.id === id);
@@ -1542,6 +1559,10 @@ export const useEditor = create<EditorState>((set, get) => {
       });
       get().syncPosterDuration(); // 关掉的可能是朗读轨（HIG-50）：隐藏的不算进成片时长
     },
+    toggleTrackLocked: (id) => get().updateSpec((spec) => {
+      const track = spec.audio?.tracks.find((t) => t.id === id);
+      if (track) track.locked = !track.locked;
+    }),
     toggleSourceHidden: () => {
       get().updateSpec((spec) => {
         const audio = ensureAudio(spec);
@@ -1549,10 +1570,14 @@ export const useEditor = create<EditorState>((set, get) => {
         else audio.source_hidden = true;
       });
     },
+    toggleSourceLocked: () => get().updateSpec((spec) => {
+      const audio = ensureAudio(spec);
+      audio.source_locked = !audio.source_locked;
+    }),
     renameAudioTrack: (id, name) => {
       const clean = cleanTrackName(name);
       const cur = get().currentSpec()?.audio?.tracks.find((x) => x.id === id);
-      if (!cur || clean === cleanTrackName(cur.name)) return;
+      if (!cur || cur.locked || clean === cleanTrackName(cur.name)) return;
       get().updateSpec((spec) => {
         const t = spec.audio?.tracks.find((x) => x.id === id);
         if (!t) return;
@@ -1561,6 +1586,7 @@ export const useEditor = create<EditorState>((set, get) => {
       });
     },
     renameSourceAudio: (name) => {
+      if (get().currentSpec()?.audio?.source_locked) return;
       const clean = cleanTrackName(name);
       if (clean === cleanTrackName(get().currentSpec()?.audio?.source_name)) return;
       get().updateSpec((spec) => {
@@ -1569,6 +1595,7 @@ export const useEditor = create<EditorState>((set, get) => {
       });
     },
     removeAudioTrack: (id) => {
+      if (get().currentSpec()?.audio?.tracks.find((t) => t.id === id)?.locked) return;
       get().updateSpec((spec) => {
         if (spec.audio) spec.audio.tracks = spec.audio.tracks.filter((t) => t.id !== id);
       });
@@ -1576,6 +1603,7 @@ export const useEditor = create<EditorState>((set, get) => {
       get().syncPosterDuration(); // 删掉的可能是朗读轨（HIG-50）
     },
     splitAudioTrack: (id) => {
+      if (get().currentSpec()?.audio?.tracks.find((t) => t.id === id)?.locked) return;
       const parts = splitAt(id);
       if (!parts) return;
       const [, right] = parts;
@@ -1591,6 +1619,7 @@ export const useEditor = create<EditorState>((set, get) => {
 
     setSelectedMute: (selectedMuteIndex) => set(selectedMuteIndex === null ? { selectedMuteIndex } : { selectedMuteIndex, selectedTrackId: SOURCE_TRACK_ID }),
     addSourceMute: (a, b) => {
+      if (get().currentSpec()?.audio?.source_locked) return;
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
@@ -1606,6 +1635,7 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedTrackId: SOURCE_TRACK_ID, selectedMuteIndex: idx >= 0 ? idx : null });
     },
     updateSourceMute: (index, a, b) => {
+      if (get().currentSpec()?.audio?.source_locked) return;
       const v = get().currentVideo();
       const spec = get().currentSpec();
       if (!v || !spec) return;
@@ -1617,6 +1647,7 @@ export const useEditor = create<EditorState>((set, get) => {
       });
     },
     deleteSourceMute: (index) => {
+      if (get().currentSpec()?.audio?.source_locked) return;
       get().updateSpec((spec) => {
         if (spec.audio?.source_mute) spec.audio.source_mute = spec.audio.source_mute.filter((_, i) => i !== index);
       });
@@ -1635,6 +1666,7 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
     useStem: (stem) => {
+      if (get().currentSpec()?.audio?.source_locked) return null;
       const video = get().currentVideo();
       const sep = video?.separation;
       const assetId = stem === 'vocals' ? sep?.vocals_asset_id : sep?.instrumental_asset_id;
@@ -1961,6 +1993,8 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedLayerId: layers[0].id, selectedLayerIds: layers.map((l) => l.id) });
     },
     updateLayer: (id, patch, history = true) => {
+      const current = get().currentSpec()?.layers.find((l) => l.id === id);
+      if (current?.locked && !(typeof patch === 'object' && Object.keys(patch).every((key) => key === 'locked' || key === 'hidden'))) return;
       get().updateSpec(
         (spec) => {
           const l = spec.layers.find((x) => x.id === id);
@@ -2010,6 +2044,7 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
     },
     removeLayer: (id) => {
+      if (get().currentSpec()?.layers.find((l) => l.id === id)?.locked) return;
       get().updateSpec((spec) => {
         spec.layers = spec.layers.filter((l) => l.id !== id);
       });

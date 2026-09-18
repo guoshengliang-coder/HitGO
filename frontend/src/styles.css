@@ -533,6 +533,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .lbl .lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tl-row .lbl .tl-acts { position: absolute; right: 2px; top: 0; bottom: 0; display: flex; align-items: center; flex: none; gap: 0; padding-left: 6px; background: linear-gradient(90deg, transparent, var(--s0) 30%); opacity: 0; transition: opacity 0.12s; }
 .tl-row:hover .lbl .tl-acts, .tl-row.selected .lbl .tl-acts, .tl-row .lbl .tl-acts:focus-within { opacity: 0.9; }
+.tl-row.locked .lbl .tl-acts { opacity: 0.9; }
 .tl-row .lbl .tl-acts .btn { width: 24px; height: 24px; padding: 0; }
 /* 轨道名就地编辑（HIG-48）：输入框占满标签列，编辑时收起显示 / 锁定按钮 */
 .tl-row .lbl .lname-input { flex: 1; min-width: 0; height: 20px; font-size: 11px; padding: 0 4px; }
@@ -541,6 +542,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .lbl .role.voice { background: var(--tk-voice-bg); color: var(--tk-voice-fg); }
 .tl-row .lbl .role.sticker { background: var(--tk-sticker-bg); color: var(--tk-sticker-fg); }
 .tl-layer.hidden .lbl .lname { color: var(--ink-3); text-decoration: line-through; }
+.tl-video.hidden .tl-sprite { opacity: 0.35; }
 .tl-row .body { position: relative; height: 100%; overflow: hidden; }
 .tl-video { height: 64px; }
 .tl-layer { height: 30px; }
@@ -559,11 +561,13 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-cut.selected { background: repeating-linear-gradient(135deg, rgba(217,72,31,0.6) 0 4px, rgba(217,72,31,0.2) 4px 8px); }
 .tl-cut .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .tl-cut .edge.l { left: -5px; } .tl-cut .edge.r { right: -5px; }
-/* 轨道分组头（HIG-67）：视频 / 音频 / 图层三组，整行可点折叠 */
+/* 轨道分组头：类型分组可折叠，右侧 + 打开新增入口。 */
 .tl-row.tl-group { border-bottom: 1px solid var(--s1-line); background: var(--s1); }
 .tl-row.tl-group .lbl { background: var(--s1); padding: 0; }
 .tl-row.tl-group .body { background: var(--s1); }
-.tl-group-btn { display: flex; align-items: center; gap: 4px; width: 100%; height: 22px; padding: 0 8px; background: none; border: 0; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--ink-2); text-align: left; }
+.tl-group-btn { display: flex; align-items: center; gap: 4px; width: 100%; height: 22px; padding: 0 28px 0 8px; background: none; border: 0; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--ink-2); text-align: left; }
+.tl-group-add { position: absolute; right: 2px; top: 1px; z-index: 4; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--ink-2); cursor: pointer; font-size: 16px; line-height: 20px; }
+.tl-group-add:hover, .tl-group-add:focus-visible { background: var(--s2); color: var(--ink); }
 .tl-group-btn:hover { color: var(--ink); }
 .tl-group-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tl-group-caret { flex: none; font-size: 11px; line-height: 1; transition: transform 0.12s; transform: rotate(-90deg); }
@@ -837,7 +841,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 /* 音轨 / 版本行：在卡片里下沉一档，选中时抬起并亮左侧橙条（与图层行一致，§3.4） */
 .track-item { border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; background: var(--s2); }
 .track-item.selected { border-color: var(--line); background: var(--s1); box-shadow: inset 2px 0 0 var(--accent); }
-.track-item .track-body { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.track-item .track-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 0; margin: 0; border: 0; min-width: 0; }
 .track-item.selected .tile, .track-item.selected .segt, .track-item.selected .slider { background: var(--s2); }
 .track-item .track-head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .track-item .track-head .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

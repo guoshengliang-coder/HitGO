@@ -9,7 +9,7 @@ import { contractCover } from './cover';
 import { contractAnimation } from './textAnimation';
 import { cleanTrackName } from './trackNames';
 
-const LOCAL_LAYER_FIELDS = ['locked', 'width_manual'] as const;
+const LOCAL_LAYER_FIELDS = ['width_manual'] as const;
 
 /** 发送给后端前剔除本地 UI 字段并规范化区间；audio / cover 块只在非缺省时带上，保持旧 spec 形状。 */
 export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
@@ -18,6 +18,8 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
   // 成片时长（HIG-50）：只在正数时发送，null / 0 / 缺省 = 剪后时长，保持旧 spec 形状
   const fixedDuration = spec.trim.duration;
   return {
+    ...(spec.video_hidden ? { video_hidden: true } : {}),
+    ...(spec.video_locked ? { video_locked: true } : {}),
     ...(audio ? { audio } : {}),
     ...(cover ? { cover } : {}),
     ...(spec.sequence ? { sequence: spec.sequence } : {}),
@@ -31,6 +33,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       const copy: Record<string, unknown> = { ...l };
       for (const f of LOCAL_LAYER_FIELDS) delete copy[f];
       if (!l.hidden) delete copy.hidden;
+      if (!l.locked) delete copy.locked;
       // 轨道名（HIG-48）是契约字段：只在非空时发送
       const name = cleanTrackName(l.name);
       if (name) copy.name = name;
