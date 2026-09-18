@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
-import { appliedVersion, canApplyVersion, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, voiceLabel } from '../../lib/localize';
+import { appliedVersion, canApplyVersion, cloneStatusText, cloneSupported, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, versionVoiceText } from '../../lib/localize';
 import { loadFeaturePrefs, saveFeaturePrefs } from '../../lib/featurePrefs';
 import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
@@ -176,12 +176,20 @@ function DubSection({ loc, options, blocked, voices, setVoices }: SectionProps &
   // 勾选：用户点过的以用户为准，没点过的默认勾「还没有能用口播」的语言
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [autoApply, setAutoApply] = useState(() => loadFeaturePrefs().autoApplyDub);
-  const isOn = (lang: string, dubbed: boolean) => picked[lang] ?? !dubbed;
+  // 用原声配音（HIG-58）：打开后每行的音色下拉让位给「原声」，不支持复刻的语言不能选
+  const [sourceVoice, setSourceVoice] = useState(() => loadFeaturePrefs().useSourceVoice);
+  const clonable = (lang: string) => !sourceVoice || cloneSupported(options, lang);
+  const isOn = (lang: string, dubbed: boolean) => (picked[lang] ?? !dubbed) && clonable(lang);
   const chosen = langs.filter((l) => isOn(l.lang, l.dubbed));
   const n = chosen.length;
+  const blockedLangs = sourceVoice ? langs.filter((l) => !cloneSupported(options, l.lang)) : [];
+  const cloneNote = cloneStatusText(loc?.clone_voice);
   const dubbing = Object.values(loc?.versions ?? {}).filter((v) => isVersionActive(v) && v.stage !== 'translate' && v.cues.length > 0 && v.dub !== false).length;
   const start = () => {
-    void dubVersions(chosen.map(({ lang }) => ({ lang, voice: pickVoice(lang, voices, loc, options) })));
+    void dubVersions(
+      chosen.map(({ lang }) => ({ lang, voice: pickVoice(lang, voices, loc, options) })),
+      { useSourceVoice: sourceVoice },
+    );
     setPicked({});
   };
   const summary = dubbing ? `生成中 ${dubbing} 种` : langs.length ? `${langs.filter((l) => l.dubbed).length} / ${langs.length} 已有口播` : '先翻译';
@@ -198,17 +206,40 @@ function DubSection({ loc, options, blocked, voices, setVoices }: SectionProps &
             const v = loc!.versions[lang];
             return (
               <div key={lang} className="dub-row">
-                <label className="inline dub-check" title={dubbed ? '已有口播，勾上会按当前译文和音色重新生成' : '还没有能用的口播'}>
-                  <input type="checkbox" checked={isOn(lang, dubbed)} disabled={blocked} onChange={(e) => setPicked((p) => ({ ...p, [lang]: e.target.checked }))} />
+                <label
+                  className="inline dub-check"
+                  title={!clonable(lang) ? `${label}暂不支持用原声配音` : dubbed ? '已有口播，勾上会按当前译文和音色重新生成' : '还没有能用的口播'}
+                >
+                  <input type="checkbox" checked={isOn(lang, dubbed)} disabled={blocked || !clonable(lang)} onChange={(e) => setPicked((p) => ({ ...p, [lang]: e.target.checked }))} />
                   <span className="dub-lang">{label}</span>
                 </label>
-                <VoiceSelect lang={lang} voices={t?.voices ?? []} value={pickVoice(lang, voices, loc, options)} onChange={(id) => setVoices((m) => ({ ...m, [lang]: id }))} disabled={blocked} ariaLabel={`${label}音色`} />
+                {sourceVoice ? (
+                  <span className="small muted">{cloneSupported(options, lang) ? '原声' : '不支持原声'}</span>
+                ) : (
+                  <VoiceSelect lang={lang} voices={t?.voices ?? []} value={pickVoice(lang, voices, loc, options)} onChange={(id) => setVoices((m) => ({ ...m, [lang]: id }))} disabled={blocked} ariaLabel={`${label}音色`} />
+                )}
                 <span className={`small ${dubbed ? 'muted' : 'warn-text'}`}>{dubbed ? '已有口播' : v.voice_stale ? '待更新' : '无口播'}</span>
               </div>
             );
           })}
         </div>
       )}
+      <label className="inline small" title="从这条视频自己的人声里复刻一个音色，各语言都用它合成，听感仍是原说话人">
+        <input
+          type="checkbox"
+          checked={sourceVoice}
+          disabled={blocked}
+          onChange={(e) => {
+            setSourceVoice(e.target.checked);
+            saveFeaturePrefs({ useSourceVoice: e.target.checked });
+          }}
+        />
+        用原声配音
+      </label>
+      {blockedLangs.length > 0 && (
+        <div className="hint">{blockedLangs.map((l) => langLabel(options, l.lang)).join('、')}暂不支持原声，取消勾选后仍可用系统音色单独生成。</div>
+      )}
+      {cloneNote && <div className={loc?.clone_voice?.status === 'failed' ? 'warn-text small' : 'hint'}>{cloneNote}</div>}
       <label className="inline small">
         <input
           type="checkbox"
@@ -234,14 +265,16 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
   const deleteVersion = useEditor((s) => s.deleteVersion);
   const [open, setOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
-  const [voice, setVoice] = useState(v.voice ?? '');
+  const shownVoice = (x: LocalizationVersion) => (x.source_voice ? '' : (x.voice ?? ''));
+  const [voice, setVoice] = useState(() => shownVoice(v));
   useEffect(() => {
     setDrafts({});
-    setVoice(v.voice ?? '');
-  }, [v.updated_at, v.voice]);
+    setVoice(v.source_voice ? '' : (v.voice ?? ''));
+  }, [v.updated_at, v.voice, v.source_voice]);
   const cues = useMemo(() => mergedCues(loc?.transcript, v), [loc?.transcript, v]);
   const changed = cues.filter((c) => drafts[c.i] !== undefined && drafts[c.i] !== c.translated);
-  const voiceChanged = !!voice && voice !== (v.voice ?? '');
+  // 用原声时下拉是空的，选中任何一个音色都是「改回系统音色」
+  const voiceChanged = !!voice && voice !== shownVoice(v);
   const active = isVersionActive(v);
   const label = langLabel(options, lang);
   const voiceOpts = options?.target_langs.find((t) => t.code === lang)?.voices ?? [];
@@ -259,7 +292,7 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
         <span className="role lang">{label}</span>
         <span className={`tname small ${v.status === 'failed' ? 'error-text' : 'muted'}`}>
           {versionStatusText(v)}
-          {v.status === 'done' && v.voice ? ` · ${voiceLabel(options, lang, v.voice)}` : ''}
+          {v.status === 'done' && (v.voice || v.source_voice) ? ` · ${versionVoiceText(options, lang, v)}` : ''}
         </span>
         {v.stale && <span className="badge-stale" title="模板改过之后译文没有更新">需重译</span>}
         <IconChevron open={open} />
@@ -302,9 +335,10 @@ function VersionRow({ loc, lang, version: v, options, blocked }: SectionProps & 
           <Field label="音色">
             <VoiceSelect lang={lang} voices={voiceOpts} value={voice} onChange={setVoice} disabled={blocked} ariaLabel={`${label}音色`} keepUnknown />
           </Field>
+          {v.source_voice && <div className="hint">这一版用的是复刻的原声。选一个音色再「重新合成」即可改回系统音色。</div>}
           <div className="inline">
             <button className="btn sm" disabled={blocked || !hasTranslation || (!changed.length && !voiceChanged)} onClick={resynth} title="只重新生成口播，不重新翻译；只传改过的句子">
-              重新合成{changed.length ? `（${changed.length} 句）` : voiceChanged ? '（换音色）' : ''}
+              重新合成{changed.length ? `（${changed.length} 句）` : voiceChanged ? (v.source_voice ? '（改用系统音色）' : '（换音色）') : ''}
             </button>
             {changed.length > 0 && (
               <button className="btn ghost sm" onClick={() => setDrafts({})}>

@@ -836,7 +836,7 @@ def test_video_serialization_carries_the_full_localization_block(client, ready_v
     assert loc["source_lang"] == "en"
     assert loc["transcript"]["cues"][0] == {"i": 0, "start": 0.42, "end": 2.91, "text": "Welcome to HitGO."}
     ko = loc["versions"]["ko"]
-    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "dub", "voice_stale", "updated_at"}
+    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "dub", "voice_stale", "source_voice", "updated_at"}
     assert ko["dub"] is True and ko["voice_stale"] is False  # old rows without the fields
     assert ko["warnings"][0].startswith("第 2 句") and ko["voice_asset_id"] == "a_ko"
     listed = client.get("/api/assets?source=derived").json()
@@ -844,3 +844,245 @@ def test_video_serialization_carries_the_full_localization_block(client, ready_v
     # Batch listing goes through the same serializer.
     videos = client.get("/api/batches/b_test000001").json()["videos"]
     assert videos[0]["localization"]["versions"]["ko"]["status"] == "done"
+
+
+# --- 原声配音（HIG-58）---------------------------------------------------------------
+
+# Twelve seconds of continuous reading: enough to clone from.
+LONG_CUES = [
+    {"i": 0, "start": 0.0, "end": 3.0, "text": "one"},
+    {"i": 1, "start": 3.0, "end": 6.5, "text": "two"},
+    {"i": 2, "start": 6.5, "end": 9.0, "text": "three"},
+    {"i": 3, "start": 9.0, "end": 12.4, "text": "four"},
+    {"i": 4, "start": 12.4, "end": 15.0, "text": "five"},
+]
+LONG_TRANSCRIPT = {"status": "done", "error": None, "cues": LONG_CUES}
+
+
+def test_plan_voice_sample_takes_the_first_long_enough_run():
+    window = localize.plan_voice_sample(LONG_CUES)
+    assert window == {"start": 0.0, "seconds": 12.4}  # cues 0–3 reach 10 s of speech
+
+
+def test_plan_voice_sample_needs_ten_seconds_of_speech():
+    assert localize.plan_voice_sample(LONG_CUES[:2]) is None
+    assert localize.plan_voice_sample([]) is None
+    assert localize.plan_voice_sample(DONE_TRANSCRIPT["cues"]) is None  # ~5 s only
+
+
+def test_plan_voice_sample_skips_a_run_broken_by_silence():
+    """A gap that pushes the window past 20 s ends the run; a later dense run still works."""
+    cues = [
+        {"i": 0, "start": 0.0, "end": 4.0, "text": "a"},
+        {"i": 1, "start": 30.0, "end": 36.0, "text": "b"},  # 26 s of silence before it
+        {"i": 2, "start": 36.0, "end": 41.0, "text": "c"},
+    ]
+    assert localize.plan_voice_sample(cues) == {"start": 30.0, "seconds": 11.0}
+
+
+def test_plan_voice_sample_respects_the_twenty_second_ceiling():
+    cues = [{"i": k, "start": k * 6.0, "end": k * 6.0 + 5.5, "text": "x"} for k in range(6)]
+    window = localize.plan_voice_sample(cues)
+    assert window is not None and window["seconds"] <= localize.CLONE_SAMPLE_MAX_SECONDS
+
+
+def test_sample_args_cuts_the_window():
+    argv = localize.sample_args(Path("/d/source.mp4"), Path("/d/s.wav"), 3.25, 12.0, mono_pcm=True, ffmpeg_bin="ffmpeg")
+    assert argv[argv.index("-ss") + 1] == "3.25" and argv[argv.index("-t") + 1] == "12"
+    assert argv[argv.index("-ar") + 1] == "16000" and argv[argv.index("-c:a") + 1] == "pcm_s16le"
+    # -ss / -t before -i so ffmpeg seeks instead of decoding the whole file
+    assert argv.index("-ss") < argv.index("-i")
+    aac = localize.sample_args(Path("/d/a_v.m4a"), Path("/d/s.m4a"), 1.0, 15.0, mono_pcm=False, ffmpeg_bin="ffmpeg")
+    assert aac[aac.index("-c:a") + 1] == "aac"
+
+
+def test_clone_supported_follows_the_configured_tts_model(monkeypatch):
+    assert localize.clone_supported("zh") and localize.clone_supported("ja") and localize.clone_supported("yue")
+    assert not localize.clone_supported("es") and not localize.clone_supported("it") and not localize.clone_supported("ar")
+    # The clone is bound to LOCALIZE_TTS_MODEL; a model with no cloning speaks for nobody.
+    monkeypatch.setattr(settings, "localize_tts_model", "qwen3-tts-flash")
+    assert not localize.clone_supported("zh")
+
+
+def test_options_ship_the_clone_capability(client):
+    langs = {t["code"]: t for t in client.get("/api/localize/options").json()["target_langs"]}
+    assert langs["ja"]["clone"] is True and langs["fr"]["clone"] is True
+    assert langs["es"]["clone"] is False and langs["it"]["clone"] is False
+
+
+def test_sample_url_carries_a_read_ticket(monkeypatch):
+    from app.services import media_ticket
+
+    path = storage.voice_sample_path(VIDEO, "wav")
+    monkeypatch.setattr(settings, "access_code", "secret", raising=True)
+    url = localize.sample_url(path)
+    base, _, query = url.partition("?")
+    assert base == f"https://hitgo.example/media/voice-samples/{VIDEO}.wav"
+    assert media_ticket.verify(f"voice-samples/{VIDEO}.wav", query.removeprefix("t="), "secret")
+    # No access code, no gate, no ticket.
+    monkeypatch.setattr(settings, "access_code", "", raising=True)
+    assert "?" not in localize.sample_url(path)
+
+
+def _queue_source_voice(db, langs, *, transcript=None):
+    db.expire_all()
+    keep = copy.deepcopy((db.get(Video, VIDEO).localization or {}).get("clone_voice"))
+    video = queue(db, langs, transcript=transcript or LONG_TRANSCRIPT)
+    loc = copy.deepcopy(video.localization)
+    if keep:
+        loc["clone_voice"] = keep  # queue() rewrites the row; a real POST would not drop it
+    for lang in langs:
+        loc["versions"][lang]["source_voice"] = True
+        loc["versions"][lang]["voice"] = ""
+    video.localization = loc
+    db.commit()
+    return video
+
+
+def test_run_localization_clones_once_and_dubs_every_language_with_it(ready_video, db, no_ffmpeg):
+    _queue_source_voice(db, ["ko", "ja"])
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+
+    clone = loc["clone_voice"]
+    assert clone["status"] == "done" and clone["voice_id"] == "hitgo-fake-1"
+    assert clone["model"] == settings.localize_tts_model and clone["error"] is None
+    assert clone["sample"] == {"from": "source", "start": 0.0, "seconds": 12.4}
+    assert len(providers.clone.calls) == 1  # one clone for the whole video, not one per language
+    sample_url, model = providers.clone.calls[0]
+    assert f"/media/voice-samples/{VIDEO}.wav" in sample_url and model == settings.localize_tts_model
+    assert storage.find_voice_sample(VIDEO) is not None
+
+    for lang in ("ko", "ja"):
+        v = loc["versions"][lang]
+        assert v["status"] == "done" and v["source_voice"] is True and v["voice"] == "hitgo-fake-1"
+        assert v["voice_asset_id"] and v["error"] is None
+    assert {voice for _, voice in providers.tts.calls} == {"hitgo-fake-1"}
+    assert set(providers.tts.models) == {settings.localize_tts_model}
+
+
+def test_a_second_run_reuses_the_cloned_voice(ready_video, db, no_ffmpeg):
+    _queue_source_voice(db, ["ko"])
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    _queue_source_voice(db, ["ja"], transcript=LONG_TRANSCRIPT)
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+    assert len(providers.clone.calls) == 1  # not cloned again
+    assert loc["versions"]["ja"]["voice"] == "hitgo-fake-1"
+
+
+def test_a_clone_bound_to_another_model_is_redone(ready_video, db, no_ffmpeg):
+    _queue_source_voice(db, ["ko"])
+    patch_loc(db, lambda loc: loc.update(clone_voice={"status": "done", "voice_id": "old", "model": "cosyvoice-v2", "error": None}))
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+    assert len(providers.clone.calls) == 1
+    assert loc["clone_voice"]["voice_id"] == "hitgo-fake-1" and loc["clone_voice"]["model"] == settings.localize_tts_model
+    assert loc["versions"]["ko"]["voice"] == "hitgo-fake-1"
+
+
+def test_a_short_transcript_fails_the_clone_with_a_readable_reason(ready_video, db, no_ffmpeg):
+    _queue_source_voice(db, ["ko"], transcript=DONE_TRANSCRIPT)  # ~5 s of speech
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+    assert loc["clone_voice"]["status"] == "failed" and "不足 10 秒" in loc["clone_voice"]["error"]
+    assert not providers.clone.calls  # never reached the vendor
+    ko = loc["versions"]["ko"]
+    assert ko["status"] == "failed" and ko["error"].startswith("音色复刻失败：")
+
+
+def test_a_failed_clone_leaves_the_system_voice_versions_alone(ready_video, db, no_ffmpeg):
+    """HIG-58 acceptance: cloning failing must not take the system-voice path down with it."""
+    video = queue(db, ["ko", "ja"], transcript=LONG_TRANSCRIPT)
+    loc = copy.deepcopy(video.localization)
+    loc["versions"]["ko"]["source_voice"] = True
+    loc["versions"]["ko"]["voice"] = ""
+    video.localization = loc
+    db.commit()
+
+    providers = localize.fake_providers()
+    providers.clone = localize.FakeVoiceClone(fail="样本里有背景音")
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+
+    assert loc["clone_voice"]["status"] == "failed" and "背景音" in loc["clone_voice"]["error"]
+    ko = loc["versions"]["ko"]
+    assert ko["status"] == "failed" and "音色复刻失败" in ko["error"] and ko["voice_asset_id"] is None
+    ja = loc["versions"]["ja"]
+    assert ja["status"] == "done" and ja["voice"] == JA_VOICE and ja["voice_asset_id"]
+    assert {voice for _, voice in providers.tts.calls} == {JA_VOICE}
+
+
+def test_the_clone_prefers_the_separated_vocals(ready_video, db, no_ffmpeg):
+    vocals = Asset(id="a_vocals", type="audio", kind="audio", status="ready", name="V01 · 人声.m4a", ext="m4a",
+                   source="derived", duration=24.6, has_audio=True,
+                   derived_from={"video_id": VIDEO, "video_name": "V01.mp4", "stem": "vocals"})  # fmt: skip
+    db.add(vocals)
+    path = storage.asset_path("a_vocals", "m4a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"vocals")
+    video = db.get(Video, VIDEO)
+    video.separation = {"status": "done", "vocals_asset_id": "a_vocals", "instrumental_asset_id": None}
+    db.commit()
+
+    _queue_source_voice(db, ["ko"])
+    providers = localize.fake_providers()
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+    assert loc["clone_voice"]["sample"]["from"] == "vocals"
+    assert f"/media/voice-samples/{VIDEO}.m4a" in providers.clone.calls[0][0]
+
+
+def test_post_localize_refuses_source_voice_for_a_language_that_cannot_be_cloned(client, ready_video, enqueued):
+    r = client.post(f"/api/videos/{VIDEO}/localize", json={"target_langs": ["ja", "es"], "use_source_voice": True})
+    assert r.status_code == 400 and "西班牙语" in r.json()["detail"]
+    assert not enqueued.calls  # rejected before anything was queued
+
+
+def test_post_localize_with_source_voice_marks_every_version(client, ready_video, enqueued, db):
+    r = client.post(f"/api/videos/{VIDEO}/localize", json={"target_langs": ["ko", "ja"], "use_source_voice": True})
+    assert r.status_code == 202, r.text
+    versions = current_loc(db)["versions"]
+    assert all(v["source_voice"] is True and v["voice"] == "" for v in versions.values())
+    # The response tells the frontend which versions are on the original voice.
+    assert r.json()["localization"]["versions"]["ko"]["source_voice"] is True
+
+
+def test_put_version_switches_between_the_original_voice_and_a_system_one(client, ready_video, enqueued, db):
+    _done_state(db, cues=[{"i": 0, "translated": "환영"}])
+
+    on = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"use_source_voice": True})
+    assert on.status_code == 202, on.text
+    ko = current_loc(db)["versions"]["ko"]
+    assert ko["source_voice"] is True and ko["voice"] == "" and ko["stage"] == "tts"
+
+    # A queued version is busy; the switch back happens after that run landed.
+    assert client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"use_source_voice": False}).status_code == 409
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="done", stage=None, voice="hitgo-fake-1", voice_asset_id="a_ko"))
+
+    off = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"use_source_voice": False})
+    assert off.status_code == 202, off.text
+    ko = current_loc(db)["versions"]["ko"]
+    assert ko["source_voice"] is False and ko["voice"] == KO_VOICE  # back to the language default
+
+
+def test_picking_a_voice_switches_a_cloned_version_back(client, ready_video, enqueued, db):
+    """The version row has no use_source_voice toggle: choosing a voice is the way back."""
+    _done_state(db, source_voice=True, voice="hitgo-fake-1")
+    r = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"cues": [], "voice": KO_VOICE})
+    assert r.status_code == 202, r.text
+    ko = current_loc(db)["versions"]["ko"]
+    assert ko["source_voice"] is False and ko["voice"] == KO_VOICE
+
+
+def test_put_version_refuses_source_voice_for_an_unclonable_language(client, ready_video, enqueued, db):
+    _done_state(db)
+    patch_loc(db, lambda loc: loc["versions"].update(it={"status": "done", "stage": None, "voice": "Cherry", "terms": [],
+                                                          "cues": [{"i": 0, "translated": "ciao"}], "stale": False,
+                                                          "error": None, "warnings": [], "voice_asset_id": None}))  # fmt: skip
+    r = client.put(f"/api/videos/{VIDEO}/localize/versions/it", json={"use_source_voice": True})
+    assert r.status_code == 400 and "意大利语" in r.json()["detail"]

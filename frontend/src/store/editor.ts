@@ -271,8 +271,11 @@ export interface EditorState {
   updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
   /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
   resynthesizeVersion: (lang: string, edits: { i: number; translated: string }[], voice?: string) => Promise<boolean>;
-  /** 「生成口播」（HIG-56）：按现有译文逐个语言合成；完成后按偏好自动套用发起顺序里第一个出口播的语言。 */
-  dubVersions: (items: { lang: string; voice: string }[]) => Promise<boolean>;
+  /**
+   * 「生成口播」（HIG-56）：按现有译文逐个语言合成；完成后按偏好自动套用发起顺序里第一个出口播的语言。
+   * useSourceVoice（HIG-58）= 用复刻的原声合成，此时忽略每行选的音色。
+   */
+  dubVersions: (items: { lang: string; voice: string }[], opts?: { useSourceVoice?: boolean }) => Promise<boolean>;
   deleteVersion: (lang: string) => Promise<boolean>;
   /**
    * 把某个语言版本套用到当前视频：一次 updateSpec = 一步历史，toast 带「撤销」。
@@ -1348,13 +1351,16 @@ export const useEditor = create<EditorState>((set, get) => {
         return false;
       }
     },
-    dubVersions: async (items) => {
+    dubVersions: async (items, opts) => {
       const video = get().currentVideo();
       if (!video || !items.length) return false;
+      const sourceVoice = !!opts?.useSourceVoice;
       const started: string[] = [];
       for (const { lang, voice } of items) {
         try {
-          const updated = await api.updateVersionCues(video.id, lang, { cues: [], ...(voice ? { voice } : {}) });
+          // 用原声时不发音色：后端从 clone_voice 取，发了也会被忽略。
+          const body = sourceVoice ? { cues: [], use_source_voice: true } : { cues: [], ...(voice ? { voice } : {}) };
+          const updated = await api.updateVersionCues(video.id, lang, body);
           mergeVideoField(set, updated, 'localization');
           started.push(lang);
         } catch (e) {

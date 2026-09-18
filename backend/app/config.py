@@ -23,6 +23,9 @@ class Settings:
     public_base_url: str
     # Upload host that bypasses the CDN (contract §3 upload-ticket); "" = same-origin uploads.
     upload_base_url: str
+    # How long a read ticket for one /media file stays valid (contract §0, HIG-58): long
+    # enough for the voice-cloning endpoint to fetch the sample, short enough to expire.
+    media_ticket_ttl_seconds: int
     worker_concurrency: int
     env: str
     ffmpeg_bin: str
@@ -73,6 +76,7 @@ def load_settings() -> Settings:
         access_code=_env("ACCESS_CODE", "").strip(),
         public_base_url=_env("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
         upload_base_url=_env("UPLOAD_BASE_URL", "").strip().rstrip("/"),
+        media_ticket_ttl_seconds=int(_env("MEDIA_TICKET_TTL_SECONDS", "1800")),
         worker_concurrency=int(_env("WORKER_CONCURRENCY", "1")),
         env=_env("ENV", "prod").lower(),
         ffmpeg_bin=_env("FFMPEG_BIN", "ffmpeg"),

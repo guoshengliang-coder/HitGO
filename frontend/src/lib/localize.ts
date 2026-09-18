@@ -3,7 +3,7 @@
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算基于 lib/time.sourceRangeToPost：
 // 模板句子在源时间轴上，字幕层的 t 在剪后时间轴上。
 
-import type { Asset, AudioTrack, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
+import type { Asset, AudioTrack, CloneVoice, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
 import { defaultTextStyle, isAssetReady } from '../types';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
@@ -81,6 +81,34 @@ export function groupVoices(voices: VoiceOption[]): VoiceGroup[] {
     if (vs.length) out.push({ key: g, label: GENDER_LABEL[g], voices: vs });
   }
   return out;
+}
+
+// ---- 原声配音（HIG-58）----
+
+/** 该语言能不能用复刻的原声：后端没标（旧后端）按不能算，宁可少给一个开关也不要请求回来 400。 */
+export function cloneSupported(options: LocalizeOptions | null | undefined, lang: string): boolean {
+  return options?.target_langs.find((l) => l.code === lang)?.clone === true;
+}
+
+/** 把一批语言分成能用原声的和不能的，面板据此提交前者、提示后者。 */
+export function splitByClone(options: LocalizeOptions | null | undefined, langs: string[]): { ok: string[]; unsupported: string[] } {
+  const ok: string[] = [];
+  const unsupported: string[] = [];
+  for (const lang of langs) (cloneSupported(options, lang) ? ok : unsupported).push(lang);
+  return { ok, unsupported };
+}
+
+/** 版本行上音色那一栏的文字：用原声合成的显示「原声」，其余走音色名。 */
+export function versionVoiceText(options: LocalizeOptions | null | undefined, lang: string, v: LocalizationVersion): string {
+  return v.source_voice ? '原声' : voiceLabel(options, lang, v.voice);
+}
+
+/** 复刻这一步的状态提示；没在做、也没失败时返回空串（面板不显示这一行）。 */
+export function cloneStatusText(clone: CloneVoice | null | undefined): string {
+  if (!clone) return '';
+  if (clone.status === 'queued' || clone.status === 'running') return '正在复刻原声…';
+  if (clone.status === 'failed') return `原声复刻失败：${clone.error ?? '未知原因'}`;
+  return '';
 }
 
 /** 该音色能不能调语速：后端没标（旧后端）按能算。 */

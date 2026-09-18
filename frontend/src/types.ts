@@ -112,6 +112,26 @@ export interface LocalizationVersion {
   dub?: boolean;
   /** 只翻译覆盖了译文，旧配音还在但对不上新译文，要重新生成口播。 */
   voice_stale?: boolean;
+  /** 缺省 false（HIG-58）：这一版用复刻出来的原声合成，voice 里是 clone_voice.voice_id，界面显示「原声」。 */
+  source_voice?: boolean;
+  updated_at?: string | null;
+}
+
+/** 复刻样本的来源与时段（HIG-58），排查用。 */
+export interface CloneSample {
+  from: string;
+  start: number;
+  seconds: number;
+}
+
+/** 这条视频复刻出来的「原声」音色（HIG-58），各语言版本共用，整条视频只刻一次。 */
+export interface CloneVoice {
+  status: LocalizeStatus;
+  voice_id?: string | null;
+  /** 复刻时绑定的 TTS 模型；音色不能跨模型用。 */
+  model?: string | null;
+  error?: string | null;
+  sample?: CloneSample | null;
   updated_at?: string | null;
 }
 
@@ -119,6 +139,8 @@ export interface Localization {
   /** 听写用的源语言；请求 auto 时为识别结果。 */
   source_lang: string;
   transcript: Transcript | null;
+  /** 缺省 null（HIG-58）：复刻出来的原声音色，各语言版本共用。 */
+  clone_voice?: CloneVoice | null;
   /** 按目标语言码一份，互相独立。 */
   versions: Record<string, LocalizationVersion>;
 }
@@ -135,6 +157,8 @@ export interface LocalizeIn {
   retranscribe?: boolean;
   /** 缺省 true；false = 只听写 + 翻译，口播之后用 PUT versions/{lang} 生成（HIG-56）。 */
   dub?: boolean;
+  /** 缺省 false（HIG-58）：用这条视频复刻出来的原声合成，此时 voices 被忽略，每个语言都必须 clone = true。 */
+  use_source_voice?: boolean;
 }
 
 export interface LangOption {
@@ -160,6 +184,8 @@ export interface VoiceOption {
 export interface TargetLangOption extends LangOption {
   /** 可选，缺省 false：从右到左书写（阿拉伯语等）。 */
   rtl?: boolean;
+  /** 可选，缺省 false（HIG-58）：该语言能否用复刻的原声合成。前端据此禁用，不写死语言表。 */
+  clone?: boolean;
   voices: VoiceOption[];
 }
 

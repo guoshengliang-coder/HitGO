@@ -29,6 +29,10 @@ import {
   voiceOptionLabel,
   groupVoices,
   voiceSupportsRate,
+  cloneStatusText,
+  cloneSupported,
+  splitByClone,
+  versionVoiceText,
 } from './localize';
 import { defaultTextStyle, emptySpec, type Asset, type EditSpec, type Localization, type LocalizationVersion, type LocalizeOptions, type TextLayer, type Transcript, type Video, type VoiceOption } from '../types';
 
@@ -514,5 +518,47 @@ describe('音色（HIG-42）', () => {
     expect(voiceSupportsRate(options, 'zh', 'e')).toBe(false);
     expect(voiceSupportsRate(options, 'zh', 'nope')).toBe(true);
     expect(voiceSupportsRate(null, 'zh', 'e')).toBe(true);
+  });
+});
+
+describe('原声配音（HIG-58）', () => {
+  const options: LocalizeOptions = {
+    enabled: true,
+    source_langs: [],
+    target_langs: [
+      { code: 'ja', label: '日语', clone: true, voices: [{ id: 'loongtomoka_v3', label: 'Tomoka' }] },
+      { code: 'it', label: '意大利语', clone: false, voices: [{ id: 'Cherry', label: 'Cherry' }] },
+      { code: 'ko', label: '韩语', voices: [] }, // 旧后端：没有 clone 字段
+    ],
+  };
+
+  it('cloneSupported：只有后端明确标了 true 才算支持', () => {
+    expect(cloneSupported(options, 'ja')).toBe(true);
+    expect(cloneSupported(options, 'it')).toBe(false);
+    expect(cloneSupported(options, 'ko')).toBe(false); // 没标 → 不给开关，好过请求回来 400
+    expect(cloneSupported(options, 'zz')).toBe(false);
+    expect(cloneSupported(null, 'ja')).toBe(false);
+  });
+
+  it('splitByClone：把一批语言分成能用原声的和不能的，保持原顺序', () => {
+    expect(splitByClone(options, ['ja', 'it', 'ko'])).toEqual({ ok: ['ja'], unsupported: ['it', 'ko'] });
+    expect(splitByClone(options, [])).toEqual({ ok: [], unsupported: [] });
+  });
+
+  it('versionVoiceText：用原声的显示「原声」，其余走音色名', () => {
+    const base: LocalizationVersion = { status: 'done', cues: [], voice: 'loongtomoka_v3' };
+    expect(versionVoiceText(options, 'ja', base)).toBe('Tomoka');
+    expect(versionVoiceText(options, 'ja', { ...base, source_voice: true, voice: 'hitgo-abc123' })).toBe('原声');
+    // 复刻 id 不在音色表里：不显示「原声」就会把这串 id 摊在界面上
+    expect(versionVoiceText(options, 'ja', { ...base, voice: 'hitgo-abc123' })).toBe('hitgo-abc123');
+  });
+
+  it('cloneStatusText：只在复刻中或复刻失败时出声', () => {
+    expect(cloneStatusText(null)).toBe('');
+    expect(cloneStatusText({ status: 'done', voice_id: 'x' })).toBe('');
+    expect(cloneStatusText({ status: 'queued' })).toBe('正在复刻原声…');
+    expect(cloneStatusText({ status: 'running' })).toBe('正在复刻原声…');
+    expect(cloneStatusText({ status: 'failed', error: '样本太短' })).toBe('原声复刻失败：样本太短');
+    expect(cloneStatusText({ status: 'failed' })).toBe('原声复刻失败：未知原因');
   });
 });

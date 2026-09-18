@@ -17,8 +17,10 @@ describe('featurePrefs', () => {
   it('按项合并保存', () => {
     const s = memStorage();
     saveFeaturePrefs({ posterPunct: 'drop-all' }, s);
-    expect(saveFeaturePrefs({ autoApplyDub: false }, s)).toEqual({ autoApplyDub: false, posterSplitOnPaste: true, posterPunct: 'drop-all' });
-    expect(loadFeaturePrefs(s)).toEqual({ autoApplyDub: false, posterSplitOnPaste: true, posterPunct: 'drop-all' });
+    const merged = { autoApplyDub: false, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'drop-all' };
+    expect(saveFeaturePrefs({ autoApplyDub: false }, s)).toEqual(merged);
+    expect(loadFeaturePrefs(s)).toEqual(merged);
+    expect(saveFeaturePrefs({ useSourceVoice: true }, s)).toEqual({ ...merged, useSourceVoice: true });
   });
 
   it('写入失败不抛，返回合并后的值', () => {
