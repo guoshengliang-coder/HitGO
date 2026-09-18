@@ -460,7 +460,14 @@ function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
     hit.width = s.width;
     hit.rotate = s.rotate;
     hit.opacity = s.opacity;
-    if (s.type === 'sticker' && hit.type === 'sticker') hit.asset_id = s.asset_id;
+    if (s.type === 'sticker' && hit.type === 'sticker') {
+      // 与后端 apply.py 的 _STYLE_KEYS_BY_TYPE 一致（此前这里漏了 playback / mix_audio）
+      hit.asset_id = s.asset_id;
+      for (const k of ['playback', 'mix_audio', 'source_in', 'source_out'] as const) {
+        if (s[k] !== undefined) (hit[k] as unknown) = s[k];
+        else delete hit[k];
+      }
+    }
     else if (s.type === 'text' && hit.type === 'text') {
       hit.text = s.text;
       if (s.spans) hit.spans = s.spans;

@@ -103,6 +103,17 @@ def test_style_only_same_id_keeps_target_position_and_time_but_takes_style():
     assert src["layers"][1]["style"]["color"] == "#FFFFFF"
 
 
+def test_style_only_carries_the_in_asset_trim_with_the_asset():
+    """source_in / source_out describe which piece of the asset to show, so they travel with it (HIG-67)."""
+    src = valid_spec()
+    src["layers"][0].update({"source_in": 1.5, "source_out": 7.5})
+    out = apply_modules(src, _target_with_layers(), ["layers"], 24.6, "style_only")
+    sticker = out["layers"][0]
+    assert (sticker["source_in"], sticker["source_out"]) == (1.5, 7.5)
+    # ...and the target's own position / window still win
+    assert sticker["t"] == [2, 9] and sticker["anchor"] == "bottom-right"
+
+
 def test_style_only_spans_follow_text():
     src, target = valid_spec(), _target_with_layers()
     src["layers"][1]["spans"] = [{"start": 0, "end": 2, "color": "#E3312B"}]

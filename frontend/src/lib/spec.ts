@@ -35,6 +35,11 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
       const name = cleanTrackName(l.name);
       if (name) copy.name = name;
       else delete copy.name;
+      // 素材内裁剪（HIG-67）只在非缺省时发：入点缺省 0，出点缺省素材时长，保持旧 spec 形状
+      if (l.type === 'sticker') {
+        if (!l.source_in) delete copy.source_in;
+        if (l.source_out == null) delete copy.source_out;
+      }
       // 没有局部上色时不发 spans，保持旧 spec 形状
       if (l.type === 'text' && !l.spans?.length) delete copy.spans;
       if (l.type === 'text' && !(l.variant_images && Object.keys(l.variant_images).length)) delete copy.variant_images;

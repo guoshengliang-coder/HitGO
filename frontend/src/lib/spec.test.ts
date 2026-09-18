@@ -2,6 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { countSafeZoneOverlaps, ensureVariants, exportKeys, hasExportChoice, layerAspect, layerName, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from './spec';
 import { defaultTextStyle, emptySpec, type EditSpec, type MaskLayer, type SafeZone, type TextLayer } from '../types';
 
+const sticker = (extra: Record<string, unknown> = {}) => ({
+  id: 'l', type: 'sticker' as const, asset_id: 'a', anchor: 'top-left' as const,
+  margin: [0, 0] as [number, number], width: 0.3, rotate: 0, opacity: 1, t: 'all' as const, ...extra,
+});
+
+describe('toContractSpec · 素材内裁剪（HIG-67）', () => {
+  it('缺省时不带这两个字段（保持旧 spec 形状）', () => {
+    const out = toContractSpec({ ...emptySpec(), layers: [sticker()] }).layers[0];
+    expect(out).not.toHaveProperty('source_in');
+    expect(out).not.toHaveProperty('source_out');
+  });
+  it('入点为 0 等于缺省，不发送；出点仍照发', () => {
+    const out = toContractSpec({ ...emptySpec(), layers: [sticker({ source_in: 0, source_out: 5 })] }).layers[0];
+    expect(out).not.toHaveProperty('source_in');
+    expect(out).toHaveProperty('source_out', 5);
+  });
+  it('有裁剪时两个都发送', () => {
+    const out = toContractSpec({ ...emptySpec(), layers: [sticker({ source_in: 1.5, source_out: 7.5 })] }).layers[0];
+    expect(out).toMatchObject({ source_in: 1.5, source_out: 7.5 });
+  });
+});
+
 describe('toContractSpec · audio', () => {
   it('没有 audio 块、或全是缺省值时不带此字段（保持旧 spec 形状）', () => {
     expect('audio' in toContractSpec(emptySpec())).toBe(false);
