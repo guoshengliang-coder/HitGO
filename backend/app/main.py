@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import time
@@ -319,7 +320,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health", include_in_schema=False)
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "commit": os.getenv("HITGO_BUILD_SHA", "unknown"),
+            "version": os.getenv("HITGO_BUILD_VERSION", "dev"),
+        }
 
     # /media → DATA_DIR (hitgo.db and tmp/ blocked by AccessGate)
     storage.ensure_dirs()

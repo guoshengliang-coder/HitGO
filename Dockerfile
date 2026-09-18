@@ -18,6 +18,9 @@ RUN set -eu; \
 # ---------- stage 2: backend ----------
 FROM python:3.12-slim AS runtime
 
+ARG HITGO_BUILD_SHA=unknown
+ARG HITGO_BUILD_VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -25,7 +28,9 @@ ENV PYTHONUNBUFFERED=1 \
     UV_PROJECT_ENVIRONMENT=/app/backend/.venv \
     DATA_DIR=/data \
     FRONTEND_DIST=/app/frontend/dist \
-    SAMPLES_DIR=/app/samples
+    SAMPLES_DIR=/app/samples \
+    HITGO_BUILD_SHA=${HITGO_BUILD_SHA} \
+    HITGO_BUILD_VERSION=${HITGO_BUILD_VERSION}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
