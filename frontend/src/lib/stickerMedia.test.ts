@@ -1,3 +1,4 @@
+import { sourceSegment } from './sourceTrim';
 import { describe, expect, it } from 'vitest';
 import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from './stickerMedia';
 
@@ -92,5 +93,42 @@ describe('stickerFinished', () => {
     expect(stickerFinished(6.5, [4, 9], 20.6, 3, 'freeze')).toBe(false);
     expect(stickerFinished(7.5, [4, 9], 20.6, 3, 'loop')).toBe(false);
     expect(stickerFinished(7.5, [4, 9], 20.6, 0, 'freeze')).toBe(false);
+  });
+});
+
+describe('素材内裁剪（HIG-67）：预览与成片同一段', () => {
+  const seg = (source_in: number, source_out: number, media: number) => sourceSegment({ source_in, source_out }, media);
+
+  it('时段起点播的是 source_in，不是素材第 0 秒', () => {
+    // 素材 6s，裁 [2, 4)，时段 [0, 6]
+    expect(stickerMediaTime(0, [0, 6], 20, 6, 'loop', seg(2, 4, 6))).toBe(2);
+    expect(stickerMediaTime(1, [0, 6], 20, 6, 'loop', seg(2, 4, 6))).toBe(3);
+  });
+  it('loop 循环的是裁出来的那一段', () => {
+    const s = seg(2, 4, 6);
+    expect(stickerMediaTime(2, [0, 6], 20, 6, 'loop', s)).toBe(2); // 第二遍开头
+    expect(stickerMediaTime(3, [0, 6], 20, 6, 'loop', s)).toBe(3);
+    expect(stickerMediaTime(5, [0, 6], 20, 6, 'loop', s)).toBe(3); // 第三遍
+  });
+  it('freeze 定格在 source_out 前，不会露出裁掉的内容', () => {
+    const at = stickerMediaTime(5, [0, 6], 20, 6, 'freeze', seg(2, 4, 6))!;
+    expect(at).toBeGreaterThan(3.9);
+    expect(at).toBeLessThanOrEqual(4);
+  });
+  it('once 播完就消失', () => {
+    expect(stickerMediaTime(5, [0, 6], 20, 6, 'once', seg(2, 4, 6))).toBeNull();
+    expect(stickerMediaTime(1, [0, 6], 20, 6, 'once', seg(2, 4, 6))).toBe(3);
+  });
+  it('不传 segment 时行为与 HIG-67 之前一致', () => {
+    expect(stickerMediaTime(1, [0, 6], 20, 6, 'loop')).toBe(1);
+    expect(stickerMediaTime(7, [0, 10], 20, 6, 'loop')).toBe(1);
+  });
+  it('出声判断按裁剪后的段长', () => {
+    const base = { t: [0, 6] as [number, number], postDuration: 20, mediaDuration: 6, playing: true, mixAudio: true, hasAudio: true };
+    // 裁成 2s：once 播到第 3 秒时已经放完，不该再出声
+    expect(stickerAudible({ ...base, postTime: 1, playback: 'once', segment: seg(2, 4, 6) })).toBe(true);
+    expect(stickerAudible({ ...base, postTime: 3, playback: 'once', segment: seg(2, 4, 6) })).toBe(false);
+    // loop 一直出声
+    expect(stickerAudible({ ...base, postTime: 5, playback: 'loop', segment: seg(2, 4, 6) })).toBe(true);
   });
 });

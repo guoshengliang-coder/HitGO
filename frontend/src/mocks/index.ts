@@ -558,6 +558,12 @@ function seed() {
   assets.push(
     { id: 'a_demo1', type: 'sticker', name: '限时免费.png', url: s1.url, width: s1.width, height: s1.height, source: 'upload', created_at: now() },
     { id: 'a_demo2', type: 'sticker', name: '新人礼包.png', url: s2.url, width: s2.width, height: s2.height, source: 'builtin', created_at: now() },
+    // 叠加素材示例（HIG-67）：没有真视频文件，海报用生成的图，画布上和 mock 源片一样走合成时钟。
+    // 有它才能在 dev:mock 下走通「叠加素材」分组、入点 / 出点与替换素材。
+    {
+      id: 'a_demo3', type: 'sticker', kind: 'video', name: '倒计时动画.mp4', url: '/media/mock/countdown.mp4',
+      poster_url: s2.url, width: 480, height: 480, duration: 6, has_audio: true, source: 'builtin', created_at: now(),
+    },
   );
 }
 

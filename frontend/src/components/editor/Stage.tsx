@@ -38,6 +38,7 @@ import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
+import { sourceSegment } from '../../lib/sourceTrim';
 import { REST, enterDelay, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
 import { CURSOR_TAIL, buildGlyphLayout, paintReveal, revealTiming, unitCount } from '../../lib/textReveal';
 import { InlineTextEditor } from './InlineTextEditor';
@@ -309,25 +310,29 @@ function LayerNode({
     if (!stickerVideo || layer.type !== 'sticker') return;
     const playback = layer.playback ?? 'loop';
     const mediaDuration = sticker?.duration ?? stickerVideo.duration ?? 0;
+    // 素材内裁剪（HIG-67）：预览只播 [source_in, source_out)，和成片同一段
+    const segment = sourceSegment(layer, mediaDuration);
     const sync = (postTime: number, playing: boolean) => {
-      const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback);
+      const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback, segment);
       // 贴纸音轨（mix_audio）：和成片同一套规则决定此刻出不出声；元素默认静音
       stickerVideo.muted = !stickerAudible({
         postTime, t: layer.t, postDuration, mediaDuration, playback, playing,
-        mixAudio: layer.mix_audio, hasAudio: sticker?.has_audio,
+        mixAudio: layer.mix_audio, hasAudio: sticker?.has_audio, segment,
       });
       if (at === null) {
         if (!stickerVideo.paused) stickerVideo.pause();
         return;
       }
-      if (playing && stickerFinished(postTime, layer.t, postDuration, mediaDuration, playback)) {
+      if (playing && stickerFinished(postTime, layer.t, postDuration, mediaDuration, playback, segment)) {
         // freeze 定格中：再 play() 浏览器会从头重播（画面闪、声音重来），停在最后一帧即可
         if (!stickerVideo.paused) stickerVideo.pause();
         if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
       } else if (playing) {
         // 播放中只在明显漂移时纠正，否则每帧 seek 会让画面抖
         if (stickerVideo.playbackRate !== player.mediaRate) stickerVideo.playbackRate = player.mediaRate;
-        if (Math.abs(stickerVideo.currentTime - at) > 0.25 * player.mediaRate) stickerVideo.currentTime = at;
+        // 越过出点要马上拉回：0.25s 的漂移容差会让裁掉的内容露出来
+        const overran = segment.trimmed && stickerVideo.currentTime > segment.end + 0.02;
+        if (overran || Math.abs(stickerVideo.currentTime - at) > 0.25 * player.mediaRate) stickerVideo.currentTime = at;
         if (stickerVideo.paused) void stickerVideo.play().catch(() => undefined);
       } else {
         if (!stickerVideo.paused) stickerVideo.pause();
