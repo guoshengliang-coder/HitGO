@@ -950,6 +950,8 @@ def build_render_command(
             skipped_tracks.append(track.id)
             continue
         aligned = getattr(track, "align", "post") == "source"
+        # Source-aligned tracks are pinned to the source timeline, so the schema forbids speed there.
+        speed = 1.0 if aligned else float(getattr(track, "speed", 1.0) or 1.0)
         available = float(source.duration) - float(track.offset)
         if available <= MIN_SEGMENT:
             warnings.append(f"音轨 {track.id}：起始偏移不小于素材时长，已跳过")
@@ -1024,10 +1026,17 @@ def build_render_command(
             head = f"[{input_index}:a]"
             if track.offset > 0:
                 steps.append(f"atrim=start={_fmt(track.offset)}")
-            steps += ["asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+            steps.append("asetpts=PTS-STARTPTS")
+            # Tempo (HIG-75) sits between the in-file cut and the timeline window: offset is in
+            # file seconds, the window in output seconds. One atempo covers the contract's
+            # 0.5-2.0, so no chaining; speed == 1 emits nothing and keeps the old command.
+            if abs(speed - 1.0) > 1e-6:
+                steps.append(f"atempo={_fmt(speed)}")
+            steps.append(f"atrim=end={_fmt(window)}")
             # Fades run against the audible span: a non-looping file shorter than the
             # window ends early, and the fade-out must land where the sound actually stops.
-            effective = window if track.loop else min(window, available)
+            # Speeding up shortens what the file covers on the output timeline.
+            effective = window if track.loop else min(window, available / speed)
         if track.volume != 1:
             steps.append(f"volume={_fmt(track.volume)}")
         fade_in = min(float(track.fade_in), effective)

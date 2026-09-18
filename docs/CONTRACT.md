@@ -414,6 +414,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时是第一遍的起点
         "volume": 1,                         // 可选，缺省 1：0–1
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
+        "speed": 1,                          // 可选，缺省 1（HIG-75）：变速 0.5–2.0，atempo 不变调；align = "source" 时必须为 1。见下方规则
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
         "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
         "name": "开场 BGM",                  // 可选（HIG-48）：音轨显示名；缺省 = 素材文件名，worker 忽略
@@ -436,6 +437,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - y：top → `margin.y·H`；center → `(H−h)/2 + margin.y·H`；bottom → `H − h − margin.y·H`
   - 前端 Konva 与后端 FFmpeg 都按这一套公式；旋转绕图层中心。
 - **时间轴**：`trim.remove` 基于源时间轴；`layers[].t` 基于剪后时间轴。前端在剪辑区间变化时不自动改图层时段，只在文本 / 贴纸模块里对落在已删区间外的图层给提示。
+- **拆分图层**（HIG-79）与拆分音轨（见下方 `audio` 规则）对称，同样是**纯前端操作，不引入新字段**：一条图层在剪后时刻 `p`
+  拆成两条 `t` 相接的图层，后一条换新 `id`，其余字段深拷贝。`t = "all"` 先展开成 `[0, 成片时长]` 再拆；两段各自不短于
+  0.1 秒，否则不拆。文字图层的 `animation`：`in` 归左段、`out` 归右段、`loop` 两段都留；`reveal` 与 `glyph_layout` 只留
+  左段（逐字显现的字位置是整张 PNG 的，右段拿着它没有意义）。**设了 `scroll` 的图层（大字报）不拆**——滚动是整张长 PNG
+  在裁切框里走，切成两段没有语义。worker 照常逐条渲染。
+- **图层时段展开**（HIG-79）：编辑器里把 `t = "all"` 的图层条在时间线上拖动时，先就地展开成 `[0, 成片时长]` 再按拖动
+  结果写回，也就是拖过之后它不再是全程。这只是前端交互，`"all"` 的语义本身不变。
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`custom` 输出用可选的 `width`、`height` 指定像素宽高，两个字段必须同时存在，且为不小于 2 的偶整数（H.264 `yuv420p` 编码限制）；其它画幅不使用这两个字段。旧 spec 不含自定义输出时语义不变。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
 - **模糊背景的强度与亮度**（HIG-54，可选，**只在 `fill = "blur"` 时生效**，其它 fill 忽略）：
   - `blur`：整数 0–100，缺省 60。boxblur 半径 `r = round(min(W, H) · blur / 100 · 0.08)`，收到 `min(W, H) / 4 − 1`（色度平面的上限）以内，power 固定 2；`r = 0` 时不模糊。固定画幅短边都是 1080，缺省半径 52；自定义画幅按实际短边计算。
@@ -512,7 +520,16 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     不受影响，后面的声音也不前移（音画保持同步）。编辑器里「剪掉一段原声」就是往这里加一个时段。
   - **拆分音轨**（HIG-25）是纯前端操作：一条 track 在剪后时刻 `p` 拆成两条 `t` 相接的 track，后一条换新 `id`；
     `align = "post"` 的后一条 `offset` 顺延 `p − a`（循环轨对素材时长取模），`align = "source"` 的只拆 `t`。
-    不引入新字段，worker 照常逐条混音。
+    不引入新字段，worker 照常逐条混音。两段沿用同一个 `speed`。
+  - **变速 `speed`**（可选，缺省 `1`，HIG-75）：0.5–2.0，用 `atempo` 变速，**不变调**。素材里可听的 `L` 秒在成片
+    时间轴上占 `L / speed` 秒——也就是说 `speed > 1` 播得更快、占得更短。各字段的先后：`offset` 是**素材自己**的
+    秒数（在变速之前取），`t` 与 `fade_in` / `fade_out` 都是**成片时间轴**的秒数（在变速之后算），`loop` 循环的是
+    变速后的片段。worker 的滤镜链顺序为 `atrim(offset) → asetpts → atempo(speed) → atrim(时段长) → volume
+    → afade → adelay`；`speed = 1` 时不插 `atempo`，命令与此前逐字一致。
+    **`align = "source"` 时 `speed` 必须为 1**（或缺省），否则 400——源对齐轨的语义就是跟着源时间轴走，变速会让它
+    整条错位，与该模式下 `offset` 必须为 0、`loop` 必须为 false 是同一类约束。
+    编辑器预览用 `HTMLMediaElement.playbackRate` 复现（浏览器默认保持音高，与 `atempo` 一致）。
+    批量套用 `audio` 模块时随块复制；改语言套用出来的配音轨不写这个字段（它的时长对齐由 worker 另行处理）。
   - 批量套用 `audio` 模块时整块深拷贝；`t` 与 `source_mute` 基于剪后时间轴，不做裁剪（同图层）。
 - **封面 `cover`**（可选，缺省 null，HIG-9）：在成片最前面插入一段封面，之后接剪辑后的正片。
   - 素材是 `type = "sticker"` 的图片或视频（含多帧 gif / webp）。图片封面停留 `duration` 秒（0.1–10，缺省 1.0）；

@@ -399,6 +399,22 @@ def test_audio_track_align_source_forbids_loop_and_offset():
     assert "align" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "sideways"}]))
 
 
+def test_audio_track_speed_defaults_to_one_and_stays_in_range():
+    assert validate(audio_spec(tracks=[{"id": "a", "asset_id": "x"}])).audio.tracks[0].speed == 1.0
+    assert validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "speed": 1.5}])).audio.tracks[0].speed == 1.5
+    for edge in (0.5, 2.0):
+        assert validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "speed": edge}])).audio.tracks[0].speed == edge
+    for bad in (0.4, 2.1, 0):
+        assert "speed" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "speed": bad}]))
+
+
+def test_audio_track_align_source_forbids_speed():
+    # A source-aligned stem rides the source timeline; any tempo change desyncs the whole track.
+    assert "变速" in errors_of(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "speed": 1.3}]))
+    ok = validate(audio_spec(tracks=[{"id": "a", "asset_id": "x", "align": "source", "speed": 1.0}]))
+    assert ok.audio.tracks[0].speed == 1.0
+
+
 # --- mask layers (contract §2 type = "mask") ------------------------------------------
 
 

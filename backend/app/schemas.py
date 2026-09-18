@@ -81,6 +81,10 @@ def _check_time_window(t: Any) -> Any:
 # Longest track / layer label the editor can store (HIG-48).
 TRACK_NAME_MAX = 64
 
+# Audio track tempo range (HIG-75). A single atempo covers 0.5–2.0, so no filter chaining is needed.
+TRACK_SPEED_MIN = 0.5
+TRACK_SPEED_MAX = 2.0
+
 # Text boxes may be wider than the canvas (HIG-37): the part outside the frame is cropped.
 # Stickers and masks stay within one canvas width.
 TEXT_WIDTH_MAX = 3.0
@@ -650,6 +654,8 @@ class AudioTrack(BaseModel):
     offset: float = Field(default=0.0, ge=0)
     volume: float = Field(default=1.0, ge=0, le=1)  # ≤ 1 so the browser preview can match it
     loop: bool = False
+    # atempo playback rate, pitch preserved (HIG-75); 1.0 keeps the pre-HIG-75 command byte for byte
+    speed: float = Field(default=1.0, ge=TRACK_SPEED_MIN, le=TRACK_SPEED_MAX)
     fade_in: float = Field(default=0.0, ge=0)
     fade_out: float = Field(default=0.0, ge=0)
     hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
@@ -664,6 +670,9 @@ class AudioTrack(BaseModel):
     def _cross_checks(self) -> AudioTrack:
         if self.align == "source" and (self.loop or self.offset > 0):
             raise ValueError(f"音轨 {self.id}：对齐源时间轴的音轨不能循环，起始偏移必须为 0")
+        # Source-aligned tracks ride the source timeline; any tempo change would desync the whole track.
+        if self.align == "source" and abs(self.speed - 1.0) > 1e-6:
+            raise ValueError(f"音轨 {self.id}：对齐源时间轴的音轨不能变速")
         if self.t != "all" and self.fade_in + self.fade_out > (self.t[1] - self.t[0]) + 1e-6:
             raise ValueError(f"音轨 {self.id}：淡入加淡出不能超过时段长度")
         return self
