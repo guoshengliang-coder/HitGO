@@ -389,9 +389,13 @@ export function localizeTracks(spec: EditSpec): AudioTrack[] {
   return spec.audio?.tracks.filter((t) => t.origin === LOCALIZE_ORIGIN) ?? [];
 }
 
+/** 改语言时的配乐选择；缺省保留原伴奏。 */
+export type LocalizeBgmChoice = { mode: 'keep' } | { mode: 'replace'; assetId: string };
+
 export interface ApplyContext {
   video: Video;
   assets: Asset[];
+  bgm?: LocalizeBgmChoice;
   /** 语言的中文名（图层名用）。 */
   langLabel: string;
   newLayerId: () => string;
@@ -436,21 +440,27 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
     placement = { anchor: prev.anchor, margin: [prev.margin[0], prev.margin[1]] };
   }
 
-  // 1. 清掉旧的层 / 轨
+  // 1. 清掉旧的层 / 轨；明确替换配乐时也移除已有 BGM，避免叠音。
   spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
   if (!spec.audio) spec.audio = { source_volume: 1, tracks: [] };
-  spec.audio.tracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN);
+  spec.audio.tracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN && !(ctx.bgm?.mode === 'replace' && (t.role ?? 'bgm') === 'bgm'));
 
   // 2. 源音轨静音 + 配音轨
   setOwnerSourceGain(spec, video.id, 0);
   spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
 
-  // 3. 伴奏
+  // 3. 原伴奏或指定的新 BGM
   const sep = video.separation;
   const instId = sep?.status === 'done' ? sep.instrumental_asset_id : null;
   const instAsset = instId ? assets.find((a) => a.id === instId) : undefined;
   const userTracks = spec.audio.tracks.filter((t) => t.origin !== LOCALIZE_ORIGIN);
-  if (instId && instAsset && isAssetReady(instAsset)) {
+  if (ctx.bgm?.mode === 'replace') {
+    const replacementId = ctx.bgm.assetId;
+    const replacement = assets.find((a) => a.id === replacementId);
+    if (replacement && isAssetReady(replacement)) {
+      spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: replacement.id, role: 'bgm', align: 'post', t: 'all', volume: 0.6, loop: true, fade_out: 1, origin: LOCALIZE_ORIGIN, lang });
+    } else warnings.push('所选 BGM 不可用，请重新选择');
+  } else if (instId && instAsset && isAssetReady(instAsset)) {
     // 用户已经用「只留伴奏」加过这条伴奏轨：不重复叠一份
     if (!userTracks.some((t) => t.asset_id === instId)) {
       spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: instId, role: 'bgm', align: 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });

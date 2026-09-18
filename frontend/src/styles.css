@@ -847,6 +847,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .track-item .track-head .role.sticker { background: var(--tk-sticker-bg); color: var(--tk-sticker-fg); }
 
 /* ---- 改语言（LocalizePanel）：逐句列表 + 版本行 ---- */
+.localize-advanced { border-top: 1px solid var(--line-soft); padding-top: 8px; }
+.localize-advanced > summary { color: var(--ink-2); cursor: pointer; font-size: 12px; padding: 4px 2px 8px; }
+.localize-advanced[open] > summary { color: var(--ink); }
 .cue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
 /* 大字报（HIG-55）：粘贴分行设置、背景列表 */
 .paste-prefs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

@@ -2,8 +2,8 @@
 // 五个可折叠分组，与剪辑面板（HIG-17）同一套 Section。状态都在 video.localization 上，后台任务由 store 轮询；
 // 这里只管展示、编辑草稿（逐句文本 / 音色 / 术语表）、发请求。语言与音色列表来自 GET /api/localize/options，不写死。
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor } from '../../store/editor';
+import { useEffect, useMemo, useState } from 'react';
+import { loadLocalizeBgm, useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
 import { appliedVersion, canApplyVersion, cloneStatusText, cloneSupported, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, transcriptStatusText, versionStatusText, versionVoiceText } from '../../lib/localize';
@@ -12,13 +12,17 @@ import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
 import { VoiceSelect } from './VoiceSelect';
+import { AudioAssetList } from './AudioPanel';
+import { Modal } from '../ui/Modal';
+import { isAssetReady } from '../../types';
+import type { LocalizeBgmChoice } from '../../lib/localize';
 import type { Localization, LocalizationVersion, LocalizeIn, LocalizeOptions, Video } from '../../types';
 
 const TRANSCRIPT_HELP = '听写只做一次，结果是所有语言版本的模板：先在这里把识别错的句子改对，再翻译，译文质量最好。时间点击可跳播放头；播放时当前句高亮。保存修正不会自动重译，已有版本会标「需重译」。';
 const GENERATE_HELP = '勾选目标语言后一键翻译：模板没听写过时同一个任务会先听写。术语表每行「原词=译词」，翻译时强制替换（品牌名、产品名）。已有版本的语言再翻译会覆盖旧译文；旧口播保留但标「口播待更新」，要在「生成口播」里重新生成。';
 const DUB_HELP = '按译文合成目标语言口播：每种语言选一个音色，逐句合成后按原句时间铺好混成一条配音。打开「生成后自动套用」时，口播生成完会直接套用到这条视频（原声静音、加配音轨和译文字幕，⌘Z 可撤销）；一次选多种语言时只自动套用排在最前、成功的那个，其余在「套用」里切换或「导出多语言」。';
 const VERSIONS_HELP = '每个语言版本独立：展开可逐句改译文、换音色，「重新合成」只重跑口播（不重新翻译）。「需重译」表示模板改过之后译文没更新，点「重译」对该语言再翻译一遍。';
-const APPLY_HELP = '套用把当前视频的源音轨静音，加一条配音轨（对齐源时间轴）和一条 Demucs 伴奏轨（如果分离过），再把译文按句变成字幕层贴底居中（按画布宽 90% 自动换行，画布上拖字幕框左右边可调换行宽度），⌘Z 一步撤销。同一时间只能套用一个语言版本，换版本会替换上一版的层和轨；用户自己加的文字 / 贴纸 / 音轨不动，字幕样式可在「文本」模块里调、重新套用时保留。结果只对本条视频有效：要导出多个语言的成片，套用一版 → 导出 → 换另一版再导出。';
+const APPLY_HELP = '套用会静音源音轨，加入目标语言配音、所选 BGM 和译文字幕，⌘Z 可一步撤销。保留原伴奏时要等自动分离完成；替换 BGM 时使用上方选定的音频。换语言会替换上一版自动生成的层和轨；字幕样式可在「文本」模块调整，重新套用时保留。';
 
 interface SectionProps {
   video: Video;
@@ -44,17 +48,12 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
   const updateTranscript = useEditor((s) => s.updateTranscript);
   const setToast = useEditor((s) => s.setToast);
   const time = useEditor((s) => s.time);
-  const playing = useEditor((s) => s.playing);
   const t = loc?.transcript ?? null;
   const cues = t?.status === 'done' ? t.cues : [];
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   // 换视频 / 服务器回了新模板：本地草稿作废
   useEffect(() => setDrafts({}), [video.id, t?.updated_at]);
-  const currentRef = useRef<HTMLDivElement>(null);
   const currentI = useMemo(() => cues.find((c) => time >= c.start && time < c.end)?.i ?? null, [cues, time]);
-  useEffect(() => {
-    if (playing) currentRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [currentI, playing]);
 
   const transcribing = t?.status === 'queued' || t?.status === 'running';
   const changed = cues.filter((c) => drafts[c.i] !== undefined && drafts[c.i] !== c.text);
@@ -99,7 +98,7 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
               const edited = drafts[c.i] !== undefined && drafts[c.i] !== c.text;
               const cur = c.i === currentI;
               return (
-                <div key={c.i} className={`cue-item ${cur ? 'current' : ''}`} ref={cur ? currentRef : undefined}>
+                <div key={c.i} className={`cue-item ${cur ? 'current' : ''}`}>
                   <button type="button" className="cue-time" title="跳到这句（源时间）" onClick={() => player.seek(c.start)}>
                     {formatTime(c.start)}
                   </button>
@@ -127,7 +126,62 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
 
 /** 音色：这次选的 > 已有版本用的 > 该语言第一个。 */
 function pickVoice(code: string, voices: Record<string, string>, loc: Localization | null, options: LocalizeOptions | null): string {
-  return voices[code] ?? loc?.versions?.[code]?.voice ?? options?.target_langs.find((t) => t.code === code)?.voices[0]?.id ?? '';
+  const prior = loc?.versions?.[code];
+  return voices[code] ?? (prior?.source_voice ? null : prior?.voice) ?? options?.target_langs.find((t) => t.code === code)?.voices[0]?.id ?? '';
+}
+
+/** 最短路径：目标语言和音色选一次，听写、翻译、配音在同一后台任务里完成。 */
+function QuickSection({ video, loc, options, blocked, sourceLang, draft }: SectionProps & { sourceLang: string; draft: GenerateDraft }) {
+  const localizeVideo = useEditor((s) => s.localizeVideo);
+  const assets = useEditor((s) => s.assets);
+  const [lang, setLang] = useState('');
+  const [bgmMode, setBgmMode] = useState<'keep' | 'replace'>(() => loadLocalizeBgm(video.id).mode);
+  const [bgmAssetId, setBgmAssetId] = useState(() => {
+    const choice = loadLocalizeBgm(video.id);
+    return choice.mode === 'replace' ? choice.assetId : '';
+  });
+  const [pickingBgm, setPickingBgm] = useState(false);
+  useEffect(() => {
+    setLang('');
+    const choice = loadLocalizeBgm(video.id);
+    setBgmMode(choice.mode);
+    setBgmAssetId(choice.mode === 'replace' ? choice.assetId : '');
+  }, [video.id]);
+  const target = options?.target_langs.find((t) => t.code === lang);
+  const voice = target ? pickVoice(lang, draft.voices, loc, options) : '';
+  const bgmAsset = assets.find((a) => a.id === bgmAssetId);
+  const bgmReady = bgmMode === 'keep' || (bgmAsset?.type === 'audio' && isAssetReady(bgmAsset));
+  const start = () => {
+    if (!lang || !voice || !bgmReady) return;
+    const bgm: LocalizeBgmChoice = bgmMode === 'keep' ? { mode: 'keep' } : { mode: 'replace', assetId: bgmAssetId };
+    void localizeVideo({ source_lang: sourceLang, target_langs: [lang], voices: { [lang]: voice }, terms: parseTerms(draft.termsText), dub: true }, { bgm });
+  };
+  return (
+    <Section id="localize.quick" title="转语言" bodyClass="stack" help="选目标语言和音色后直接生成配音与字幕；默认自动保留原伴奏，无需先到音频模块分离。">
+      <Field label="目标语言">
+        <select className="select sm" value={lang} disabled={blocked} aria-label="转语言目标语言" onChange={(e) => setLang(e.target.value)}>
+          <option value="">选择语言</option>
+          {options?.target_langs.map((t) => <option key={t.code} value={t.code}>{t.label}</option>)}
+        </select>
+      </Field>
+      {target && <Field label="音色"><VoiceSelect lang={lang} voices={target.voices} value={voice} onChange={(id) => draft.setVoices((v) => ({ ...v, [lang]: id }))} disabled={blocked} ariaLabel="转语言音色" /></Field>}
+      <div className="inline small" role="group" aria-label="转语言 BGM">
+        <label><input type="radio" name={`localize-bgm-${video.id}`} checked={bgmMode === 'keep'} disabled={blocked} onChange={() => setBgmMode('keep')} /> 保留原伴奏（自动分离）</label>
+        <label><input type="radio" name={`localize-bgm-${video.id}`} checked={bgmMode === 'replace'} disabled={blocked} onChange={() => setBgmMode('replace')} /> 替换 BGM</label>
+      </div>
+      {bgmMode === 'replace' && <div className="inline">
+        <button className="btn sm" disabled={blocked} onClick={() => setPickingBgm(true)}>{bgmAsset ? bgmAsset.name : '选择或上传 BGM'}</button>
+        {bgmAsset && !isAssetReady(bgmAsset) && <span className="hint">素材尚未就绪</span>}
+      </div>}
+      {bgmMode === 'keep' && video.separation?.status === 'failed' && <div className="hint">上次伴奏分离失败；再次生成会重试。</div>}
+      <button className="btn action" disabled={blocked || !lang || !voice || !bgmReady} onClick={start}>
+        {lang ? `生成${target?.label ?? ''}配音与字幕` : '先选目标语言'}
+      </button>
+      {pickingBgm && <Modal title="选择 BGM" onClose={() => setPickingBgm(false)} width={520}>
+        <AudioAssetList onPick={(id) => { setBgmAssetId(id); setPickingBgm(false); }} />
+      </Modal>}
+    </Section>
+  );
 }
 
 /** 翻译：目标语言多选、术语表、一键翻译（只翻译不合成，HIG-56）。 */
@@ -386,6 +440,8 @@ function ApplySection({ video, loc, options }: SectionProps) {
   const applied = appliedVersion(spec, loc);
   const versions = Object.entries(loc?.versions ?? {}).filter(([, v]) => v.status === 'done');
   const sepDone = video.separation?.status === 'done' && !!video.separation.instrumental_asset_id;
+  const bgm = loadLocalizeBgm(video.id);
+  const bgmReady = bgm.mode === 'replace' ? isAssetReady(assets.find((a) => a.id === bgm.assetId)) : sepDone;
   const summary = applied ? `${langLabel(options, applied.lang)}版${applied.state === 'applied' ? '' : '（需重新套用）'}` : '未套用';
 
   return (
@@ -409,7 +465,7 @@ function ApplySection({ video, loc, options }: SectionProps) {
             const isCur = applied?.lang === lang && applied.state === 'applied';
             const label = langLabel(options, lang);
             return (
-              <button key={lang} className={`btn ${isCur ? 'on' : ''}`} disabled={!check.ok || isCur} title={!check.ok ? check.reason : isCur ? '已是当前套用的版本' : `把配音轨和译文字幕换成${label}版（替换上一版的层 / 轨）`} onClick={() => applyVersion(lang)}>
+              <button key={lang} className={`btn ${isCur ? 'on' : ''}`} disabled={!check.ok || !bgmReady || isCur} title={!bgmReady ? '先等原伴奏分离完成，或在上方选择新 BGM' : !check.ok ? check.reason : isCur ? '已是当前套用的版本' : `把配音轨和译文字幕换成${label}版（替换上一版的层 / 轨）`} onClick={() => applyVersion(lang)}>
                 {isCur ? `已套用${label}版` : `套用${label}版`}
               </button>
             );
@@ -432,7 +488,7 @@ function ApplySection({ video, loc, options }: SectionProps) {
           </button>
         </div>
       )}
-      {!sepDone && <div className="hint">还没有分离出的伴奏：套用后成片只有配音没有背景音乐。到「音频」模块分离后再点一次套用即可补上。</div>}
+      {!bgmReady && <div className="hint">{bgm.mode === 'keep' ? '原伴奏尚未就绪；从上方生成会自动分离，完成后再套用。' : '所选 BGM 不可用，请在上方重新选择。'}</div>}
     </Section>
   );
 }
@@ -499,11 +555,15 @@ export function LocalizePanel() {
         {video && !ready && <div className="error-text">视频还在预处理，就绪后再来。</div>}
         {video && (
           <>
-            <TranscriptSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} setSourceLang={setSourceLang} requestFor={requestFor} />
-            <GenerateSection video={video} loc={loc} options={options} blocked={blocked} requestFor={requestFor} draft={draft} />
-            <DubSection video={video} loc={loc} options={options} blocked={blocked} voices={voices} setVoices={setVoices} />
-            <VersionsSection video={video} loc={loc} options={options} blocked={blocked} />
+            <QuickSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} draft={draft} />
             <ApplySection video={video} loc={loc} options={options} blocked={blocked} />
+            <details className="localize-advanced">
+              <summary>高级操作：修正听写、单独翻译、重新配音和管理版本</summary>
+              <TranscriptSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} setSourceLang={setSourceLang} requestFor={requestFor} />
+              <GenerateSection video={video} loc={loc} options={options} blocked={blocked} requestFor={requestFor} draft={draft} />
+              <DubSection video={video} loc={loc} options={options} blocked={blocked} voices={voices} setVoices={setVoices} />
+              <VersionsSection video={video} loc={loc} options={options} blocked={blocked} />
+            </details>
           </>
         )}
       </div>

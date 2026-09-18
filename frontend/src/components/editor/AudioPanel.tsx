@@ -21,7 +21,7 @@ import type { AudioRole, AudioTrack, SeparationModel } from '../../types';
  * 音频素材列表：我的 / 素材库 / 分离结果 + 搜索 + 直接上传（走素材库同一条上传链路）。
  * 弹窗选择器点选用（onPick）；音频面板里常驻一份，卡片拖到时间线上加轨（draggable，HIG-33）。
  */
-function AudioAssetList({ onPick, draggable }: { onPick?: (assetId: string) => void; draggable?: boolean }) {
+export function AudioAssetList({ onPick, draggable }: { onPick?: (assetId: string) => void; draggable?: boolean }) {
   const assets = useEditor((s) => s.assets);
   const loadAssets = useEditor((s) => s.loadAssets);
   const [bucket, setBucket] = useState<AssetBucket>('mine');
