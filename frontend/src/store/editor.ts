@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
@@ -29,10 +29,11 @@ import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceTo
 import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
-import { nudgePlacement, round4, type LayerBox } from '../lib/layout';
+import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
 import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
+import { bakeShapeLayer } from '../lib/shapeImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
@@ -111,6 +112,11 @@ export interface EditorState {
   specs: Record<string, EditSpec>;
   history: Record<string, History>;
   selectedLayerId: string | null;
+  /** HIG-63：同一视频里的视觉图层多选；selectedLayerId 是属性面板的主选中项。 */
+  selectedLayerIds: string[];
+  marqueeEnabled: boolean;
+  /** HIG-65：贴纸页当前要在预览画布拖画的图形；null = 普通选择。 */
+  drawingShape: import('../types').ShapeLayer['shape'] | null;
   /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
   layerFocusVersion: number;
   /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
@@ -182,6 +188,17 @@ export interface EditorState {
   setStep: (s: Step) => void;
   setSafeZoneKey: (k: string) => void;
   setSelectedLayer: (id: string | null) => void;
+  selectLayers: (ids: string[], mode?: 'replace' | 'add' | 'subtract') => void;
+  selectAllLayers: () => void;
+  setMarqueeEnabled: (on: boolean) => void;
+  removeSelectedLayers: () => void;
+  duplicateSelectedLayers: () => void;
+  shiftSelectedLayers: (seconds: number) => void;
+  moveSelectedLayersOnCanvas: (dx: number, dy: number) => void;
+  updateSelectedOpacity: (opacity: number) => void;
+  updateSelectedTextStyle: (patch: Partial<TextStyle>) => void;
+  updateSelectedShapeStyle: (patch: Partial<Pick<ShapeLayer, 'shape' | 'fill' | 'stroke' | 'stroke_width' | 'radius'>>) => void;
+  setDrawingShape: (shape: import('../types').ShapeLayer['shape'] | null) => void;
   focusLayer: (layer: Layer) => void;
   setSelectedClip: (id: string | null) => void;
   setTime: (t: number) => void;
@@ -372,7 +389,7 @@ export interface EditorState {
   /** opts.name：导出名称，写到本次建出的每个任务上（HIG-27）。 */
   /** variantKeys：这次导出哪些画幅（缺省只出 9x16）。 */
   /** langs（HIG-43）：多语言导出，勾选的语言码（含 'original' = 原版）；每条视频每个语言各带一份套用好的 spec 快照，编辑器里的 spec 不动。缺省 / 空 = 按当前 spec 出一份。 */
-  saveAndRender: (targetIds: string[], opts?: { name?: string; variantKeys?: VariantKey[]; langs?: string[] }) => Promise<void>;
+  saveAndRender: (targetIds: string[], opts?: { name?: string; variantKeys?: VariantKey[]; langs?: string[]; outputFormat?: 'source' | 'mp4' | 'mov' | 'png' | 'jpg' }) => Promise<void>;
   retryJob: (id: string) => Promise<void>;
   closeProgress: () => void;
   openExport: (req?: ExportDialogRequest) => void;
@@ -400,6 +417,9 @@ const PER_BATCH_INITIAL = {
   specs: {},
   history: {},
   selectedLayerId: null,
+  selectedLayerIds: [],
+  marqueeEnabled: false,
+  drawingShape: null,
   layerFocusVersion: 0,
   replacingLayerId: null,
   selectedClipId: null,
@@ -609,6 +629,7 @@ const LAYER_HOME: Record<Layer['type'], { kind: string; step: string }> = {
   text: { kind: '文字', step: '文本' },
   sticker: { kind: '贴纸', step: '贴纸' },
   mask: { kind: '遮盖', step: '字幕' },
+  shape: { kind: '图形', step: '贴纸' },
 };
 
 export const useEditor = create<EditorState>((set, get) => {
@@ -814,7 +835,7 @@ export const useEditor = create<EditorState>((set, get) => {
           safeZoneKey: zones.find((z) => z.key === get().safeZoneKey)?.key ?? zones[0]?.key ?? 'generic-vertical',
           currentVideoId,
           selectedIds: [],
-          selectedLayerId: null,
+          selectedLayerId: null, selectedLayerIds: [],
           time: 0,
           loading: false,
           saveState: 'idle',
@@ -945,7 +966,7 @@ export const useEditor = create<EditorState>((set, get) => {
           layerClipboardVideoId: s.layerClipboardVideoId && gone.has(s.layerClipboardVideoId) ? null : s.layerClipboardVideoId,
           posterVoicePending: deletedPosterVoice ? null : s.posterVoicePending,
           ...(nextId !== s.currentVideoId
-            ? { currentVideoId: nextId, selectedLayerId: null, selectedClipId: null, replacingLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null, exportDialog: null, progressOpen: false, saveState: 'idle', saveError: null }
+            ? { currentVideoId: nextId, selectedLayerId: null, selectedLayerIds: [], selectedClipId: null, replacingLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null, exportDialog: null, progressOpen: false, saveState: 'idle', saveError: null }
             : {}),
         });
       }
@@ -1042,7 +1063,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedClipId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedLayerIds: [], selectedClipId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -1050,14 +1071,88 @@ export const useEditor = create<EditorState>((set, get) => {
     setStep: (step) => {
       player.pause();
       // 选中的图层 / 区间 / 音轨只属于原模块：切模块时不保留上个模块的选择
-      set({ step, selectedLayerId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, cropEditing: false });
+      set({ step, selectedLayerId: null, selectedLayerIds: [], drawingShape: step === 'sticker' ? get().drawingShape : null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
-    setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
+    setSelectedLayer: (selectedLayerId) => set({ selectedLayerId, selectedLayerIds: selectedLayerId ? [selectedLayerId] : [] }),
+    selectLayers: (ids, mode = 'replace') => {
+      const spec = get().currentSpec();
+      if (!spec) return;
+      const valid = new Set(spec.layers.filter((l) => !l.hidden && !l.locked).map((l) => l.id));
+      const incoming = ids.filter((id) => valid.has(id));
+      const old = get().selectedLayerIds.filter((id) => valid.has(id));
+      const next = mode === 'add' ? [...new Set([...old, ...incoming])] : mode === 'subtract' ? old.filter((id) => !incoming.includes(id)) : incoming;
+      const primary = spec.layers.find((l) => l.id === next[next.length - 1]);
+      if (primary && (get().step === 'trim' || get().step === 'audio')) get().setStep(stepForLayer(primary));
+      set({ selectedLayerIds: next, selectedLayerId: next[next.length - 1] ?? null });
+    },
+    selectAllLayers: () => get().selectLayers((get().currentSpec()?.layers ?? []).map((l) => l.id)),
+    setMarqueeEnabled: (marqueeEnabled) => set({ marqueeEnabled }),
+    removeSelectedLayers: () => {
+      const ids = new Set(get().selectedLayerIds);
+      if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);
+      if (!ids.size) return;
+      get().updateSpec((spec) => { spec.layers = spec.layers.filter((l) => !ids.has(l.id)); });
+      set({ selectedLayerId: null, selectedLayerIds: [] });
+      get().syncPosterDuration();
+    },
+    duplicateSelectedLayers: () => {
+      const ids = new Set(get().selectedLayerIds);
+      if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);
+      if (!ids.size) return;
+      const copies: string[] = [];
+      get().updateSpec((spec) => {
+        spec.layers = spec.layers.flatMap((l) => {
+          if (!ids.has(l.id)) return [l];
+          const copy = { ...cloneSpec({ ...emptySpec(), layers: [l] }).layers[0], id: newLayerId(), margin: [round4(l.margin[0] + 0.03), round4(l.margin[1] + 0.03)] as [number, number] };
+          copies.push(copy.id);
+          return [l, copy];
+        });
+      });
+      set({ selectedLayerIds: copies, selectedLayerId: copies[copies.length - 1] ?? null });
+    },
+    shiftSelectedLayers: (seconds) => {
+      const ids = new Set(get().selectedLayerIds);
+      const spec = get().currentSpec();
+      if (!spec || !ids.size || !Number.isFinite(seconds)) return;
+      const timed = spec.layers.filter((l) => ids.has(l.id) && l.t !== 'all');
+      if (!timed.length) return;
+      const minStart = Math.min(...timed.map((l) => l.t === 'all' ? Infinity : l.t[0]));
+      const maxEnd = Math.max(...timed.map((l) => l.t === 'all' ? 0 : l.t[1]));
+      const shift = Math.max(-minStart, Math.min(selectPostDuration(get()) - maxEnd, seconds));
+      get().updateSpec((s) => { for (const l of s.layers) if (ids.has(l.id) && l.t !== 'all') l.t = [round4(l.t[0] + shift), round4(l.t[1] + shift)]; });
+    },
+    moveSelectedLayersOnCanvas: (dx, dy) => {
+      const ids = new Set(get().selectedLayerIds);
+      if (!ids.size) return;
+      get().updateSpec((spec) => {
+        for (const l of spec.layers) {
+          if (!ids.has(l.id) || l.locked) continue;
+          const aspect = layerAspect(l, get().assets);
+          const box = placeLayer(l, aspect, { W: 1080, H: 1920 });
+          const margin = marginFromBox({ ...box, x: box.x + dx * 1080, y: box.y + dy * 1920 }, l.anchor, { W: 1080, H: 1920 });
+          l.margin = [round4(margin[0]), round4(margin[1])];
+        }
+      });
+    },
+    updateSelectedOpacity: (opacity) => {
+      const ids = new Set(get().selectedLayerIds);
+      if (!ids.size) return;
+      get().updateSpec((spec) => { for (const l of spec.layers) if (ids.has(l.id) && !l.locked) l.opacity = Math.max(0, Math.min(1, opacity)); });
+    },
+    updateSelectedTextStyle: (patch) => {
+      const ids = new Set(get().selectedLayerIds);
+      get().updateSpec((spec) => { for (const l of spec.layers) if (l.type === 'text' && ids.has(l.id) && !l.locked) Object.assign(l.style, patch); });
+    },
+    updateSelectedShapeStyle: (patch) => {
+      const ids = new Set(get().selectedLayerIds);
+      get().updateSpec((spec) => { for (const l of spec.layers) if (l.type === 'shape' && ids.has(l.id) && !l.locked) { Object.assign(l, patch); l.image_url = null; l.image_size = null; } });
+    },
+    setDrawingShape: (drawingShape) => set({ drawingShape }),
     focusLayer: (layer) => {
       const next = stepForLayer(layer);
       if (next !== get().step) get().setStep(next);
-      set((s) => ({ selectedLayerId: layer.id, selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
+      set((s) => ({ selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
     },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
     setTime: (time) => set({ time }),
@@ -1183,7 +1278,7 @@ export const useEditor = create<EditorState>((set, get) => {
         h.future = [];
         history[videoId] = h;
       }
-      set({ specs: { ...s.specs, [videoId]: next }, history, selectedLayerId: videoId === s.currentVideoId ? null : s.selectedLayerId });
+      set({ specs: { ...s.specs, [videoId]: next }, history, selectedLayerId: videoId === s.currentVideoId ? null : s.selectedLayerId, selectedLayerIds: videoId === s.currentVideoId ? [] : s.selectedLayerIds });
       scheduleSave(videoId);
     },
     pushHistorySnapshot: (snapshot, videoId) => {
@@ -1205,7 +1300,7 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!h.past.length) return;
       const prev = h.past[h.past.length - 1];
       const nh: History = { past: h.past.slice(0, -1), future: [s.specs[videoId], ...h.future].slice(0, HISTORY_CAP) };
-      set({ specs: { ...s.specs, [videoId]: prev }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null });
+      set({ specs: { ...s.specs, [videoId]: prev }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null, selectedLayerIds: [] });
       scheduleSave(videoId);
     },
     redo: () => {
@@ -1216,7 +1311,7 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!h.future.length) return;
       const next = h.future[0];
       const nh: History = { past: [...h.past, s.specs[videoId]].slice(-HISTORY_CAP), future: h.future.slice(1) };
-      set({ specs: { ...s.specs, [videoId]: next }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null });
+      set({ specs: { ...s.specs, [videoId]: next }, history: { ...s.history, [videoId]: nh }, selectedLayerId: null, selectedLayerIds: [] });
       scheduleSave(videoId);
     },
     canUndo: () => {
@@ -1538,7 +1633,7 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((s) => {
         warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, newLayerId, newTrackId });
       });
-      set({ selectedLayerId: null, selectedTrackId: null });
+      set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
       get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
       return true;
     },
@@ -1705,14 +1800,14 @@ export const useEditor = create<EditorState>((set, get) => {
         const at = opts?.belowType ? insertIndexBelow(spec.layers, opts.belowType) : spec.layers.length;
         spec.layers.splice(at, 0, layer);
       });
-      set({ selectedLayerId: layer.id });
+      set({ selectedLayerId: layer.id, selectedLayerIds: [layer.id] });
     },
     addLayers: (layers) => {
       if (!layers.length) return;
       get().updateSpec((spec) => {
         spec.layers.push(...layers);
       });
-      set({ selectedLayerId: layers[0].id });
+      set({ selectedLayerId: layers[0].id, selectedLayerIds: layers.map((l) => l.id) });
     },
     updateLayer: (id, patch, history = true) => {
       get().updateSpec(
@@ -1721,6 +1816,10 @@ export const useEditor = create<EditorState>((set, get) => {
           if (!l) return;
           if (typeof patch === 'function') patch(l);
           else Object.assign(l, patch);
+          if (l.type === 'shape' && !(typeof patch === 'object' && 'image_url' in patch)) {
+            l.image_url = null;
+            l.image_size = null;
+          }
         },
         { history },
       );
@@ -1731,7 +1830,7 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => {
         spec.layers = spec.layers.filter((l) => l.id !== id);
       });
-      if (get().selectedLayerId === id) set({ selectedLayerId: null });
+      if (get().selectedLayerIds.includes(id)) set((s) => ({ selectedLayerIds: s.selectedLayerIds.filter((x) => x !== id), selectedLayerId: s.selectedLayerId === id ? null : s.selectedLayerId }));
       get().syncPosterDuration(); // 删掉的可能是滚动文案（HIG-50）
     },
     moveLayer: (id, dir) => {
@@ -1765,7 +1864,7 @@ export const useEditor = create<EditorState>((set, get) => {
         const i = spec.layers.findIndex((l) => l.id === id);
         spec.layers.splice(i + 1, 0, copy);
       });
-      set({ selectedLayerId: copy.id });
+      set({ selectedLayerId: copy.id, selectedLayerIds: [copy.id] });
     },
     setReplacingLayer: (id) => set({ replacingLayerId: id }),
     replaceLayerAsset: (layerId, assetId) => {
@@ -1785,13 +1884,14 @@ export const useEditor = create<EditorState>((set, get) => {
         // 换成静态图后播放方式没有意义，但留着不发也无害；换成视频时缺省补 loop
         if (isVideoAsset(asset) && sticker.playback === undefined) sticker.playback = 'loop';
       });
-      set({ replacingLayerId: null, selectedLayerId: layerId, toast: `已替换为「${asset.name}」` });
+      set({ replacingLayerId: null, selectedLayerId: layerId, selectedLayerIds: [layerId], toast: `已替换为「${asset.name}」` });
     },
     copyLayer: () => {
-      const id = get().selectedLayerId;
-      const src = get().currentSpec()?.layers.find((l) => l.id === id);
-      if (!src) return;
-      set({ layerClipboard: cloneSpec({ ...emptySpec(), layers: [src] }).layers, layerClipboardVideoId: get().currentVideoId, toast: '已复制图层', toastAction: null });
+      const ids = new Set(get().selectedLayerIds);
+      if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);
+      const layers = get().currentSpec()?.layers.filter((l) => ids.has(l.id)) ?? [];
+      if (!layers.length) return;
+      set({ layerClipboard: cloneSpec({ ...emptySpec(), layers }).layers, layerClipboardVideoId: get().currentVideoId, toast: `已复制 ${layers.length} 个图层`, toastAction: null });
     },
     pasteLayer: () => {
       const clip = get().layerClipboard;
@@ -1800,7 +1900,7 @@ export const useEditor = create<EditorState>((set, get) => {
       // 文本 / 贴纸各管各的（字幕管文字 + 遮盖）：粘进来的图层要能在当前模块里选中和编辑
       const want = layerTypesForStep(get().step);
       const stray = clip.find((l) => !want.includes(l.type));
-      if (want.length && stray) {
+      if (want.length && stray && clip.length === 1) {
         const home = LAYER_HOME[stray.type];
         set({ toast: `剪贴板里是${home.kind}图层，切到「${home.step}」再粘贴`, toastAction: null });
         return;
@@ -1822,7 +1922,7 @@ export const useEditor = create<EditorState>((set, get) => {
       });
       // 同一视频里连续粘贴时继续错开：剪贴板里的坐标随之更新
       if (sameVideo) set({ layerClipboard: cloneSpec({ ...emptySpec(), layers: pasted }).layers });
-      set({ selectedLayerId: pasted[pasted.length - 1].id });
+      set({ selectedLayerId: pasted[pasted.length - 1].id, selectedLayerIds: pasted.map((l) => l.id) });
     },
     copyStyle: () => {
       const id = get().selectedLayerId;
@@ -2009,6 +2109,7 @@ export const useEditor = create<EditorState>((set, get) => {
           for (let i = 0; i < spec.layers.length; i++) {
             const l = spec.layers[i];
             if (l.type === 'text') spec.layers[i] = await bakeTextLayer(l as TextLayer);
+            if (l.type === 'shape') spec.layers[i] = await bakeShapeLayer(l);
           }
           // 各画幅上文字的实际像素宽和基准 PNG 差得多时，按该画幅重新渲染一张（HIG-29）；要在基准烤完、宽度定下来之后算
           for (let i = 0; i < spec.layers.length; i++) {
@@ -2061,7 +2162,7 @@ export const useEditor = create<EditorState>((set, get) => {
         const wanted = new Set(items.map((it) => `${it.video_id}|${it.lang ?? ''}`));
         let jobs: Job[];
         try {
-          jobs = await api.render(items, opts?.name, variantKeys);
+          jobs = await api.render(items, opts?.name, variantKeys, opts?.outputFormat);
           if (skippedText) set({ toast: `已提交 ${jobs.length} 个任务${skippedText}` });
         } catch (e) {
           if (e instanceof ApiError && e.status === 409) {

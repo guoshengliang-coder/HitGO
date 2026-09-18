@@ -5,7 +5,7 @@
 ## 0. 约定
 
 - 所有 API 挂在 `/api` 前缀下，JSON 请求 / 响应，时间用 ISO 8601 字符串。
-- 媒体文件（源片、代理、雪碧图、素材、成片、文字 PNG）通过 `/media/...` 路径访问，由后端静态服务；返回给前端的 `*_url` 字段都是以 `/media/` 开头的站内相对路径。**唯一例外**：`source = "library"` 的素材（将来对接正式物料库时才出现）其 `url` 可以是外部 `https://` 绝对地址，前端一律当不透明 URL 直接用；见 `docs/ASSETS.md`。`/media` 静态文件支持 `Range`（206）、不带 `Content-Disposition`，成片 `output_url` 可直接交给 `<video>` 播放（产物页「播放」，HIG-52）；下载文件名由前端 `<a download>` 决定。
+- 媒体文件（源片、代理、雪碧图、素材、成片、文字 PNG）通过 `/media/...` 路径访问，由后端静态服务；返回给前端的 `*_url` 字段都是以 `/media/` 开头的站内相对路径。**唯一例外**：`source = "library"` 的素材（将来对接正式物料库时才出现）其 `url` 可以是外部 `https://` 绝对地址，前端一律当不透明 URL 直接用；见 `docs/ASSETS.md`。`/media` 静态文件支持 `Range`（206）、不带 `Content-Disposition`；视频成片 `output_url` 交给 `<video>` 播放，图片成片交给 `<img>` 显示（HIG-64）；下载文件名由前端 `<a download>` 决定。
 - 所有几何量用**相对比例**（0–1），相对于所在画布的宽或高；时间用秒（float）。
 - ID 用短随机字符串（例如 `nanoid` 12 位），前后端都当不透明字符串处理。
 - 错误统一返回 `{ "detail": "人类可读的中文说明", "code"?: "稳定的机器可读错误码" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。批次源片上传链路的错误带 `code`；浏览器或 CDN 返回的无 JSON 错误由前端按 HTTP 状态映射成本地错误码并展示，便于报障时定位。后续新增错误按同一约定给出稳定的 `code`。
@@ -36,6 +36,7 @@
   "status": "ready",              // preparing | ready | failed（预处理状态）
   "error": null,
   "kind": "video",                // 可选，缺省 "video"（HIG-50）：素材来源 video（上传的视频）| image（上传的图片）| blank（空白素材）
+  "original_ext": "mp4",         // 可选；上传时记录 mp4 | mov | png | jpg，旧记录和空白素材为 null
   "width": 1080, "height": 1920, "duration": 24.6, "fps": 30, "has_audio": true,
   "source_url": "/media/batches/b_x1y2z3/v_a1b2c3/source.mp4",
   "proxy_url":  "/media/batches/b_x1y2z3/v_a1b2c3/proxy.mp4",
@@ -202,10 +203,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "batch_id": "b_x1y2z3",
   "video_id": "v_a1b2c3",
   "variant_key": "9x16",
+  "output_format": "mp4",       // mp4 | mov | png | jpg；source 在创建任务时解析
   "status": "running",            // queued | running | done | failed
   "progress": 62,                 // 0–100
   "error": null,
-  "output_url": null,             // done 时为 /media/outputs/j_r1s2t3.mp4
+  "output_url": null,             // done 时为 /media/outputs/j_r1s2t3.{output_format}
   "output": null,                 // done 时：{ "width", "height", "duration", "size", "codec": "h264/aac", "audio"? }（audio 见下）
   "callback": null,               // done 时：第 4 节的回传 JSON（原型只展示，不真正发送）
   "created_at": "...", "started_at": null, "finished_at": null,
@@ -368,6 +370,20 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "anchor": "bottom-center", "margin": [0, 0.10],
       "width": 1.0, "height": 0.12,          // height 相对画布高（遮盖没有素材宽高比）
       "rotate": 0, "opacity": 1, "t": [0, 6]
+    },
+    {
+      "id": "l_4",
+      "type": "shape",                       // HIG-65：可编辑图形；属性是源数据，导出前重新烤制透明 PNG
+      "shape": "rect",                      // rect | ellipse | triangle | line | arrow | star
+      "fill": "#E3312B", "stroke": "#FFFFFF",
+      "stroke_width": 0.004,               // 相对画布高；line / arrow 只用 stroke
+      "radius": 0.02,                     // 相对图形短边，只有 rect 使用
+      "flip_x": false, "flip_y": false,    // 可选；直线 / 箭头绘制方向
+      "height": 0.12,                     // 相对画布高；与 width 一起决定图形几何
+      "image_url": "/media/uploads/u_shape.png", // 导出时前端按图形参数生成的透明 PNG
+      "image_size": [540, 230],
+      "anchor": "center", "margin": [0, 0],
+      "width": 0.3, "rotate": 0, "opacity": 1, "t": [0, 6]
     }
   ],
   "outputs": [
@@ -696,7 +712,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   （日期、数字 + 单位、金额、百分比），只给测试 / 演示。
 
 ### 渲染
-- `POST /api/render` `{ video_ids?: [], items?: [{ video_id, lang?: string | null, edit_spec?: EditSpec }], name?: string, variant_keys?: string[] }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。每个视频按其 spec 的 `outputs` 生成任务；`variant_keys`（HIG-29，可选，非空）只为这些输出建任务，某个视频的 spec 里没有其中某个 key 时整单 400，缺省 = 全部输出。已有 queued / running 任务的同一 video + variant + lang 不重复建（409 列出冲突，只检查本次要建的 key）。
+- `POST /api/render` `{ video_ids?: [], items?: [{ video_id, lang?: string | null, edit_spec?: EditSpec }], name?: string, variant_keys?: string[], output_format?: "source" | "mp4" | "mov" | "png" | "jpg" }` → `Job[]`。`name` 可选，去掉前后空白后最多 120 字符（超出 400），空串视为没填；写到本次建出的每个任务的 `name`。HIG-64：缺省 `output_format = "mp4"` 保持旧客户端行为；编辑器导出弹窗缺省发送 `source`，逐条视频根据上传时保存的 `original_ext` 解析（jpg/jpeg 归一为 jpg），批次混合来源可得到不同格式。旧记录缺少该字段时，视频回退源扩展名、图片回退当前名称扩展名。图片格式从已应用图层和画幅的成片首帧生成单张文件，MOV 使用 H.264/AAC 容器编码。每个视频按其 spec 的 `outputs` 生成任务；`variant_keys`（HIG-29，可选，非空）只为这些输出建任务，某个视频的 spec 里没有其中某个 key 时整单 400，缺省 = 全部输出。已有 queued / running 任务的同一 video + variant + lang 不重复建（409 列出冲突，只检查本次要建的 key）。
   - `video_ids` 与 `items`（HIG-43，多语言批量导出）**二选一**，恰好填一个且非空，否则 400。`video_ids: [a]` 等价于 `items: [{ video_id: a }]`。
   - `items[].lang`：这份成片的语言（改语言的语言代码，如 `ko`），写到任务的 `lang`；null / 缺省 = 原版或没套用语言。必须是改语言支持的语言代码（`GET /api/localize/options` 里出现过的），否则 400。同一 `video_id + lang` 在一次请求里重复出现只取第一个。
   - `items[].edit_spec`：带了就按它校验（同 `PUT /spec`）并**存为任务快照**，worker 渲染、重试和回传 JSON 都用这份快照，不读也不改视频上的 `edit_spec`；没带就和原来一样，worker 执行时读视频当前的 spec。前端导出多个语言时，每个语言各带一份套用好的 spec，编辑器里的 spec 不动。
@@ -764,7 +780,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 /data/assets/{asset_id}.preview.{webm|mp4}    视频贴纸：浏览器可播的预览代理
 /data/assets/{asset_id}.m4a                   分离出来的人声 / 伴奏、改语言配音（aac 192k，source = derived）
 /data/uploads/{upload_id}.png
-/data/outputs/{job_id}.mp4
+/data/outputs/{job_id}.{mp4|mov|png|jpg}
 /data/tmp/                                    worker 临时文件
 /data/tmp/{video_id}.loc/                     改语言运行中的临时目录（16 kHz wav、逐句配音片段），结束即删
 /data/tmp/{asset_id}.tts/                     朗读合成中的临时目录（分段 wav），结束即删

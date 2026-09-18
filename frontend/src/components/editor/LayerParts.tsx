@@ -262,7 +262,7 @@ function PlacementSection({ layer }: { layer: Layer }) {
             </button>
           )}
         </div>
-        {layer.type === 'mask' ? (
+        {layer.type === 'mask' || layer.type === 'shape' ? (
           <Num label="高度" value={layer.height} min={0.01} max={1} onChange={(v) => updateLayer(layer.id, { height: v })} title="相对画布高" />
         ) : (
           <Num label="旋转" value={layer.rotate} scale={1} step={1} min={-360} max={360} suffix="°" onChange={(v) => updateLayer(layer.id, { rotate: v })} />
@@ -451,7 +451,8 @@ export function TextSections({ layer, sel, poster = false }: { layer: TextLayer;
   const otherBuiltins = BUILTIN_WEB_FONTS.filter((f) => f.family !== BUILTIN_FONT_FAMILY && f.family.toLowerCase().includes(fontQuery.trim().toLowerCase()));
   const st = layer.style;
   const d = defaultTextStyle();
-  const patchStyle = (patch: Partial<TextStyle>) => updateLayer(layer.id, (l) => { if (l.type === 'text') Object.assign(l.style, patch); });
+  const updateSelectedTextStyle = useEditor((s) => s.updateSelectedTextStyle);
+  const patchStyle = (patch: Partial<TextStyle>) => updateSelectedTextStyle(patch);
   const [spanColor, setSpanColorState] = useState('#E3312B');
   const patchSpans = (fn: (spans: TextSpan[], textLength: number) => TextSpan[]) =>
     updateLayer(layer.id, (l) => {
@@ -757,7 +758,7 @@ function LayerNameCell({ layer, editing, onEdit, onDone }: { layer: Layer; editi
 
 // ---------------------------------------------------------------- 同类图层列表
 
-const LIST_TITLES: Record<LayerType, string> = { text: '文字图层', sticker: '贴纸图层', mask: '遮盖图层' };
+const LIST_TITLES: Record<LayerType, string> = { text: '文字图层', sticker: '贴纸图层', mask: '遮盖图层', shape: '图形图层' };
 const layerIcon = (type: LayerType) => (type === 'text' ? <IconText /> : type === 'mask' ? <IconMask /> : <IconSticker />);
 
 /** 属性头部第二行：图层类型 + 一项最有辨识度的信息（字数 / 素材尺寸 / 遮盖方式）。 */
@@ -767,6 +768,7 @@ function layerSubtitle(layer: Layer, assets: Asset[]): string {
     return `文字图层 · ${n} 字`;
   }
   if (layer.type === 'mask') return `遮盖图层 · ${MASK_MODE_LABEL[layer.mode]}`;
+  if (layer.type === 'shape') return `图形图层 · ${layer.shape}`;
   const a = assets.find((x) => x.id === layer.asset_id);
   const dims = a?.width && a?.height ? ` · ${a.width}×${a.height}` : '';
   return `${isVideoAsset(a) ? '视频贴纸' : '贴纸图层'}${dims}`;

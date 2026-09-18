@@ -50,6 +50,30 @@ describe('focusLayer（HIG-72）', () => {
   });
 });
 
+describe('多图层框选操作（HIG-63）', () => {
+  it('追加和排除后，批量移动与删除各只记一次撤销', () => {
+    const s = useEditor.getState();
+    const first = textLayer('第一条');
+    const second = { ...textLayer('第二条'), id: 'L2', t: [2, 4] as [number, number] };
+    s.replaceSpec('v1', { ...emptySpec(), layers: [{ ...first, t: [1, 3] }, second] });
+    s.selectLayers(['L1']);
+    s.selectLayers(['L2'], 'add');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L1', 'L2']);
+    s.selectLayers(['L1'], 'subtract');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L2']);
+    s.selectLayers(['L1'], 'add');
+    useEditor.getState().shiftSelectedLayers(1);
+    expect(useEditor.getState().currentSpec()?.layers.map((l) => l.t)).toEqual([[2, 4], [3, 5]]);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.layers.map((l) => l.t)).toEqual([[1, 3], [2, 4]]);
+    useEditor.getState().selectLayers(['L1', 'L2']);
+    useEditor.getState().removeSelectedLayers();
+    expect(useEditor.getState().currentSpec()?.layers).toEqual([]);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.layers).toHaveLength(2);
+  });
+});
+
 describe('pushHistorySnapshot', () => {
   it('HIG-39 合成后 I/O、删左/右、拖动删除区间与撤销都使用完整合成时长', () => {
     const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: '1', video_id: 'v1', in: 0, out: 10 }, { id: '2', video_id: 'v2', in: 0, out: 20 }] } };

@@ -4,7 +4,7 @@
     {DATA_DIR}/batches/{batch_id}/{video_id}/source.mp4 | proxy.mp4 | poster.jpg | sprite.jpg | still.{jpg|png}
     {DATA_DIR}/assets/{asset_id}.{ext} | {asset_id}.poster.jpg | {asset_id}.preview.{webm|mp4}
     {DATA_DIR}/uploads/{upload_id}.png
-    {DATA_DIR}/outputs/{job_id}.mp4
+    {DATA_DIR}/outputs/{job_id}.{mp4|mov|png|jpg}
     {DATA_DIR}/tmp/                          ({video_id}.loc/ while a localization runs)
     {DATA_DIR}/voice-samples/{video_id}.{m4a|wav}   voice-cloning sample (HIG-58)
 """
@@ -92,16 +92,16 @@ def upload_path(upload_id: str) -> Path:
     return data_dir() / "uploads" / f"{upload_id}.png"
 
 
-def output_path(job_id: str) -> Path:
-    return data_dir() / "outputs" / f"{job_id}.mp4"
+def output_path(job_id: str, output_format: str = "mp4") -> Path:
+    return data_dir() / "outputs" / f"{job_id}.{output_format}"
 
 
 def tmp_dir() -> Path:
     return data_dir() / "tmp"
 
 
-def tmp_output_path(job_id: str) -> Path:
-    return tmp_dir() / f"{job_id}.mp4"
+def tmp_output_path(job_id: str, output_format: str = "mp4") -> Path:
+    return tmp_dir() / f"{job_id}.{output_format}"
 
 
 def voice_sample_path(video_id: str, ext: str) -> Path:

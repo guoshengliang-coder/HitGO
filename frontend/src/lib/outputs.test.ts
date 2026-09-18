@@ -101,6 +101,10 @@ describe('sortByFinishedDesc', () => {
 });
 
 describe('outputFileName', () => {
+  it('uses the actual output extension and removes an image source extension', () => {
+    const j = { ...job('j_png', 'v_1', '9x16', null), output_format: 'png' as const, name: '图片', video_name: '封面.jpeg' };
+    expect(outputFileName(j)).toBe('图片_封面_9x16.png');
+  });
   it('uses the export name, the video name without extension and the variant', () => {
     const j = { ...job('j_1', 'v_1', '9x16', null), name: '九月投放 A', batch_name: '批次', video_name: 'V01 开场.mp4' };
     expect(outputFileName(j)).toBe('九月投放 A_V01 开场_9x16.mp4');

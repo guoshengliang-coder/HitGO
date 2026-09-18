@@ -515,6 +515,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
    滚动条，时间线会在 26 / 27 px/s 之间抖个不停。 */
 .tl-scroll { flex: 1; overflow: auto; scrollbar-gutter: stable; position: relative; overscroll-behavior-x: contain; }
 .tl-scroll.scrubbing { cursor: ew-resize; user-select: none; }
+.tl-marquee { position: absolute; z-index: 20; pointer-events: none; border: 1px solid var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .tl-inner { position: relative; min-width: 100%; }
 /* overflow: hidden —— 最后一个刻度的数字（"30"）画在轨道末端之外，会把滚动宽度撑出十几像素，引出横向滚动条 */
 .tl-ruler { height: 20px; position: relative; overflow: hidden; border-bottom: 1px solid var(--line-soft); background: var(--s1); cursor: pointer; touch-action: none; }

@@ -40,6 +40,8 @@ export interface Video {
   order: number;
   /** 可选，缺省 'video'（HIG-50）；旧后端不返回。 */
   kind?: VideoKind;
+  /** HIG-64：上传时的真实扩展名，改视频显示名后仍保留。 */
+  original_ext?: string | null;
   status: VideoStatus;
   error: string | null;
   width: number;
@@ -335,6 +337,8 @@ export interface Job {
   batch_id: string;
   video_id: string;
   variant_key: string;
+  /** HIG-64；旧任务缺省 mp4。 */
+  output_format?: 'mp4' | 'mov' | 'png' | 'jpg';
   status: JobStatus;
   progress: number;
   error: string | null;
@@ -440,6 +444,21 @@ export interface StickerLayer extends LayerBase {
    * playback 在裁剪**之后**生效：loop 循环的是裁出来的这一段，不是整个素材（契约 §2）。
    */
   source_out?: number;
+}
+
+/** HIG-65：属性保留为可编辑源数据；导出前按属性重新生成透明 PNG。 */
+export interface ShapeLayer extends LayerBase {
+  type: 'shape';
+  shape: 'rect' | 'ellipse' | 'triangle' | 'line' | 'arrow' | 'star';
+  height: number;
+  fill: string;
+  stroke: string;
+  stroke_width: number;
+  radius: number;
+  flip_x?: boolean;
+  flip_y?: boolean;
+  image_url?: string | null;
+  image_size?: [number, number] | null;
 }
 
 /** 上传票据端点：大文件绕开 CDN 的上传子域名；未配置时全是 null。 */
@@ -641,7 +660,7 @@ export interface MaskLayer extends LayerBase {
   color?: string;
 }
 
-export type Layer = StickerLayer | TextLayer | MaskLayer;
+export type Layer = StickerLayer | TextLayer | MaskLayer | ShapeLayer;
 
 export type AspectKey = '9:16' | '1:1' | '4:5' | '16:9';
 export type OutputAspectKey = AspectKey | 'custom';

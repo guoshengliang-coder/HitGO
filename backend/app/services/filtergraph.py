@@ -37,6 +37,7 @@ from app.schemas import (
     EditSpec,
     MaskLayer,
     OutputVariant,
+    ShapeLayer,
     StickerLayer,
     TextLayer,
 )
@@ -324,7 +325,7 @@ def mask_layer_box(
 
 def image_layer_box(
     spec: EditSpec,
-    layer: StickerLayer | TextLayer,
+    layer: StickerLayer | TextLayer | ShapeLayer,
     variant: OutputVariant,
     fmap: FitMap | None,
     image_w: int,
@@ -1188,7 +1189,7 @@ def _cursor_color(layer: TextLayer) -> str:
 
 
 def _resolve_layer_image(
-    layer: StickerLayer | TextLayer,
+    layer: StickerLayer | TextLayer | ShapeLayer,
     assets: Mapping[str, ImageSource],
     resolve_image_url: Callable[[str], ImageSource | None] | None,
     warnings: list[str],
@@ -1199,6 +1200,16 @@ def _resolve_layer_image(
         if image is None:
             warnings.append(f"图层 {layer.id}：贴纸素材 {layer.asset_id} 不存在，已跳过")
         return image
+
+    if isinstance(layer, ShapeLayer):
+        if not layer.image_url:
+            warnings.append(f"图层 {layer.id}：图形图层没有 image_url，已跳过")
+            return None
+        image = resolve_image_url(layer.image_url) if resolve_image_url else None
+        if image is None:
+            warnings.append(f"图层 {layer.id}：图形 PNG 不存在，已跳过")
+            return None
+        return ImageSource(image.path, *(layer.image_size or (image.width, image.height)))
 
     # text layer: the worker only consumes the pre-rendered PNG. A PNG re-rendered for this output
     # (variant_images, HIG-29) wins; if it cannot be found, quietly use the base one.

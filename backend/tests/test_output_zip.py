@@ -46,6 +46,18 @@ def test_zip_contains_outputs_named_like_the_single_download(client, ready_video
     assert all(i.compress_type == zipfile.ZIP_STORED for i in zf.infolist())
 
 
+def test_zip_uses_each_outputs_actual_format(client, ready_video, db):
+    add_done(db, "j_image", content=None, output_format="png")
+    path = storage.output_path("j_image", "png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"PNG")
+    r = post_zip(client, ["j_image"])
+    assert r.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.namelist() == ["测试批次_V01_9x16.png"]
+    assert zf.read(zf.namelist()[0]) == b"PNG"
+
+
 def test_zip_skips_unfinished_unknown_and_missing_files(client, ready_video, db):
     add_done(db, "j_ok", "9x16", b"ok")
     add_done(db, "j_gone", "1x1", content=None)  # done row whose file was deleted

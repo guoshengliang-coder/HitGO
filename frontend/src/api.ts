@@ -364,11 +364,12 @@ export const api = {
    * name：本次导出的名称，写到每个任务上（可选，HIG-27）。
    * 传 RenderItem[]（HIG-43）时每项带语言，可带自己的 spec 快照：同一视频的多个语言一次提交。
    */
-  render: (targets: string[] | RenderItem[], name?: string, variant_keys?: string[]) =>
+  render: (targets: string[] | RenderItem[], name?: string, variant_keys?: string[], output_format?: 'source' | 'mp4' | 'mov' | 'png' | 'jpg') =>
     request<Job[]>('POST', '/api/render', {
       ...(targets.length && typeof targets[0] === 'object' ? { items: targets } : { video_ids: targets }),
       ...(name?.trim() ? { name: name.trim() } : {}),
       ...(variant_keys?.length ? { variant_keys } : {}),
+      ...(output_format ? { output_format } : {}),
     }),
   getJob: (id: string) => request<Job>('GET', `/api/jobs/${id}`),
   retryJob: (id: string) => request<Job>('POST', `/api/jobs/${id}/retry`),

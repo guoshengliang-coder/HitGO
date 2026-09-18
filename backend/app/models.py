@@ -90,6 +90,8 @@ class Video(Base):
     has_audio: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     codec: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_ext: Mapped[str] = mapped_column(String(8), default="mp4", nullable=False)
+    # Original uploaded extension, independent of later display-name edits (HIG-64).
+    original_ext: Mapped[str | None] = mapped_column(String(8), nullable=True)
     # Where the source came from (contract §1): "video" = uploaded clip, "image" = a still
     # (still.<ext> next to it) turned into a 5 s clip, "blank" = a solid-colour clip generated
     # from ``blank_params`` ({color, duration, aspect}). Downstream code only ever sees source.mp4.
@@ -155,6 +157,8 @@ class Job(Base):
     name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # Language of this output (HIG-43): a localize language code, None = original / none applied.
     lang: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Resolved output container / image type (HIG-64). Old jobs default to mp4.
+    output_format: Mapped[str] = mapped_column(String(8), default="mp4", nullable=False)
     # Spec snapshot sent with the render call (HIG-43); None = read video.edit_spec when the job runs.
     edit_spec: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default=JOB_QUEUED, nullable=False, index=True)

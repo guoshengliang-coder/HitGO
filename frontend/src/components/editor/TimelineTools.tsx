@@ -22,6 +22,18 @@ export function TimelineTools() {
   const selectedRange = useEditor((s) => s.selectedRangeIndex);
   const deleteRange = useEditor((s) => s.deleteRemoveRange);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
+  const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
+  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
+  const setMarqueeEnabled = useEditor((s) => s.setMarqueeEnabled);
+  const selectAllLayers = useEditor((s) => s.selectAllLayers);
+  const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
+  const removeSelectedLayers = useEditor((s) => s.removeSelectedLayers);
+  const duplicateSelectedLayers = useEditor((s) => s.duplicateSelectedLayers);
+  const updateSelectedOpacity = useEditor((s) => s.updateSelectedOpacity);
+  const selectedOpacity = useEditor((s) => {
+    const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : null;
+    return l?.opacity ?? 1;
+  });
   const removeLayer = useEditor((s) => s.removeLayer);
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const removeTrack = useEditor((s) => s.removeAudioTrack);
@@ -32,9 +44,10 @@ export function TimelineTools() {
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
 
-  const canDelete = step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId;
+  const canDelete = selectedLayerIds.length > 1 || (step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId);
   const onDelete = () => {
-    if (step === 'trim') {
+    if (selectedLayerIds.length > 1) removeSelectedLayers();
+    else if (step === 'trim') {
       if (selectedRange !== null) deleteRange(selectedRange);
     } else if (step === 'audio') {
       if (onSource) {
@@ -46,6 +59,13 @@ export function TimelineTools() {
 
   return (
     <div className="tl-tools">
+      <button className={`btn ${marqueeEnabled ? 'on' : ''}`} aria-pressed={marqueeEnabled} title="在时间轴拖出选择框；Shift 追加，Alt/Ctrl 排除" onClick={() => setMarqueeEnabled(!marqueeEnabled)}>框选</button>
+      <button className="btn" onClick={selectAllLayers} title="选中当前视频所有可见且未锁定的视觉图层">全选图层</button>
+      <button className="btn" onClick={() => setSelectedLayer(null)} disabled={!selectedLayerIds.length}>取消选择</button>
+      {selectedLayerIds.length > 1 && <>
+        <button className="btn" onClick={duplicateSelectedLayers}>复制 {selectedLayerIds.length}</button>
+        <label title="批量修改透明度" style={{ display: 'flex', alignItems: 'center', gap: 3 }}>透明度 <input type="range" min="0" max="1" step="0.05" value={selectedOpacity} onChange={(e) => updateSelectedOpacity(Number(e.target.value))} style={{ width: 64 }} /></label>
+      </>}
       {step === 'trim' && (
         <>
           <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} title={hintFor('in')}>

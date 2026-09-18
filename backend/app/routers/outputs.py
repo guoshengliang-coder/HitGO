@@ -116,7 +116,7 @@ def download_outputs_zip(
     if len(ids) > MAX_ZIP_JOBS:
         raise HTTPException(400, f"一次最多打包 {MAX_ZIP_JOBS} 个产物")
     jobs = {j.id: j for j in db.scalars(select(Job).where(Job.id.in_(ids), Job.status == JOB_DONE)).all()}
-    rows = [jobs[i] for i in ids if i in jobs and storage.output_path(i).is_file()]
+    rows = [jobs[i] for i in ids if i in jobs and storage.output_path(i, jobs[i].output_format).is_file()]
     if not rows:
         raise HTTPException(400, "所选产物都已不存在或还没完成，无法下载")
     batch_names = dict(db.execute(select(Batch.id, Batch.name).where(Batch.id.in_({j.batch_id for j in rows}))).all())
@@ -124,13 +124,13 @@ def download_outputs_zip(
     names = dedupe_names(
         [
             output_file_name(
-                j.id, j.variant_key, j.name, batch_names.get(j.batch_id), video_names.get(j.video_id), lang_label(j.lang)
+                j.id, j.variant_key, j.name, batch_names.get(j.batch_id), video_names.get(j.video_id), lang_label(j.lang), j.output_format
             )
             for j in rows
         ]
     )
     entries = [
-        ZipEntry(name=n, path=storage.output_path(j.id), modified=j.finished_at) for n, j in zip(names, rows, strict=True)
+        ZipEntry(name=n, path=storage.output_path(j.id, j.output_format), modified=j.finished_at) for n, j in zip(names, rows, strict=True)
     ]
     only_batch = {j.batch_id for j in rows}
     label = batch_names.get(next(iter(only_batch))) if len(only_batch) == 1 else None
