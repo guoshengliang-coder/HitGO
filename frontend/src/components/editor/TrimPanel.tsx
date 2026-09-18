@@ -1,8 +1,6 @@
-// 剪辑模块右侧面板。HIG-17 做了功能分层：高频的剪辑操作常驻在最上面，
-// 已删除区间 / 封面 / 成片画面 / 时长各自成一个可折叠分组，收起时标题行留一句摘要；
-// 原先常驻在面板底部的那大段说明按语义拆进各分组标题旁的「?」里。
+// 剪辑模块右侧分为「剪辑 / 视频拼接」；只切换检查器内容，不影响播放器和底部轨道。
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, selectSourceDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
@@ -278,15 +276,39 @@ function DurationSection() {
   );
 }
 
-/** 剪辑面板只放"看"的东西：区间列表、封面、成片画面、时长。剪的动作（入出点 / 删左右 / 删除）都在画布下方的工具条里（§8.1 A2）。 */
+const TRIM_TABS = [{ key: 'edit', label: '剪辑' }, { key: 'sequence', label: '视频拼接' }] as const;
+
+/** Tab 只控制右侧可见性；保留面板挂载，避免丢失输入草稿、展开状态和滚动位置。 */
 export function TrimPanel() {
+  const [tab, setTab] = useState<typeof TRIM_TABS[number]['key']>('edit');
+  const id = useId();
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const inPoint = useEditor((s) => s.inPoint);
   const setInPoint = useEditor((s) => s.setInPoint);
 
   return (
     <div className="panel">
-      <div className="panel-head">剪辑</div>
-      <div className="panel-body inspector">
+      <div className="tabs" role="tablist" aria-label="剪辑操作区" style={{ padding: '0 8px' }}>
+        {TRIM_TABS.map((item, index) => (
+          <button
+            key={item.key} ref={(node) => { tabRefs.current[index] = node; }} type="button"
+            id={`${id}-${item.key}-tab`} role="tab" aria-selected={tab === item.key}
+            aria-controls={`${id}-${item.key}-panel`} tabIndex={tab === item.key ? 0 : -1}
+            className={`tab ${tab === item.key ? 'active' : ''}`} onClick={() => setTab(item.key)}
+            onKeyDown={(e) => {
+              const next = e.key === 'Home' ? 0 : e.key === 'End' ? TRIM_TABS.length - 1
+                : e.key === 'ArrowRight' ? (index + 1) % TRIM_TABS.length
+                : e.key === 'ArrowLeft' ? (index + TRIM_TABS.length - 1) % TRIM_TABS.length : null;
+              if (next === null) return;
+              e.preventDefault();
+              e.stopPropagation(); // 不把页签方向键传给编辑器的逐帧/切点快捷键。
+              setTab(TRIM_TABS[next].key);
+              tabRefs.current[next]?.focus();
+            }}
+          >{item.label}</button>
+        ))}
+      </div>
+      <div id={`${id}-edit-panel`} role="tabpanel" aria-labelledby={`${id}-edit-tab`} hidden={tab !== 'edit'} className="panel-body inspector">
         {inPoint !== null && (
           <div className="hint">
             入点已设在 <span className="mono">{formatTime(inPoint)}</span>（源时间），移动播放头后按 O 设出点。
@@ -296,11 +318,14 @@ export function TrimPanel() {
           </div>
         )}
 
-        <SequenceSection />
         <RangesSection />
-        <CoverSection />
         <FrameSection />
         <DurationSection />
+      </div>
+      <div id={`${id}-sequence-panel`} role="tabpanel" aria-labelledby={`${id}-sequence-tab`} hidden={tab !== 'sequence'} className="panel-body inspector">
+        <div className="hint">添加封面和视频片段，组合成一条视频。下方时间轴仍使用原有剪辑工具。</div>
+        <SequenceSection />
+        <CoverSection />
       </div>
     </div>
   );
