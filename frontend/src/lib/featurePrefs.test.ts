@@ -17,10 +17,19 @@ describe('featurePrefs', () => {
   it('按项合并保存', () => {
     const s = memStorage();
     saveFeaturePrefs({ posterPunct: 'drop-all' }, s);
-    const merged = { autoApplyDub: false, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'drop-all' };
+    const merged = { ...FEATURE_DEFAULTS, autoApplyDub: false, posterPunct: 'drop-all' };
     expect(saveFeaturePrefs({ autoApplyDub: false }, s)).toEqual(merged);
     expect(loadFeaturePrefs(s)).toEqual(merged);
     expect(saveFeaturePrefs({ useSourceVoice: true }, s)).toEqual({ ...merged, useSourceVoice: true });
+  });
+
+  it('新开关缺省都开着，存过的值照旧生效（HIG-79 滚轮 / HIG-75 跟随朗读）', () => {
+    expect(FEATURE_DEFAULTS.timelineWheelVertical).toBe(true);
+    expect(FEATURE_DEFAULTS.posterFitVoiceSpeed).toBe(true);
+    expect(cleanFeaturePrefs({ timelineWheelVertical: false })).toEqual({ ...FEATURE_DEFAULTS, timelineWheelVertical: false });
+    expect(cleanFeaturePrefs({ posterFitVoiceSpeed: 'nope' }).posterFitVoiceSpeed).toBe(true);
+    // 旧版本存下的偏好里没有这两项，读出来要补上默认值而不是 undefined
+    expect(loadFeaturePrefs(memStorage({ 'hitgo.prefs': '{"autoApplyDub":false}' }))).toEqual({ ...FEATURE_DEFAULTS, autoApplyDub: false });
   });
 
   it('写入失败不抛，返回合并后的值', () => {
