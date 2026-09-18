@@ -659,6 +659,17 @@ def test_trimmed_loop_uses_the_loop_filter_not_stream_loop():
     assert "loop=loop=5:size=30:start=0,setpts=N/FRAME_RATE/TB,trim=end=6[l1]" in fc(plan)
 
 
+def test_trimmed_loop_normalises_the_frame_rate_first():
+    """`fps` before `loop` keeps ffmpeg 7.1.5 (the prototype server) from emitting black frames.
+
+    After trim + setpts the frames carry too little rate information for 7.1.5's loop; it then
+    renders the whole overlay black while 9.x is fine. Dropping this makes the server render a
+    black box with green tests, so the order is asserted rather than left to chance.
+    """
+    graph = fc(video_build(trimmed_spec(1.5, 2.5)))
+    assert "setpts=PTS-STARTPTS,fps=30,loop=loop=5:" in graph
+
+
 def test_trimmed_loop_shifts_pts_for_a_later_window():
     graph = fc(video_build(trimmed_spec(1.5, 2.5, t=[4, 9])))
     assert "loop=loop=4:size=30:start=0,setpts=N/FRAME_RATE/TB+4/TB,trim=end=9[l1]" in graph

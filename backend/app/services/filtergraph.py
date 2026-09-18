@@ -861,6 +861,11 @@ def build_render_command(
                         steps.append(f"setpts=PTS{shift}")
                 else:
                     frames = max(1, round(source_trim.length * fps_value))
+                    # `fps` before `loop` is load-bearing: after trim + setpts the frames carry
+                    # too little rate information for ffmpeg 7.1.5's loop, which then emits an
+                    # all-black plane (9.x tolerates it). The prototype server runs 7.1.5, so
+                    # without this the feature silently renders a black box. Verified on both.
+                    steps.append(f"fps={fps}")
                     steps.append(f"loop=loop={loop_times}:size={frames}:start=0")
                     # `loop` replays the cached frames with their original PTS; rebuild the
                     # timeline from the frame counter so the repeats land back to back.
