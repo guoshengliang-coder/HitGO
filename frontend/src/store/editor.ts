@@ -11,7 +11,7 @@ import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDet
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
-import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization } from '../lib/localize';
+import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
@@ -269,7 +269,7 @@ export interface EditorState {
   localizeOptions: LocalizeOptions | null;
   loadLocalizeOptions: () => Promise<void>;
   /** POST localize：听写（模板未就绪时）+ 逐语言生成；发起后轮询到全部结束。成功返回 true。 */
-  localizeVideo: (body: LocalizeIn) => Promise<boolean>;
+  localizeVideo: (body: LocalizeIn, opts?: { bgm: LocalizeBgmChoice }) => Promise<boolean>;
   /** 修正模板文本（PUT transcript）；不触发任务，已有版本会被标为 stale。 */
   updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
   /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
@@ -469,6 +469,49 @@ type PolledField = 'separation' | 'localization';
 const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
+const quickRequests: Record<string, { langs: string[]; readyLang?: string }> = {};
+const BGM_CHOICE_KEY = 'hitgo.localizeBgm';
+const bgmChoiceMemory: Record<string, LocalizeBgmChoice> = {};
+
+export function loadLocalizeBgm(videoId: string): LocalizeBgmChoice {
+  if (bgmChoiceMemory[videoId]) return bgmChoiceMemory[videoId];
+  try {
+    const choice = JSON.parse(localStorage.getItem(BGM_CHOICE_KEY) ?? '{}')?.[videoId];
+    if (choice?.mode === 'replace' && typeof choice.assetId === 'string') return (bgmChoiceMemory[videoId] = { mode: 'replace', assetId: choice.assetId });
+  } catch { /* localStorage unavailable or stale */ }
+  return { mode: 'keep' };
+}
+
+function saveLocalizeBgm(videoId: string, choice: LocalizeBgmChoice) {
+  bgmChoiceMemory[videoId] = choice;
+  try {
+    const all = JSON.parse(localStorage.getItem(BGM_CHOICE_KEY) ?? '{}');
+    localStorage.setItem(BGM_CHOICE_KEY, JSON.stringify({ ...(all && typeof all === 'object' ? all : {}), [videoId]: choice }));
+  } catch { /* private mode: this run still uses the selected choice in memory */ }
+}
+
+function applyQuickWhenReady(videoId: string, get: () => EditorState) {
+  const pending = quickRequests[videoId];
+  if (!pending?.readyLang) return;
+  const video = get().videos.find((v) => v.id === videoId);
+  if (!video) { delete quickRequests[videoId]; return; }
+  const bgm = loadLocalizeBgm(videoId);
+  if (bgm.mode === 'keep') {
+    if (fieldActive(video, 'separation')) return;
+    if (video.separation?.status !== 'done' || !video.separation.instrumental_asset_id) {
+      get().setToast('口播已生成，但原伴奏分离失败；未自动套用，请重试分离');
+      delete quickRequests[videoId];
+      return;
+    }
+  } else if (!isAssetReady(get().assets.find((a) => a.id === bgm.assetId))) {
+    get().setToast('口播已生成，但所选 BGM 不可用；未自动套用');
+    delete quickRequests[videoId];
+    return;
+  }
+  if (get().currentVideoId === videoId) get().applyVersion(pending.readyLang, { force: true });
+  else get().setToast(`${video.name} 的口播已生成；切回视频后可套用`);
+  delete quickRequests[videoId];
+}
 
 /** 该字段是否还有后台任务在跑：分离看 status；改语言看听写和所有版本。 */
 function fieldActive(video: Video | null | undefined, field: PolledField): boolean {
@@ -502,17 +545,25 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
       if (field === 'separation') {
         if (fresh.separation?.status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
         else get().setToast(`分离失败：${fresh.separation?.error ?? '未知原因'}`);
+        applyQuickWhenReady(videoId, get);
       } else {
         const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
         if (text) get().setToast(text);
-        const requested = dubRequests[videoId] ?? [];
+        const quick = quickRequests[videoId];
+        const requested = [...(dubRequests[videoId] ?? []), ...(quick?.langs ?? [])];
         delete dubRequests[videoId];
         const lang = autoApplyLang(before, fresh.localization, requested);
         if (lang && loadFeaturePrefs().autoApplyDub) {
-          // 切到别的视频就不动它的 spec：提示回去手动套用
-          if (get().currentVideoId === videoId) get().applyVersion(lang, { force: true });
-          else get().setToast(`${fresh.name} 的${langLabel(get().localizeOptions, lang)}口播已生成；切回该视频在「套用」里套用`);
+          if (quick) {
+            quick.readyLang = lang;
+            applyQuickWhenReady(videoId, get);
+          } else {
+            // 切到别的视频就不动它的 spec：提示回去手动套用
+            if (get().currentVideoId === videoId) get().applyVersion(lang, { force: true });
+            else get().setToast(`${fresh.name} 的${langLabel(get().localizeOptions, lang)}口播已生成；切回该视频在「套用」里套用`);
+          }
         }
+        if (!lang || !loadFeaturePrefs().autoApplyDub) delete quickRequests[videoId];
       }
       return;
     }
@@ -1322,11 +1373,20 @@ export const useEditor = create<EditorState>((set, get) => {
         set({ localizeOptions: { enabled: false, source_langs: [], target_langs: [] } });
       }
     },
-    localizeVideo: async (body) => {
+    localizeVideo: async (body, opts) => {
       const video = get().currentVideo();
       if (!video) return false;
       try {
+        if (opts?.bgm.mode === 'keep' && video.separation?.status !== 'done' && !fieldActive(video, 'separation')) {
+          const separated = await api.separateVideo(video.id, 'htdemucs');
+          mergeVideoField(set, separated, 'separation');
+          pollVideoField(video.id, 'separation', set, get);
+        }
         const updated = await api.localizeVideo(video.id, body);
+        if (opts) {
+          saveLocalizeBgm(video.id, opts.bgm);
+          quickRequests[video.id] = { langs: body.target_langs };
+        }
         mergeVideoField(set, updated, 'localization');
         pollVideoField(video.id, 'localization', set, get);
         return true;
@@ -1424,9 +1484,18 @@ export const useEditor = create<EditorState>((set, get) => {
         }
       }
       const assets = get().assets;
+      const bgm = loadLocalizeBgm(video.id);
+      if (bgm.mode === 'keep' && (video.separation?.status !== 'done' || !isAssetReady(assets.find((a) => a.id === video.separation?.instrumental_asset_id)))) {
+        get().setToast('原伴奏尚未就绪；请从改语言主操作生成，系统会自动分离');
+        return false;
+      }
+      if (bgm.mode === 'replace' && !isAssetReady(assets.find((a) => a.id === bgm.assetId))) {
+        get().setToast('所选 BGM 不可用，请在改语言里重新选择');
+        return false;
+      }
       let warnings: string[] = [];
       get().updateSpec((s) => {
-        warnings = applyLocalizationToSpec(s, lang, { video, assets, langLabel: label, newLayerId, newTrackId });
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, newLayerId, newTrackId });
       });
       set({ selectedLayerId: null, selectedTrackId: null });
       get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });

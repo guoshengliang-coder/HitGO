@@ -434,11 +434,44 @@ describe('改语言套用（applyVersion）', () => {
     expect(nl.style.color).toBe('#123456');
   });
 
-  it('没有伴奏时只加配音轨，toast 里带提示', () => {
+  it('没有伴奏时不套用，避免成片丢失原 BGM', () => {
     useEditor.setState({ videos: [{ ...LOC_VIDEO, separation: null }] });
-    expect(useEditor.getState().applyVersion('ko')).toBe(true);
-    expect(localizeTracks().map((t) => t.role)).toEqual(['voice']);
-    expect(useEditor.getState().toast).toContain('伴奏');
+    expect(useEditor.getState().applyVersion('ko')).toBe(false);
+    expect(localizeTracks()).toEqual([]);
+    expect(useEditor.getState().toast).toContain('原伴奏尚未就绪');
+  });
+});
+
+describe('转语言主流程（HIG-74）', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('自动分离与口播并行；口播先完成时等待伴奏就绪再套用', async () => {
+    const base = { ...VIDEO, id: 'v_quick', has_audio: true, status: 'ready' } as Video;
+    const queued = { source_lang: 'en', transcript: { status: 'queued', cues: [] }, versions: { ko: { status: 'queued', stage: null, voice_asset_id: null, cues: [] } } } as unknown as Video['localization'];
+    const done = { source_lang: 'en', transcript: { status: 'done', cues: [{ i: 0, start: 0, end: 2, text: 'Hello' }] }, versions: { ko: { status: 'done', stage: null, voice: 'kyong', terms: [], cues: [{ i: 0, translated: '안녕' }], stale: false, error: null, warnings: [], voice_asset_id: 'a_quick', updated_at: 'done' } } } as Video['localization'];
+    const sepQueued = { status: 'queued', model: 'htdemucs' } as Video['separation'];
+    const sepRunning = { status: 'running', model: 'htdemucs' } as Video['separation'];
+    const sepDone = { status: 'done', model: 'htdemucs', vocals_asset_id: 'a_voc', instrumental_asset_id: 'a_inst' } as Video['separation'];
+    const asset = (id: string, stem: 'dubbed' | 'instrumental'): Asset => ({ id, type: 'audio', kind: 'audio', status: 'ready', name: `${id}.m4a`, url: '/media/x', source: 'derived', derived_from: { video_id: base.id, video_name: base.name, stem }, created_at: '' });
+    useEditor.setState({ videos: [base], currentVideoId: base.id, assets: [], specs: {}, history: {},
+      loadAssets: vi.fn(async () => useEditor.setState({ assets: [asset('a_quick', 'dubbed'), asset('a_inst', 'instrumental')] })) });
+    useEditor.getState().replaceSpec(base.id, emptySpec());
+    const separate = vi.spyOn(api, 'separateVideo').mockResolvedValue({ ...base, separation: sepQueued });
+    vi.spyOn(api, 'localizeVideo').mockResolvedValue({ ...base, separation: sepQueued, localization: queued });
+    const states = [
+      { ...base, separation: sepRunning, localization: queued },
+      { ...base, separation: sepRunning, localization: done },
+      { ...base, separation: sepDone, localization: done },
+    ];
+    let read = 0;
+    vi.spyOn(api, 'getVideo').mockImplementation(async () => states[Math.min(read++, states.length - 1)]);
+
+    expect(await useEditor.getState().localizeVideo({ target_langs: ['ko'], voices: { ko: 'kyong' }, dub: true }, { bgm: { mode: 'keep' } })).toBe(true);
+    expect(separate).toHaveBeenCalledWith(base.id, 'htdemucs');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useEditor.getState().currentSpec()?.audio?.tracks ?? []).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useEditor.getState().currentSpec()?.audio?.tracks.map((t) => t.asset_id)).toEqual(['a_quick', 'a_inst']);
   });
 });
 

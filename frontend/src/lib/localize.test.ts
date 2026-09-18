@@ -81,6 +81,7 @@ const ASSETS: Asset[] = [
   { ...ASSET_BASE, id: 'a_ja', name: 'ja.m4a', derived_from: { video_id: 'v1', video_name: 'a.mp4', stem: 'dubbed', lang: 'ja' } },
   { ...ASSET_BASE, id: 'a_inst', name: 'inst.m4a', derived_from: { video_id: 'v1', video_name: 'a.mp4', stem: 'instrumental' } },
   { ...ASSET_BASE, id: 'a_voc', name: 'voc.m4a', derived_from: { video_id: 'v1', video_name: 'a.mp4', stem: 'vocals' } },
+  { ...ASSET_BASE, id: 'a_new', name: 'new-bgm.m4a', source: 'upload' },
 ];
 
 function video(over: Partial<Video> = {}): Video {
@@ -314,6 +315,18 @@ describe('applyLocalizationToSpec', () => {
     const w2 = applyLocalizationToSpec(spec2, 'ko', ctx(video()));
     expect(spec2.audio!.tracks.filter((t) => t.asset_id === 'a_inst')).toHaveLength(1);
     expect(w2.some((x) => x.includes('原人声'))).toBe(true);
+  });
+
+  it('替换 BGM 时移除旧 BGM，不依赖分离伴奏；切换语言后仍只留一条新 BGM', () => {
+    const spec = base();
+    spec.audio!.tracks.push({ id: 'legacy_bgm', asset_id: 'a_up', t: 'all' });
+    const bgm = { mode: 'replace' as const, assetId: 'a_new' };
+    const v = video({ separation: null });
+    expect(applyLocalizationToSpec(spec, 'ko', { ...ctx(v), bgm })).toEqual([]);
+    expect(spec.audio!.tracks.map((t) => [t.role, t.asset_id])).toEqual([['voice', 'a_ko'], ['bgm', 'a_new']]);
+    expect(spec.audio!.tracks[1]).toMatchObject({ align: 'post', loop: true, volume: 0.6, origin: 'localize' });
+    expect(applyLocalizationToSpec(spec, 'ja', { ...ctx(v, '日语'), bgm })).toEqual([]);
+    expect(spec.audio!.tracks.map((t) => [t.role, t.asset_id])).toEqual([['voice', 'a_ja'], ['bgm', 'a_new']]);
   });
 
   it('切换语言：旧语言的层 / 轨整批替换，样式与位置沿用，自动字体换成新语言的；用户改过的上传字体保留', () => {
