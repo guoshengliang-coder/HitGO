@@ -125,7 +125,10 @@ def test_presets_lifecycle(client):
 
 
 def test_health_and_docs(client):
-    assert client.get("/api/health").json() == {"status": "ok"}
+    health = client.get("/api/health").json()
+    assert health["status"] == "ok"
+    assert isinstance(health["commit"], str)
+    assert isinstance(health["version"], str)
     assert client.get("/api/openapi.json").status_code == 200
 
 

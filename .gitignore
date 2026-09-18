@@ -36,3 +36,4 @@ npm-debug.log*
 
 # local deploy target (never commit)
 .deploy.env
+.private/

@@ -1,6 +1,10 @@
 services:
   api:
-    build: .
+    build:
+      context: .
+      args:
+        HITGO_BUILD_SHA: ${HITGO_BUILD_SHA:-unknown}
+        HITGO_BUILD_VERSION: ${HITGO_BUILD_VERSION:-dev}
     image: hitgo:latest
     restart: unless-stopped
     ports:
