@@ -18,7 +18,7 @@ import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
 import { clampWrapWidth, TEXT_WIDTH_MAX, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { setLayerWrapWidth } from '../../lib/localize';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
-import { groupPresets } from '../../lib/textGallery';
+import { fontChoices, groupPresets, searchFontChoices } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
 import { TextAnimationSection } from './TextAnimationSection';
 import { ColorPicker } from '../ui/ColorPicker';
@@ -396,7 +396,10 @@ const BG_WIDTH_MODES: SegOption<'fit' | 'full'>[] = [
 export function TextSections({ layer, sel, poster = false }: { layer: TextLayer; sel: [number, number] | null; poster?: boolean }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
-  const fonts = assets.filter((a) => a.type === 'font');
+  const fonts = useMemo(() => fontChoices(assets), [assets]);
+  const [fontQuery, setFontQuery] = useState('');
+  const shownFonts = useMemo(() => searchFontChoices(fonts, fontQuery), [fonts, fontQuery]);
+  const otherBuiltins = BUILTIN_WEB_FONTS.filter((f) => f.family !== BUILTIN_FONT_FAMILY && f.family.toLowerCase().includes(fontQuery.trim().toLowerCase()));
   const st = layer.style;
   const d = defaultTextStyle();
   const patchStyle = (patch: Partial<TextStyle>) => updateLayer(layer.id, (l) => { if (l.type === 'text') Object.assign(l.style, patch); });
@@ -414,18 +417,21 @@ export function TextSections({ layer, sel, poster = false }: { layer: TextLayer;
     <>
       <Section title="字体" hint={poster ? undefined : '选中一段文字可单独上色'} bodyClass="stack" onReset={() => patchStyle({ font_family: d.font_family, font_weight: d.font_weight, font_size: d.font_size, color: d.color, align: d.align })}>
         <Field label="字体">
-          <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })} aria-label="字体">
-            {BUILTIN_WEB_FONTS.map((f) => (
-              <option key={f.family} value={f.family}>{f.family}（{f.label}）</option>
-            ))}
-            {/* 图层用的是别的字体（旧 spec / 已删的上传字体）：保留为一个选项，免得下拉显示成第一项而实际不是 */}
-            {st.font_family !== BUILTIN_FONT_FAMILY && !BUILTIN_WEB_FONTS.some((f) => f.family === st.font_family) && !fonts.some((f) => f.family === st.font_family) && (
-              <option value={st.font_family}>{st.font_family}</option>
-            )}
-            {fonts.map((f) => (
-              <option key={f.id} value={f.family}>{f.family}</option>
-            ))}
-          </select>
+          <div className="font-select-stack">
+            <input className="input sm" type="search" placeholder="搜索名称或风格" aria-label="搜索图层字体" value={fontQuery} onChange={(e) => setFontQuery(e.target.value)} />
+            <select className="select sm" value={st.font_family} onChange={(e) => patchStyle({ font_family: e.target.value })} aria-label="字体">
+              {/* 搜索时也保留当前值，避免原生 select 显示成另一款字体。 */}
+              {![...shownFonts.map((f) => f.family), ...otherBuiltins.map((f) => f.family)].includes(st.font_family) && (
+                <option value={st.font_family}>{st.font_family}</option>
+              )}
+              {shownFonts.map((f) => (
+                <option key={f.family} value={f.family}>{f.label} · {f.style}</option>
+              ))}
+              {otherBuiltins.map((f) => (
+                <option key={f.family} value={f.family}>{f.family}（{f.label}）</option>
+              ))}
+            </select>
+          </div>
         </Field>
         <div className="g2">
           <Field label="字重">

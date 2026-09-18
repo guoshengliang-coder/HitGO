@@ -2,7 +2,7 @@
 // 纯函数，组件只负责渲染与交互。
 
 import type { Asset, TextStyle, TextStylePreset } from '../types';
-import { BUILTIN_FONT_FAMILY } from './fonts';
+import { FONT_CATALOG, catalogFontFor, fontMatchesQuery, type CatalogFont, type FontGroup } from './fontCatalog';
 
 /** 预设分组：带背景的算「气泡」，其余算「花字」。 */
 export type PresetGroup = 'text' | 'bubble';
@@ -17,26 +17,52 @@ export function groupPresets(presets: TextStylePreset[]): Record<PresetGroup, Te
 
 export interface FontChoice {
   family: string;
+  label: string;
+  style: string;
+  sample: string;
+  group: FontGroup | 'uploaded';
   builtin: boolean;
+  aliases?: string[];
 }
 
-/** 字体候选：内置字体排第一，其后是已就绪、带 family 的上传字体，按 family 去重。 */
+const readyFontAssets = (assets: Asset[]) => assets.filter((a) => a.type === 'font' && a.family && (a.status ?? 'ready') === 'ready');
+
+/** 内置网页字体和已加载的素材字体，按清单顺序排列并去重。 */
 export function fontChoices(assets: Asset[]): FontChoice[] {
-  const out: FontChoice[] = [{ family: BUILTIN_FONT_FAMILY, builtin: true }];
-  const seen = new Set([BUILTIN_FONT_FAMILY]);
-  for (const a of assets) {
-    if (a.type !== 'font' || !a.family || (a.status ?? 'ready') !== 'ready' || seen.has(a.family)) continue;
-    seen.add(a.family);
-    out.push({ family: a.family, builtin: false });
+  const ready = readyFontAssets(assets);
+  const seen = new Set<string>();
+  const out: FontChoice[] = [];
+  for (const entry of FONT_CATALOG) {
+    const asset = ready.find((a) => catalogFontFor(a.family!) === entry);
+    if (entry.delivery === 'asset' && !asset) continue;
+    const family = entry.delivery === 'asset' ? asset!.family! : entry.family;
+    seen.add(family);
+    out.push({ family, label: entry.label, style: entry.style, sample: entry.sample, group: entry.group, builtin: entry.delivery === 'web' || asset?.source === 'builtin', aliases: entry.aliases });
+  }
+  for (const asset of ready) {
+    const family = asset.family!;
+    if (seen.has(family) || catalogFontFor(family)) continue;
+    seen.add(family);
+    out.push({ family, label: family, style: '已上传', sample: '字体', group: 'uploaded', builtin: asset.source === 'builtin' });
   }
   return out;
+}
+
+/** 尚需从官方来源取得并上传字体文件的已选字体。 */
+export function missingCatalogFonts(assets: Asset[]): CatalogFont[] {
+  const ready = readyFontAssets(assets);
+  return FONT_CATALOG.filter((entry) => entry.delivery === 'asset' && !ready.some((a) => catalogFontFor(a.family!) === entry));
+}
+
+export function searchFontChoices(fonts: FontChoice[], query: string): FontChoice[] {
+  return fonts.filter((font) => fontMatchesQuery(font, query));
 }
 
 export type GalleryItem = { kind: 'font'; font: FontChoice } | { kind: 'preset'; preset: TextStylePreset };
 
 /** 双击卡片新建文字图层时带的初始样式与默认文字。 */
 export function galleryLayerSeed(item: GalleryItem): { style: Partial<TextStyle>; text: string } {
-  if (item.kind === 'font') return { style: { font_family: item.font.family }, text: item.font.family };
+  if (item.kind === 'font') return { style: { font_family: item.font.family }, text: item.font.label };
   return { style: { ...item.preset.style }, text: presetGroup(item.preset) === 'bubble' ? '气泡文字' : '花字' };
 }
 

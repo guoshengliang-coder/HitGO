@@ -659,6 +659,26 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .preset-add { width: 100%; justify-content: center; margin-top: 4px; }
 .preset-btn .font-sample { height: 28px; line-height: 28px; font-size: 20px; color: var(--ink); }
 .gallery-body { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
+@font-face {
+  font-family: '抖音美好体';
+  src: url('https://raw.githubusercontent.com/bytedance/fonts/main/DouyinSans/DouyinSansBold.ttf') format('truetype');
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: '霞鹜文楷';
+  src: url('https://raw.githubusercontent.com/lxgw/LxgwWenKai-Lite/main/fonts/TTF/LXGWWenKaiLite-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-display: swap;
+}
+.font-search { width: 100%; }
+.font-group { display: flex; flex-direction: column; gap: 4px; }
+.font-missing { font-size: 11px; color: var(--ink-3); }
+.font-missing summary { cursor: pointer; }
+.font-missing-list { display: flex; flex-wrap: wrap; gap: 4px 10px; padding: 6px 0 0; }
+.font-missing-list a { color: var(--accent-ink); }
+.font-select-stack { display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0; }
+.font-select-stack .input, .font-select-stack .select { width: 100%; text-align: left; }
 .preset-btn img { height: 28px; max-width: 64px; object-fit: contain; background: repeating-conic-gradient(var(--preset-checker-a) 0 25%, var(--preset-checker-b) 0 50%) 0 0 / 10px 10px; border-radius: 3px; }
 .preset-btn .pname { font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 66px; }
 .preset-del { position: absolute; top: -5px; right: -5px; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--ink-3); font-size: 10px; line-height: 14px; padding: 0; cursor: pointer; display: none; }
