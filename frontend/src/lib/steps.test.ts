@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Layer } from '../types';
 import { defaultApplyModules, layerTypeForStep, layerTypesForStep, stepForLayer, STEPS } from './steps';
 
 describe('layerTypesForStep', () => {
@@ -16,29 +17,21 @@ describe('layerTypesForStep', () => {
   });
 });
 
-describe('stepForLayer（HIG-67）', () => {
-  it('当前模块已经管这个类型时不切——字幕 / 改语言 / 大字报都管文字图层', () => {
-    expect(stepForLayer('text', 'subtitle')).toBe('subtitle');
-    expect(stepForLayer('text', 'localize')).toBe('localize');
-    expect(stepForLayer('text', 'poster')).toBe('poster');
-    expect(stepForLayer('mask', 'subtitle')).toBe('subtitle');
-    expect(stepForLayer('sticker', 'sticker')).toBe('sticker');
+describe('stepForLayer（HIG-72）', () => {
+  const layer = (type: Layer['type'], extra = {}): Layer => ({ id: type, type, ...extra }) as Layer;
+
+  it('普通文字（含字幕和改语言图层）总到文本属性，滚动文案到大字报', () => {
+    expect(stepForLayer(layer('text'))).toBe('text');
+    expect(stepForLayer(layer('text', { origin: 'localize' }))).toBe('text');
+    expect(stepForLayer(layer('text', { scroll: {} }))).toBe('poster');
   });
-  it('当前模块管不到时切到管它的那个', () => {
-    expect(stepForLayer('sticker', 'text')).toBe('sticker');
-    expect(stepForLayer('text', 'sticker')).toBe('text');
-    expect(stepForLayer('mask', 'text')).toBe('subtitle');
-  });
-  it('从不管图层的模块（剪辑 / 音频）选中图层时也能落到对应模块', () => {
-    expect(stepForLayer('text', 'trim')).toBe('text');
-    expect(stepForLayer('sticker', 'audio')).toBe('sticker');
-    expect(stepForLayer('mask', 'trim')).toBe('subtitle');
+  it('贴纸与遮盖分别打开自己的属性面板', () => {
+    expect(stepForLayer(layer('sticker'))).toBe('sticker');
+    expect(stepForLayer(layer('mask'))).toBe('subtitle');
   });
   it('返回值一定是真实存在的模块', () => {
     const keys = STEPS.map((s) => s.key);
-    for (const type of ['text', 'sticker', 'mask'] as const) {
-      for (const cur of keys) expect(keys).toContain(stepForLayer(type, cur));
-    }
+    for (const type of ['text', 'sticker', 'mask'] as const) expect(keys).toContain(stepForLayer(layer(type)));
   });
 });
 

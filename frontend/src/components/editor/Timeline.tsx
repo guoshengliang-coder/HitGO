@@ -1,6 +1,6 @@
 // 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨可选中并画出静音区间（可拖边，HIG-25）、
 // BGM / 口播可拖动拉伸、贴纸音轨只读）/
-// 图层行（文本模块显示文字图层，字幕模块显示文字 + 遮盖图层，贴纸模块显示贴纸图层；可拖动、拉伸，轨道头可锁定 / 隐藏）。
+// 图层行常显全部类型；点选后切到对应编辑面板，可拖动、拉伸，轨道头可锁定 / 隐藏。
 // 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
 // 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
@@ -20,7 +20,7 @@ import { clipDisplayGroups, insertClip, moveClipGroup, sequenceDuration, sequenc
 import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { timelineThumbnails } from '../../lib/timelineThumbnails';
-import { layerTypesForStep, stepForLayer } from '../../lib/steps';
+import { layerTypesForStep } from '../../lib/steps';
 import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
@@ -209,7 +209,7 @@ export function Timeline() {
   const setSelectedRange = useEditor((s) => s.setSelectedRange);
   const updateRemoveRange = useEditor((s) => s.updateRemoveRange);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
-  const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
+  const focusLayer = useEditor((s) => s.focusLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const renameLayer = (l: Layer, name: string) => {
     if (cleanTrackName(name) !== cleanTrackName(l.name)) updateLayer(l.id, { name: cleanTrackName(name) });
@@ -839,13 +839,8 @@ export function Timeline() {
             const sel = selectedLayerId === l.id;
             const hidden = !!l.hidden;
             const locked = !!l.locked;
-            // 轨道常显之后，选中的图层可能不归当前模块管；跟着切过去，右栏才是这个图层的属性。
-            // setStep 会清掉选中，所以先切再选。
-            const pick = () => {
-              const next = stepForLayer(l.type, step);
-              if (next !== step) setStep(next);
-              setSelectedLayer(l.id);
-            };
+            // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
+            const pick = () => focusLayer(l);
             return (
               <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`} onClick={pick}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>

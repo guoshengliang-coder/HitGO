@@ -39,6 +39,10 @@ export function StickerPanel() {
     const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
     return l?.type === 'sticker' ? l : null;
   });
+  const layerFocusVersion = useEditor((s) => s.layerFocusVersion);
+  useEffect(() => {
+    if (selected) setTab('layers');
+  }, [layerFocusVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const addLayer = useEditor((s) => s.addLayer);
   const setToast = useEditor((s) => s.setToast);
   const fileRef = useRef<HTMLInputElement>(null);

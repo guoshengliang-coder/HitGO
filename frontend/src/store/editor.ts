@@ -31,7 +31,7 @@ import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { nudgePlacement, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
-import { layerTypesForStep, type Step } from '../lib/steps';
+import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
 import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
@@ -111,6 +111,8 @@ export interface EditorState {
   specs: Record<string, EditSpec>;
   history: Record<string, History>;
   selectedLayerId: string | null;
+  /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
+  layerFocusVersion: number;
   /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
   replacingLayerId: string | null;
   selectedClipId: string | null;
@@ -180,6 +182,7 @@ export interface EditorState {
   setStep: (s: Step) => void;
   setSafeZoneKey: (k: string) => void;
   setSelectedLayer: (id: string | null) => void;
+  focusLayer: (layer: Layer) => void;
   setSelectedClip: (id: string | null) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
@@ -397,6 +400,7 @@ const PER_BATCH_INITIAL = {
   specs: {},
   history: {},
   selectedLayerId: null,
+  layerFocusVersion: 0,
   replacingLayerId: null,
   selectedClipId: null,
   selectedRangeIndex: null,
@@ -1018,6 +1022,11 @@ export const useEditor = create<EditorState>((set, get) => {
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId }),
+    focusLayer: (layer) => {
+      const next = stepForLayer(layer);
+      if (next !== get().step) get().setStep(next);
+      set((s) => ({ selectedLayerId: layer.id, selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
+    },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),

@@ -16,7 +16,7 @@ export const STEPS: { key: Step; label: string }[] = [
 ];
 
 /**
- * 该模块管理的图层类型（画布上可选中、时间线上有行、⌘V 能粘进来）；不管图层的模块（剪辑、音频）返回 []。
+ * 该模块管理的图层类型（画布选中框、快捷操作与 ⌘V 使用）；不管图层的模块（剪辑、音频）返回 []。
  * 字幕模块除了文字图层，还管遮住原字幕的遮盖层。
  */
 export function layerTypesForStep(step: Step): Layer['type'][] {
@@ -28,15 +28,11 @@ export function layerTypesForStep(step: Step): Layer['type'][] {
   return [];
 }
 
-/**
- * 在时间线上选中某个图层时该切到哪个模块（HIG-67）。
- * 时间线现在常显全部轨道，选中的图层可能不归当前模块管——那样右栏面板和选中的对象就对不上了。
- * 当前模块已经管这个类型时原样不动：字幕 / 改语言 / 大字报都管文字图层，不该因为点了一下就跳回「文本」。
- */
-export function stepForLayer(type: Layer['type'], current: Step): Step {
-  if (layerTypesForStep(current).includes(type)) return current;
-  if (type === 'sticker') return 'sticker';
-  if (type === 'mask') return 'subtitle';
+/** 画布和时间线选中图层后，打开实际能编辑该对象的面板（HIG-72）。 */
+export function stepForLayer(layer: Layer): Step {
+  if (layer.type === 'sticker') return 'sticker';
+  if (layer.type === 'mask') return 'subtitle';
+  if (layer.scroll) return 'poster';
   return 'text';
 }
 
