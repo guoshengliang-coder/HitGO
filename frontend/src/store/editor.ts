@@ -119,7 +119,6 @@ export interface EditorState {
   selectedLayerIds: string[];
   subtitleSyncEnabled: boolean;
   setSubtitleSyncEnabled: (enabled: boolean) => void;
-  marqueeEnabled: boolean;
   /** HIG-65：贴纸页当前要在预览画布拖画的图形；null = 普通选择。 */
   drawingShape: import('../types').ShapeLayer['shape'] | null;
   /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
@@ -197,7 +196,6 @@ export interface EditorState {
   setSelectedLayer: (id: string | null) => void;
   selectLayers: (ids: string[], mode?: 'replace' | 'add' | 'subtract') => void;
   selectAllLayers: () => void;
-  setMarqueeEnabled: (on: boolean) => void;
   removeSelectedLayers: () => void;
   duplicateSelectedLayers: () => void;
   shiftSelectedLayers: (seconds: number) => void;
@@ -435,7 +433,6 @@ const PER_BATCH_INITIAL = {
   selectedLayerId: null,
   selectedLayerIds: [],
   subtitleSyncEnabled: false,
-  marqueeEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
   replacingLayerId: null,
@@ -1126,7 +1123,6 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedLayerIds: next, selectedLayerId: next[next.length - 1] ?? null });
     },
     selectAllLayers: () => get().selectLayers((get().currentSpec()?.layers ?? []).map((l) => l.id)),
-    setMarqueeEnabled: (marqueeEnabled) => set({ marqueeEnabled }),
     removeSelectedLayers: () => {
       const ids = new Set(get().selectedLayerIds);
       if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);

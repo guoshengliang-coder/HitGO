@@ -81,6 +81,8 @@ type PendingDrop = { assetId: string; role: AudioRole; start: number; videoId: s
 
 const LABEL_W = 96;
 const SNAP_PX = 6;
+/** 指针移开这么多像素才算框选，而不是一次点击（HIG-77）。 */
+const MARQUEE_PX = 4;
 
 /** 封面段在非视频行里的占位斜纹（封面期间不叠图层、不放音轨）。 */
 function CoverGap({ width }: { width: number }) {
@@ -191,7 +193,27 @@ function useScrub(seekAt: (clientX: number) => void) {
     }
     setScrubbing(false);
   };
-  return { scrubbing, handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp } };
+  /**
+   * 半路放手：这一次按下改判成别的手势了（空白处拖 = 框选，HIG-60/HIG-77），
+   * 播放头停在按下的位置，不再跟着走，捕获也还回去让新手势接管。
+   */
+  const cancel = (el: HTMLElement | null, pointerId: number) => {
+    if (!active.current) return false;
+    active.current = false;
+    if (raf.current) {
+      cancelAnimationFrame(raf.current);
+      raf.current = 0;
+    }
+    pending.current = null;
+    try {
+      el?.releasePointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    setScrubbing(false);
+    return true;
+  };
+  return { scrubbing, cancel, handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp } };
 }
 
 export function Timeline() {
@@ -213,10 +235,9 @@ export function Timeline() {
   const timelineSelection = useEditor((s) => s.timelineSelection);
   const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
   const shiftTimelineItems = useEditor((s) => s.shiftTimelineItems);
-  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
   const shiftSelectedLayers = useEditor((s) => s.shiftSelectedLayers);
   const [marqueeDraft, setMarqueeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const marqueeStart = useRef<{ x: number; y: number; mode: 'replace' | 'add' | 'subtract' } | null>(null);
+  const marqueeStart = useRef<{ x: number; y: number; clientX: number; clientY: number; mode: 'replace' | 'add' | 'subtract'; active: boolean } | null>(null);
   const focusLayer = useEditor((s) => s.focusLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const renameLayer = (l: Layer, name: string) => {
@@ -673,25 +694,51 @@ export function Timeline() {
       selectTimelineItems([key]);
     }
   };
+  /**
+   * 框选（HIG-60 跨轨选择，HIG-77 改成剪映式的直接拖）：轨道区空白处按下再拖就是框选，
+   * 不用先切模式。
+   *
+   * 和 scrub 共存靠「按下先不接管」：按下时只记起点，播放头照常跟着点一下走（这个手感不变），
+   * 等指针真的移开超过阈值才改判成框选，把 scrub 叫停并接过捕获。按在条上则一开始就不记起点
+   * ——那是拖条，不是框选。
+   */
   const marqueeDown = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!marqueeEnabled || e.button !== 0 || !(e.target as HTMLElement).closest('.body')) return;
-    e.preventDefault();
-    e.stopPropagation();
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (!t.closest('.body')) return; // 标尺、轨道头：不框选
+    if (t.closest('[data-timeline-key], .tl-bar, .tl-cut, .tl-mute')) return; // 按在条上：交给拖条
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    marqueeStart.current = { x, y, mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace' };
-    setMarqueeDraft({ x0: x, y0: y, x1: x, y1: y });
-    e.currentTarget.setPointerCapture(e.pointerId);
+    marqueeStart.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace',
+      active: false,
+    };
   };
   const marqueeMove = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!marqueeStart.current) return;
+    const m = marqueeStart.current;
+    if (!m) return;
+    if (!m.active) {
+      if (Math.abs(e.clientX - m.clientX) < MARQUEE_PX && Math.abs(e.clientY - m.clientY) < MARQUEE_PX) return;
+      m.active = true;
+      scrub.cancel(e.target as HTMLElement, e.pointerId); // 改判成框选：播放头停在按下的位置
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      setMarqueeDraft({ x0: m.x, y0: m.y, x1: m.x, y1: m.y });
+    }
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
     setMarqueeDraft((d) => d && { ...d, x1: e.clientX - rect.left, y1: e.clientY - rect.top });
   };
   const marqueeUp = (e: RPointerEvent<HTMLDivElement>) => {
     const start = marqueeStart.current;
-    if (!start) return;
+    marqueeStart.current = null;
+    if (!start || !start.active) return; // 没拖起来：就是一次普通点击 / scrub，什么都不做
     e.preventDefault();
     e.stopPropagation();
     const inner = e.currentTarget;
@@ -704,15 +751,18 @@ export function Timeline() {
       return r.left <= right && r.right >= left && r.top <= bottom && r.bottom >= top;
     }).map((bar) => bar.dataset.timelineKey!);
     selectTimelineItems(hits, start.mode);
-    marqueeStart.current = null;
     setMarqueeDraft(null);
-    inner.releasePointerCapture(e.pointerId);
+    try {
+      inner.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
   };
 
   return (
     <div className="timeline" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
-        <div className="tl-inner" style={{ width: off + trackW + LABEL_W, cursor: marqueeEnabled ? 'crosshair' : undefined }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
+        <div className="tl-inner" style={{ width: off + trackW + LABEL_W }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
           <div className="tl-row" style={{ height: 20 }}>
             <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>

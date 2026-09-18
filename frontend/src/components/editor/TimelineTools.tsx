@@ -30,8 +30,6 @@ export function TimelineTools() {
   const copyTimelineItems = useEditor((s) => s.copyTimelineItems);
   const pasteTimelineItems = useEditor((s) => s.pasteTimelineItems);
   const deleteTimelineItems = useEditor((s) => s.deleteTimelineItems);
-  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
-  const setMarqueeEnabled = useEditor((s) => s.setMarqueeEnabled);
   const selectAllLayers = useEditor((s) => s.selectAllLayers);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const removeSelectedLayers = useEditor((s) => s.removeSelectedLayers);
@@ -75,7 +73,6 @@ export function TimelineTools() {
 
   return (
     <div className="tl-tools">
-      <button className={`btn ${marqueeEnabled ? 'on' : ''}`} aria-pressed={marqueeEnabled} title="在时间轴拖出选择框；Shift 追加，Alt/Ctrl 排除" onClick={() => setMarqueeEnabled(!marqueeEnabled)}>框选</button>
       <button className="btn" onClick={selectAllLayers} title="选中当前视频所有可见且未锁定的视觉图层">全选图层</button>
       <button className="btn" onClick={() => { selectTimelineItems([]); setSelectedLayer(null); }} disabled={!selectedLayerIds.length && !timelineSelection.length}>取消选择</button>
       <button className="btn" onClick={copyTimelineItems} disabled={!timelineSelection.length} title="复制选中的视频、图片、字幕或音频片段">复制所选</button>

@@ -685,7 +685,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const drawingShape = useEditor((s) => s.drawingShape);
   const addLayer = useEditor((s) => s.addLayer);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
-  const selectLayers = useEditor((s) => s.selectLayers);
+  const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
   const focusLayer = useEditor((s) => s.focusLayer);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
@@ -855,7 +855,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         return r.x <= right && r.x + r.width >= left && r.y <= bottom && r.y + r.height >= top;
       })
       .map((l) => l.id);
-    selectLayers(hits, m.mode);
+    // 走时间线那一套选择入口（HIG-60）：它会把 timelineSelection 和 selectedLayerIds 一起更新，
+    // 否则画布上框中的图层在时间轴上不会跟着高亮。
+    selectTimelineItems(hits.map((id) => `layer:${id}`), m.mode);
   };
   const onStageMouseUp = () => {
     if (!shapeDraft) {
