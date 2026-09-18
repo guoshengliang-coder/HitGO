@@ -625,6 +625,158 @@ def test_real_ffmpeg_video_sticker_does_not_stretch_the_output(tmp_path):
     assert abs(float(probe.stdout.strip()) - plan.expected_duration) < 0.15
 
 
+# --- in-asset trim, source_in / source_out (HIG-67) ---------------------------------
+
+# 3s sticker, spec window [0, 6], post-trim duration 20.6s, fps 30 (META has no fps -> DEFAULT_FPS).
+
+
+def trimmed_spec(source_in=None, source_out=None, **layer):
+    spec = valid_spec()
+    if source_in is not None:
+        spec["layers"][0]["source_in"] = source_in
+    if source_out is not None:
+        spec["layers"][0]["source_out"] = source_out
+    spec["layers"][0].update(layer)
+    return spec
+
+
+def test_untrimmed_video_sticker_graph_is_unchanged():
+    """The no-trim path must stay byte for byte what it was before HIG-67."""
+    assert fc(video_build(trimmed_spec())) == fc(video_build(valid_spec()))
+
+
+def test_source_trim_cuts_inside_the_asset():
+    graph = fc(video_build(trimmed_spec(1.5, 2.5)))
+    # trim sits after scale, so `loop` caches scaled frames rather than source-sized ones.
+    assert "[1:v]format=rgba,scale=378:151,trim=start=1.5:end=2.5,setpts=PTS-STARTPTS," in graph
+
+
+def test_trimmed_loop_uses_the_loop_filter_not_stream_loop():
+    """-stream_loop -1 cannot serve a trimmed layer: trim=start ends that input after one pass."""
+    plan = video_build(trimmed_spec(1.5, 2.5))
+    assert "-stream_loop" not in plan.argv
+    # 1s piece at 30fps over a 6s window: 30 cached frames, 5 extra passes.
+    assert "loop=loop=5:size=30:start=0,setpts=N/FRAME_RATE/TB,trim=end=6[l1]" in fc(plan)
+
+
+def test_trimmed_loop_shifts_pts_for_a_later_window():
+    graph = fc(video_build(trimmed_spec(1.5, 2.5, t=[4, 9])))
+    assert "loop=loop=4:size=30:start=0,setpts=N/FRAME_RATE/TB+4/TB,trim=end=9[l1]" in graph
+
+
+def test_trimmed_piece_long_enough_for_the_window_does_not_loop():
+    # 2.5s piece over a 2s window: nothing to repeat.
+    graph = fc(video_build(trimmed_spec(0.5, 3.0, t=[0, 2])))
+    assert "loop=" not in graph
+    assert "trim=start=0.5:end=3,setpts=PTS-STARTPTS,trim=end=2[l1]" in graph
+
+
+@pytest.mark.parametrize("playback", ["freeze", "once"])
+def test_trimmed_non_loop_playback_never_loops(playback):
+    graph = fc(video_build(trimmed_spec(1.5, 2.5, playback=playback)))
+    assert "loop=" not in graph
+    assert "trim=start=1.5:end=2.5,setpts=PTS-STARTPTS,trim=end=6[l1]" in graph
+
+
+def test_source_out_past_the_asset_is_clamped_with_a_warning():
+    plan = video_build(trimmed_spec(1.0, 9.0))
+    assert "scale=378:151,trim=start=1:end=3," in fc(plan)  # asset is 3s
+    assert any("超出素材时长" in w for w in plan.warnings)
+
+
+def test_trim_entirely_past_the_asset_is_dropped_with_a_warning():
+    """An in-point past a 3s asset leaves nothing to show: drop the trim, do not render a sliver."""
+    plan = video_build(trimmed_spec(5.0, 5.5))
+    # Falls all the way back to the untrimmed chain (the source's own trims keep their start=).
+    assert fc(plan) == fc(video_build(valid_spec()))
+    assert any("超出素材范围" in w for w in plan.warnings)
+
+
+def test_still_image_ignores_the_trim_fields():
+    """source_in / source_out are video-only; a PNG sticker keeps its old chain."""
+    assert fc(build(trimmed_spec(1.0, 2.0))) == fc(build(valid_spec()))
+
+
+def test_loop_over_the_memory_budget_freezes_instead():
+    """`loop` caches size frames; one layer must not eat the worker's memory."""
+    long_asset = ImageSource("/data/assets/a_sticker001.webm", 600, 240, duration=600.0)
+    spec = trimmed_spec(0.0, 400.0)
+    spec["layers"][0]["t"] = "all"  # 20.6s window, 400s piece -> no loop anyway
+    plan = video_build(spec, source=long_asset)
+    assert "loop=" not in fc(plan)
+
+    # Now make the piece shorter than the window but still far past the budget:
+    # 378*151*4 B/frame -> ~1.1k frames fit; 20s at 30fps = 600 frames fits, so push the
+    # layer to full canvas width where the budget bites.
+    spec = trimmed_spec(0.0, 10.0)
+    spec["layers"][0]["t"] = "all"
+    spec["layers"][0]["width"] = 1.0  # 1080x432 -> 1.87 MB/frame, 300 frames = 560 MB
+    plan = video_build(spec, source=long_asset)
+    assert "loop=" not in fc(plan)
+    assert any("循环已跳过" in w for w in plan.warnings)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+@pytest.mark.parametrize("playback,expected", [
+    # 6s asset, one colour per second; trim [2, 4) = blue, yellow; 6s window.
+    ("loop", ["blue", "yellow", "blue", "yellow", "blue", "yellow"]),
+    # freeze holds source_out's last frame once the piece runs out
+    ("freeze", ["blue", "yellow", "yellow", "yellow", "yellow", "yellow"]),
+])  # fmt: skip
+def test_real_ffmpeg_trimmed_sticker_shows_the_trimmed_piece(tmp_path, playback, expected):
+    """String assertions only prove the filter was built; this proves the right frames come out.
+
+    Without the loop filter (i.e. on the old -stream_loop -1 path) the "loop" row degrades into
+    the "freeze" row -- that is exactly the bug this feature had to route around.
+    """
+    colours = ["red", "green", "blue", "yellow", "magenta", "cyan"]
+    inputs = []
+    for c in colours:
+        inputs += ["-f", "lavfi", "-i", f"color=c={c}:s=64x64:r=10:d=1"]
+    sticker = tmp_path / "sticker.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", *inputs,
+         "-filter_complex", "".join(f"[{i}]" for i in range(6)) + "concat=n=6:v=1:a=0[v]",
+         "-map", "[v]", "-pix_fmt", "yuv420p", str(sticker)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+    src = tmp_path / "src.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=128x128:r=10:d=6",
+         "-pix_fmt", "yuv420p", str(src)],
+        check=True, capture_output=True,
+    )  # fmt: skip
+
+    layer = dict(
+        valid_spec()["layers"][0],
+        t="all", anchor="top-left", margin=[0.0, 0.0], width=1.0, rotate=0, opacity=1,
+        source_in=2.0, source_out=4.0, playback=playback,
+    )  # fmt: skip
+    spec = EditSpec.model_validate(valid_spec(trim={"remove": []}, layers=[layer]))
+    out = tmp_path / "out.mp4"
+    plan = build_render_command(
+        spec,
+        {"duration": 6.0, "has_audio": False, "fps": 10},
+        {"a_sticker001": ImageSource(str(sticker), 64, 64, duration=6.0)},
+        spec.outputs[0],
+        source_path=str(src),
+        output_path=str(out),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=180)
+
+    rgb = {"blue": (0, 0, 255), "yellow": (255, 255, 0)}
+    for second, name in enumerate(expected):
+        frame = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", str(second + 0.5), "-i", str(out),
+             "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            check=True, capture_output=True,
+        ).stdout  # fmt: skip
+        got, want = frame[:3], rgb[name]
+        assert all(abs(got[i] - want[i]) < 24 for i in range(3)), (
+            f"t={second}.5s: expected {name} {want}, got {tuple(got)}"
+        )
+
+
 # --- sticker audio (mix_audio) ------------------------------------------------------
 
 VOCAL_STICKER = ImageSource("/data/assets/a_sticker001.mp4", 600, 240, duration=3.0, has_audio=True)
@@ -643,6 +795,27 @@ def test_sticker_audio_is_left_out_unless_the_layer_mixes_it():
     mute = video_build(source=ImageSource(VOCAL_STICKER.path, 600, 240, duration=3.0))
     assert vocal.argv == mute.argv
     assert "[aout]" not in fc(vocal) and "amix" not in fc(vocal)
+
+
+def test_trimmed_sticker_audio_follows_the_picture(): 
+    """The mixed audio must be the same piece of the asset the picture shows (HIG-67)."""
+    spec = mixing_spec(t=[4, 9], source_in=1.5, source_out=2.5)
+    graph = fc(video_build(spec, source=VOCAL_STICKER))
+    # 1s piece over a 5s window: the picture loops 4 extra times, so the audio does too.
+    assert "loop=loop=4:size=30:start=0" in graph  # picture
+    assert (
+        "[1:a]atrim=start=1.5:end=2.5,asetpts=PTS-STARTPTS,"
+        "aloop=loop=4:size=48000:start=0,asetpts=N/SR/TB,"
+        f"atrim=end=5,adelay=4000:all=1,{AFMT}[sa1]"
+    ) in graph
+
+
+def test_trimmed_sticker_audio_does_not_loop_when_the_picture_freezes():
+    """Picture and sound must agree: no repeat for the frames means no repeat for the samples."""
+    spec = mixing_spec(t=[0, 2], source_in=0.5, source_out=3.0)
+    graph = fc(video_build(spec, source=VOCAL_STICKER))
+    assert "loop=" not in graph and "aloop=" not in graph
+    assert f"[1:a]atrim=start=0.5:end=3,asetpts=PTS-STARTPTS,atrim=end=2,{AFMT}[sa1]" in graph
 
 
 def test_mixed_sticker_audio_is_windowed_delayed_and_mixed_over_the_trimmed_source():

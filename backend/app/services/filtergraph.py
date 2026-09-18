@@ -89,6 +89,26 @@ MIN_SEGMENT = 0.01  # seconds; shorter keep-segments are dropped
 AUDIO_FORMAT = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
 
 
+# `loop` keeps `size` decoded frames in memory, so a trimmed sticker may only repeat while
+# its cached frames fit this budget (contract §6, HIG-67). Past it we freeze instead.
+LOOP_BUDGET_BYTES = 256 * 1024 * 1024
+
+# Sample rate every audio chain is normalised to (see AUDIO_FORMAT); `aloop` sizes in samples.
+AUDIO_RATE = 48000
+
+
+@dataclass(frozen=True)
+class SourceTrim:
+    """Resolved in-asset trim of one video layer (contract §2, HIG-67)."""
+
+    start: float
+    end: float
+
+    @property
+    def length(self) -> float:
+        return self.end - self.start
+
+
 @dataclass(frozen=True)
 class ImageSource:
     """One layer's media. ``duration is None`` means a still image (the original case)."""
@@ -320,6 +340,58 @@ def image_layer_box(
     geo = apply_overrides(layer, variant)
     W, H = variant.canvas
     return layer_box(geo["anchor"], geo["margin"], geo["width"], W, H, image_w, image_h)
+
+
+def resolve_source_trim(layer: Any, image: ImageSource, warnings: list[str]) -> SourceTrim | None:
+    """In-asset trim of a video layer (contract §2, HIG-67).
+
+    ``None`` means "no trim" and keeps the pre-HIG-67 argv byte for byte: still images,
+    layers that set neither bound, and trims too short to survive clamping all land there.
+    """
+    if not image.is_video:
+        return None
+    raw_in = getattr(layer, "source_in", None)
+    raw_out = getattr(layer, "source_out", None)
+    if raw_in is None and raw_out is None:
+        return None
+    media = float(image.duration or 0.0)
+    start = max(0.0, float(raw_in or 0.0))
+    end = float(raw_out) if raw_out is not None else media
+    if media > 0:
+        if end > media + 1e-6:
+            warnings.append(f"图层 {layer.id}：素材内出点超出素材时长，已收到 {_fmt(media)} 秒")
+        end = min(end, media)
+    # Clamping can leave nothing usable -- an in-point past the asset, say. Drop the whole
+    # trim rather than render a sliver of a frame.
+    if end - start < MIN_SEGMENT:
+        warnings.append(f"图层 {layer.id}：素材内裁剪超出素材范围，已忽略")
+        return None
+    return SourceTrim(start, end)
+
+
+def source_loop_times(
+    trim: SourceTrim,
+    window: float,
+    playback: str,
+    frame_bytes: int,
+    fps: float,
+    layer_id: str,
+    warnings: list[str],
+) -> int | None:
+    """How many extra times a trimmed sticker repeats, or ``None`` when it must not.
+
+    ``-stream_loop -1`` cannot serve a trimmed layer -- ``trim=start`` ends that input after
+    the first pass -- so repeating moves into the filter graph, where ``loop`` caches ``size``
+    decoded frames. Past ``LOOP_BUDGET_BYTES`` we freeze on the last frame instead of letting
+    one layer eat the worker's memory.
+    """
+    if playback != "loop" or trim.length >= window - 1e-6:
+        return None
+    frames = max(1, round(trim.length * fps))
+    if frames * max(1, frame_bytes) > LOOP_BUDGET_BYTES:
+        warnings.append(f"图层 {layer_id}：裁剪后的片段过长，循环已跳过，末帧保持")
+        return None
+    return math.ceil(window / trim.length) - 1
 
 
 def _layer_window(t: Any, expected_duration: float) -> tuple[float, float]:
@@ -666,12 +738,16 @@ def build_render_command(
         w, h = max(1, w), max(1, h)
 
         playback = getattr(layer, "playback", "loop")
+        # In-asset trim (HIG-67). None keeps every pre-HIG-67 layer on the old path.
+        source_trim = resolve_source_trim(layer, image, warnings)
         options: list[str] = []
         if image.is_video:
             has_video_layer = True
-            if playback == "loop":
+            if playback == "loop" and source_trim is None:
                 # Safe only because the layer chain ends in trim=end (see below);
                 # on its own -stream_loop -1 makes ffmpeg run forever.
+                # A trimmed layer must not use it: trim=start ends the input after one
+                # pass, so the repeat comes from the `loop` filter instead (contract §6).
                 options += ["-stream_loop", "-1"]
             if image.decoder:
                 options += ["-c:v", image.decoder]
@@ -694,7 +770,8 @@ def build_render_command(
                     cursor = reveal_mask.cursor(layer.glyph_layout, layer.animation.reveal, window_len, delay, w, h)
                     background = _resolve_text_background(layer, resolve_image_url, variant.variant_key)
         animated = any((anim.opacity, anim.dx, anim.dy, anim.scale, mask))
-        fps = _fmt(float(video_meta.get("fps") or DEFAULT_FPS))
+        fps_value = float(video_meta.get("fps") or DEFAULT_FPS)
+        fps = _fmt(fps_value)
 
         input_index = len(inputs)
         if animated:
@@ -763,14 +840,31 @@ def build_render_command(
             steps.append(f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*if(eq(X,0),st(0,{gain}),ld(0))'")
         elif opacity < 1:
             steps.append(f"colorchannelmixer=aa={_fmt(opacity)}")
+        loop_times: int | None = None
         if image.is_video:
-            # Start the sticker at its own frame 0 when the window opens, instead of
-            # letting it run (and finish) behind the enable= gate.
-            steps.append(
-                "setpts=PTS-STARTPTS"
-                if t_start <= 0
-                else f"setpts=PTS-STARTPTS+{_fmt(t_start)}/TB"
-            )
+            shift = f"+{_fmt(t_start)}/TB" if t_start > 0 else ""
+            if source_trim is None:
+                # Start the sticker at its own frame 0 when the window opens, instead of
+                # letting it run (and finish) behind the enable= gate.
+                steps.append(f"setpts=PTS-STARTPTS{shift}")
+            else:
+                # Cut the asset's own [source_in, source_out) first, then let playback
+                # stretch that piece over the window (contract §2, HIG-67). Sitting after
+                # `scale`, the frames `loop` caches are the scaled ones.
+                steps.append(f"trim=start={_fmt(source_trim.start)}:end={_fmt(source_trim.end)}")
+                steps.append("setpts=PTS-STARTPTS")
+                loop_times = source_loop_times(
+                    source_trim, t_end - t_start, playback, w * h * 4, fps_value, layer.id, warnings
+                )
+                if loop_times is None:
+                    if shift:
+                        steps.append(f"setpts=PTS{shift}")
+                else:
+                    frames = max(1, round(source_trim.length * fps_value))
+                    steps.append(f"loop=loop={loop_times}:size={frames}:start=0")
+                    # `loop` replays the cached frames with their original PTS; rebuild the
+                    # timeline from the frame counter so the repeats land back to back.
+                    steps.append(f"setpts=N/FRAME_RATE/TB{shift}")
             # Bounds the looped input and any sticker longer than the main stream.
             steps.append(f"trim=end={_fmt(t_end)}")
         chains.append(",".join(steps) + lbl)
@@ -790,7 +884,20 @@ def build_render_command(
             if window > MIN_SEGMENT:
                 # Same timing as the picture: from the sticker's own 0 s at the window
                 # start, cut at the window end (the looped input repeats the audio too).
-                steps = [f"[{input_index}:a]asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+                if source_trim is None:
+                    steps = [f"[{input_index}:a]asetpts=PTS-STARTPTS", f"atrim=end={_fmt(window)}"]
+                else:
+                    # Trimmed layer: same cut as the picture, and the same decision about
+                    # repeating -- loop_times is None when the picture freezes (HIG-67).
+                    steps = [
+                        f"[{input_index}:a]atrim=start={_fmt(source_trim.start)}:end={_fmt(source_trim.end)}",
+                        "asetpts=PTS-STARTPTS",
+                    ]
+                    if loop_times is not None:
+                        samples = max(1, round(source_trim.length * AUDIO_RATE))
+                        steps.append(f"aloop=loop={loop_times}:size={samples}:start=0")
+                        steps.append("asetpts=N/SR/TB")
+                    steps.append(f"atrim=end={_fmt(window)}")
                 delay_ms = round(t_start * 1000)
                 if delay_ms > 0:
                     steps.append(f"adelay={delay_ms}:all=1")

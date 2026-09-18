@@ -41,6 +41,9 @@ OutputAspect = Literal["9:16", "1:1", "4:5", "16:9", "custom"]
 Fill = Literal["blur", "color", "crop"]
 # Video sticker shorter than its time window: loop it, hold the last frame, or let it end.
 Playback = Literal["loop", "freeze", "once"]
+
+# Shortest in-asset trim a sticker layer may keep (contract §2, HIG-67).
+MIN_SOURCE_SEGMENT = 0.1
 Quality = Literal["standard", "high"]
 LayerMode = Literal["replace", "style_only"]
 # How layers sit on a non-reference output (HIG-29): "canvas" = relative to that canvas (the
@@ -111,6 +114,19 @@ class StickerLayer(LayerBase):
     playback: Playback = "loop"
     # Mix the sticker's own audio into the output (contract §2); needs Asset.has_audio.
     mix_audio: bool = False
+    # In-asset trim (contract §2, HIG-67): take [source_in, source_out) of the asset's own
+    # timeline instead of starting at its 0 s. Video assets only; None = the whole asset.
+    # playback applies *after* this, so loop repeats the trimmed piece, not the whole asset.
+    source_in: float | None = Field(default=None, ge=0)
+    source_out: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _check_source_range(self) -> StickerLayer:
+        if self.source_out is not None:
+            start = self.source_in or 0.0
+            if self.source_out - start < MIN_SOURCE_SEGMENT - 1e-6:
+                raise ValueError("素材内裁剪长度至少为 0.1 秒")
+        return self
 
 
 class TextShadow(BaseModel):

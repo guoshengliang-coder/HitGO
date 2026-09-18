@@ -301,6 +301,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
       "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
       "name": "品牌角标",                     // 可选（HIG-48）：轨道 / 图层显示名，所有图层类型通用；缺省 = 编辑器自动命名，worker 忽略
+      "source_in": 1.5,                      // 可选，缺省 0（HIG-67）：素材内入点，秒；只对视频素材生效
+      "source_out": 7.5,                     // 可选，缺省素材时长（HIG-67）：素材内出点，秒
       "playback": "loop",                    // 可选，缺省 "loop"：视频贴纸短于 t 时段时 loop | freeze | once
       "mix_audio": false                     // 可选，缺省 false：视频贴纸自带的音轨是否合成进成片
     },
@@ -447,13 +449,27 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
+- **素材内裁剪 `source_in` / `source_out`**（均可选，缺省 `0` 与素材时长，HIG-67）：只对视频素材
+  （`Asset.kind = "video"`，含多帧 gif / webp）生效，静态图忽略。取素材自己时间轴上的 `[source_in, source_out)`
+  这一段参与合成，而不是从素材第 0 秒开始。约束 `0 ≤ source_in < source_out ≤ 素材时长`，
+  且 `source_out − source_in ≥ 0.1` 秒；超出素材时长时 worker 收到素材实际时长内并记警告。
+  两个字段都不写时命令与此前完全一致。
+  **与 `playback` 的先后**：先按 `source_in` / `source_out` 裁出片段长度 `L = source_out − source_in`，
+  再按 `playback` 把 `L` 补到 `t` 时段的长度。也就是说 `loop` 循环的是**裁剪后的片段**，不是整个素材；
+  `freeze` 定格的是 `source_out` 前的最后一帧。
+  **有裁剪时循环换一套实现**：输入侧的 `-stream_loop -1` 与素材内裁剪不兼容——滤镜链里的
+  `trim=start=…:end=…` 会在第一遍结束时终止该路流，循环拿不到后续帧（实测：裁 `[2,4]` 循环到 6 秒，
+  画面在第 2 秒后一直停在裁剪段的最后一帧）。所以有裁剪且确实需要循环时，改用滤镜侧的
+  `loop` / `aloop`（见第 6 节）。
 - **贴纸播放 `playback`**（可选，默认 `"loop"`）：只对视频贴纸（`Asset.kind = "video"`，含多帧 gif / webp）
-  生效，静态图忽略。素材时长短于 `t` 时段时 —— `loop` 循环播放；`freeze` 播完定格最后一帧；`once` 播完
-  消失。素材比时段长时一律在时段结束处截断。批量套用 `style_only` 时 `playback` 跟随 `asset_id` 一起复制。
+  生效，静态图忽略。素材（裁剪后，见上条）时长短于 `t` 时段时 —— `loop` 循环播放；`freeze` 播完定格最后
+  一帧；`once` 播完消失。素材比时段长时一律在时段结束处截断。批量套用 `style_only` 时 `playback`
+  跟随 `asset_id` 一起复制，`source_in` / `source_out` 同样跟随。
 - **贴纸音轨 `mix_audio`**（可选，默认 `false`）：只对带音轨的视频贴纸（`Asset.kind = "video"` 且
   `has_audio = true`）生效，其它贴纸与 `false` 一律忽略——成片音轨只来自源视频（即此前的行为）。为 `true`
   时贴纸音轨按原音量叠加到成片音轨上（不做音量调节，也不压低源视频音量）：只在 `t` 时段内出声，从
-  贴纸自己的第 0 秒开始；`loop` 时随画面循环，`freeze` / `once` 只放一遍；时段结束处截断。源视频
+  贴纸自己的第 0 秒开始（有 `source_in` 时从 `source_in` 开始，与画面同一段）；`loop` 时随画面循环，
+  `freeze` / `once` 只放一遍；时段结束处截断。源视频
   没有音轨时成片音轨就是贴纸音轨（其余时间静音）。编辑器预览按同样的规则出声。批量套用
   `style_only` 时 `mix_audio` 跟随 `asset_id` 一起复制。
 - **音轨 `audio`**（可选，缺省 null）：成片音轨 = 源音轨（剪辑后）× `source_volume` + 各贴纸 `mix_audio`
@@ -846,13 +862,24 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
        （`boxblur` 要求半径小于短边的一半，收到 0 时跳过）。`format=rgba` 放在 `crop` 之前，避免 yuv420p 下奇数坐标被取偶。
      - solid：`[c{n−1}]drawbox=x=X:y=Y:w=W:h=H:color=0xRRGGBB[@opacity]:t=fill[:enable='between(t,a,b)'][c{n}]`。
      - 区域裁后不足 2×2 px 的遮盖跳过并记警告，不占用 `[c{n}]` 编号；成片里存在遮盖层不影响输出端的 `-t` 判断（它不是视频输入）。
-   - 视频贴纸图层额外：输入侧 `playback = "loop"` 时加 `-stream_loop -1`，带透明的 WebM 还要强制解码器
-     （VP9 → `-c:v libvpx-vp9`，VP8 → `-c:v libvpx`，否则 alpha 会被静默丢弃）；滤镜侧在链尾加
-     `setpts=PTS-STARTPTS+a/TB`（贴纸从自己第 0 帧开始播）与 `trim=end=b`（既挡住无限循环，也挡住
-     比主流长的素材）；`playback = "once"` 用 `overlay=...:eof_action=pass`，其余用 `repeat`。
+   - 视频贴纸图层额外：输入侧 `playback = "loop"` 且**没有素材内裁剪**时加 `-stream_loop -1`，带透明的
+     WebM 还要强制解码器（VP9 → `-c:v libvpx-vp9`，VP8 → `-c:v libvpx`，否则 alpha 会被静默丢弃）；
+     滤镜侧在链尾加 `setpts=PTS-STARTPTS+a/TB`（贴纸从自己第 0 帧开始播）与 `trim=end=b`（既挡住无限
+     循环，也挡住比主流长的素材）；`playback = "once"` 用 `overlay=...:eof_action=pass`，其余用 `repeat`。
+   - 素材内裁剪 `source_in` / `source_out`（第 2 节，HIG-67）：链尾的 `setpts` 之前插入
+     `trim=start=source_in:end=source_out`（放在 `scale` 之后，循环缓存的是缩放后的帧）。此时**不加**
+     `-stream_loop -1`——它与 `trim=start` 不兼容，见第 2 节。裁出的片段长度 `L = source_out − source_in`：
+     - `L ≥ b − a`（够铺满时段）或 `playback ≠ "loop"`：只有 `trim`，其余与无裁剪时一致。
+     - `L < b − a` 且 `playback = "loop"`：`trim` 与 `setpts=PTS-STARTPTS` 之后接
+       `loop=loop=<n>:size=<frames>:start=0,setpts=N/FRAME_RATE/TB`，`frames = round(L × fps)`，
+       `n = ceil((b − a) / L) − 1`（有限次，不用 `-1`），再接平移与 `trim=end=b`。
+       `loop` 把 `size` 帧存在内存里，所以有预算上限：`frames × 缩放后宽 × 高 × 4 字节 ≤ 256 MiB`；
+       超出时不循环、按 `freeze` 处理（末帧保持）并记警告，不让 worker 吃掉整台机器的内存。
+     - 贴纸音轨同理：`[i:a]atrim=start=source_in:end=source_out,asetpts=PTS-STARTPTS` 起头，需要循环时
+       接 `aloop=loop=<n>:size=<samples>:start=0,asetpts=N/SR/TB`，`samples = round(L × 48000)`。
    - 贴纸音轨：`mix_audio = true` 且素材 `has_audio = true` 的图层，从该输入取
      `[i:a]asetpts=PTS-STARTPTS,atrim=end=b−a,adelay=a·1000:all=1,aformat=48000/stereo`（loop 复用输入侧的
-     `-stream_loop -1`），与主音轨（剪辑后的 `[at]` / 源 `0:a:0`；源无音轨时用 `anullsrc` 截到剪后时长）
+     `-stream_loop -1`；有素材内裁剪时改走上一条的 `atrim` + `aloop`），与主音轨（剪辑后的 `[at]` / 源 `0:a:0`；源无音轨时用 `anullsrc` 截到剪后时长）
      `amix=inputs=N:duration=first:normalize=0:dropout_transition=0` 混成 `[aout]` 再映射。没有这样的图层时
      命令与此前完全一致，贴纸音轨不映射。
    - 音轨 `audio`（第 2 节）：每条 track 一个 `-i` 输入（`loop = true` 时前置 `-stream_loop -1`），滤镜链
