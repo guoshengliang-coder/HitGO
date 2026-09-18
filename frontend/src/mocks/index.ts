@@ -460,7 +460,14 @@ function mergeLayersStyleOnly(target: Layer[], source: Layer[]): Layer[] {
     hit.width = s.width;
     hit.rotate = s.rotate;
     hit.opacity = s.opacity;
-    if (s.type === 'sticker' && hit.type === 'sticker') hit.asset_id = s.asset_id;
+    if (s.type === 'sticker' && hit.type === 'sticker') {
+      // 与后端 apply.py 的 _STYLE_KEYS_BY_TYPE 一致（此前这里漏了 playback / mix_audio）
+      hit.asset_id = s.asset_id;
+      for (const k of ['playback', 'mix_audio', 'source_in', 'source_out'] as const) {
+        if (s[k] !== undefined) (hit[k] as unknown) = s[k];
+        else delete hit[k];
+      }
+    }
     else if (s.type === 'text' && hit.type === 'text') {
       hit.text = s.text;
       if (s.spans) hit.spans = s.spans;
@@ -551,6 +558,12 @@ function seed() {
   assets.push(
     { id: 'a_demo1', type: 'sticker', name: '限时免费.png', url: s1.url, width: s1.width, height: s1.height, source: 'upload', created_at: now() },
     { id: 'a_demo2', type: 'sticker', name: '新人礼包.png', url: s2.url, width: s2.width, height: s2.height, source: 'builtin', created_at: now() },
+    // 叠加素材示例（HIG-67）：没有真视频文件，海报用生成的图，画布上和 mock 源片一样走合成时钟。
+    // 有它才能在 dev:mock 下走通「叠加素材」分组、入点 / 出点与替换素材。
+    {
+      id: 'a_demo3', type: 'sticker', kind: 'video', name: '倒计时动画.mp4', url: '/media/mock/countdown.mp4',
+      poster_url: s2.url, width: 480, height: 480, duration: 6, has_audio: true, source: 'builtin', created_at: now(),
+    },
   );
 }
 

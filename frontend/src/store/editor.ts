@@ -7,8 +7,8 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
-import { defaultTextStyle, emptySpec, isAssetReady } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer } from '../types';
+import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization } from '../lib/localize';
@@ -22,6 +22,7 @@ export interface ExportDialogRequest {
   langs?: string[];
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
+import { retrimForAsset } from '../lib/sourceTrim';
 import { normalizeSequenceAudio, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
@@ -110,6 +111,8 @@ export interface EditorState {
   specs: Record<string, EditSpec>;
   history: Record<string, History>;
   selectedLayerId: string | null;
+  /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
+  replacingLayerId: string | null;
   selectedClipId: string | null;
   time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
@@ -297,6 +300,13 @@ export interface EditorState {
   /** 把图层挪到同类里的第 index 位（0 = 同类最下层；越界夹到边界）。 */
   moveLayerToIndex: (id: string, index: number) => void;
   duplicateLayer: (id: string) => void;
+  /** 开始 / 取消「替换素材」（HIG-67）。 */
+  setReplacingLayer: (id: string | null) => void;
+  /**
+   * 替换贴纸图层的素材（HIG-67）：只换 asset_id，位置、尺寸、时段、层级、名字、播放方式全部保留。
+   * 素材内裁剪按新素材的时长收紧，放不下就整段播（lib/sourceTrim.retrimForAsset）。
+   */
+  replaceLayerAsset: (layerId: string, assetId: string) => void;
   copyLayer: () => void;
   pasteLayer: () => void;
   copyStyle: () => void;
@@ -387,6 +397,7 @@ const PER_BATCH_INITIAL = {
   specs: {},
   history: {},
   selectedLayerId: null,
+  replacingLayerId: null,
   selectedClipId: null,
   selectedRangeIndex: null,
   selectedTrackId: null,
@@ -1645,6 +1656,26 @@ export const useEditor = create<EditorState>((set, get) => {
         spec.layers.splice(i + 1, 0, copy);
       });
       set({ selectedLayerId: copy.id });
+    },
+    setReplacingLayer: (id) => set({ replacingLayerId: id }),
+    replaceLayerAsset: (layerId, assetId) => {
+      const layer = get().currentSpec()?.layers.find((l) => l.id === layerId);
+      if (!layer || layer.type !== 'sticker') return;
+      const asset = get().assets.find((a) => a.id === assetId);
+      if (!asset) return;
+      const trim = retrimForAsset(layer, asset.duration ?? 0);
+      get().updateLayer(layerId, (l) => {
+        const sticker = l as StickerLayer;
+        sticker.asset_id = assetId;
+        // 裁剪跟着新素材走；放不下就整段播，而不是留一段越界的值
+        if (trim.source_in === undefined) delete sticker.source_in;
+        else sticker.source_in = trim.source_in;
+        if (trim.source_out === undefined) delete sticker.source_out;
+        else sticker.source_out = trim.source_out;
+        // 换成静态图后播放方式没有意义，但留着不发也无害；换成视频时缺省补 loop
+        if (isVideoAsset(asset) && sticker.playback === undefined) sticker.playback = 'loop';
+      });
+      set({ replacingLayerId: null, selectedLayerId: layerId, toast: `已替换为「${asset.name}」` });
     },
     copyLayer: () => {
       const id = get().selectedLayerId;

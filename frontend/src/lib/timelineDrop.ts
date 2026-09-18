@@ -48,13 +48,13 @@ export function assetDragType(types: ArrayLike<string> | null | undefined): Asse
 
 /**
  * 这次拖到时间线上会加什么：素材卡片看类型标记；系统文件看 items 的 MIME（dragover 时拿得到类型、拿不到内容），
- * 全是图片才算贴纸，其余（音频、混着的、类型不明的）按音轨提示——松手时再按实际文件分流。
+ * 全是图片或视频才算贴纸（视频 HIG-67），其余（音频、混着的、类型不明的）按音轨提示——松手时再按实际文件分流。
  */
 export function dropKind(types: ArrayLike<string> | null | undefined, items: ArrayLike<{ kind: string; type: string }> | null | undefined): 'sticker' | 'audio' {
   const card = assetDragType(types);
   if (card) return card === 'sticker' ? 'sticker' : 'audio';
   const files = Array.from(items ?? []).filter((i) => i.kind === 'file');
-  return files.length > 0 && files.every((i) => /^image\//i.test(i.type)) ? 'sticker' : 'audio';
+  return files.length > 0 && files.every((i) => /^(image|video)\//i.test(i.type)) ? 'sticker' : 'audio';
 }
 
 /** 落在哪一行决定角色：落在口播音轨行上加口播，其余（BGM 行、源音轨、空白处）都加 BGM。 */

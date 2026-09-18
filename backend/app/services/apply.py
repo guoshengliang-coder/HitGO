@@ -30,7 +30,7 @@ LAYER_MODES = ("replace", "style_only")
 # Keys copied from source → matched target in style_only mode, by layer type.
 _STYLE_KEYS_COMMON = ("width", "rotate", "opacity")
 _STYLE_KEYS_BY_TYPE: dict[str, tuple[str, ...]] = {
-    "sticker": ("asset_id", "playback", "mix_audio"),
+    "sticker": ("asset_id", "playback", "mix_audio", "source_in", "source_out"),
     "text": (
         "text", "spans", "style", "image_url", "image_size", "variant_images", "animation", "scroll",
         "glyph_layout", "background_image",  # HIG-45: belong to the PNG, like image_url

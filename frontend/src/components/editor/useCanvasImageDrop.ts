@@ -7,7 +7,7 @@ import { isFileDrag } from '../../lib/fileDrop';
 import { assetDragType, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
 import { assetAspect, canvasDropMargin, defaultMargin } from '../../lib/imageDrop';
 import type { Asset } from '../../types';
-import { addStickerLayers, dropImages } from './stickerDrop';
+import { addStickerLayers, dropOverlays } from './stickerDrop';
 
 export function useCanvasImageDrop(boxRef: RefObject<HTMLElement>, opts: { enabled: boolean; isRef: boolean }) {
   const [over, setOver] = useState(false);
@@ -55,7 +55,7 @@ export function useCanvasImageDrop(boxRef: RefObject<HTMLElement>, opts: { enabl
         return;
       }
       const files = Array.from(e.dataTransfer.files);
-      if (files.length) void dropImages(files, at);
+      if (files.length) void dropOverlays(files, at);
     },
   };
   return { over, handlers };

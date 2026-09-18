@@ -1,12 +1,19 @@
-// 把 JPG / PNG 拖进编辑器（HIG-46）的纯逻辑：认格式、按落点算贴纸图层。
+// 把图片 / 视频拖进编辑器（HIG-46，视频 HIG-67）的纯逻辑：认格式、按落点算贴纸图层。
 // 三个落点共用这一套：画布（按落点摆放）、时间线（落点时间作为出现起点）、贴纸面板（默认位置）。
-// 图片走现有的贴纸链路：上传成 type = sticker、kind = image 的素材，再加一个贴纸图层；后端与契约不变。
+// 都走现有的贴纸链路：上传成 type = sticker 的素材（图片 kind = image，视频 kind = video），
+// 再加一个贴纸图层；后端与契约不变。
 
 import { isVideoAsset, type Asset, type StickerLayer, type TimeWindow } from '../types';
 
-/** 本需求只收 JPG / PNG（webp / gif / 视频贴纸仍走素材库上传）。 */
+/** 图片贴纸（HIG-46）。 */
 export const IMAGE_ACCEPT = 'image/png,image/jpeg,.png,.jpg,.jpeg';
 export const IMAGE_ACCEPT_TEXT = 'JPG / PNG';
+/**
+ * 拖进编辑器能收的叠加素材（HIG-67）：图片 + 视频，与素材库的 STICKER_ACCEPT 对齐。
+ * 此前编辑器只认 JPG / PNG，而素材库早就收 mp4 / mov / webm，两处对不上。
+ */
+export const OVERLAY_ACCEPT = `${IMAGE_ACCEPT},image/webp,image/gif,video/mp4,video/quicktime,video/webm,.webp,.gif,.mp4,.mov,.webm`;
+export const OVERLAY_ACCEPT_TEXT = 'JPG / PNG / WEBP / GIF / MP4 / MOV / WEBM';
 
 /** 与「贴纸」面板点选添加一致的默认值。 */
 export const STICKER_DEFAULTS = { anchor: 'top-left', margin: [0.08, 0.12], width: 0.35 } as const;

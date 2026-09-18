@@ -428,6 +428,13 @@ export interface StickerLayer extends LayerBase {
   playback?: Playback;
   /** 可选，缺省 false：视频贴纸自带的音轨是否合成进成片（契约 §2），只对 has_audio 的素材生效。 */
   mix_audio?: boolean;
+  /** 可选，缺省 0（HIG-67）：素材内入点，秒。只对视频素材（Asset.kind = 'video'）生效，静态图忽略。 */
+  source_in?: number;
+  /**
+   * 可选，缺省素材时长（HIG-67）：素材内出点，秒。
+   * playback 在裁剪**之后**生效：loop 循环的是裁出来的这一段，不是整个素材（契约 §2）。
+   */
+  source_out?: number;
 }
 
 /** 上传票据端点：大文件绕开 CDN 的上传子域名；未配置时全是 null。 */

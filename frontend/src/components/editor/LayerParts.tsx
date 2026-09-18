@@ -12,6 +12,7 @@ import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } f
 import { alignPlacement, placeLayer, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerFollows, overrideDetaches, placementOfBox } from '../../lib/variantLayout';
 import { layerAspect } from '../../lib/spec';
+import { clampSourceIn, clampSourceOut, MIN_SOURCE_SEGMENT, sourceSegment } from '../../lib/sourceTrim';
 import { BUILTIN_FONT_FAMILY, BUILTIN_WEB_FONTS } from '../../lib/fonts';
 import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
@@ -341,14 +342,45 @@ const AUDIO_MODES: SegOption<boolean>[] = [
   { v: true, label: '合成', title: '贴纸自带的声音叠加进成片（时段内，跟随播放方式）' },
 ];
 
-/** 视频贴纸：播放方式 / 音轨。 */
+/** 视频贴纸：素材内裁剪（HIG-67）/ 播放方式 / 音轨。 */
 function StickerMediaSection({ layer }: { layer: StickerLayer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const assets = useEditor((s) => s.assets);
   const asset = assets.find((a) => a.id === layer.asset_id);
   if (!isVideoAsset(asset)) return null;
+  const media = asset?.duration ?? 0;
+  const seg = sourceSegment(layer, media);
+  const setIn = (v: number) => {
+    const next = clampSourceIn(v, seg.end, media);
+    updateLayer(layer.id, { source_in: next > 0 ? next : undefined, source_out: round2(seg.end) });
+  };
+  const setOut = (v: number) => {
+    const next = clampSourceOut(v, seg.start, media);
+    updateLayer(layer.id, { source_in: seg.start > 0 ? round2(seg.start) : undefined, source_out: next });
+  };
   return (
-    <Section title="播放" bodyClass="stack">
+    <Section
+      title="播放"
+      bodyClass="stack"
+      help={seg.trimmed ? `用素材的 ${seg.start.toFixed(2)}s – ${seg.end.toFixed(2)}s` : undefined}
+    >
+      {media > 0 && (
+        <>
+          <div className="inline">
+            <Num label="入点" value={seg.start} onChange={setIn} step={0.1} min={0} max={Math.max(0, seg.end - MIN_SOURCE_SEGMENT)} scale={1} suffix="s" title="从素材的第几秒开始用" />
+            <Num label="出点" value={seg.end} onChange={setOut} step={0.1} min={seg.start + MIN_SOURCE_SEGMENT} max={media} scale={1} suffix="s" title="用到素材的第几秒为止" />
+          </div>
+          {seg.trimmed && (
+            <button
+              className="btn ghost sm"
+              onClick={() => updateLayer(layer.id, { source_in: undefined, source_out: undefined })}
+              title={`恢复成整段素材（${media.toFixed(2)}s）`}
+            >
+              用整段素材
+            </button>
+          )}
+        </>
+      )}
       <Seg label="播放" options={PLAYBACK_MODES} value={layer.playback ?? 'loop'} onChange={(mode) => updateLayer(layer.id, { playback: mode })} />
       {asset?.has_audio === true && (
         <Field label="音轨">
@@ -356,6 +388,23 @@ function StickerMediaSection({ layer }: { layer: StickerLayer }) {
         </Field>
       )}
     </Section>
+  );
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/** 换掉图层用的素材，别的属性一概不动（HIG-67）。图片贴纸也能换，所以不放在「播放」组里。 */
+export function ReplaceAssetButton({ layer }: { layer: StickerLayer }) {
+  const replacing = useEditor((s) => s.replacingLayerId) === layer.id;
+  const setReplacingLayer = useEditor((s) => s.setReplacingLayer);
+  return (
+    <button
+      className={`btn ${replacing ? 'action' : ''}`}
+      onClick={() => setReplacingLayer(replacing ? null : layer.id)}
+      title="换一个素材，位置、尺寸、时段、层级、名字和播放方式都保留"
+    >
+      {replacing ? '选择素材中…点此取消' : '替换素材'}
+    </button>
   );
 }
 
@@ -646,7 +695,14 @@ export function LayerProps({ layer }: { layer: Layer }) {
           <TextSections layer={layer} sel={sel} />
         </>
       )}
-      {layer.type === 'sticker' && <StickerMediaSection layer={layer} />}
+      {layer.type === 'sticker' && (
+        <>
+          <div className="inline" style={{ padding: '0 0 6px' }}>
+            <ReplaceAssetButton layer={layer} />
+          </div>
+          <StickerMediaSection layer={layer} />
+        </>
+      )}
       {layer.type === 'mask' && <MaskSection layer={layer} />}
       <PlacementSection layer={layer} />
       <BlendSection layer={layer} />

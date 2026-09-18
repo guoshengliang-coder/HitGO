@@ -11,7 +11,7 @@
 // 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），上下边把手改框高（style.box_height，
 // 不小于文字本身，文字在框内垂直居中）。拖边时逐帧同步重画 PNG，字号、字形不变，被拖边的对边不动。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
-// 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
+// 把图片 / 视频或贴纸卡片拖到画布上（图片 HIG-46，视频 HIG-67）：以落点为中心加贴纸图层（useCanvasImageDrop）。
 // 滚动文字（HIG-50 大字报）：PNG 在裁切框（scroll.box）里按 lib/poster 的曲线向上滚，框外裁掉；不能拖动 / 缩放，
 // 选中且暂停时画出框线。成片时长（trim.duration）交给 player 循环补足，播放头的成片时刻从 usePostTime 取（跨遍累加）。
 
@@ -38,6 +38,7 @@ import { containBox, coverBox, variantFrameBox } from '../../lib/videoBox';
 import { coverMediaTime } from '../../lib/cover';
 import { useVideo } from '../../lib/useVideo';
 import { stickerAudible, stickerFinished, stickerMediaTime, windowRange } from '../../lib/stickerMedia';
+import { sourceSegment } from '../../lib/sourceTrim';
 import { REST, enterDelay, hasAnimation, sampleAnimation } from '../../lib/textAnimation';
 import { CURSOR_TAIL, buildGlyphLayout, paintReveal, revealTiming, unitCount } from '../../lib/textReveal';
 import { InlineTextEditor } from './InlineTextEditor';
@@ -309,25 +310,29 @@ function LayerNode({
     if (!stickerVideo || layer.type !== 'sticker') return;
     const playback = layer.playback ?? 'loop';
     const mediaDuration = sticker?.duration ?? stickerVideo.duration ?? 0;
+    // 素材内裁剪（HIG-67）：预览只播 [source_in, source_out)，和成片同一段
+    const segment = sourceSegment(layer, mediaDuration);
     const sync = (postTime: number, playing: boolean) => {
-      const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback);
+      const at = stickerMediaTime(postTime, layer.t, postDuration, mediaDuration, playback, segment);
       // 贴纸音轨（mix_audio）：和成片同一套规则决定此刻出不出声；元素默认静音
       stickerVideo.muted = !stickerAudible({
         postTime, t: layer.t, postDuration, mediaDuration, playback, playing,
-        mixAudio: layer.mix_audio, hasAudio: sticker?.has_audio,
+        mixAudio: layer.mix_audio, hasAudio: sticker?.has_audio, segment,
       });
       if (at === null) {
         if (!stickerVideo.paused) stickerVideo.pause();
         return;
       }
-      if (playing && stickerFinished(postTime, layer.t, postDuration, mediaDuration, playback)) {
+      if (playing && stickerFinished(postTime, layer.t, postDuration, mediaDuration, playback, segment)) {
         // freeze 定格中：再 play() 浏览器会从头重播（画面闪、声音重来），停在最后一帧即可
         if (!stickerVideo.paused) stickerVideo.pause();
         if (Math.abs(stickerVideo.currentTime - at) > 0.01) stickerVideo.currentTime = at;
       } else if (playing) {
         // 播放中只在明显漂移时纠正，否则每帧 seek 会让画面抖
         if (stickerVideo.playbackRate !== player.mediaRate) stickerVideo.playbackRate = player.mediaRate;
-        if (Math.abs(stickerVideo.currentTime - at) > 0.25 * player.mediaRate) stickerVideo.currentTime = at;
+        // 越过出点要马上拉回：0.25s 的漂移容差会让裁掉的内容露出来
+        const overran = segment.trimmed && stickerVideo.currentTime > segment.end + 0.02;
+        if (overran || Math.abs(stickerVideo.currentTime - at) > 0.25 * player.mediaRate) stickerVideo.currentTime = at;
         if (stickerVideo.paused) void stickerVideo.play().catch(() => undefined);
       } else {
         if (!stickerVideo.paused) stickerVideo.pause();
