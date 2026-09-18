@@ -416,7 +416,7 @@ export interface LayerBase {
   opacity: number;
   t: TimeWindow;
   /** 可选；改语言模块生成的图层打 'localize'（契约 §2），套用别的语言版本时按它整批替换。发送给后端，原样存取。 */
-  origin?: 'localize';
+  origin?: 'localize' | 'subtitle';
   /** 可选；与 origin 配套：这层译文字幕属于哪个目标语言。 */
   lang?: string;
   /** 可选（HIG-33）：时间线上关掉眼睛。留在 spec 里，成片不渲染（视频贴纸的声音一起去掉）；缺省 false，false 时不发。 */

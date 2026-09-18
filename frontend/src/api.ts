@@ -245,6 +245,27 @@ export const api = {
   /** 跨批次的已完成产物，按完成时间倒序；q 按导出名称 / 批次名 / 视频名 / 语言名搜索（HIG-27）；lang 只要某个语言，original = 原版（HIG-43）。 */
   allOutputs: (limit = 100, offset = 0, q = '', lang = '') =>
     request<Job[]>('GET', `/api/outputs?limit=${limit}&offset=${offset}${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ''}${lang ? `&lang=${encodeURIComponent(lang)}` : ''}`),
+  downloadMediaFiles: async (options: Record<string, unknown>): Promise<void> => {
+    const response = await fetch('/api/media-export/files', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw new Error(typeof detail?.detail === 'string' ? detail.detail : `导出失败（HTTP ${response.status}）`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'HitGO_media.zip';
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } finally {
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    }
+  },
   /**
    * 批量下载（HIG-47）：提交隐藏表单到 POST /api/outputs/zip，响应是附件，浏览器边收边写盘、不进内存。
    * 表单目标是隐藏 iframe，页面本身不跳转。成功时是附件下载，iframe 不会加载出页面；

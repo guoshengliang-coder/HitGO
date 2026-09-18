@@ -523,6 +523,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-ruler .tick.minor { height: 40%; top: 60%; border-color: var(--line-soft); }
 .tl-row .body { touch-action: none; }
 .tl-snap { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--focus); z-index: 5; pointer-events: none; }
+.tl-ghost-clip { position: absolute; top: 3px; bottom: 3px; z-index: 6; pointer-events: none; border: 1px dashed var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--ink); padding: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
+.tl-clip-hit { position: absolute; top: 1px; height: 14px; z-index: 3; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); cursor: grab; }
+.tl-clip-hit.selected { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .tl-playhead .grip { position: absolute; top: 0; left: -7px; width: 14px; height: 20px; cursor: ew-resize; pointer-events: auto; touch-action: none; }
 .tl-row { position: relative; display: grid; grid-template-columns: 96px 1fr; border-bottom: 1px solid var(--s1-line); }
 .tl-row .lbl { font-size: 11px; color: var(--ink-2); padding: 2px 8px; border-right: 1px solid var(--line-soft); background: var(--s0); position: sticky; left: 0; z-index: 3; display: flex; align-items: center; gap: 4px; overflow: hidden; white-space: nowrap; }

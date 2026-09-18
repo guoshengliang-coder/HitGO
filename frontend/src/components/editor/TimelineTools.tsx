@@ -23,6 +23,11 @@ export function TimelineTools() {
   const deleteRange = useEditor((s) => s.deleteRemoveRange);
   const selectedLayerId = useEditor((s) => s.selectedLayerId);
   const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
+  const timelineSelection = useEditor((s) => s.timelineSelection);
+  const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
+  const copyTimelineItems = useEditor((s) => s.copyTimelineItems);
+  const pasteTimelineItems = useEditor((s) => s.pasteTimelineItems);
+  const deleteTimelineItems = useEditor((s) => s.deleteTimelineItems);
   const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
   const setMarqueeEnabled = useEditor((s) => s.setMarqueeEnabled);
   const selectAllLayers = useEditor((s) => s.selectAllLayers);
@@ -44,9 +49,10 @@ export function TimelineTools() {
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
 
-  const canDelete = selectedLayerIds.length > 1 || (step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId);
+  const canDelete = timelineSelection.length > 0 || selectedLayerIds.length > 1 || (step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId);
   const onDelete = () => {
-    if (selectedLayerIds.length > 1) removeSelectedLayers();
+    if (timelineSelection.length) deleteTimelineItems();
+    else if (selectedLayerIds.length > 1) removeSelectedLayers();
     else if (step === 'trim') {
       if (selectedRange !== null) deleteRange(selectedRange);
     } else if (step === 'audio') {
@@ -61,7 +67,9 @@ export function TimelineTools() {
     <div className="tl-tools">
       <button className={`btn ${marqueeEnabled ? 'on' : ''}`} aria-pressed={marqueeEnabled} title="在时间轴拖出选择框；Shift 追加，Alt/Ctrl 排除" onClick={() => setMarqueeEnabled(!marqueeEnabled)}>框选</button>
       <button className="btn" onClick={selectAllLayers} title="选中当前视频所有可见且未锁定的视觉图层">全选图层</button>
-      <button className="btn" onClick={() => setSelectedLayer(null)} disabled={!selectedLayerIds.length}>取消选择</button>
+      <button className="btn" onClick={() => { selectTimelineItems([]); setSelectedLayer(null); }} disabled={!selectedLayerIds.length && !timelineSelection.length}>取消选择</button>
+      <button className="btn" onClick={copyTimelineItems} disabled={!timelineSelection.length} title="复制选中的视频、图片、字幕或音频片段">复制所选</button>
+      <button className="btn" onClick={pasteTimelineItems} title="把复制的片段粘贴到播放头">粘贴</button>
       {selectedLayerIds.length > 1 && <>
         <button className="btn" onClick={duplicateSelectedLayers}>复制 {selectedLayerIds.length}</button>
         <label title="批量修改透明度" style={{ display: 'flex', alignItems: 'center', gap: 3 }}>透明度 <input type="range" min="0" max="1" step="0.05" value={selectedOpacity} onChange={(e) => updateSelectedOpacity(Number(e.target.value))} style={{ width: 64 }} /></label>

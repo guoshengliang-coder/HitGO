@@ -12,8 +12,10 @@ import { exportableLangs, ORIGINAL_LANG, planLanguageExport } from '../../lib/la
 import { langLabel } from '../../lib/localize';
 import { VARIANT_DEFS, outputSize, type VariantKey } from '../../types';
 import { Modal } from '../ui/Modal';
+import { MediaExportDialog, MediaExportTabs, type MediaExportKind } from './MediaExportDialog';
 
 export function ExportDialog({ request, onClose }: { request?: ExportDialogRequest; onClose: () => void }) {
+  const [kind, setKind] = useState<MediaExportKind>('video');
   const videos = useEditor((s) => s.videos);
   const selectedIds = useEditor((s) => s.selectedIds);
   const currentId = useEditor((s) => s.currentVideoId);
@@ -56,6 +58,8 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
     { key: 'current', label: '仅当前这条', note: current?.name ?? '—', disabled: !current },
   ];
 
+  if (kind !== 'video') return <MediaExportDialog kind={kind} onKind={setKind} onClose={onClose} />;
+
   return (
     <Modal
       title="导出"
@@ -85,6 +89,7 @@ export function ExportDialog({ request, onClose }: { request?: ExportDialogReque
         </>
       }
     >
+      <MediaExportTabs kind={kind} onKind={setKind} />
       <label className="field" style={{ marginBottom: 12 }}>
         导出名称（可选）
         <input

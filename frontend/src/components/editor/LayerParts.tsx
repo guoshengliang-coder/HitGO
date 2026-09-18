@@ -23,6 +23,7 @@ import { fontChoices, groupPresets, searchFontChoices } from '../../lib/textGall
 import { Section } from '../ui/Section';
 import { TextAnimationSection } from './TextAnimationSection';
 import { ColorPicker } from '../ui/ColorPicker';
+import { formatHex, parseHex } from '../../lib/color';
 import {
   IconAlignBottom, IconAlignLeft, IconAlignRight, IconAlignTop, IconCenterH, IconCenterV, IconCopy, IconDown, IconEye, IconLock, IconMask, IconSticker, IconText, IconTrash, IconUp,
 } from '../ui/Icons';
@@ -586,6 +587,7 @@ export function TextSections({ layer, sel, poster = false }: { layer: TextLayer;
           <>
             <Field label="颜色">
               <ColorPicker label="背景颜色" alpha value={st.background} onChange={(c) => patchStyle({ background: c })} />
+              <Slider label="背景不透明度" value={parseHex(st.background)?.a ?? 1} onChange={(v) => patchStyle({ background: formatHex({ ...(parseHex(st.background) ?? { r: 0, g: 0, b: 0, a: 1 }), a: v }) })} />
             </Field>
             <div className="g2">
               <Num label="内边距" value={st.padding} min={0} max={0.1} step={0.001} scale={1000} suffix="‰" onChange={(v) => patchStyle({ padding: v })} />

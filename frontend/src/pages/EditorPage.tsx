@@ -91,6 +91,12 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
 
   const layerStep = !!layerTypeForStep(s.step);
 
+  if (s.timelineSelection.length && (e.code === 'Delete' || e.code === 'Backspace') && !mod) {
+    e.preventDefault();
+    s.deleteTimelineItems();
+    return;
+  }
+
   // ---- 修饰键组合 ----
   if (mod) {
     switch (e.code) {
@@ -122,6 +128,13 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
       case 'KeyC':
       case 'KeyV':
       case 'KeyX': {
+        if ((e.code === 'KeyV' && s.hasTimelineClipboard) || (e.code !== 'KeyV' && s.timelineSelection.length)) {
+          if (e.code !== 'KeyV' && (window.getSelection()?.toString() ?? '') !== '') return;
+          e.preventDefault();
+          if (e.code === 'KeyV') s.pasteTimelineItems();
+          else { s.copyTimelineItems(); if (e.code === 'KeyX') s.deleteTimelineItems(); }
+          return;
+        }
         if (!layerStep) return;
         // 页面上有选中文字时交给浏览器
         if (e.code !== 'KeyV' && (window.getSelection()?.toString() ?? '') !== '') return;

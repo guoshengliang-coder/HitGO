@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
@@ -23,7 +23,7 @@ export interface ExportDialogRequest {
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { retrimForAsset } from '../lib/sourceTrim';
-import { normalizeSequenceAudio, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
+import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
 import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
@@ -57,6 +57,8 @@ export interface LastApply {
 }
 
 export type EditorTheme = 'light' | 'dark';
+type TimelineClipboard = { clips: SequenceClip[]; layers: Layer[]; tracks: AudioTrack[]; origin: number };
+let timelineClipboard: TimelineClipboard | null = null;
 const THEME_KEY = 'hitgo.editorTheme';
 /** 整站默认深色（与剪映一致）；只有用户明确切到浅色才记住浅色。 */
 function loadTheme(): EditorTheme {
@@ -114,6 +116,8 @@ export interface EditorState {
   selectedLayerId: string | null;
   /** HIG-63：同一视频里的视觉图层多选；selectedLayerId 是属性面板的主选中项。 */
   selectedLayerIds: string[];
+  subtitleSyncEnabled: boolean;
+  setSubtitleSyncEnabled: (enabled: boolean) => void;
   marqueeEnabled: boolean;
   /** HIG-65：贴纸页当前要在预览画布拖画的图形；null = 普通选择。 */
   drawingShape: import('../types').ShapeLayer['shape'] | null;
@@ -122,6 +126,8 @@ export interface EditorState {
   /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
   replacingLayerId: string | null;
   selectedClipId: string | null;
+  timelineSelection: string[];
+  hasTimelineClipboard: boolean;
   time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
   /** 播放到第几遍（0 起，HIG-50 循环补足）；镜像 player.lap。成片时刻 = lap × 剪后时长 + 剪后时刻，见 usePostTime。 */
@@ -201,6 +207,11 @@ export interface EditorState {
   setDrawingShape: (shape: import('../types').ShapeLayer['shape'] | null) => void;
   focusLayer: (layer: Layer) => void;
   setSelectedClip: (id: string | null) => void;
+  selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract') => void;
+  copyTimelineItems: () => void;
+  pasteTimelineItems: () => void;
+  deleteTimelineItems: () => void;
+  shiftTimelineItems: (seconds: number) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
@@ -418,11 +429,14 @@ const PER_BATCH_INITIAL = {
   history: {},
   selectedLayerId: null,
   selectedLayerIds: [],
+  subtitleSyncEnabled: false,
   marqueeEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
   replacingLayerId: null,
   selectedClipId: null,
+  timelineSelection: [],
+  hasTimelineClipboard: false,
   selectedRangeIndex: null,
   selectedTrackId: null,
   selectedMuteIndex: null,
@@ -1063,7 +1077,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCurrent: (id) => {
       if (id === get().currentVideoId) return;
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedLayerIds: [], selectedClipId: null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedLayerId: null, selectedLayerIds: [], subtitleSyncEnabled: false, selectedClipId: null, timelineSelection: [], selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -1071,10 +1085,11 @@ export const useEditor = create<EditorState>((set, get) => {
     setStep: (step) => {
       player.pause();
       // 选中的图层 / 区间 / 音轨只属于原模块：切模块时不保留上个模块的选择
-      set({ step, selectedLayerId: null, selectedLayerIds: [], drawingShape: step === 'sticker' ? get().drawingShape : null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, cropEditing: false });
+      set({ step, selectedLayerId: null, selectedLayerIds: [], timelineSelection: [], drawingShape: step === 'sticker' ? get().drawingShape : null, selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, cropEditing: false });
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId, selectedLayerIds: selectedLayerId ? [selectedLayerId] : [] }),
+    setSubtitleSyncEnabled: (subtitleSyncEnabled) => set({ subtitleSyncEnabled }),
     selectLayers: (ids, mode = 'replace') => {
       const spec = get().currentSpec();
       if (!spec) return;
@@ -1155,6 +1170,113 @@ export const useEditor = create<EditorState>((set, get) => {
       set((s) => ({ selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
     },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
+    selectTimelineItems: (keys, mode = 'replace') => {
+      const old = get().timelineSelection;
+      const next = mode === 'add' ? [...new Set([...old, ...keys])] : mode === 'subtract' ? old.filter((key) => !keys.includes(key)) : [...new Set(keys)];
+      const layers = next.filter((key) => key.startsWith('layer:')).map((key) => key.slice(6));
+      const clips = next.filter((key) => key.startsWith('clip:')).map((key) => key.slice(5));
+      const tracks = next.filter((key) => key.startsWith('track:')).map((key) => key.slice(6));
+      set({ timelineSelection: next, selectedLayerIds: layers, selectedLayerId: layers[layers.length - 1] ?? null, selectedClipId: clips[clips.length - 1] ?? null, selectedTrackId: tracks[tracks.length - 1] ?? null });
+    },
+    copyTimelineItems: () => {
+      const spec = get().currentSpec();
+      if (!spec) return;
+      const keys = new Set(get().timelineSelection);
+      const windows = spec.sequence ? clipWindows(spec.sequence).filter((w) => keys.has(`clip:${w.clip.id}`)) : [];
+      const clips = windows.map((w) => structuredClone(w.clip));
+      const layers = spec.layers.filter((layer) => keys.has(`layer:${layer.id}`)).map((layer) => structuredClone(layer));
+      const tracks = (spec.audio?.tracks ?? []).filter((track) => keys.has(`track:${track.id}`)).map((track) => structuredClone(track));
+      if (!clips.length && !layers.length && !tracks.length) return;
+      const starts = [...windows.map((w) => w.start), ...layers.map((l) => l.t === 'all' ? 0 : l.t[0]), ...tracks.map((t) => t.t === 'all' ? 0 : t.t[0])];
+      timelineClipboard = { clips, layers, tracks, origin: Math.min(...starts) };
+      set({ hasTimelineClipboard: true });
+      get().setToast(`已复制 ${clips.length + layers.length + tracks.length} 个片段`);
+    },
+    pasteTimelineItems: () => {
+      const source = timelineClipboard;
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!source || !video || !spec) return;
+      let next = cloneSpec(spec);
+      const ids: string[] = [];
+      const at = Math.max(0, get().time);
+      if (source.clips.length) {
+        next = materializeSequence(next, video.id, video.duration);
+        const windows = clipWindows(next.sequence!);
+        const index = windows.findIndex((w) => at < (w.start + w.end) / 2);
+        const inserted = pasteClipSet(next, source.clips, index < 0 ? windows.length : index);
+        next = inserted.spec;
+        ids.push(...inserted.ids.map((id) => `clip:${id}`));
+      }
+      const timed = [...source.layers, ...source.tracks].map((item) => item.t).filter((window): window is [number, number] => window !== 'all');
+      const timelineEnd = next.sequence ? postTrimDuration(sequenceDuration(next.sequence), next.trim.remove) : selectPostDuration(get());
+      const delta = timed.length ? Math.max(-Math.min(...timed.map((window) => window[0])), Math.min(timelineEnd - Math.max(...timed.map((window) => window[1])), at - source.origin)) : at - source.origin;
+      const moveWindow = (window: [number, number] | 'all'): [number, number] | 'all' => window === 'all' ? 'all' : [Math.max(0, window[0] + delta), Math.max(0.1, window[1] + delta)];
+      for (const layer of source.layers) {
+        const copy = { ...structuredClone(layer), id: newLayerId(), t: moveWindow(layer.t) };
+        next.layers.push(copy);
+        ids.push(`layer:${copy.id}`);
+      }
+      if (source.tracks.length) next.audio ??= { source_volume: 1, tracks: [] };
+      for (const track of source.tracks) {
+        const copy = { ...structuredClone(track), id: newTrackId(), t: moveWindow(track.t) };
+        next.audio!.tracks.push(copy);
+        ids.push(`track:${copy.id}`);
+      }
+      get().replaceSpec(video.id, next, { history: true });
+      get().selectTimelineItems(ids);
+    },
+    deleteTimelineItems: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const keys = new Set(get().timelineSelection);
+      const clipIds = (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
+      const clipResult = clipIds.length ? removeClipSet(spec, clipIds) : cloneSpec(spec);
+      if (!clipResult) { get().setToast('主轨必须保留至少一个片段'); return; }
+      clipResult.layers = clipResult.layers.filter((layer) => !keys.has(`layer:${layer.id}`) || layer.locked);
+      if (clipResult.audio) clipResult.audio.tracks = clipResult.audio.tracks.filter((track) => !keys.has(`track:${track.id}`));
+      get().replaceSpec(video.id, clipResult, { history: true });
+      get().selectTimelineItems([]);
+    },
+    shiftTimelineItems: (seconds) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec || !Number.isFinite(seconds) || Math.abs(seconds) < 0.001) return;
+      const keys = new Set(get().timelineSelection);
+      const clipIds = (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
+      let next = cloneSpec(spec);
+      if (clipIds.length && spec.sequence) {
+        const windows = clipWindows(spec.sequence);
+        const first = windows.find((w) => clipIds.includes(w.clip.id));
+        const destination = Math.max(0, (first?.start ?? 0) + seconds);
+        const target = windows.filter((w) => !clipIds.includes(w.clip.id)).findIndex((w) => destination < (w.start + w.end) / 2);
+        next = moveClipSet(next, clipIds, target < 0 ? windows.length : target);
+        const newFirst = next.sequence ? clipWindows(next.sequence).find((w) => w.clip.id === first?.clip.id) : null;
+        const delta = newFirst && first ? newFirst.start - first.start : 0;
+        const movedWindow = (old: [number, number] | 'all', current: [number, number] | 'all'): [number, number] | 'all' =>
+          old !== 'all' && current !== 'all' && old[0] === current[0] && old[1] === current[1]
+            ? [round4(Math.max(0, current[0] + delta)), round4(Math.max(0.1, current[1] + delta))] : current;
+        for (const layer of next.layers) {
+          if (!keys.has(`layer:${layer.id}`) || layer.locked) continue;
+          const old = spec.layers.find((item) => item.id === layer.id);
+          if (old) layer.t = movedWindow(old.t, layer.t);
+        }
+        for (const track of next.audio?.tracks ?? []) {
+          if (!keys.has(`track:${track.id}`)) continue;
+          const old = spec.audio?.tracks.find((item) => item.id === track.id);
+          if (old) track.t = movedWindow(old.t, track.t);
+        }
+      } else {
+        const timed = [...next.layers.filter((l) => keys.has(`layer:${l.id}`) && !l.locked && l.t !== 'all'), ...(next.audio?.tracks ?? []).filter((t) => keys.has(`track:${t.id}`) && t.t !== 'all')];
+        if (!timed.length) return;
+        const min = Math.min(...timed.map((item) => item.t === 'all' ? Infinity : item.t[0]));
+        const max = Math.max(...timed.map((item) => item.t === 'all' ? 0 : item.t[1]));
+        const delta = Math.max(-min, Math.min(selectPostDuration(get()) - max, seconds));
+        for (const item of timed) if (item.t !== 'all') item.t = [round4(item.t[0] + delta), round4(item.t[1] + delta)];
+      }
+      get().replaceSpec(video.id, next, { history: true });
+    },
     setTime: (time) => set({ time }),
     setPlaying: (playing) => set({ playing }),
     setPlayhead: (time, playing, lap) => set({ time, playing, lap }),
@@ -1814,8 +1936,22 @@ export const useEditor = create<EditorState>((set, get) => {
         (spec) => {
           const l = spec.layers.find((x) => x.id === id);
           if (!l) return;
+          const sync = get().subtitleSyncEnabled && l.type === 'text' && (l.origin === 'subtitle' || l.origin === 'localize' || /^字幕\s*\d+/.test(l.name ?? ''));
+          const before = sync ? structuredClone(l) : null;
           if (typeof patch === 'function') patch(l);
           else Object.assign(l, patch);
+          if (before?.type === 'text' && l.type === 'text') {
+            const changedStyle = Object.keys(l.style) as (keyof typeof l.style)[];
+            for (const other of spec.layers) {
+              if (other.id === id || other.type !== 'text' || other.locked || !(other.origin === 'subtitle' || other.origin === 'localize' || /^字幕\s*\d+/.test(other.name ?? ''))) continue;
+              for (const key of changedStyle) {
+                if (JSON.stringify(before.style[key]) !== JSON.stringify(l.style[key])) Object.assign(other.style, { [key]: l.style[key] === undefined ? undefined : structuredClone(l.style[key]) });
+              }
+              for (const key of ['anchor', 'margin', 'width', 'rotate', 'opacity'] as const) {
+                if (JSON.stringify(before[key]) !== JSON.stringify(l[key])) Object.assign(other, { [key]: structuredClone(l[key]) });
+              }
+            }
+          }
           if (l.type === 'shape' && !(typeof patch === 'object' && 'image_url' in patch)) {
             l.image_url = null;
             l.image_size = null;

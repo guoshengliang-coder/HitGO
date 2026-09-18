@@ -29,6 +29,8 @@ export function TextPanel() {
   });
   const addLayer = useEditor((s) => s.addLayer);
   const addLayers = useEditor((s) => s.addLayers);
+  const subtitleSyncEnabled = useEditor((s) => s.subtitleSyncEnabled);
+  const setSubtitleSyncEnabled = useEditor((s) => s.setSubtitleSyncEnabled);
   // 「文字」页双击新建的图层 id：它被自动选中时不切页
   const createdIdRef = useRef<string | null>(null);
   const selectedId = selected?.id ?? null;
@@ -73,6 +75,7 @@ export function TextPanel() {
               </button>
             </div>
             <LayerList type="text" emptyHint="还没有文字图层。点「添加文字」，或在「文字」页双击字体 / 花字 / 气泡卡片、在「模板」页添加；字幕请到顶栏「字幕」模块导入。加入后可在画布上双击直接改字。" />
+            {selected && (selected.origin === 'localize' || selected.origin === 'subtitle' || /^字幕\s*\d+/.test(selected.name ?? '')) && <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>}
             {selected && <LayerProps key={selected.id} layer={selected} />}
           </>
         )}
