@@ -1,35 +1,52 @@
 import { describe, expect, it } from 'vitest';
-import { defaultApplyModules, layerTypeForStep, layerTypesForStep, STEPS } from './steps';
+import { defaultApplyModules, layerTypeForStep, layerTypesForStep, stepForLayer, STEPS } from './steps';
 
-describe('STEPS', () => {
-  it('顶栏顺序：字幕作为贴纸右侧的独立模块（HIG-15），改语言之后是大字报（HIG-50）', () => {
-    expect(STEPS.map((s) => s.label)).toEqual(['剪辑', '音频', '文本', '贴纸', '字幕', '改语言', '大字报']);
-  });
-  it('字幕 / 改语言 / 大字报模块沿用文字图层交互', () => {
-    expect(layerTypeForStep('trim')).toBeNull();
-    expect(layerTypeForStep('audio')).toBeNull();
-    expect(layerTypeForStep('text')).toBe('text');
-    expect(layerTypeForStep('sticker')).toBe('sticker');
-    expect(layerTypeForStep('subtitle')).toBe('text');
-    expect(layerTypeForStep('localize')).toBe('text');
-    expect(layerTypeForStep('poster')).toBe('text');
-  });
-  it('字幕模块同时管文字与遮盖层，其它模块只管自己那一类', () => {
-    expect(layerTypesForStep('subtitle')).toEqual(['text', 'mask']);
+describe('layerTypesForStep', () => {
+  it('文本类模块管文字图层，字幕还管遮盖，贴纸管贴纸', () => {
     expect(layerTypesForStep('text')).toEqual(['text']);
+    expect(layerTypesForStep('localize')).toEqual(['text']);
     expect(layerTypesForStep('poster')).toEqual(['text']);
+    expect(layerTypesForStep('subtitle')).toEqual(['text', 'mask']);
     expect(layerTypesForStep('sticker')).toEqual(['sticker']);
+  });
+  it('不管图层的模块返回空', () => {
     expect(layerTypesForStep('trim')).toEqual([]);
     expect(layerTypesForStep('audio')).toEqual([]);
+    expect(layerTypeForStep('audio')).toBeNull();
+  });
+});
+
+describe('stepForLayer（HIG-67）', () => {
+  it('当前模块已经管这个类型时不切——字幕 / 改语言 / 大字报都管文字图层', () => {
+    expect(stepForLayer('text', 'subtitle')).toBe('subtitle');
+    expect(stepForLayer('text', 'localize')).toBe('localize');
+    expect(stepForLayer('text', 'poster')).toBe('poster');
+    expect(stepForLayer('mask', 'subtitle')).toBe('subtitle');
+    expect(stepForLayer('sticker', 'sticker')).toBe('sticker');
+  });
+  it('当前模块管不到时切到管它的那个', () => {
+    expect(stepForLayer('sticker', 'text')).toBe('sticker');
+    expect(stepForLayer('text', 'sticker')).toBe('text');
+    expect(stepForLayer('mask', 'text')).toBe('subtitle');
+  });
+  it('从不管图层的模块（剪辑 / 音频）选中图层时也能落到对应模块', () => {
+    expect(stepForLayer('text', 'trim')).toBe('text');
+    expect(stepForLayer('sticker', 'audio')).toBe('sticker');
+    expect(stepForLayer('mask', 'trim')).toBe('subtitle');
+  });
+  it('返回值一定是真实存在的模块', () => {
+    const keys = STEPS.map((s) => s.key);
+    for (const type of ['text', 'sticker', 'mask'] as const) {
+      for (const cur of keys) expect(keys).toContain(stepForLayer(type, cur));
+    }
   });
 });
 
 describe('defaultApplyModules', () => {
-  it('跟随当前模块：音频只勾音频，改语言勾图层 + 音频，大字报勾剪辑 + 图层 + 音频，剪辑全勾，其余只勾图层', () => {
+  it('跟随当前模块', () => {
     expect(defaultApplyModules('audio')).toEqual(['audio']);
     expect(defaultApplyModules('localize')).toEqual(['layers', 'audio']);
-    expect(defaultApplyModules('poster')).toEqual(['trim', 'layers', 'audio']);
+    expect(defaultApplyModules('text')).toEqual(['layers']);
     expect(defaultApplyModules('trim')).toEqual(['trim', 'layers', 'outputs', 'audio', 'cover']);
-    for (const s of ['text', 'sticker', 'subtitle'] as const) expect(defaultApplyModules(s)).toEqual(['layers']);
   });
 });

@@ -6,7 +6,9 @@ export interface LayoutPrefs {
   timelineH: number;
 }
 
-export const LAYOUT_DEFAULTS: LayoutPrefs = { leftW: 236, rightW: 320, timelineH: 214 };
+// 时间线默认高度在 HIG-67 之后抬高：轨道不再按模块过滤，首屏要放得下三个分组头 + 几条轨道。
+// 存过偏好的用户不受影响（loadPrefs 读 localStorage）。
+export const LAYOUT_DEFAULTS: LayoutPrefs = { leftW: 236, rightW: 320, timelineH: 268 };
 export const LAYOUT_LIMITS = {
   leftW: [180, 420] as const,
   rightW: [260, 480] as const,

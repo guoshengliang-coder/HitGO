@@ -28,6 +28,18 @@ export function layerTypesForStep(step: Step): Layer['type'][] {
   return [];
 }
 
+/**
+ * 在时间线上选中某个图层时该切到哪个模块（HIG-67）。
+ * 时间线现在常显全部轨道，选中的图层可能不归当前模块管——那样右栏面板和选中的对象就对不上了。
+ * 当前模块已经管这个类型时原样不动：字幕 / 改语言 / 大字报都管文字图层，不该因为点了一下就跳回「文本」。
+ */
+export function stepForLayer(type: Layer['type'], current: Step): Step {
+  if (layerTypesForStep(current).includes(type)) return current;
+  if (type === 'sticker') return 'sticker';
+  if (type === 'mask') return 'subtitle';
+  return 'text';
+}
+
 /** 该模块的主图层类型（第一项）；不管图层的模块返回 null。 */
 export function layerTypeForStep(step: Step): Layer['type'] | null {
   return layerTypesForStep(step)[0] ?? null;

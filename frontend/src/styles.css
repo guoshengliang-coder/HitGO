@@ -39,6 +39,8 @@
   --tk-bgm-bg: #dcefe3; --tk-bgm-line: #7fbf98; --tk-bgm-fg: #2f5f42;
   --tk-voice-bg: #f7e6d3; --tk-voice-line: #d9a56b; --tk-voice-fg: #6a4a22;
   --tk-sticker-bg: #e9e3f7; --tk-sticker-line: #a996d6; --tk-sticker-fg: #4d3f7a;
+  /* 叠加素材（视频贴纸，HIG-67）：与图片贴纸区分，轨道常显后一屏里两类都在 */
+  --tk-overlay-bg: #d9eef0; --tk-overlay-line: #74b6be; --tk-overlay-fg: #23606a;
   --tk-source-bg: #e6e3f7; --tk-source-fg: #4a3f8f;
   --tk-lang-bg: #dde8f7; --tk-lang-fg: #2c4f8a;
 }
@@ -77,6 +79,7 @@ html.dark {
   --tk-bgm-bg: #1f3a2a; --tk-bgm-line: #3f7f57; --tk-bgm-fg: #9fd9b3;
   --tk-voice-bg: #43301c; --tk-voice-line: #8f6a3a; --tk-voice-fg: #e8c496;
   --tk-sticker-bg: #332b4a; --tk-sticker-line: #6d5aa6; --tk-sticker-fg: #c7b8f0;
+  --tk-overlay-bg: #1d3c42; --tk-overlay-line: #3f838d; --tk-overlay-fg: #a6dbe2;
   --tk-source-bg: #2c2a45; --tk-source-fg: #b7aef0;
   --tk-lang-bg: #24344d; --tk-lang-fg: #a9c3ec;
   color-scheme: dark;
@@ -552,11 +555,23 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-cut.selected { background: repeating-linear-gradient(135deg, rgba(217,72,31,0.6) 0 4px, rgba(217,72,31,0.2) 4px 8px); }
 .tl-cut .edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .tl-cut .edge.l { left: -5px; } .tl-cut .edge.r { right: -5px; }
+/* 轨道分组头（HIG-67）：视频 / 音频 / 图层三组，整行可点折叠 */
+.tl-row.tl-group { border-bottom: 1px solid var(--s1-line); background: var(--s1); }
+.tl-row.tl-group .lbl { background: var(--s1); padding: 0; }
+.tl-row.tl-group .body { background: var(--s1); }
+.tl-group-btn { display: flex; align-items: center; gap: 4px; width: 100%; height: 22px; padding: 0 8px; background: none; border: 0; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--ink-2); text-align: left; }
+.tl-group-btn:hover { color: var(--ink); }
+.tl-group-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tl-group-caret { flex: none; font-size: 11px; line-height: 1; transition: transform 0.12s; transform: rotate(-90deg); }
+.tl-group-caret.open { transform: none; }
+.tl-group-count { flex: none; font-size: 10px; color: var(--ink-3); }
 .tl-bar { position: absolute; top: 5px; bottom: 5px; background: var(--tk-layer-bg); border: 1px solid var(--tk-layer-line); border-radius: 3px; cursor: grab; font-size: 10px; padding: 0 4px; overflow: hidden; white-space: nowrap; line-height: 18px; color: var(--tk-layer-fg); }
 .tl-bar.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar.all { background: var(--tk-all-bg); border-style: dashed; }
 .tl-bar.locked { cursor: default; opacity: 0.75; }
 /* 遮盖层（字幕模块里与字幕行并列）：灰底斜纹，和文字条区分 */
+.tl-bar.overlay { background: var(--tk-overlay-bg); border-color: var(--tk-overlay-line); color: var(--tk-overlay-fg); }
+.tl-bar.overlay.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar.mask { background: repeating-linear-gradient(135deg, var(--tk-mask-a) 0 4px, var(--tk-mask-b) 4px 8px); border-color: var(--tk-mask-line); color: var(--tk-mask-fg); }
 .tl-bar.mask.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar .edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
