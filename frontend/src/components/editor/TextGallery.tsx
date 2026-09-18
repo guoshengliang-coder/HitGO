@@ -3,7 +3,8 @@
 
 import { useMemo, useState, type ReactNode } from 'react';
 import { useEditor } from '../../store/editor';
-import { fontChoices, galleryItemKey, groupPresets, type GalleryItem } from '../../lib/textGallery';
+import { fontChoices, galleryItemKey, groupPresets, missingCatalogFonts, searchFontChoices, type GalleryItem } from '../../lib/textGallery';
+import { FONT_GROUP_LABEL, type FontGroup } from '../../lib/fontCatalog';
 import { IconChevron } from '../ui/Icons';
 import { presetThumb } from './LayerParts';
 
@@ -31,6 +32,9 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
   const deletePreset = useEditor((s) => s.deleteTextPreset);
   const groups = useMemo(() => groupPresets(presets), [presets]);
   const fonts = useMemo(() => fontChoices(assets), [assets]);
+  const missingFonts = useMemo(() => missingCatalogFonts(assets), [assets]);
+  const [fontQuery, setFontQuery] = useState('');
+  const shownFonts = useMemo(() => searchFontChoices(fonts, fontQuery), [fonts, fontQuery]);
   const [active, setActive] = useState<string | null>(null);
   const [closed, setClosed] = useState<Record<GroupKey, boolean>>({ font: false, fancy: false, bubble: false });
   const toggle = (k: GroupKey) => setClosed((c) => ({ ...c, [k]: !c[k] }));
@@ -86,16 +90,33 @@ export function TextGallery({ onCreate }: { onCreate: (item: GalleryItem) => voi
     <>
       <div className="hint">单击选中样式，再点「添加」创建文字图层；双击或按 Enter 也可直接添加。</div>
       <GalleryGroup title="字体" count={fonts.length} open={!closed.font} onToggle={() => toggle('font')}>
-        <div className="preset-list">
-          {fonts.map((f) =>
-            card(
-              { kind: 'font', font: f },
-              f.builtin ? `${f.family}（内置）` : f.family,
-              <span className="font-sample" style={{ fontFamily: `"${f.family}", sans-serif` }}>字体</span>,
-            ),
-          )}
-        </div>
-        {fonts.length === 1 && <div className="hint">上传的字体会出现在这里（在「素材库」上传 ttf / otf / woff2）。</div>}
+        <input className="input font-search" type="search" placeholder="搜索字体名称或风格" aria-label="搜索字体" value={fontQuery} onChange={(e) => setFontQuery(e.target.value)} />
+        {(['basic', 'popular', 'more', 'uploaded'] as const).map((group) => {
+          const inGroup = shownFonts.filter((f) => f.group === group);
+          if (!inGroup.length) return null;
+          return (
+            <div key={group} className="font-group">
+              <div className="muted small">{group === 'uploaded' ? '其他已上传' : FONT_GROUP_LABEL[group as FontGroup]}</div>
+              <div className="preset-list">
+                {inGroup.map((f) => card(
+                  { kind: 'font', font: f },
+                  f.builtin ? `${f.label}（内置）` : f.label,
+                  <span className="font-sample" style={{ fontFamily: `"${f.family}", sans-serif` }}>{f.sample}</span>,
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {shownFonts.length === 0 && <div className="hint">没有符合「{fontQuery.trim()}」的可用字体。</div>}
+        {missingFonts.length > 0 && (
+          <details className="font-missing">
+            <summary>另有 {missingFonts.length} 款已选字体需要上传官方字体文件</summary>
+            <div className="font-missing-list">
+              {missingFonts.map((f) => <a key={f.family} href={f.sourceUrl} target="_blank" rel="noreferrer">{f.label} · {f.style}</a>)}
+            </div>
+            <a href="/assets">前往素材库 → 字体上传</a>
+          </details>
+        )}
       </GalleryGroup>
       <GalleryGroup title="花字" count={groups.text.length} open={!closed.fancy} onToggle={() => toggle('fancy')}>
         {presetCards(groups.text)}
