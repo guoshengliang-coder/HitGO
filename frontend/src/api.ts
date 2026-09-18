@@ -18,9 +18,38 @@ export interface RenderItem {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  diagnosticId?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
+  }
+}
+
+/** Put the stable code next to the human-readable cause when an upload fails. */
+export function uploadErrorText(error: unknown): string {
+  if (error instanceof ApiError) return `${error.message}${error.code ? `（错误码：${error.code}）` : ''}${error.diagnosticId ? `（诊断编号：${error.diagnosticId}）` : ''}`;
+  return error instanceof Error ? error.message : String(error);
+}
+
+type UploadStage = 'ticket' | 'upload';
+type UploadChannel = 'direct' | 'same_origin' | 'unknown';
+
+function reportVideoUploadFailure(report: {
+  request_id: string; batch_id: string; stage: UploadStage; channel: UploadChannel;
+  code: string; status: number; file_count: number; total_bytes: number; elapsed_ms: number;
+}): void {
+  if (MOCK) return;
+  // A small same-origin request can still reach the app when the CDN rejects a large body.
+  // Reporting must never replace or delay the original upload error.
+  try {
+    void fetch('/api/uploads/diagnostic', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(report), keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    /* offline or browser shutdown: the error and ID remain visible to the user */
   }
 }
 
@@ -43,14 +72,16 @@ async function request<T>(method: Method, url: string, body?: unknown): Promise<
   const res = await fetch(url, init);
   if (!res.ok) {
     let detail = `请求失败（${res.status}）`;
+    let code: string | undefined;
     try {
       const j = await res.json();
       if (j && typeof j.detail === 'string') detail = j.detail;
       else if (j && j.detail) detail = JSON.stringify(j.detail);
+      if (j && typeof j.code === 'string') code = j.code;
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -99,20 +130,23 @@ export function uploadWithProgress<T>(
         try {
           resolve(JSON.parse(xhr.responseText) as T);
         } catch (e) {
-          reject(new ApiError(xhr.status, '响应解析失败'));
+          reject(new ApiError(xhr.status, '上传已发送，但无法解析服务端响应', 'UPLOAD_RESPONSE_INVALID'));
         }
       } else {
-        let detail = `上传失败（${xhr.status}）`;
+        let detail = xhr.status === 413 ? '上传请求超过当前通道的大小限制，请检查上传服务配置' : `上传失败（${xhr.status}）`;
+        let code = xhr.status === 413 ? 'UPLOAD_REQUEST_TOO_LARGE' : `UPLOAD_HTTP_${xhr.status}`;
         try {
           const j = JSON.parse(xhr.responseText);
           if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          if (typeof j?.code === 'string') code = j.code;
         } catch {
           /* ignore */
         }
-        reject(new ApiError(xhr.status, detail));
+        reject(new ApiError(xhr.status, detail, code));
       }
     };
-    xhr.onerror = () => reject(new ApiError(0, '网络错误：上传被中断，请检查网络后重试'));
+    xhr.onerror = () => reject(new ApiError(0, '网络错误：上传被中断，请检查网络后重试', 'UPLOAD_NETWORK_ERROR'));
+    xhr.onabort = () => reject(new ApiError(0, '上传已取消', 'UPLOAD_ABORTED'));
     xhr.send(form);
   });
 }
@@ -128,10 +162,45 @@ export const api = {
   getBatch: (id: string) => request<BatchDetail>('GET', `/api/batches/${id}`),
   renameBatch: (id: string, name: string) => request<Batch>('PATCH', `/api/batches/${id}`, { name }),
   deleteBatch: (id: string) => request<void>('DELETE', `/api/batches/${id}`),
-  uploadVideos: (batchId: string, files: File[], onProgress?: (f: number) => void) => {
+  uploadVideos: async (batchId: string, files: File[], onProgress?: (f: number) => void) => {
+    const requestId = crypto.randomUUID();
+    const started = Date.now();
+    let stage: UploadStage = 'ticket';
+    let channel: UploadChannel = 'unknown';
     const form = new FormData();
     for (const f of files) form.append('files', f, f.name);
-    return uploadWithProgress<Video[]>(`/api/batches/${batchId}/videos`, form, onProgress);
+    try {
+      const target = await request<UploadTicket>('POST', `/api/batches/${batchId}/upload-ticket`);
+      if (target?.upload_url && target.ticket) {
+        channel = 'direct';
+        stage = 'upload';
+        return await uploadWithProgress<Video[]>(target.upload_url, form, onProgress, {
+          'X-Upload-Ticket': target.ticket, 'X-Upload-Request-ID': requestId,
+        });
+      }
+      if (target?.upload_url === null && target.ticket === null) {
+        channel = 'same_origin';
+        stage = 'upload';
+        return await uploadWithProgress<Video[]>(`/api/batches/${batchId}/videos`, form, onProgress, {
+          'X-Upload-Request-ID': requestId,
+        });
+      }
+      throw new ApiError(0, '上传服务返回的凭证不完整，请稍后重试', 'UPLOAD_TICKET_INVALID');
+    } catch (error) {
+      const failure = error instanceof ApiError
+        ? error
+        : new ApiError(0, stage === 'ticket' ? '无法取得上传凭证，请检查网络后重试' : '上传失败，请稍后重试',
+          stage === 'ticket' ? 'UPLOAD_TICKET_REQUEST_FAILED' : 'UPLOAD_UNKNOWN_ERROR');
+      failure.code ??= stage === 'ticket' ? 'UPLOAD_TICKET_REQUEST_FAILED' : 'UPLOAD_UNKNOWN_ERROR';
+      failure.diagnosticId = requestId;
+      reportVideoUploadFailure({
+        request_id: requestId, batch_id: batchId, stage, channel,
+        code: failure.code, status: failure.status, file_count: files.length,
+        total_bytes: files.reduce((total, file) => total + file.size, 0),
+        elapsed_ms: Math.max(0, Date.now() - started),
+      });
+      throw failure;
+    }
   },
   /** 空白素材（HIG-50，契约 §3）：201 Video（kind = blank），worker 生成源片，之后轮询 GET /api/videos/{id}。 */
   createBlankVideo: (batchId: string, body: BlankVideoIn) => request<Video>('POST', `/api/batches/${batchId}/blank`, body),

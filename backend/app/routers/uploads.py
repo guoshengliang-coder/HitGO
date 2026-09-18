@@ -1,6 +1,9 @@
-"""POST /api/uploads/layer-image — frontend-rendered text-layer PNGs (contract §3)."""
+"""Upload diagnostics and frontend-rendered text-layer PNGs (contract §3)."""
 
 from __future__ import annotations
+
+import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
@@ -9,10 +12,16 @@ from sqlalchemy.orm import Session
 from app import ids
 from app.db import get_db
 from app.models import Upload
-from app.schemas import LayerImageOut
+from app.schemas import LayerImageOut, UploadDiagnosticIn
 from app.services import storage
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
+log = logging.getLogger("uvicorn.error")
+
+
+@router.post("/diagnostic", status_code=204)
+def record_upload_diagnostic(body: UploadDiagnosticIn) -> None:
+    log.warning("upload_client_failure %s", json.dumps(body.model_dump(), ensure_ascii=False, sort_keys=True))
 
 
 @router.post("/layer-image", response_model=LayerImageOut)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import shutil
 from datetime import timedelta
 
@@ -242,15 +243,47 @@ def test_upload_videos_streams_and_enqueues(client, enqueued):
     assert [v["name"] for v in detail["videos"]] == ["V01.mp4", "V02.MOV", "V03.mp4"]
 
 
+def test_batch_upload_logs_request_id_and_status(client, caplog):
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    request_id = "11111111-1111-4111-8111-111111111111"
+    with caplog.at_level(logging.INFO, logger="uvicorn.error"):
+        response = client.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"]),
+                               headers={"X-Upload-Request-ID": request_id})
+    assert response.status_code == 201
+    assert any("upload_request_received" in record.message and request_id in record.message for record in caplog.records)
+    assert any("upload_request_finished" in record.message and '"status": 201' in record.message
+               and request_id in record.message for record in caplog.records)
+
+
+def test_failed_upload_diagnostic_is_authenticated_and_secret_free(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "access_code", "secret")
+    payload = {
+        "request_id": "11111111-1111-4111-8111-111111111111", "batch_id": "b_test000001",
+        "stage": "upload", "channel": "same_origin", "code": "UPLOAD_REQUEST_TOO_LARGE",
+        "status": 413, "file_count": 1, "total_bytes": 117755084, "elapsed_ms": 950,
+    }
+    with TestClient(app, base_url="https://testserver") as browser:
+        assert browser.post("/api/uploads/diagnostic", json=payload).status_code == 401
+        browser.post("/api/auth", json={"code": "secret"})
+        with caplog.at_level(logging.WARNING, logger="uvicorn.error"):
+            assert browser.post("/api/uploads/diagnostic", json=payload).status_code == 204
+        invalid = browser.post("/api/uploads/diagnostic", json={**payload, "cookie": "secret"})
+        assert invalid.status_code == 400
+    line = next(record.message for record in caplog.records if "upload_client_failure" in record.message)
+    assert payload["request_id"] in line and payload["code"] in line
+    assert "cookie" not in line and "secret" not in line
+
+
 def test_upload_rejects_bad_files_atomically(client, enqueued):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     r = client.post(f"/api/batches/{bid}/videos", files=upload_files(["ok.mp4", "bad.avi"]))
     assert r.status_code == 400 and "avi" in r.json()["detail"]
+    assert r.json()["code"] == "UPLOAD_UNSUPPORTED_FORMAT"
     assert client.get(f"/api/batches/{bid}").json()["videos"] == []
     assert not any(storage.batch_dir(bid).rglob("source.*"))
     assert enqueued.calls == []
-    assert client.post(f"/api/batches/{bid}/videos").status_code == 400
-    assert client.post("/api/batches/b_missing/videos", files=upload_files(["a.mp4"])).status_code == 404
+    assert client.post(f"/api/batches/{bid}/videos").json()["code"] == "UPLOAD_NO_FILES"
+    assert client.post("/api/batches/b_missing/videos", files=upload_files(["a.mp4"])).json()["code"] == "UPLOAD_BATCH_NOT_FOUND"
 
 
 def test_upload_returns_503_when_queue_down(monkeypatch):
@@ -260,6 +293,7 @@ def test_upload_returns_503_when_queue_down(monkeypatch):
         r = c.post(f"/api/batches/{bid}/videos", files=upload_files(["a.mp4"]))
         assert r.status_code == 503, r.text
         assert "Redis" in r.json()["detail"]
+        assert r.json()["code"] == "UPLOAD_PROCESSING_UNAVAILABLE"
         assert c.get(f"/api/batches/{bid}").json()["videos"] == []
 
 
@@ -293,6 +327,7 @@ def test_upload_image_rejects_oversized(client, enqueued, monkeypatch):
     bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
     r = client.post(f"/api/batches/{bid}/videos", files=[("files", ("big.jpg", io.BytesIO(b"\xff" * 65), "image/jpeg"))])
     assert r.status_code == 400 and "20 MiB" in r.json()["detail"]
+    assert r.json()["code"] == "UPLOAD_IMAGE_TOO_LARGE"
     assert client.get(f"/api/batches/{bid}").json()["videos"] == []
     assert not any(storage.batch_dir(bid).rglob("still.*"))
     assert enqueued.calls == []
@@ -1395,6 +1430,39 @@ def test_upload_ticket_is_empty_without_an_upload_host(client):
         "ticket": None,
         "expires_at": None,
     }
+    bid = client.post("/api/batches", json={"name": "b"}).json()["id"]
+    assert client.post(f"/api/batches/{bid}/upload-ticket").json() == {
+        "upload_url": None,
+        "ticket": None,
+        "expires_at": None,
+    }
+
+
+def test_batch_upload_ticket_accepts_only_its_batch_and_reports_auth_errors(monkeypatch, enqueued):
+    monkeypatch.setattr(settings, "access_code", "secret")
+    monkeypatch.setattr(settings, "upload_base_url", "https://up.example")
+    with TestClient(app, base_url="https://testserver") as owner:
+        owner.post("/api/auth", json={"code": "secret"})
+        first = owner.post("/api/batches", json={"name": "first"}).json()["id"]
+        second = owner.post("/api/batches", json={"name": "second"}).json()["id"]
+        response = owner.post(f"/api/batches/{first}/upload-ticket")
+        assert response.status_code == 200
+        issued = response.json()
+        assert issued["upload_url"] == f"https://up.example/api/batches/{first}/videos"
+        assert issued["expires_at"].endswith("Z")
+        assert owner.post("/api/batches/b_missing/upload-ticket").json()["code"] == "UPLOAD_BATCH_NOT_FOUND"
+
+    files = upload_files(["a.mp4"])
+    with TestClient(app, base_url="https://up.example") as bare:
+        route = f"/api/batches/{first}/videos"
+        assert bare.post(route, files=files).json()["code"] == "UPLOAD_AUTH_REQUIRED"
+        wrong = bare.post(f"/api/batches/{second}/videos", files=files, headers={"X-Upload-Ticket": issued["ticket"]})
+        assert wrong.status_code == 401 and wrong.json()["code"] == "UPLOAD_AUTH_REQUIRED"
+        assert bare.post("/api/assets", files=files, headers={"X-Upload-Ticket": issued["ticket"]}).status_code == 401
+        ok = bare.post(route, files=files, headers={"X-Upload-Ticket": issued["ticket"]})
+        assert ok.status_code == 201, ok.text
+        assert ok.json()[0]["batch_id"] == first
+        assert bare.get(f"/api/batches/{first}", headers={"X-Upload-Ticket": issued["ticket"]}).status_code == 401
 
 
 def test_upload_ticket_lets_the_cookieless_upload_host_accept_assets(monkeypatch, enqueued, png_bytes):
@@ -1443,6 +1511,16 @@ def test_upload_host_cors_allows_the_main_site(monkeypatch, enqueued):
         )
         assert r.status_code == 200
         assert r.headers["access-control-allow-origin"] == "https://hitgo.example"
+        batch_preflight = c.options(
+            "/api/batches/b_test/videos",
+            headers={
+                "Origin": "https://hitgo.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-upload-ticket",
+            },
+        )
+        assert batch_preflight.status_code == 200
+        assert batch_preflight.headers["access-control-allow-origin"] == "https://hitgo.example"
         evil = c.options(
             "/api/assets",
             headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"},

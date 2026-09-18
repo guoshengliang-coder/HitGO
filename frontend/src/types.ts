@@ -430,7 +430,7 @@ export interface StickerLayer extends LayerBase {
   mix_audio?: boolean;
 }
 
-/** POST /api/assets/upload-ticket：大文件上传绕开 CDN 的上传子域名；未配置时全是 null。 */
+/** 上传票据端点：大文件绕开 CDN 的上传子域名；未配置时全是 null。 */
 export interface UploadTicket {
   upload_url: string | null;
   ticket: string | null;

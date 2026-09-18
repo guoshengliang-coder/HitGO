@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -22,6 +25,7 @@ from app.routers.auth import access_ok
 from app.services import media_ticket, storage, upload_ticket
 
 log = logging.getLogger("hitgo")
+upload_log = logging.getLogger("uvicorn.error")
 
 ALLOWED_DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -180,6 +184,11 @@ class AccessGate:
             await self.app(scope, receive, send)
             return
         path: str = scope.get("path", "")
+        video_upload = _is_batch_video_upload_path(scope, path)
+        request_id = _upload_request_id(scope) if video_upload else ""
+        started = time.monotonic() if video_upload else 0.0
+        if video_upload:
+            upload_log.info("upload_request_received %s", json.dumps({"request_id": request_id, "path": path}))
         if path.startswith("/media/"):
             if storage.is_blocked_media_path(path[len("/media/") :]):
                 await JSONResponse({"detail": "不存在"}, status_code=404)(scope, receive, send)
@@ -188,9 +197,29 @@ class AccessGate:
         # /api/auth issues the cookie; /api/health is polled by the compose healthcheck.
         if gated and settings.access_code and path not in ("/api/auth", "/api/health"):
             if not access_ok(Request(scope)) and not _ticket_ok(scope) and not _media_ticket_ok(scope, path):
-                await JSONResponse({"detail": "需要访问码"}, status_code=401)(scope, receive, send)
+                if _is_upload_path(scope, path):
+                    body = {"detail": "上传凭证缺失或失效，请重试", "code": "UPLOAD_AUTH_REQUIRED"}
+                else:
+                    body = {"detail": "需要访问码"}
+                await JSONResponse(body, status_code=401)(scope, receive, send)
+                if video_upload:
+                    _log_upload_response(request_id, path, 401, started)
                 return
-        await self.app(scope, receive, send)
+        if not video_upload:
+            await self.app(scope, receive, send)
+            return
+        status = 0
+
+        async def send_with_status(message: dict) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_status)
+        finally:
+            _log_upload_response(request_id, path, status, started)
 
 
 def _media_ticket_ok(scope: Scope, path: str) -> bool:
@@ -206,13 +235,40 @@ def _media_ticket_ok(scope: Scope, path: str) -> bool:
 
 
 def _ticket_ok(scope: Scope) -> bool:
-    """POST /api/assets from the cookie-less upload host (contract §0 / §3)."""
-    if scope.get("method") != "POST" or scope.get("path") != "/api/assets":
+    """Cookie-less uploads only at the path signed into the ticket (contract §0 / §3)."""
+    path = scope.get("path", "")
+    if not _is_upload_path(scope, path):
         return False
     for name, value in scope.get("headers", []):
         if name == upload_ticket.HEADER.encode():
-            return upload_ticket.verify(value.decode("latin-1"), settings.access_code)
+            return upload_ticket.verify(value.decode("latin-1"), settings.access_code, path=path)
     return False
+
+
+def _is_upload_path(scope: Scope, path: str) -> bool:
+    return (scope.get("method") == "POST" and path == "/api/assets") or _is_batch_video_upload_path(scope, path)
+
+
+def _is_batch_video_upload_path(scope: Scope, path: str) -> bool:
+    return scope.get("method") == "POST" and re.fullmatch(r"/api/batches/[^/]+/videos", path) is not None
+
+
+def _upload_request_id(scope: Scope) -> str:
+    for name, value in scope.get("headers", []):
+        if name == b"x-upload-request-id":
+            candidate = value.decode("latin-1")
+            if re.fullmatch(r"[0-9a-f-]{36}", candidate):
+                return candidate
+    return ""
+
+
+def _log_upload_response(request_id: str, path: str, status: int, started: float) -> None:
+    upload_log.info("upload_request_finished %s", json.dumps({
+        "request_id": request_id,
+        "path": path,
+        "status": status,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+    }))
 
 
 def cors_origins() -> list[str]:
@@ -256,7 +312,10 @@ def create_app() -> FastAPI:
         detail = exc.detail if isinstance(exc.detail, str) else "请求失败"
         if exc.status_code == 404 and detail == "Not Found":
             detail = "资源不存在"
-        return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
+        content = {"detail": detail}
+        if code := getattr(exc, "code", None):
+            content["code"] = code
+        return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.get("/api/health", include_in_schema=False)
     def health() -> dict[str, str]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -9,7 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import ids, worker
+from app.config import settings
 from app.db import get_db, utcnow
+from app.errors import CodedHTTPException
 from app.models import JOB_DONE, VIDEO_PREPARING, Batch, Job, Video
 from app.routers._common import (
     enqueue_or_503,
@@ -25,10 +28,11 @@ from app.schemas import (
     BlankVideoIn,
     JobOut,
     RenameIn,
+    UploadTicketOut,
     VideoOut,
 )
 from app.serializers import batch_detail_out, batch_out, group_jobs_by_video, job_out, video_out
-from app.services import storage
+from app.services import storage, upload_ticket
 from app.services.apply import apply_modules
 
 router = APIRouter(prefix="/api/batches", tags=["batches"])
@@ -90,15 +94,36 @@ def delete_batch(batch_id: str, db: Session = Depends(get_db)) -> None:
 # --- upload ------------------------------------------------------------------
 
 
+def _upload_batch_or_404(db: Session, batch_id: str) -> Batch:
+    batch = db.get(Batch, batch_id)
+    if batch is None:
+        raise CodedHTTPException(404, "批次不存在", "UPLOAD_BATCH_NOT_FOUND")
+    return batch
+
+
+@router.post("/{batch_id}/upload-ticket", response_model=UploadTicketOut)
+def create_video_upload_ticket(batch_id: str, db: Session = Depends(get_db)) -> UploadTicketOut:
+    _upload_batch_or_404(db, batch_id)
+    if not settings.upload_base_url:
+        return UploadTicketOut()
+    path = f"/api/batches/{batch_id}/videos"
+    ticket, expires = upload_ticket.issue(settings.access_code, path=path)
+    return UploadTicketOut(
+        upload_url=f"{settings.upload_base_url}{path}",
+        ticket=ticket,
+        expires_at=datetime.fromtimestamp(expires, UTC).isoformat().replace("+00:00", "Z"),
+    )
+
+
 @router.post("/{batch_id}/videos", response_model=list[VideoOut], status_code=201)
 async def upload_videos(
     batch_id: str,
     files: list[UploadFile] = [],  # noqa: B006 - FastAPI form binding
     db: Session = Depends(get_db),
 ) -> list[VideoOut]:
-    get_batch_or_404(db, batch_id)
+    _upload_batch_or_404(db, batch_id)
     if not files:
-        raise HTTPException(400, "没有上传文件")
+        raise CodedHTTPException(400, "没有上传文件", "UPLOAD_NO_FILES")
 
     start = len(videos_for_batch(db, batch_id))
 
@@ -108,7 +133,7 @@ async def upload_videos(
             name = upload.filename or f"video_{i + 1}.mp4"
             ext = Path(name).suffix.lower().lstrip(".")
             if ext not in VIDEO_EXTS and ext not in IMAGE_EXTS:
-                raise HTTPException(400, f"{name}：只支持 mp4 / mov / jpg / png 文件")
+                raise CodedHTTPException(400, f"{name}：只支持 mp4 / mov / jpg / png 文件", "UPLOAD_UNSUPPORTED_FORMAT")
             is_image = ext in IMAGE_EXTS
             video = Video(
                 id=ids.video_id(),
@@ -128,9 +153,9 @@ async def upload_videos(
             created.append(video)
             size = await storage.write_upload(upload, dst)
             if size == 0:
-                raise HTTPException(400, f"{name}：文件为空")
+                raise CodedHTTPException(400, f"{name}：文件为空", "UPLOAD_EMPTY_FILE")
             if is_image and size > IMAGE_MAX_BYTES:
-                raise HTTPException(400, f"{name}：图片不能超过 20 MiB")
+                raise CodedHTTPException(400, f"{name}：图片不能超过 20 MiB", "UPLOAD_IMAGE_TOO_LARGE")
             db.add(video)
         # Commit before publishing so the worker always finds the rows.
         db.commit()
@@ -142,14 +167,14 @@ async def upload_videos(
     try:
         for video in created:
             enqueue_or_503(worker.preprocess_video, video.id)
-    except HTTPException:
+    except HTTPException as exc:
         # Queue down: undo the whole upload so the user can simply retry it.
         for video in created:
             db.delete(video)
         db.commit()
         for video in created:
             storage.remove_tree(storage.video_dir(batch_id, video.id))
-        raise
+        raise CodedHTTPException(503, str(exc.detail), "UPLOAD_PROCESSING_UNAVAILABLE") from exc
     return [video_out(v) for v in created]
 
 

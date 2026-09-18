@@ -8,8 +8,8 @@
 - 媒体文件（源片、代理、雪碧图、素材、成片、文字 PNG）通过 `/media/...` 路径访问，由后端静态服务；返回给前端的 `*_url` 字段都是以 `/media/` 开头的站内相对路径。**唯一例外**：`source = "library"` 的素材（将来对接正式物料库时才出现）其 `url` 可以是外部 `https://` 绝对地址，前端一律当不透明 URL 直接用；见 `docs/ASSETS.md`。`/media` 静态文件支持 `Range`（206）、不带 `Content-Disposition`，成片 `output_url` 可直接交给 `<video>` 播放（产物页「播放」，HIG-52）；下载文件名由前端 `<a download>` 决定。
 - 所有几何量用**相对比例**（0–1），相对于所在画布的宽或高；时间用秒（float）。
 - ID 用短随机字符串（例如 `nanoid` 12 位），前后端都当不透明字符串处理。
-- 错误统一返回 `{ "detail": "人类可读的中文说明" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。
-- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。**两个例外**：① `POST /api/assets` 带有效的请求头 `X-Upload-Ticket`（由 `POST /api/assets/upload-ticket` 签发）时不看 Cookie，见第 3 节「素材」的上传子域名；② `GET /media/...` 带有效的查询参数 `?t=<ticket>` 时不看 Cookie（HIG-58）——票据是对「这一个路径 + 过期时间」的 HMAC 签名（密钥由 `ACCESS_CODE` 派生，`MEDIA_TICKET_TTL_SECONDS` 缺省 1800 秒），只放行签名里那一个文件，`hitgo.db` 和 `tmp/` 仍然 404。它存在的唯一理由是百炼的声音复刻接口要从公网拉取样本。
+- 错误统一返回 `{ "detail": "人类可读的中文说明", "code"?: "稳定的机器可读错误码" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。批次源片上传链路的错误带 `code`；浏览器或 CDN 返回的无 JSON 错误由前端按 HTTP 状态映射成本地错误码并展示，便于报障时定位。后续新增错误按同一约定给出稳定的 `code`。
+- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。**两个例外**：① `POST /api/assets` 或 `POST /api/batches/{id}/videos` 带有效的请求头 `X-Upload-Ticket` 时不看 Cookie。票据由各自的 `/upload-ticket` 端点签发，签名绑定目标路径与过期时间，不能跨批次或跨接口使用；见第 3 节上传子域名。② `GET /media/...` 带有效的查询参数 `?t=<ticket>` 时不看 Cookie（HIG-58）——票据是对「这一个路径 + 过期时间」的 HMAC 签名（密钥由 `ACCESS_CODE` 派生，`MEDIA_TICKET_TTL_SECONDS` 缺省 1800 秒），只放行签名里那一个文件，`hitgo.db` 和 `tmp/` 仍然 404。它存在的唯一理由是百炼的声音复刻接口要从公网拉取样本。
 
 ## 1. 数据模型
 
@@ -573,6 +573,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `DELETE /api/batches/{id}` → 204（删除视频、任务、文件）
 - `POST /api/batches/{id}/videos` multipart，字段 `files`（多文件，mp4 / mov，或 jpg / jpeg / png（HIG-50，单文件 ≤ 20 MiB））→ `Video[]`，每条立即入队预处理。
   已有视频的批次也可以再调用来追加，新视频排在末尾（`order_index` 接着现有数量）。图片以 `kind = "image"` 入库，worker 转成 5 秒静止源片（第 6 节）。
+- `POST /api/batches/{id}/upload-ticket` → `{ "upload_url": "https://hitgo-upload.example.com/api/batches/{id}/videos" | null, "ticket": "..." | null, "expires_at": "..." | null }`。需要访问码 Cookie 且批次存在；未配置 `UPLOAD_BASE_URL` 时三个字段为 null。配置后签发 10 分钟有效、仅供该批次 `POST /videos` 使用的票据。前端用返回的地址及 `X-Upload-Ticket` 上传；仅在未配置上传子域名时使用同源路径。上传失败码：`UPLOAD_AUTH_REQUIRED`（401）、`UPLOAD_BATCH_NOT_FOUND`（404）、`UPLOAD_NO_FILES`、`UPLOAD_UNSUPPORTED_FORMAT`、`UPLOAD_EMPTY_FILE`、`UPLOAD_IMAGE_TOO_LARGE`（400）、`UPLOAD_PROCESSING_UNAVAILABLE`（503）。无法取得票据及票据响应不完整由前端显示 `UPLOAD_TICKET_REQUEST_FAILED`、`UPLOAD_TICKET_INVALID`；无 JSON 的 413、网络中断、取消、响应无效分别显示 `UPLOAD_REQUEST_TOO_LARGE`、`UPLOAD_NETWORK_ERROR`、`UPLOAD_ABORTED`、`UPLOAD_RESPONSE_INVALID`，其他无 JSON 的 HTTP 错误为 `UPLOAD_HTTP_<状态码>`。
+- 批次视频上传请求附带随机 `X-Upload-Request-ID`，服务端日志记录该编号、收到请求的时间、路径、完成状态和耗时，不记录 Cookie、票据或文件内容。上传失败时前端向同源 `POST /api/uploads/diagnostic` 发送一条小型诊断记录 `{ request_id, batch_id, stage: "ticket" | "upload", channel: "direct" | "same_origin" | "unknown", code, status, file_count, total_bytes, elapsed_ms }` → 204；服务端把该记录写入应用日志，页面错误提示附诊断编号。该接口需要正常访问码 Cookie，不存文件名、文件内容或凭证。若浏览器完全离线，诊断上报也可能失败；CDN 拒绝大文件时上报仍可经小请求到达主域名。
 - `POST /api/batches/{id}/blank` `{ name?, color?: "#000000", duration?: 10, aspect?: "9:16" }` → 201 `Video`（`kind = "blank"`，HIG-50）。
   `color` 为 `#RRGGBB`（缺省黑），`duration` 秒 (0, 600]（缺省 10），`aspect` ∈ `9:16 | 1:1 | 4:5 | 16:9`（缺省 `9:16`，决定源片分辨率，同第 2 节画幅尺寸），
   `name` 规则同批次改名（缺省「空白素材 N」）。立即入队预处理，worker 生成纯色源片；队列不可用 503（记录回滚）。
@@ -642,13 +644,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - `font`：`ttf / otf / woff2`
   - `audio`：`mp3 / wav / m4a`，入队探测时长并以 `status = "preparing"` 返回。
   - 单文件上限：图片 sticker 10 MiB、font 20 MiB、audio 50 MiB、视频 sticker 1 GiB，超出 400。视频贴纸与音频不限时长。
-  - 请求头 `X-Upload-Ticket: <ticket>`（可选）：有效时本请求免 Cookie 校验，见下面的上传子域名。
+  - 请求头 `X-Upload-Ticket: <ticket>`（可选）：对本路径有效时本请求免 Cookie 校验，见下面的上传子域名。
 - `POST /api/assets/upload-ticket` → `{ "upload_url": "https://hitgo-upload.example.com/api/assets" | null, "ticket": "..." | null, "expires_at": "..." | null }`。
   需要正常的访问码 Cookie。服务端未配置 `UPLOAD_BASE_URL` 时三个字段都是 null，前端照旧同源上传。
-  配置了时签发一张 10 分钟有效的 ticket，前端把 `POST /api/assets` 直接发到 `upload_url`
+  配置了时签发一张绑定 `/api/assets`、10 分钟有效的 ticket，前端把 `POST /api/assets` 直接发到 `upload_url`
   （跨域 XHR，带 `X-Upload-Ticket`，不带 Cookie）。
   **为什么**：主域名走 Cloudflare 代理，免费版单个请求超过 100 MB 会被 Cloudflare 回 413，根本到不了源站；
-  上传子域名不经 Cloudflare 代理（DNS only），只放行这一个接口。服务端对 `PUBLIC_BASE_URL` 这个 origin
+  上传子域名不经 Cloudflare 代理（DNS only），只放行 `POST /api/assets` 和 `POST /api/batches/{id}/videos`。服务端对 `PUBLIC_BASE_URL` 这个 origin
   开 CORS（`POST` / `OPTIONS`，允许 `X-Upload-Ticket`）。
 - `DELETE /api/assets/{id}` → 204（一并删除 poster / preview 派生文件）。只有 `upload` 和 `derived` 的素材可删；
   `builtin` / `library` 不可删（400）——`builtin` 删了下次启动会被重新导入，`library` 归正式系统管。

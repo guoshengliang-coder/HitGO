@@ -6,7 +6,7 @@
 //   缺的用 ensureVariants 补上缺省设置。画面分组 / 画布预览看的是 previewVariantKey 这个画幅
 
 import { create } from 'zustand';
-import { api, ApiError, type ApplyLayerMode, type RenderItem } from '../api';
+import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
 import type { Asset, AudioRole, AudioSpec, AudioTrack, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady } from '../types';
 import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
@@ -801,7 +801,7 @@ export const useEditor = create<EditorState>((set, get) => {
         pollPreparingVideos();
         return created.map((v) => v.id);
       } catch (e) {
-        if (get().batch?.id === b.id) set({ appendProgress: null, toast: `追加视频失败：${e instanceof Error ? e.message : String(e)}`, toastAction: null });
+        if (get().batch?.id === b.id) set({ appendProgress: null, toast: `追加视频失败：${uploadErrorText(e)}`, toastAction: null });
         return [];
       }
     },
