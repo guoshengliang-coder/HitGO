@@ -291,6 +291,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 ```jsonc
 {
   "spec_version": 1,
+  "video_hidden": false,                   // 可选，缺省 false（HIG-62）：隐藏主视频画面，保留封面、可见图层及音轨；成片正片以黑色为底
+  "video_locked": false,                   // 可选，缺省 false（HIG-62）：编辑器时间线禁止修改主视频片段，worker 忽略
   "trim": {
     "remove": [[3.2, 5.8], [17.0, 18.4]],    // 秒，基于源视频时间轴，互不重叠、升序
     "duration": null                         // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
@@ -307,6 +309,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "opacity": 1,
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
       "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
+      "locked": false,                       // 可选，缺省 false（HIG-62）：禁止编辑该轨道，worker 忽略
       "name": "品牌角标",                     // 可选（HIG-48）：轨道 / 图层显示名，所有图层类型通用；缺省 = 编辑器自动命名，worker 忽略
       "source_in": 1.5,                      // 可选，缺省 0（HIG-67）：素材内入点，秒；只对视频素材生效
       "source_out": 7.5,                     // 可选，缺省素材时长（HIG-67）：素材内出点，秒
@@ -403,6 +406,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     "source_volume": 1,                      // 0–1；0 = 源音轨静音（相当于剪映「分离音频 → 删除」）
     "source_mute": [[3.0, 4.5]],             // 可选，缺省 []：源音轨在这些时段静音（剪后时间轴，秒），画面不动（HIG-25）
     "source_hidden": false,                  // 可选，缺省 false：源音轨关掉眼睛，成片不带原声，source_volume 原样保留（HIG-33）
+    "source_locked": false,                  // 可选，缺省 false（HIG-62）：禁止编辑源音轨，worker 忽略
     "source_name": "原声",                    // 可选（HIG-48）：源音轨的显示名；缺省 = 「源音轨」，worker 忽略
     "tracks": [
       {
@@ -417,6 +421,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "speed": 1,                          // 可选，缺省 1（HIG-75）：变速 0.5–2.0，atempo 不变调；align = "source" 时必须为 1。见下方规则
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
         "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
+        "locked": false,                     // 可选，缺省 false（HIG-62）：禁止编辑该音轨，worker 忽略
         "name": "开场 BGM",                  // 可选（HIG-48）：音轨显示名；缺省 = 素材文件名，worker 忽略
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
@@ -476,6 +481,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `source_hidden = true` 等价于 `source_volume = 0`（回传的 `audio.source_volume` 为 0），但 spec 里的 `source_volume`
   不变。编辑器预览按同样的规则隐藏 / 静音。前端只在为 `true` 时发送这些字段。批量套用时随所在的图层 / `audio`
   块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
+- **视频主轨隐藏与锁定（HIG-62）**：`video_hidden` / `video_locked` 均可选，缺省 `false`。隐藏时只把正片的主视频画面替换为黑底，封面、可见图层、源音轨及独立音轨保留；编辑器预览和 worker 一致。锁定只限制编辑器对主视频片段及剪辑区间的修改，worker 忽略。主轨仍至少保留一个片段，不能整轨删除。
+- **单轨锁定（HIG-62）**：`layers[].locked`、`audio.tracks[].locked`、`audio.source_locked` 可选，缺省 `false`；编辑器禁止移动、裁剪、删除或修改被锁定的轨道，隐藏开关和解锁仍可用。worker 忽略锁定字段。源音轨不能整轨删除。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
 - **素材内裁剪 `source_in` / `source_out`**（均可选，缺省 `0` 与素材时长，HIG-67）：只对视频素材

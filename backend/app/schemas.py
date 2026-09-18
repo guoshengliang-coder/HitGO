@@ -102,6 +102,7 @@ class LayerBase(BaseModel):
     t: Literal["all"] | TimeWindow = "all"
     # Eye switched off in the editor (HIG-33): kept in the spec, left out of the output.
     hidden: bool = False
+    locked: bool = False  # HIG-62: timeline editing only; worker ignores it
     # Track label the user typed on the timeline (HIG-48); the worker ignores it.
     name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)
 
@@ -659,6 +660,7 @@ class AudioTrack(BaseModel):
     fade_in: float = Field(default=0.0, ge=0)
     fade_out: float = Field(default=0.0, ge=0)
     hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
+    locked: bool = False  # HIG-62: timeline editing only
     name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)  # timeline label (HIG-48)
 
     @field_validator("t")
@@ -689,6 +691,7 @@ class AudioSpec(BaseModel):
     tracks: list[AudioTrack] = Field(default_factory=list)
     # Eye off on the source track (HIG-33): no source audio in the output, source_volume kept.
     source_hidden: bool = False
+    source_locked: bool = False  # HIG-62: timeline editing only
     # Timeline label of the source track (HIG-48); the worker ignores it.
     source_name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)
 
@@ -793,6 +796,8 @@ class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     spec_version: Literal[1] = 1
+    video_hidden: bool = False  # HIG-62: black canvas in place of the main video picture
+    video_locked: bool = False  # HIG-62: timeline editing only
     trim: Trim = Field(default_factory=Trim)
     layers: list[Layer] = Field(default_factory=list)
     outputs: list[OutputVariant] = Field(min_length=1)

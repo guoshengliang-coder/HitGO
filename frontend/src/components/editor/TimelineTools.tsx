@@ -41,6 +41,7 @@ export function TimelineTools() {
   });
   const removeLayer = useEditor((s) => s.removeLayer);
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const removeTrack = useEditor((s) => s.removeAudioTrack);
   const splitTrack = useEditor((s) => s.splitAudioTrack);
   const cutTrackBefore = useEditor((s) => s.cutTrackBefore);
@@ -52,8 +53,12 @@ export function TimelineTools() {
   const postDuration = useEditor(selectPostDuration);
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
+  const videoLocked = !!spec?.video_locked;
+  const audioLocked = onSource ? !!spec?.audio?.source_locked : !!spec?.audio?.tracks.find((t) => t.id === selectedTrackId)?.locked;
+  const selectedDeletable = timelineSelection.some((key) => key.startsWith('clip:') ? !videoLocked : key.startsWith('layer:') ? !spec?.layers.find((l) => l.id === key.slice(6))?.locked : key.startsWith('track:') ? !spec?.audio?.tracks.find((t) => t.id === key.slice(6))?.locked : false);
+  const selectedLayerDeletable = selectedLayerIds.some((id) => !spec?.layers.find((l) => l.id === id)?.locked);
 
-  const canDelete = timelineSelection.length > 0 || selectedLayerIds.length > 1 || (step === 'trim' ? selectedRange !== null : step === 'audio' ? (onSource ? selectedMute !== null : !!selectedTrackId) : !!selectedLayerId);
+  const canDelete = selectedDeletable || (selectedLayerIds.length > 1 && selectedLayerDeletable) || (step === 'trim' ? selectedRange !== null && !videoLocked : step === 'audio' ? (onSource ? selectedMute !== null && !audioLocked : !!selectedTrackId && !audioLocked) : !!selectedLayerId && !spec?.layers.find((l) => l.id === selectedLayerId)?.locked);
   const onDelete = () => {
     if (timelineSelection.length) deleteTimelineItems();
     else if (selectedLayerIds.length > 1) removeSelectedLayers();
@@ -83,10 +88,10 @@ export function TimelineTools() {
       </>}
       {step === 'trim' && (
         <>
-          <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} title={hintFor('in')}>
+          <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} disabled={videoLocked} title={hintFor('in')}>
             入点
           </button>
-          <button className="btn" onClick={() => setOutPoint(time)} disabled={inPoint === null} title={hintFor('out')}>
+          <button className="btn" onClick={() => setOutPoint(time)} disabled={inPoint === null || videoLocked} title={hintFor('out')}>
             出点
           </button>
           <button className="btn" onClick={removeBefore} disabled={!canRemoveBefore} title={hintFor('remove-before')}>
@@ -99,13 +104,13 @@ export function TimelineTools() {
       )}
       {step === 'audio' && (
         <>
-          <button className="btn" onClick={() => selectedTrackId && splitTrack(selectedTrackId)} disabled={!selectedTrackId || onSource} title={selectedTrackId ? hintFor('split-track') : '先选中一条 BGM / 口播'}>
+          <button className="btn" onClick={() => selectedTrackId && splitTrack(selectedTrackId)} disabled={!selectedTrackId || onSource || audioLocked} title={selectedTrackId ? hintFor('split-track') : '先选中一条 BGM / 口播'}>
             <IconSplit /> 拆分
           </button>
-          <button className="btn" onClick={() => selectedTrackId && cutTrackBefore(selectedTrackId)} disabled={!selectedTrackId} title={selectedTrackId ? hintFor('cut-track-before') : '先选中一条音轨或源音轨'}>
+          <button className="btn" onClick={() => selectedTrackId && cutTrackBefore(selectedTrackId)} disabled={!selectedTrackId || audioLocked} title={selectedTrackId ? hintFor('cut-track-before') : '先选中一条音轨或源音轨'}>
             <IconCutLeft /> 删左
           </button>
-          <button className="btn" onClick={() => selectedTrackId && cutTrackAfter(selectedTrackId)} disabled={!selectedTrackId} title={selectedTrackId ? hintFor('cut-track-after') : '先选中一条音轨或源音轨'}>
+          <button className="btn" onClick={() => selectedTrackId && cutTrackAfter(selectedTrackId)} disabled={!selectedTrackId || audioLocked} title={selectedTrackId ? hintFor('cut-track-after') : '先选中一条音轨或源音轨'}>
             <IconCutRight /> 删右
           </button>
         </>

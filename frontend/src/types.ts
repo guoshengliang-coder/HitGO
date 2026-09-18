@@ -423,7 +423,7 @@ export interface LayerBase {
   hidden?: boolean;
   /** 可选（HIG-48）：时间线 / 图层列表里改的名字；缺省按内容自动命名，只在非空时发（契约 §2）。 */
   name?: string;
-  // 前端本地字段（不发送给后端）
+  /** 可选（HIG-62）：编辑器禁止修改该图层；worker 忽略。 */
   locked?: boolean;
 }
 
@@ -730,6 +730,8 @@ export interface AudioTrack {
   lang?: string;
   /** 可选（HIG-33）：关掉眼睛，不混进成片也不算跳过；缺省 false，false 时不发。 */
   hidden?: boolean;
+  /** 可选（HIG-62）：编辑器禁止修改该音轨；worker 忽略。 */
+  locked?: boolean;
   /** 可选（HIG-48）：时间线上改的轨道名；缺省显示素材文件名，只在非空时发。 */
   name?: string;
 }
@@ -743,6 +745,8 @@ export interface AudioSpec {
   tracks: AudioTrack[];
   /** 可选（HIG-33）：源音轨关掉眼睛，成片不带原声；source_volume 原样保留，打开眼睛即恢复。 */
   source_hidden?: boolean;
+  /** 可选（HIG-62）：编辑器禁止修改源音轨；worker 忽略。 */
+  source_locked?: boolean;
   /** 可选（HIG-48）：源音轨改的名字；缺省叫「源音轨」，只在非空时发。 */
   source_name?: string;
 }
@@ -784,6 +788,10 @@ export interface SequenceSpec {
 
 export interface EditSpec {
   spec_version: 1;
+  /** 可选（HIG-62）：主视频画面隐藏，以黑底代替；封面、图层和音频保留。 */
+  video_hidden?: boolean;
+  /** 可选（HIG-62）：编辑器禁止修改主视频片段；worker 忽略。 */
+  video_locked?: boolean;
   trim: Trim;
   layers: Layer[];
   outputs: OutputVariant[];

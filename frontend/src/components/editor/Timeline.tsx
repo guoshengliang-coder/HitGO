@@ -20,7 +20,8 @@ import { activeSourceDrag, clipDisplayGroups, clipWindows, insertClip, moveClipG
 import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { timelineThumbnails } from '../../lib/timelineThumbnails';
-import { layerTypesForStep } from '../../lib/steps';
+import { layerLane } from '../../lib/timelineTracks';
+import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
 import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { timelineTime, timelineX } from '../../lib/cover';
@@ -28,7 +29,8 @@ import { snapActive, snapValue } from '../../lib/snap';
 import { loadSectionPrefs, saveSectionOpen, sectionOpen } from '../../lib/sectionPrefs';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
 import { loadFeaturePrefs, PREFS_EVENT, type FeaturePrefs } from '../../lib/featurePrefs';
-import { IconEye, IconLock } from '../ui/Icons';
+import { IconEye, IconLock, IconTrash } from '../ui/Icons';
+import { newTextLayer } from './LayerParts';
 import { InlineName } from '../ui/InlineName';
 import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
 import { api } from '../../api';
@@ -41,16 +43,20 @@ import { enterDelay, hasAnimation, phaseLengths } from '../../lib/textAnimation'
 import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type Layer } from '../../types';
 
 /**
- * 轨道分组（HIG-67）：视频 / 音频 / 图层三组，各自可折叠，开合记在本机（lib/sectionPrefs）。
+ * 轨道分组（HIG-67、HIG-62）：Video / Audio / Subtitle / Text 与其他图层各自可折叠，开合记在本机。
  * 时间线现在常显全部轨道，不分组的话满配一屏会把画面挤没。
  */
-function TrackGroup({ id, label, count, children }: { id: string; label: string; count: number; children: React.ReactNode }) {
+function TrackGroup({ id, label, count, onAdd, children }: { id: string; label: string; count: number; onAdd?: () => void; children: React.ReactNode }) {
   const [open, setOpen] = useState(() => sectionOpen(loadSectionPrefs(), id, true));
   const toggle = () => {
     setOpen((v) => {
       saveSectionOpen(id, !v);
       return !v;
     });
+  };
+  const add = () => {
+    if (!open) { setOpen(true); saveSectionOpen(id, true); }
+    onAdd?.();
   };
   return (
     <>
@@ -61,6 +67,7 @@ function TrackGroup({ id, label, count, children }: { id: string; label: string;
             <span className="lname">{label}</span>
             <span className="tl-group-count mono">{count}</span>
           </button>
+          {onAdd && <button className="tl-group-add" onClick={add} aria-label={`新增${label}内容`} title={`新增${label}内容`}>+</button>}
         </div>
         <div className="body" />
       </div>
@@ -92,30 +99,33 @@ function CoverGap({ width }: { width: number }) {
 /** 轨道头的眼睛（HIG-33）：关掉 = 隐藏，留在 spec 里、成片不出；再打开即恢复。 */
 function EyeButton({ hidden, onToggle }: { hidden: boolean; onToggle: () => void }) {
   return (
-    <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
-      <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={onToggle}>
-        <IconEye off={hidden} />
-      </button>
-    </span>
+    <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={onToggle}>
+      <IconEye off={hidden} />
+    </button>
   );
 }
 
 /** 轨道头上可双击改名的名字（HIG-48）：清空提交空字符串，由调用方恢复自动名。 */
-function TrackName({ value, display, label, onSave }: { value: string; display?: string; label: string; onSave: (name: string) => Promise<boolean> | boolean | void }) {
+function TrackName({ value, display, label, disabled = false, onSave }: { value: string; display?: string; label: string; disabled?: boolean; onSave: (name: string) => Promise<boolean> | boolean | void }) {
+  if (disabled) return <span className="lname" title={`${label}已锁定`}>{display ?? value}</span>;
   return <InlineName className="lname" inputClassName="lname-input" value={value} display={display} label={label} allowEmpty maxLength={TRACK_NAME_MAX} onSave={onSave} />;
 }
 
 /** 音频模块的源音轨行：状态（静音 / 音量 / 隐藏）+ 静音区间（source_mute，由调用方画进 children）。点行选中，删左 / 删右 / I·O 作用于它。 */
-function SourceAudioRow({ audio, hasAudio, onToggleHidden, onRename, width, offset, scrub, selected, onSelect, children }: { audio: AudioSpec | null | undefined; hasAudio: boolean; onToggleHidden: () => void; onRename: (name: string) => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
+function SourceAudioRow({ audio, hasAudio, onToggleHidden, onToggleLocked, onRename, width, offset, scrub, selected, onSelect, children }: { audio: AudioSpec | null | undefined; hasAudio: boolean; onToggleHidden: () => void; onToggleLocked: () => void; onRename: (name: string) => void; width: number; offset: number; scrub: ReturnType<typeof useScrub>['handlers']; selected: boolean; onSelect: () => void; children?: React.ReactNode }) {
   const volume = sourceVolume(audio);
   const hidden = !!audio?.source_hidden;
+  const locked = !!audio?.source_locked;
   const muted = !hasAudio || volume === 0 || hidden;
   const label = sourceAudioLabel(audio, hasAudio);
   return (
-    <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${hidden ? 'hidden' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
+    <div className={`tl-row tl-audio ${muted ? 'muted' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''} ${selected ? 'selected' : ''}`} onClick={hasAudio ? onSelect : undefined}>
       <div className="lbl" title={hasAudio ? `${label}：选中后按 Q / W 或 I、O 静音一段原声（画面不动）` : label}>
-        <TrackName value={sourceAudioName(audio)} display={label} label="源音轨名" onSave={onRename} />
-        {hasAudio && <EyeButton hidden={hidden} onToggle={onToggleHidden} />}
+        <TrackName value={sourceAudioName(audio)} display={label} label="源音轨名" disabled={locked} onSave={onRename} />
+        {hasAudio && <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+          <EyeButton hidden={hidden} onToggle={onToggleHidden} />
+          <button className="btn ghost icon" title={locked ? '解锁源音轨' : '锁定源音轨'} aria-label={locked ? '解锁源音轨' : '锁定源音轨'} aria-pressed={locked} onClick={onToggleLocked}><IconLock open={!locked} /></button>
+        </span>}
       </div>
       <div className="body" {...scrub}>
         <CoverGap width={offset} />
@@ -252,6 +262,13 @@ export function Timeline() {
   const selectedTrackId = useEditor((s) => s.selectedTrackId);
   const setSelectedTrack = useEditor((s) => s.setSelectedTrack);
   const updateAudioTrack = useEditor((s) => s.updateAudioTrack);
+  const toggleVideoHidden = useEditor((s) => s.toggleVideoHidden);
+  const toggleVideoLocked = useEditor((s) => s.toggleVideoLocked);
+  const toggleTrackLocked = useEditor((s) => s.toggleTrackLocked);
+  const toggleSourceLocked = useEditor((s) => s.toggleSourceLocked);
+  const removeAudioTrack = useEditor((s) => s.removeAudioTrack);
+  const removeLayer = useEditor((s) => s.removeLayer);
+  const addLayer = useEditor((s) => s.addLayer);
   const toggleTrackHidden = useEditor((s) => s.toggleTrackHidden);
   const toggleSourceHidden = useEditor((s) => s.toggleSourceHidden);
   const renameAudioTrack = useEditor((s) => s.renameAudioTrack);
@@ -303,10 +320,26 @@ export function Timeline() {
   const mutes = spec?.audio?.source_mute ?? [];
   // 全轨道常显（HIG-67）：音轨与图层不再按当前模块过滤，模块只决定右栏面板和新增入口。
   const stickerAudio = stickerAudioLayers(spec?.layers ?? [], assets);
-  const layerTypes = layerTypesForStep(step);
-  const layerType = layerTypes[0] ?? null;
   // 全部图层行；保留在 spec.layers 里的下标，拖动时按它写回
   const layerRows = (spec?.layers ?? []).map((l, i) => ({ l, i }));
+  const visualGroups = [
+    { id: 'tl.subtitle', label: 'Subtitle', lane: 'subtitle', empty: '还没有字幕；在「字幕」模块导入 .srt 或新增字幕。' },
+    { id: 'tl.text', label: 'Text', lane: 'text', empty: '还没有文字；在「文本」模块添加。' },
+    { id: 'tl.layers', label: '其他', lane: 'other', empty: '还没有贴纸或形状；在「贴纸」模块添加。' },
+  ] as const;
+  const addText = (subtitle: boolean) => {
+    if (!video) return;
+    const subtitleStyle = subtitle ? BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar')?.style : undefined;
+    const layer = newTextLayer(subtitleStyle, subtitle ? '字幕' : '双击编辑文字');
+    if (subtitle) {
+      layer.origin = 'subtitle';
+      const start = Math.min(Math.max(0, postTime), Math.max(0, postDuration - 0.1));
+      layer.t = postDuration > 0.1 ? [start, Math.min(postDuration, start + 3)] : 'all';
+    }
+    // Subtitle remains a text layer; its editable properties live in TextPanel.
+    setStep('text');
+    addLayer(layer);
+  };
   const ppsRef = useRef(pps);
   ppsRef.current = pps;
   const prerollRef = useRef(preroll);
@@ -440,7 +473,7 @@ export function Timeline() {
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => {
     const videoTrack = !!(e.target as HTMLElement).closest('.tl-video .body');
-    if (video && spec && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
+    if (video && spec && !spec.video_locked && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
       e.preventDefault();
       e.dataTransfer.dropEffect = e.dataTransfer.types.includes(CLIP_DRAG) ? 'move' : 'copy';
       setSequenceDropAt(Math.max(0, Math.min(duration, xToTime(e.clientX))));
@@ -461,6 +494,7 @@ export function Timeline() {
     setSequenceDropAt(null);
     if (!video || !spec) return;
     if ((e.target as HTMLElement).closest('.tl-video .body')) {
+      if (spec.video_locked && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) { e.preventDefault(); setToast('Video 轨道已锁定'); return; }
       const at = Math.max(0, Math.min(duration, xToTime(e.clientX)));
       const moving = e.dataTransfer.getData(CLIP_DRAG);
       if (moving && sequence) {
@@ -551,6 +585,10 @@ export function Timeline() {
   // ---- 拖动区间 / 图层条（pointer capture + 吸附）----
   const startDrag = (e: RPointerEvent<HTMLElement>, d: Drag) => {
     if (e.button !== 0) return;
+    if ((d.kind.startsWith('cut') && spec?.video_locked)
+      || (d.kind.startsWith('track') && tracks[d.index]?.locked)
+      || (d.kind.startsWith('bar') && spec?.layers[d.index]?.locked)
+      || (d.kind.startsWith('mute') && spec?.audio?.source_locked)) return;
     e.stopPropagation();
     e.preventDefault();
     const el = e.currentTarget;
@@ -775,10 +813,14 @@ export function Timeline() {
             </div>
           </div>
 
-          <TrackGroup id="tl.video" label="视频" count={sequence ? sequence.clips.length : 1}>
-          <div className="tl-row tl-video">
+          <TrackGroup id="tl.video" label="Video" count={video ? (sequence ? sequence.clips.length : 1) : 0} onAdd={video && !spec?.video_locked ? () => { setStep('trim'); setToast('从左侧视频列表拖入素材，添加到 Video 轨道'); } : undefined}>
+          <div className={`tl-row tl-video ${spec?.video_hidden ? 'hidden' : ''} ${spec?.video_locked ? 'locked' : ''}`}>
             <div className="lbl" title="视频轨：双击改视频名（与左栏同一个名字）">
-              {video ? <TrackName value={video.name} label="视频名" onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}
+              {video ? <TrackName value={video.name} label="视频名" disabled={!!spec?.video_locked} onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}
+              {video && <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                <button className="btn ghost icon" title={spec?.video_hidden ? '显示主视频画面' : '隐藏主视频画面，导出为黑底'} aria-label={spec?.video_hidden ? '显示主视频' : '隐藏主视频'} aria-pressed={!!spec?.video_hidden} onClick={toggleVideoHidden}><IconEye off={!!spec?.video_hidden} /></button>
+                <button className="btn ghost icon" title={spec?.video_locked ? '解锁主视频' : '锁定主视频'} aria-label={spec?.video_locked ? '解锁主视频' : '锁定主视频'} aria-pressed={!!spec?.video_locked} onClick={toggleVideoLocked}><IconLock open={!spec?.video_locked} /></button>
+              </span>}
             </div>
             <div className="body" {...scrub.handlers}>
               {sequenceDropAt !== null && activeSourceDrag() && (() => {
@@ -795,7 +837,7 @@ export function Timeline() {
                 </div>
               )}
               {tiles.map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: off + tile.left, pointerEvents: 'none' }} />)}
-              {sequence && clipWindows(sequence).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps) }} draggable onDragStart={(e) => { e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s`} />)}
+              {sequence && clipWindows(sequence).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s`} />)}
               {remove.map((r, i) => {
                 const [a, b] = cutVal(i, r);
                 return (
@@ -849,11 +891,12 @@ export function Timeline() {
 
           </TrackGroup>
 
-          <TrackGroup id="tl.audio" label="音频" count={1 + tracks.length + stickerAudio.length}>
+          <TrackGroup id="tl.audio" label="Audio" count={1 + tracks.length + stickerAudio.length} onAdd={video ? () => { setStep('audio'); setToast('在右侧音频面板选择素材，添加 BGM 或口播'); } : undefined}>
           <SourceAudioRow
               audio={spec?.audio}
               hasAudio={sequence ? sequence.clips.some((c) => videos.find((v) => v.id === c.video_id)?.has_audio) : !!video?.has_audio}
               onToggleHidden={toggleSourceHidden}
+              onToggleLocked={toggleSourceLocked}
               onRename={renameSourceAudio}
               width={trackW}
               offset={off}
@@ -896,25 +939,29 @@ export function Timeline() {
               const problem = trackAssetProblem(t, assets);
               const hidden = !!t.hidden;
               return (
-                <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pickTrack(t.id); }}>
+                <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${t.locked ? 'locked' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pickTrack(t.id); }}>
                   <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
-                    <TrackName value={name} label="音轨名" onSave={(v) => renameAudioTrack(t.id, v)} />
-                    <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
+                    <TrackName value={name} label="音轨名" disabled={!!t.locked} onSave={(v) => renameAudioTrack(t.id, v)} />
+                    <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                      <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
+                      <button className="btn ghost icon" title={t.locked ? '解锁音轨' : '锁定音轨'} aria-label={t.locked ? '解锁音轨' : '锁定音轨'} aria-pressed={!!t.locked} onClick={() => toggleTrackLocked(t.id)}><IconLock open={!t.locked} /></button>
+                      <button className="btn ghost icon" title="删除音轨" aria-label="删除音轨" disabled={!!t.locked} onClick={() => removeAudioTrack(t.id)}><IconTrash /></button>
+                    </span>
                   </div>
                   <div className="body" {...scrub.handlers}>
                     <CoverGap width={off} />
                     {sequence && video && r.align === 'source' ? sequenceTrackWindows(sequence, video.id, [postToSource(pa, remove), postToSource(pb, remove)]).map(([start, end]) => (
                       <div key={start} data-timeline-key={`track:${t.id}`} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
-                        style={{ left: off + start * pps, width: Math.max(4, (end - start) * pps), cursor: all ? 'default' : 'grab' }}
+                        style={{ left: off + start * pps, width: Math.max(4, (end - start) * pps), cursor: all || t.locked ? 'default' : 'grab' }}
                         title="只随原视频片段播放；插入的其他视频期间不播放这条配音"
                         onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id); pickTimeline(`track:${t.id}`, e); if (all || e.metaKey || e.ctrlKey || e.shiftKey) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
                         随原片 · {start.toFixed(1)}s–{end.toFixed(1)}s
-                        {!all && <><div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} /><div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} /></>}
+                        {!all && !t.locked && <><div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} /><div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} /></>}
                       </div>
                     )) : <div data-timeline-key={`track:${t.id}`}
                       className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 || hidden ? 'muted' : ''} ${hidden ? 'hidden' : ''}`}
-                      style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
+                      style={{ left, width: Math.max(4, right - left), cursor: all || t.locked ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
                         if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id);
                         pickTimeline(`track:${t.id}`, e);
@@ -929,7 +976,7 @@ export function Timeline() {
                       {r.loop ? ' ↻' : ''}
                       {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
                       {hidden ? ' · 已隐藏' : problem === 'missing' ? ' · 素材已失效，导出会跳过' : problem === 'not-ready' ? ' · 素材处理中' : ''}
-                      {!all && (
+                      {!all && !t.locked && (
                         <>
                           <div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} />
                           <div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} />
@@ -956,7 +1003,7 @@ export function Timeline() {
               <div key={l.id} className={`tl-row tl-audio ${on ? '' : 'muted'}`}>
                 <div className="lbl" title={`${name}（贴纸音轨，时段在贴纸模块里改${l.hidden ? '；贴纸图层已隐藏，声音跟着不出' : ''}）`}>
                   <span className="role sticker" style={{ fontSize: 10, flex: 'none' }}>贴纸</span>
-                  <TrackName value={name} label="贴纸名" onSave={(v) => renameLayer(l, v)} />
+                  <TrackName value={name} label="贴纸名" disabled={!!l.locked} onSave={(v) => renameLayer(l, v)} />
                 </div>
                 <div className="body" {...scrub.handlers}>
                   <CoverGap width={off} />
@@ -969,8 +1016,14 @@ export function Timeline() {
           })}
           </TrackGroup>
 
-          <TrackGroup id="tl.layers" label="图层" count={layerRows.length}>
-          {layerRows.map(({ l, i }) => {
+          {visualGroups.map((group) => {
+          const rows = layerRows.filter(({ l }) => layerLane(l) === group.lane);
+          return <TrackGroup key={group.id} id={group.id} label={group.label} count={rows.length} onAdd={video ? () => {
+            if (group.lane === 'subtitle') addText(true);
+            else if (group.lane === 'text') addText(false);
+            else { setStep('sticker'); setToast('在右侧贴纸面板添加图片、视频或形状'); }
+          } : undefined}>
+          {rows.map(({ l, i }) => {
             const v = barVal(i, l);
             const all = v === 'all';
             const [pa, pb] = all ? [0, postDuration] : v;
@@ -982,16 +1035,17 @@ export function Timeline() {
             // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
             const pick = () => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); };
             return (
-              <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pick(); }}>
+              <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pick(); }}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
-                  <TrackName value={layerName(l, assets)} label="图层名" onSave={(v) => renameLayer(l, v)} />
+                  <TrackName value={layerName(l, assets)} label="图层名" disabled={locked} onSave={(v) => renameLayer(l, v)} />
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                     <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
                       <IconEye off={hidden} />
                     </button>
-                    <button className="btn ghost icon" title="锁定 / 解锁" onClick={() => updateLayer(l.id, { locked: !locked }, false)}>
+                    <button className="btn ghost icon" title="锁定 / 解锁" aria-pressed={locked} onClick={() => updateLayer(l.id, { locked: !locked })}>
                       <IconLock open={!locked} />
                     </button>
+                    <button className="btn ghost icon" title="删除图层" aria-label="删除图层" disabled={locked} onClick={() => removeLayer(l.id)}><IconTrash /></button>
                   </span>
                 </div>
                 <div className="body" {...scrub.handlers}>
@@ -1040,23 +1094,14 @@ export function Timeline() {
               </div>
             );
           })}
-          {layerRows.length === 0 && (
+          {rows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
-              <div className="lbl">{step === 'subtitle' ? '字幕' : step === 'localize' ? '译文字幕' : layerType === 'sticker' ? '叠加素材' : '图层'}</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>
-                {step === 'subtitle'
-                  ? '还没有字幕，在右侧选择 .srt 文件导入；要遮住画面里的原字幕，在右侧「遮盖原字幕」里添加。'
-                  : step === 'localize'
-                    ? '还没有译文字幕，在右侧生成语言版本后「套用」，字幕层和配音轨会一起加进来。'
-                    : layerType === 'text'
-                      ? '还没有文字图层，在右侧添加文字或标题模板；字幕请到顶栏「字幕」模块导入。'
-                      : layerType === 'sticker'
-                        ? '还没有叠加素材，在右侧素材里点选添加，或把图片 / 视频拖到这里 / 画布上。'
-                        : '还没有图层。到顶栏的「文本」「贴纸」「字幕」模块添加，或把图片 / 视频拖到这里。'}
-              </div>
+              <div className="lbl">{group.label}</div>
+              <div className="body hint" style={{ padding: '6px 8px' }}>{group.empty}</div>
             </div>
           )}
-          </TrackGroup>
+          </TrackGroup>;
+          })}
           {marqueeDraft && <div className="tl-marquee" style={{ left: Math.min(marqueeDraft.x0, marqueeDraft.x1), top: Math.min(marqueeDraft.y0, marqueeDraft.y1), width: Math.abs(marqueeDraft.x1 - marqueeDraft.x0), height: Math.abs(marqueeDraft.y1 - marqueeDraft.y0) }} />}
 
           {snapX !== null && <div className="tl-snap" style={{ left: LABEL_W + snapX }} />}

@@ -1944,3 +1944,58 @@ def test_hidden_source_is_silenced_but_keeps_its_volume_in_the_spec():
     plan = audio_build(spec)
     assert audio_build(audio_spec(source_volume=0)).argv == plan.argv
     assert "-an" in plan.argv and plan.audio["source_volume"] == 0.0
+
+
+def test_hidden_main_video_replaces_only_picture_before_layers_and_keeps_audio():
+    spec = valid_spec(trim={"remove": []})
+    spec["video_hidden"] = True
+    plan = build(spec)
+    graph = fc(plan)
+    assert "[c0]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[c0hidden]" in graph
+    assert re.search(r"\[c0hidden\]\[l\d+\]overlay=", graph)
+    assert "0:a:0" in plan.argv
+    assert plan.expected_duration == pytest.approx(24.6)
+
+
+def test_track_locks_are_saved_but_do_not_change_render_command():
+    plain = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5]}])
+    locked = audio_spec(tracks=[{"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5], "locked": True}])
+    locked["video_locked"] = True
+    locked["audio"]["source_locked"] = True
+    locked["layers"][0]["locked"] = True
+    parsed = EditSpec.model_validate(locked)
+    assert parsed.video_locked and parsed.audio.source_locked
+    assert parsed.audio.tracks[0].locked and parsed.layers[0].locked
+    assert audio_build(plain).argv == audio_build(locked).argv
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg/ffprobe not installed")
+def test_real_ffmpeg_hidden_main_video_is_black_with_source_audio(tmp_path):
+    src = tmp_path / "white_with_tone.mp4"
+    out = tmp_path / "hidden.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=white:size=320x180:rate=10:duration=0.6",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=0.6", "-shortest", "-c:v", "libx264", "-c:a", "aac", str(src)],
+        check=True, capture_output=True,
+    )
+    spec_dict = valid_spec(
+        trim={"remove": []}, layers=[],
+        outputs=[{"variant_key": "custom", "aspect": "custom", "width": 320, "height": 180, "fill": "color", "color": "#FFFFFF"}],
+    )
+    spec_dict["video_hidden"] = True
+    spec = EditSpec.model_validate(spec_dict)
+    plan = build_render_command(
+        spec, {"duration": 0.6, "has_audio": True, "width": 320, "height": 180}, {}, spec.outputs[0],
+        source_path=str(src), output_path=str(out),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True)
+    frame = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1", "-vf", "format=gray", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    assert frame and max(frame) < 40
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "default=nw=1", str(out)],
+        check=True, capture_output=True, text=True,
+    )
+    assert "codec_type=audio" in probe.stdout
