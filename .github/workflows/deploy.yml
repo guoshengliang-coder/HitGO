@@ -63,6 +63,7 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          echo "SSH_OPTS=-i $HOME/.ssh/deploy_key" >> "$GITHUB_ENV"
 
       - name: Deploy
         env:
@@ -70,7 +71,6 @@ jobs:
           HITGO_APP_DIR: ${{ secrets.DEPLOY_APP_DIR }}
           HITGO_PUBLIC_ORIGIN: ${{ vars.HITGO_PUBLIC_ORIGIN }}
           SKIP_SMOKE: '1'
-          SSH_OPTS: -i ~/.ssh/deploy_key
         run: |
           scripts/deploy.sh --notice-origin "$HITGO_PUBLIC_ORIGIN" | tee deploy.log
           tail -n 1 deploy.log | python3 -m json.tool > release-receipt.json
