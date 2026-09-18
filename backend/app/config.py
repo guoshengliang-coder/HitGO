@@ -21,7 +21,7 @@ class Settings:
     redis_url: str
     access_code: str
     public_base_url: str
-    # Upload host that bypasses the CDN (contract §3 upload-ticket); "" = same-origin uploads.
+    # Upload host for assets and batch videos, bypassing the CDN (contract §3).
     upload_base_url: str
     # How long a read ticket for one /media file stays valid (contract §0, HIG-58): long
     # enough for the voice-cloning endpoint to fetch the sample, short enough to expire.

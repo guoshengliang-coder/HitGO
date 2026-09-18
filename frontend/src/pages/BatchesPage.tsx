@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, uploadErrorText } from '../api';
 import type { Batch } from '../types';
 import { IconExport, IconPen, IconPlus, IconTrash } from '../components/ui/Icons';
 import { Seg } from '../components/ui/Seg';
@@ -92,7 +92,7 @@ export function BatchesPage() {
       }
       navigate(`/batches/${b.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(uploadErrorText(err));
       setBusy(false);
       setProgress(null);
     }

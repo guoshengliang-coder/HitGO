@@ -18,3 +18,11 @@ def test_ticket_is_bound_to_the_access_code_and_cannot_be_tampered_with():
     assert not upload_ticket.verify(f"{expires + 9999}.{signature}", "secret", now=1000)  # extended
     for junk in ("", "nope", ".abc", "12.", "x.y", f"{expires}"):
         assert not upload_ticket.verify(junk, "secret", now=1000)
+
+
+def test_ticket_is_bound_to_the_exact_upload_path():
+    path = "/api/batches/b_one/videos"
+    ticket, _ = upload_ticket.issue("secret", now=1000, path=path)
+    assert upload_ticket.verify(ticket, "secret", now=1000, path=path)
+    assert not upload_ticket.verify(ticket, "secret", now=1000, path="/api/batches/b_two/videos")
+    assert not upload_ticket.verify(ticket, "secret", now=1000, path="/api/assets")

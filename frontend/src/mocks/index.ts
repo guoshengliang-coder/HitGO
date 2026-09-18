@@ -977,7 +977,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     }
     return clone(v);
   }
-  if (path === '/api/assets/upload-ticket') {
+  if (path === '/api/assets/upload-ticket' || /^\/api\/batches\/[^/]+\/upload-ticket$/.test(path)) {
     return { upload_url: null, ticket: null, expires_at: null };
   }
   if (path === '/api/assets') {

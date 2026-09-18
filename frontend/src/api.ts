@@ -18,10 +18,18 @@ export interface RenderItem {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+/** Put the stable code next to the human-readable cause when an upload fails. */
+export function uploadErrorText(error: unknown): string {
+  if (error instanceof ApiError) return `${error.message}${error.code ? `（错误码：${error.code}）` : ''}`;
+  return error instanceof Error ? error.message : String(error);
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -43,14 +51,16 @@ async function request<T>(method: Method, url: string, body?: unknown): Promise<
   const res = await fetch(url, init);
   if (!res.ok) {
     let detail = `请求失败（${res.status}）`;
+    let code: string | undefined;
     try {
       const j = await res.json();
       if (j && typeof j.detail === 'string') detail = j.detail;
       else if (j && j.detail) detail = JSON.stringify(j.detail);
+      if (j && typeof j.code === 'string') code = j.code;
     } catch {
       /* ignore */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, code);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -99,20 +109,23 @@ export function uploadWithProgress<T>(
         try {
           resolve(JSON.parse(xhr.responseText) as T);
         } catch (e) {
-          reject(new ApiError(xhr.status, '响应解析失败'));
+          reject(new ApiError(xhr.status, '上传已发送，但无法解析服务端响应', 'UPLOAD_RESPONSE_INVALID'));
         }
       } else {
-        let detail = `上传失败（${xhr.status}）`;
+        let detail = xhr.status === 413 ? '上传请求超过当前通道的大小限制，请检查上传服务配置' : `上传失败（${xhr.status}）`;
+        let code = xhr.status === 413 ? 'UPLOAD_REQUEST_TOO_LARGE' : `UPLOAD_HTTP_${xhr.status}`;
         try {
           const j = JSON.parse(xhr.responseText);
           if (j?.detail) detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+          if (typeof j?.code === 'string') code = j.code;
         } catch {
           /* ignore */
         }
-        reject(new ApiError(xhr.status, detail));
+        reject(new ApiError(xhr.status, detail, code));
       }
     };
-    xhr.onerror = () => reject(new ApiError(0, '网络错误：上传被中断，请检查网络后重试'));
+    xhr.onerror = () => reject(new ApiError(0, '网络错误：上传被中断，请检查网络后重试', 'UPLOAD_NETWORK_ERROR'));
+    xhr.onabort = () => reject(new ApiError(0, '上传已取消', 'UPLOAD_ABORTED'));
     xhr.send(form);
   });
 }
@@ -128,10 +141,23 @@ export const api = {
   getBatch: (id: string) => request<BatchDetail>('GET', `/api/batches/${id}`),
   renameBatch: (id: string, name: string) => request<Batch>('PATCH', `/api/batches/${id}`, { name }),
   deleteBatch: (id: string) => request<void>('DELETE', `/api/batches/${id}`),
-  uploadVideos: (batchId: string, files: File[], onProgress?: (f: number) => void) => {
+  uploadVideos: async (batchId: string, files: File[], onProgress?: (f: number) => void) => {
     const form = new FormData();
     for (const f of files) form.append('files', f, f.name);
-    return uploadWithProgress<Video[]>(`/api/batches/${batchId}/videos`, form, onProgress);
+    let target: UploadTicket;
+    try {
+      target = await request<UploadTicket>('POST', `/api/batches/${batchId}/upload-ticket`);
+    } catch (error) {
+      if (error instanceof ApiError) throw new ApiError(error.status, error.message, error.code ?? 'UPLOAD_TICKET_REQUEST_FAILED');
+      throw new ApiError(0, '无法取得上传凭证，请检查网络后重试', 'UPLOAD_TICKET_REQUEST_FAILED');
+    }
+    if (target?.upload_url && target.ticket) {
+      return uploadWithProgress<Video[]>(target.upload_url, form, onProgress, { 'X-Upload-Ticket': target.ticket });
+    }
+    if (target?.upload_url === null && target.ticket === null) {
+      return uploadWithProgress<Video[]>(`/api/batches/${batchId}/videos`, form, onProgress);
+    }
+    throw new ApiError(0, '上传服务返回的凭证不完整，请稍后重试', 'UPLOAD_TICKET_INVALID');
   },
   /** 空白素材（HIG-50，契约 §3）：201 Video（kind = blank），worker 生成源片，之后轮询 GET /api/videos/{id}。 */
   createBlankVideo: (batchId: string, body: BlankVideoIn) => request<Video>('POST', `/api/batches/${batchId}/blank`, body),

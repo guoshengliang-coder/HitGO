@@ -1257,7 +1257,7 @@ class JobOut(BaseModel):
 
 
 class UploadTicketOut(BaseModel):
-    """Where to send large asset uploads; all null when no upload host is configured."""
+    """Where to send large uploads; all null when no upload host is configured."""
 
     upload_url: str | None = None
     ticket: str | None = None

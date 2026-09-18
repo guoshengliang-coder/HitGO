@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -188,7 +189,11 @@ class AccessGate:
         # /api/auth issues the cookie; /api/health is polled by the compose healthcheck.
         if gated and settings.access_code and path not in ("/api/auth", "/api/health"):
             if not access_ok(Request(scope)) and not _ticket_ok(scope) and not _media_ticket_ok(scope, path):
-                await JSONResponse({"detail": "需要访问码"}, status_code=401)(scope, receive, send)
+                if _is_upload_path(scope, path):
+                    body = {"detail": "上传凭证缺失或失效，请重试", "code": "UPLOAD_AUTH_REQUIRED"}
+                else:
+                    body = {"detail": "需要访问码"}
+                await JSONResponse(body, status_code=401)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
@@ -206,13 +211,20 @@ def _media_ticket_ok(scope: Scope, path: str) -> bool:
 
 
 def _ticket_ok(scope: Scope) -> bool:
-    """POST /api/assets from the cookie-less upload host (contract §0 / §3)."""
-    if scope.get("method") != "POST" or scope.get("path") != "/api/assets":
+    """Cookie-less uploads only at the path signed into the ticket (contract §0 / §3)."""
+    path = scope.get("path", "")
+    if not _is_upload_path(scope, path):
         return False
     for name, value in scope.get("headers", []):
         if name == upload_ticket.HEADER.encode():
-            return upload_ticket.verify(value.decode("latin-1"), settings.access_code)
+            return upload_ticket.verify(value.decode("latin-1"), settings.access_code, path=path)
     return False
+
+
+def _is_upload_path(scope: Scope, path: str) -> bool:
+    return scope.get("method") == "POST" and (
+        path == "/api/assets" or re.fullmatch(r"/api/batches/[^/]+/videos", path) is not None
+    )
 
 
 def cors_origins() -> list[str]:
@@ -256,7 +268,10 @@ def create_app() -> FastAPI:
         detail = exc.detail if isinstance(exc.detail, str) else "请求失败"
         if exc.status_code == 404 and detail == "Not Found":
             detail = "资源不存在"
-        return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
+        content = {"detail": detail}
+        if code := getattr(exc, "code", None):
+            content["code"] = code
+        return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
 
     @app.get("/api/health", include_in_schema=False)
     def health() -> dict[str, str]:
