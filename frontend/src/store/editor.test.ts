@@ -841,3 +841,111 @@ describe('大字报（HIG-50）', () => {
     expect(selectPostDuration(useEditor.getState())).toBe(3);
   });
 });
+
+// --- 多选下的样式粘贴（HIG-77 在 HIG-63 的多选之上补的一点）----------------------
+
+describe('多选时粘贴文字样式', () => {
+  it('贴到全部选中的文字图层，只记一步历史', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [textLayer('一'), { ...textLayer('二'), id: 'L2' }, { ...textLayer('三'), id: 'L3' }] };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().updateLayer('L1', (l) => {
+      if (l.type === 'text') l.style.color = '#00ff00';
+    });
+    useEditor.getState().copyStyle();
+    useEditor.getState().selectLayers(['L2', 'L3']);
+    const undoDepthBefore = useEditor.getState().canUndo();
+    useEditor.getState().pasteStyle();
+    const colors = () => (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
+    expect(colors()).toEqual(['#00ff00', '#00ff00', '#00ff00']);
+    expect(undoDepthBefore).toBe(true);
+    useEditor.getState().undo(); // 一步就回到只有 L1 是绿的
+    expect(colors().slice(1).every((c) => c !== '#00ff00')).toBe(true);
+  });
+
+  it('单选时只贴当前一条', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [textLayer('一'), { ...textLayer('二'), id: 'L2' }] };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().updateLayer('L1', (l) => {
+      if (l.type === 'text') l.style.color = '#123456';
+    });
+    useEditor.getState().copyStyle();
+    useEditor.getState().setSelectedLayer('L2');
+    useEditor.getState().pasteStyle();
+    const colors = (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
+    expect(colors[1]).toBe('#123456');
+  });
+});
+
+// --- 拆分图层（HIG-79）-------------------------------------------------------------
+
+describe('splitLayer', () => {
+  const at = (sourceTime: number) => useEditor.setState({ time: sourceTime, lap: 0 });
+
+  it('在播放头处拆成两条，选中右半段，可一步撤销', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字'), t: [0, 8] }] });
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    const layers = useEditor.getState().currentSpec()!.layers;
+    expect(layers.map((l) => l.t)).toEqual([[0, 4], [4, 8]]);
+    expect(useEditor.getState().selectedLayerId).toBe(layers[1].id);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+  });
+
+  it("t = 'all' 的图层先展开成成片时段再拆", () => {
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers.map((l) => l.t)).toEqual([[0, 4], [4, 10]]);
+  });
+
+  it('播放头在时段外时不拆，给出可照做的提示', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字'), t: [5, 9] }] });
+    at(1);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().toast).toContain('播放头');
+  });
+
+  it('大字报不拆，提示说明原因', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('文案'), scroll: { speed: 0.08, box: DEFAULT_SCROLL_BOX } }] });
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().toast).toContain('大字报');
+  });
+});
+
+// --- 音轨变速（HIG-75）-------------------------------------------------------------
+
+describe('setTrackSpeed', () => {
+  const withTrack = (t: [number, number] | 'all') => {
+    useEditor.setState({ assets: [{ id: 'a_v', name: 'v.wav', type: 'audio', status: 'ready', duration: 8 } as Asset] });
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), audio: { source_volume: 1, tracks: [{ id: 'au_1', asset_id: 'a_v', t }] } });
+  };
+
+  it('提速时时段跟着缩短，播的素材内容不变', () => {
+    withTrack([0, 8]);
+    useEditor.getState().setTrackSpeed('au_1', 2);
+    const track = useEditor.getState().currentSpec()!.audio!.tracks[0];
+    expect(track.speed).toBe(2);
+    expect(track.t).toEqual([0, 4]);
+  });
+
+  it('速度夹在契约范围内', () => {
+    withTrack([0, 8]);
+    useEditor.getState().setTrackSpeed('au_1', 9);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks[0].speed).toBe(2);
+    useEditor.getState().setTrackSpeed('au_1', 0.01);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks[0].speed).toBe(0.5);
+  });
+
+  it("t = 'all' 的轨只改速度不动时段", () => {
+    withTrack('all');
+    useEditor.getState().setTrackSpeed('au_1', 1.5);
+    const track = useEditor.getState().currentSpec()!.audio!.tracks[0];
+    expect(track.speed).toBe(1.5);
+    expect(track.t).toBe('all');
+  });
+});

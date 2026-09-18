@@ -153,10 +153,13 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
         return;
       }
       case 'KeyB':
-        // 剪映的分割 ⌘B：目前只有音轨能拆分（音频模块选中的 BGM / 口播 / 分离轨，HIG-25）
+        // 剪映的分割 ⌘B：音频模块拆音轨（HIG-25），图层模块拆图层（HIG-79）
         if (s.step === 'audio' && s.selectedTrackId && s.selectedTrackId !== SOURCE_TRACK_ID) {
           e.preventDefault();
           s.splitAudioTrack(s.selectedTrackId);
+        } else if (layerStep && s.selectedLayerId) {
+          e.preventDefault();
+          s.splitLayer(s.selectedLayerId);
         }
         return;
       case 'KeyD':
@@ -270,6 +273,13 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
         return;
       case 'Escape':
         s.setSelectedLayer(null);
+        return;
+      case 'KeyS':
+        // 与音频模块的 S 对称（HIG-79）：在播放头处拆分选中的图层
+        if (layer) {
+          e.preventDefault();
+          s.splitLayer(layer.id);
+        }
         return;
       case 'BracketLeft':
       case 'BracketRight': {

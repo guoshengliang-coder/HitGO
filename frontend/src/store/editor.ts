@@ -9,7 +9,7 @@ import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
 import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
-import { addMuteRange, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor } from '../lib/audioTracks';
+import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
@@ -26,7 +26,8 @@ import { retrimForAsset } from '../lib/sourceTrim';
 import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
-import { DEFAULT_SCROLL_BOX, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
+import { splitLayerAt, splitLayerBlockedReason } from '../lib/layerSplit';
+import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
@@ -118,7 +119,6 @@ export interface EditorState {
   selectedLayerIds: string[];
   subtitleSyncEnabled: boolean;
   setSubtitleSyncEnabled: (enabled: boolean) => void;
-  marqueeEnabled: boolean;
   /** HIG-65：贴纸页当前要在预览画布拖画的图形；null = 普通选择。 */
   drawingShape: import('../types').ShapeLayer['shape'] | null;
   /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
@@ -196,7 +196,6 @@ export interface EditorState {
   setSelectedLayer: (id: string | null) => void;
   selectLayers: (ids: string[], mode?: 'replace' | 'add' | 'subtract') => void;
   selectAllLayers: () => void;
-  setMarqueeEnabled: (on: boolean) => void;
   removeSelectedLayers: () => void;
   duplicateSelectedLayers: () => void;
   shiftSelectedLayers: (seconds: number) => void;
@@ -268,6 +267,8 @@ export interface EditorState {
   /** init：拖进时间线时带上落点算出的时段等（HIG-33），覆盖按角色的默认值。 */
   addAudioTrack: (assetId: string, role: AudioRole, init?: Partial<Omit<AudioTrack, 'id' | 'asset_id' | 'role'>>) => string | null;
   updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
+  /** 改音轨速度（HIG-75）：同时按新速度调时段，让这条轨播的素材内容不变。 */
+  setTrackSpeed: (id: string, speed: number) => void;
   removeAudioTrack: (id: string) => void;
   /** 音轨眼睛（HIG-33）：隐藏 / 显示，进撤销栈（影响成片）。 */
   toggleTrackHidden: (id: string) => void;
@@ -324,6 +325,8 @@ export interface EditorState {
   /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
   addLayers: (layers: Layer[]) => void;
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
+  /** 在播放头处把图层拆成两条（HIG-79，契约 §2「拆分图层」）；拆不了时弹提示。 */
+  splitLayer: (id: string) => void;
   removeLayer: (id: string) => void;
   // 层级操作都只在图层自己这一类（文字 / 贴纸）里换序，另一类的位置不动，见 lib/layerKind
   moveLayer: (id: string, dir: -1 | 1) => void;
@@ -430,7 +433,6 @@ const PER_BATCH_INITIAL = {
   selectedLayerId: null,
   selectedLayerIds: [],
   subtitleSyncEnabled: false,
-  marqueeEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
   replacingLayerId: null,
@@ -801,11 +803,30 @@ export const useEditor = create<EditorState>((set, get) => {
       },
       { videoId },
     );
+    // 跟随朗读调速（HIG-75）：条目要的是「朗读多少秒，大字报就滚多少秒」。以前这一步要用户
+    // 手点「配合朗读调速」，现在生成完自动跑一次；速度滑杆照旧可以再改，开关可以关掉。
+    let fitted = false;
+    if (loadFeaturePrefs().posterFitVoiceSpeed && (asset.duration ?? 0) > 0) {
+      const layer = (get().specs[videoId]?.layers ?? []).find((l): l is TextLayer => l.type === 'text' && !!l.scroll && !l.hidden);
+      if (layer) {
+        const speed = fitScrollSpeed(layer, asset.duration!);
+        if (Math.abs(speed - resolveScroll(layer.scroll).speed) > 1e-6) {
+          get().updateSpec(
+            (spec) => {
+              const l = spec.layers.find((x) => x.id === layer.id);
+              if (l?.type === 'text' && l.scroll) l.scroll = { ...l.scroll, speed };
+            },
+            { videoId },
+          );
+          fitted = true;
+        }
+      }
+    }
     if (videoId === get().currentVideoId) {
       set({ selectedTrackId: id });
       get().syncPosterDuration();
     }
-    get().setToast('朗读已生成，已加为口播轨');
+    get().setToast(fitted ? '朗读已生成，已加为口播轨并按朗读时长调好滚动速度' : '朗读已生成，已加为口播轨');
   };
 
   return {
@@ -1102,7 +1123,6 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedLayerIds: next, selectedLayerId: next[next.length - 1] ?? null });
     },
     selectAllLayers: () => get().selectLayers((get().currentSpec()?.layers ?? []).map((l) => l.id)),
-    setMarqueeEnabled: (marqueeEnabled) => set({ marqueeEnabled }),
     removeSelectedLayers: () => {
       const ids = new Set(get().selectedLayerIds);
       if (!ids.size && get().selectedLayerId) ids.add(get().selectedLayerId!);
@@ -1493,6 +1513,15 @@ export const useEditor = create<EditorState>((set, get) => {
       });
       set({ selectedTrackId: id });
       return id;
+    },
+    setTrackSpeed: (id, speed) => {
+      const spec = get().currentSpec();
+      const track = spec?.audio?.tracks.find((t) => t.id === id);
+      if (!spec || !track) return;
+      const next = clampSpeed(speed);
+      const media = get().assets.find((a) => a.id === track.asset_id)?.duration ?? 0;
+      const postDuration = outputDuration(selectSourceDuration(get()), spec.trim);
+      get().updateAudioTrack(id, { speed: next, t: windowForSpeed(track, postDuration, media, next) });
     },
     updateAudioTrack: (id, patch, history = true) => {
       get().updateSpec(
@@ -1962,6 +1991,24 @@ export const useEditor = create<EditorState>((set, get) => {
       // 眼睛开关（HIG-33）碰到滚动文案（HIG-50）：隐藏的不算进成片时长
       if (typeof patch === 'object' && 'hidden' in patch) get().syncPosterDuration();
     },
+    splitLayer: (id) => {
+      const ctx = playheadPost();
+      const layer = ctx?.spec.layers.find((l) => l.id === id);
+      if (!ctx || !layer) return;
+      const blocked = splitLayerBlockedReason(layer, ctx.p, ctx.postDuration);
+      if (blocked) {
+        set({ toast: blocked, toastAction: null });
+        return;
+      }
+      const parts = splitLayerAt(layer, ctx.p, ctx.postDuration, newLayerId());
+      if (!parts) return;
+      get().updateSpec((spec) => {
+        const i = spec.layers.findIndex((l) => l.id === id);
+        if (i >= 0) spec.layers.splice(i, 1, parts[0], parts[1]);
+      });
+      // 选中右半段：和剪映一样，拆完接着处理后面那截
+      set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
     removeLayer: (id) => {
       get().updateSpec((spec) => {
         spec.layers = spec.layers.filter((l) => l.id !== id);
@@ -2083,8 +2130,11 @@ export const useEditor = create<EditorState>((set, get) => {
         set({ toast: '只能把样式粘贴到文字图层', toastAction: null });
         return;
       }
-      get().updateLayer(target.id, (l) => {
-        if (l.type === 'text') l.style = { ...style };
+      // 多选时一次贴到全部选中的文字图层上，包在同一次 updateSpec 里 = 一步撤销
+      // （与 HIG-63 的 updateSelectedTextStyle 同一个路子，只是贴的是整份样式而不是某几个字段）
+      const ids = new Set(get().selectedLayerIds.length > 1 ? get().selectedLayerIds : [target.id]);
+      get().updateSpec((spec) => {
+        for (const l of spec.layers) if (l.type === 'text' && ids.has(l.id) && !l.locked) l.style = { ...style };
       });
     },
     nudgeLayer: (id, dx, dy, history = true) => {

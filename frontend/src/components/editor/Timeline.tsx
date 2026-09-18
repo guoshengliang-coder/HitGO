@@ -27,6 +27,7 @@ import { timelineTime, timelineX } from '../../lib/cover';
 import { snapActive, snapValue } from '../../lib/snap';
 import { loadSectionPrefs, saveSectionOpen, sectionOpen } from '../../lib/sectionPrefs';
 import { MAX_PPS, MIN_PPS, stepZoom, TIMELINE_ZOOM_EVENT } from '../../lib/transportKeys';
+import { loadFeaturePrefs, PREFS_EVENT, type FeaturePrefs } from '../../lib/featurePrefs';
 import { IconEye, IconLock } from '../ui/Icons';
 import { InlineName } from '../ui/InlineName';
 import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
@@ -80,6 +81,8 @@ type PendingDrop = { assetId: string; role: AudioRole; start: number; videoId: s
 
 const LABEL_W = 96;
 const SNAP_PX = 6;
+/** 指针移开这么多像素才算框选，而不是一次点击（HIG-77）。 */
+const MARQUEE_PX = 4;
 
 /** 封面段在非视频行里的占位斜纹（封面期间不叠图层、不放音轨）。 */
 function CoverGap({ width }: { width: number }) {
@@ -190,7 +193,27 @@ function useScrub(seekAt: (clientX: number) => void) {
     }
     setScrubbing(false);
   };
-  return { scrubbing, handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp } };
+  /**
+   * 半路放手：这一次按下改判成别的手势了（空白处拖 = 框选，HIG-60/HIG-77），
+   * 播放头停在按下的位置，不再跟着走，捕获也还回去让新手势接管。
+   */
+  const cancel = (el: HTMLElement | null, pointerId: number) => {
+    if (!active.current) return false;
+    active.current = false;
+    if (raf.current) {
+      cancelAnimationFrame(raf.current);
+      raf.current = 0;
+    }
+    pending.current = null;
+    try {
+      el?.releasePointerCapture(pointerId);
+    } catch {
+      /* ignore */
+    }
+    setScrubbing(false);
+    return true;
+  };
+  return { scrubbing, cancel, handlers: { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp } };
 }
 
 export function Timeline() {
@@ -212,10 +235,9 @@ export function Timeline() {
   const timelineSelection = useEditor((s) => s.timelineSelection);
   const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
   const shiftTimelineItems = useEditor((s) => s.shiftTimelineItems);
-  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
   const shiftSelectedLayers = useEditor((s) => s.shiftSelectedLayers);
   const [marqueeDraft, setMarqueeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const marqueeStart = useRef<{ x: number; y: number; mode: 'replace' | 'add' | 'subtract' } | null>(null);
+  const marqueeStart = useRef<{ x: number; y: number; clientX: number; clientY: number; mode: 'replace' | 'add' | 'subtract'; active: boolean } | null>(null);
   const focusLayer = useEditor((s) => s.focusLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const renameLayer = (l: Layer, name: string) => {
@@ -292,6 +314,16 @@ export function Timeline() {
   const axisTimeRef = useRef(axisTime);
   axisTimeRef.current = axisTime;
 
+  // 滚轮方向的偏好（HIG-79）：开关在 Transport 里，这里跟着广播走（wheel 监听是 ref 闭包，不能靠 state）
+  const wheelVerticalRef = useRef(loadFeaturePrefs().timelineWheelVertical);
+  useEffect(() => {
+    const onPrefs = (e: Event) => {
+      wheelVerticalRef.current = (e as CustomEvent<FeaturePrefs>).detail.timelineWheelVertical;
+    };
+    window.addEventListener(PREFS_EVENT, onPrefs);
+    return () => window.removeEventListener(PREFS_EVENT, onPrefs);
+  }, []);
+
   // ---- 缩放：围绕锚点保持光标下的时间不动 ----
   const zoomAnchor = useRef<{ time: number; offsetX: number } | null>(null);
   const zoomTo = (next: number, anchor: { time: number; offsetX: number }) => {
@@ -312,7 +344,6 @@ export function Timeline() {
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (e.shiftKey) return; // 交给浏览器
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const cur = ppsRef.current;
@@ -321,8 +352,13 @@ export function Timeline() {
         zoomTo(cur * Math.exp(-e.deltaY * 0.002), { time: (offsetX + el.scrollLeft) / cur - prerollRef.current, offsetX });
         return;
       }
-      // 普通滚轮：横向滚动（轨道没有横向溢出时保留浏览器默认的纵向滚动）
-      if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && el.scrollWidth > el.clientWidth + 1) {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return; // 本来就是横向手势，交给浏览器
+      // 裸滚轮的方向（HIG-79）。以前一律横向，于是只要放大到横向溢出（几乎总是），纵向分量就被
+      // 抢走，轨道多了根本翻不到下面。现在默认上下看轨道，⇧ 换成左右看时间；关掉偏好则反过来。
+      const vertical = wheelVerticalRef.current !== e.shiftKey;
+      if (vertical && el.scrollHeight > el.clientHeight + 1) return; // 有得滚就交给浏览器的原生纵向滚动
+      // 纵向没什么可滚的（轨道装得下）：别让滚轮变成哑的，还是拿来横向看时间
+      if (el.scrollWidth > el.clientWidth + 1) {
         e.preventDefault();
         el.scrollLeft += e.deltaY;
       }
@@ -601,8 +637,10 @@ export function Timeline() {
             else updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
           }
         } else {
+          // 只点了一下没拖就不写。全程条（HIG-79）尤其要挡住——点一下就把「全程」变成
+          // 具体区间，是用户没要求过的语义变更
           const layer = spec?.layers[d.index];
-          if (layer) {
+          if (layer && (a !== d.orig[0] || b !== d.orig[1])) {
             if (d.kind === 'bar-move' && timelineSelection.length > 1 && timelineSelection.includes(`layer:${layer.id}`)) shiftTimelineItems(a - d.orig[0]);
             else if (d.kind === 'bar-move' && selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id)) shiftSelectedLayers(a - d.orig[0]);
             else updateLayer(layer.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
@@ -639,8 +677,9 @@ export function Timeline() {
   };
   const cutVal = (i: number, r: [number, number]) => (drag && drag.kind.startsWith('cut') && drag.index === i && dragVal ? dragVal : r);
   const barVal = (i: number, l: Layer): [number, number] | 'all' => {
-    if (l.t === 'all') return 'all';
-    return drag && drag.kind.startsWith('bar') && drag.index === i && dragVal ? dragVal : l.t;
+    // 全程条一开始拖就按拖动值显示（HIG-79）：松手写回具体区间，拖的过程中条要跟着手走
+    if (drag && drag.kind.startsWith('bar') && drag.index === i && dragVal) return dragVal;
+    return l.t === 'all' ? 'all' : l.t;
   };
   const pickTimeline = (key: string, e: RPointerEvent<HTMLElement>) => {
     if (!e.metaKey && !e.ctrlKey && !e.shiftKey && timelineSelection.length > 1 && timelineSelection.includes(key)) return;
@@ -655,25 +694,51 @@ export function Timeline() {
       selectTimelineItems([key]);
     }
   };
+  /**
+   * 框选（HIG-60 跨轨选择，HIG-77 改成剪映式的直接拖）：轨道区空白处按下再拖就是框选，
+   * 不用先切模式。
+   *
+   * 和 scrub 共存靠「按下先不接管」：按下时只记起点，播放头照常跟着点一下走（这个手感不变），
+   * 等指针真的移开超过阈值才改判成框选，把 scrub 叫停并接过捕获。按在条上则一开始就不记起点
+   * ——那是拖条，不是框选。
+   */
   const marqueeDown = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!marqueeEnabled || e.button !== 0 || !(e.target as HTMLElement).closest('.body')) return;
-    e.preventDefault();
-    e.stopPropagation();
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (!t.closest('.body')) return; // 标尺、轨道头：不框选
+    if (t.closest('[data-timeline-key], .tl-bar, .tl-cut, .tl-mute')) return; // 按在条上：交给拖条
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left, y = e.clientY - rect.top;
-    marqueeStart.current = { x, y, mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace' };
-    setMarqueeDraft({ x0: x, y0: y, x1: x, y1: y });
-    e.currentTarget.setPointerCapture(e.pointerId);
+    marqueeStart.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace',
+      active: false,
+    };
   };
   const marqueeMove = (e: RPointerEvent<HTMLDivElement>) => {
-    if (!marqueeStart.current) return;
+    const m = marqueeStart.current;
+    if (!m) return;
+    if (!m.active) {
+      if (Math.abs(e.clientX - m.clientX) < MARQUEE_PX && Math.abs(e.clientY - m.clientY) < MARQUEE_PX) return;
+      m.active = true;
+      scrub.cancel(e.target as HTMLElement, e.pointerId); // 改判成框选：播放头停在按下的位置
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      setMarqueeDraft({ x0: m.x, y0: m.y, x1: m.x, y1: m.y });
+    }
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
     setMarqueeDraft((d) => d && { ...d, x1: e.clientX - rect.left, y1: e.clientY - rect.top });
   };
   const marqueeUp = (e: RPointerEvent<HTMLDivElement>) => {
     const start = marqueeStart.current;
-    if (!start) return;
+    marqueeStart.current = null;
+    if (!start || !start.active) return; // 没拖起来：就是一次普通点击 / scrub，什么都不做
     e.preventDefault();
     e.stopPropagation();
     const inner = e.currentTarget;
@@ -686,15 +751,18 @@ export function Timeline() {
       return r.left <= right && r.right >= left && r.top <= bottom && r.bottom >= top;
     }).map((bar) => bar.dataset.timelineKey!);
     selectTimelineItems(hits, start.mode);
-    marqueeStart.current = null;
     setMarqueeDraft(null);
-    inner.releasePointerCapture(e.pointerId);
+    try {
+      inner.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
   };
 
   return (
     <div className="timeline" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
-        <div className="tl-inner" style={{ width: off + trackW + LABEL_W, cursor: marqueeEnabled ? 'crosshair' : undefined }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
+        <div className="tl-inner" style={{ width: off + trackW + LABEL_W }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
           <div className="tl-row" style={{ height: 20 }}>
             <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
@@ -933,11 +1001,15 @@ export function Timeline() {
                     data-timeline-key={`layer:${l.id}`}
                     className={`tl-bar ${l.type === 'mask' ? 'mask' : isOverlayVideo(l, assets) ? 'overlay' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
                     style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
+                    title={all ? '全程；拖两端收成具体时段' : undefined}
                     onPointerDown={(e) => {
                       if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`layer:${l.id}`))) pick();
                       pickTimeline(`layer:${l.id}`, e);
                       if (all || locked || e.metaKey || e.ctrlKey || e.shiftKey) {
-                        e.stopPropagation();
+                        // 全程条（未锁、无修饰键）占满整条时间轴，中间没有可移动的余地（拖了也会被夹回
+                        // 原位），所以不接管：让它冒泡下去做 scrub / 框选。要收成具体时段就拖两端（HIG-79）。
+                        const passThrough = all && !locked && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+                        if (!passThrough) e.stopPropagation();
                         return;
                       }
                       startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
@@ -956,10 +1028,11 @@ export function Timeline() {
                       );
                     })()}
                     {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
-                    {!all && !locked && (
+                    {/* 全程条也给把手（HIG-79）：拖两端就把「全程」收成具体时段 */}
+                    {!locked && (
                       <>
-                        <div className="edge l" onPointerDown={(e) => { pick(); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
-                        <div className="edge r" onPointerDown={(e) => { pick(); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: v as [number, number] }); }} />
+                        <div className="edge l" onPointerDown={(e) => { pick(); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
+                        <div className="edge r" onPointerDown={(e) => { pick(); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
                       </>
                     )}
                   </div>

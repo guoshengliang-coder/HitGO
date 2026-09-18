@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { addMuteRange, audibleSpan, continuationOffset, contractAudio, isDefaultAudio, resolveTrack, sourceGainAt, sourceMutedAt, splitTrackAt, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackDefaultsFor, trackGain, trackMediaTime, trackSnapCandidates } from './audioTracks';
+import { addMuteRange, audibleSpan, clampSpeed, continuationOffset, contractAudio, isDefaultAudio, resolveTrack, sourceGainAt, sourceMutedAt, splitTrackAt, SPEED_MAX, SPEED_MIN, stickerAudioLayers, toggleTrackWindow, trackAssetProblem, trackDefaultsFor, trackGain, trackMediaTime, trackSnapCandidates, trackSpeed, windowForSpeed } from './audioTracks';
 import type { Asset, AudioTrack, Layer } from '../types';
 
 const D = 20.6; // 剪后时长
 
 describe('resolveTrack / defaults', () => {
   it('补齐契约缺省值', () => {
-    expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' })).toEqual({ id: 'a', asset_id: 'x', t: 'all', role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 });
+    expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all' })).toEqual({ id: 'a', asset_id: 'x', t: 'all', role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, speed: 1, fade_in: 0, fade_out: 0 });
     expect(resolveTrack({ id: 'a', asset_id: 'x', t: 'all', volume: 0.5, loop: true })).toMatchObject({ volume: 0.5, loop: true, offset: 0 });
   });
   it('BGM 循环压低淡出，口播原音量播一遍', () => {
@@ -249,5 +249,90 @@ describe('trackAssetProblem（HIG-26）', () => {
     expect(trackAssetProblem({ id: 't', asset_id: 'a_gone', t: 'all' }, assets)).toBe('missing');
     expect(trackAssetProblem({ id: 't', asset_id: 'a_wait', t: 'all' }, assets)).toBe('not-ready');
     expect(trackAssetProblem({ id: 't', asset_id: 'a_ok', t: 'all' }, assets)).toBeNull();
+  });
+});
+
+// --- 变速（契约 §2 audio.tracks[].speed，HIG-75）---------------------------------
+
+describe('trackSpeed / clampSpeed', () => {
+  it('缺省 1，夹在 0.5–2.0 之间；源对齐轨一律按 1 算（契约禁止它变速）', () => {
+    expect(trackSpeed({ id: 'a', asset_id: 'x', t: 'all' })).toBe(1);
+    expect(trackSpeed({ id: 'a', asset_id: 'x', t: 'all', speed: 1.5 })).toBe(1.5);
+    expect(trackSpeed({ id: 'a', asset_id: 'x', t: 'all', speed: 5 })).toBe(SPEED_MAX);
+    expect(trackSpeed({ id: 'a', asset_id: 'x', t: 'all', align: 'source', speed: 1.5 })).toBe(1);
+    expect(clampSpeed(0.1)).toBe(SPEED_MIN);
+    expect(clampSpeed(NaN)).toBe(1);
+  });
+});
+
+describe('audibleSpan 与变速', () => {
+  it('加速让素材在时间轴上占得更短，淡出跟着提前', () => {
+    const t: AudioTrack = { id: 'a', asset_id: 'x', t: [0, 10] };
+    expect(audibleSpan(t, D, 4)).toBe(4); // 4 秒素材，1x 占 4 秒
+    expect(audibleSpan({ ...t, speed: 2 }, D, 4)).toBe(2); // 2x 只占 2 秒
+    expect(audibleSpan({ ...t, speed: 0.5 }, D, 4)).toBe(8); // 0.5x 拉长到 8 秒
+  });
+
+  it('减速到超出时段时仍夹在时段内，循环轨始终按时段长算', () => {
+    expect(audibleSpan({ id: 'a', asset_id: 'x', t: [0, 6], speed: 0.5 }, D, 4)).toBe(6);
+    expect(audibleSpan({ id: 'a', asset_id: 'x', t: [0, 9], loop: true, speed: 1.5 }, D, 4)).toBe(9);
+  });
+});
+
+describe('trackMediaTime 与变速', () => {
+  it('时间轴上过了 N 秒，素材里走 N × speed 秒', () => {
+    const t: AudioTrack = { id: 'a', asset_id: 'x', t: [2, 12], speed: 2 };
+    expect(trackMediaTime(2, t, D, 10)).toBe(0);
+    expect(trackMediaTime(4, t, D, 10)).toBe(4); // 时间轴 2 秒 → 素材 4 秒
+    expect(trackMediaTime(7, t, D, 4)).toBeNull(); // 4 秒素材 2x 播，第 4 秒就播完了
+  });
+
+  it('带 offset 时从 offset 起按速度走', () => {
+    expect(trackMediaTime(3, { id: 'a', asset_id: 'x', t: [0, 10], offset: 1, speed: 2 }, D, 10)).toBe(7);
+  });
+
+  it('循环轨对素材时长取模，取模前也按速度换算', () => {
+    expect(trackMediaTime(3, { id: 'a', asset_id: 'x', t: [0, 10], loop: true, speed: 2 }, D, 4)).toBe(2);
+  });
+});
+
+describe('windowForSpeed', () => {
+  it('提速后时段按同样的素材内容缩短，减速则拉长', () => {
+    const t: AudioTrack = { id: 'a', asset_id: 'x', t: [2, 6] }; // 4 秒内容
+    expect(windowForSpeed(t, D, 10, 2)).toEqual([2, 4]);
+    expect(windowForSpeed(t, D, 10, 0.5)).toEqual([2, 10]);
+    // 从 2x 调回 1x：现在占 4 秒的是 8 秒素材内容
+    expect(windowForSpeed({ ...t, speed: 2 }, D, 10, 1)).toEqual([2, 10]);
+  });
+
+  it('素材比时段短时按素材实际长度算', () => {
+    expect(windowForSpeed({ id: 'a', asset_id: 'x', t: [0, 10] }, D, 4, 2)).toEqual([0, 2]);
+  });
+
+  it('全程 / 循环 / 源对齐的轨不动时段——它们本来就填满时段', () => {
+    expect(windowForSpeed({ id: 'a', asset_id: 'x', t: 'all' }, D, 10, 2)).toBe('all');
+    expect(windowForSpeed({ id: 'a', asset_id: 'x', t: [0, 6], loop: true }, D, 10, 2)).toEqual([0, 6]);
+    expect(windowForSpeed({ id: 'a', asset_id: 'x', t: [0, 6], align: 'source' }, D, 10, 2)).toEqual([0, 6]);
+  });
+});
+
+describe('contractAudio 与变速', () => {
+  it('speed 为 1 或缺省时不发这个字段，非 1 时带上', () => {
+    const out = contractAudio({ source_volume: 0.5, tracks: [
+      { id: 'a', asset_id: 'x', t: 'all' },
+      { id: 'b', asset_id: 'x', t: 'all', speed: 1 },
+      { id: 'c', asset_id: 'x', t: 'all', speed: 1.25 },
+    ] });
+    expect(out?.tracks[0].speed).toBeUndefined();
+    expect(out?.tracks[1].speed).toBeUndefined();
+    expect(out?.tracks[2].speed).toBe(1.25);
+  });
+});
+
+describe('splitTrackAt 与变速', () => {
+  it('两段沿用同一个速度（契约 §2「拆分音轨」）', () => {
+    const [l, r] = splitTrackAt({ id: 'a', asset_id: 'x', t: [0, 8], speed: 1.5 }, 4, D, 30, 'new')!;
+    expect(l.speed).toBe(1.5);
+    expect(r.speed).toBe(1.5);
   });
 });

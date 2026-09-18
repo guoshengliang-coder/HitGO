@@ -721,6 +721,8 @@ export interface AudioTrack {
   /** 0–1。 */
   volume?: number;
   loop?: boolean;
+  /** 可选（HIG-75）：变速 0.5–2.0，atempo 不变调；缺省 1，align = 'source' 时必须为 1。 */
+  speed?: number;
   fade_in?: number;
   fade_out?: number;
   /** 可选；改语言模块加的配音 / 伴奏轨打 'localize'（契约 §2），与 layers[].origin 同义。 */

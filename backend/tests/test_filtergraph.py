@@ -1016,6 +1016,53 @@ def test_voice_track_is_windowed_offset_delayed_and_faded_against_its_real_end()
     assert "-stream_loop" not in plan.argv
 
 
+# --- track speed (contract §2 audio.tracks[].speed, HIG-75) -------------------------
+
+
+def test_default_speed_emits_no_atempo():
+    track = {"id": "au_1", "asset_id": "a_bgm00001", "t": [1, 5]}
+    assert "atempo" not in fc(audio_build(audio_spec(tracks=[track])))
+    # writing the default explicitly must not change the command either
+    assert "atempo" not in fc(audio_build(audio_spec(tracks=[{**track, "speed": 1.0}])))
+
+
+def test_speed_sits_between_the_in_file_cut_and_the_timeline_window():
+    # offset is in file seconds (before atempo), the window in output seconds (after it).
+    track = {"id": "au_1", "asset_id": "a_bgm00001", "t": [2, 12], "offset": 1, "speed": 1.25}
+    graph = fc(audio_build(audio_spec(tracks=[track])))
+    assert (
+        f"[3:a]atrim=start=1,asetpts=PTS-STARTPTS,atempo=1.25,atrim=end=10,"
+        f"adelay=2000:all=1,{AFMT}[tk1]"
+    ) in graph
+
+
+def test_speeding_up_moves_the_fade_out_to_the_new_audible_end():
+    # 4 s file at 2x covers 2 s of the 10 s window, so the fade-out lands at 1.5 s, not 9.5 s.
+    track = {"id": "au_v", "asset_id": "a_voice0001", "role": "voice", "t": [0, 10], "speed": 2, "fade_out": 0.5}
+    graph = fc(audio_build(audio_spec(tracks=[track])))
+    assert f"[3:a]asetpts=PTS-STARTPTS,atempo=2,atrim=end=10,afade=t=out:st=1.5:d=0.5,{AFMT}[tk1]" in graph
+
+
+def test_slowing_down_keeps_the_fade_out_inside_the_window():
+    # 4 s at 0.5x would cover 8 s, still inside a 6 s window: the fade-out clamps to the window.
+    track = {"id": "au_v", "asset_id": "a_voice0001", "t": [0, 6], "speed": 0.5, "fade_out": 1}
+    assert "afade=t=out:st=5:d=1" in fc(audio_build(audio_spec(tracks=[track])))
+
+
+def test_looped_track_keeps_stream_loop_and_fades_against_the_full_window():
+    track = {"id": "au_1", "asset_id": "a_voice0001", "t": [0, 9], "loop": True, "speed": 1.5, "fade_out": 1}
+    plan = audio_build(audio_spec(tracks=[track]))
+    graph = fc(plan)
+    assert "-stream_loop" in plan.argv
+    assert f"[3:a]asetpts=PTS-STARTPTS,atempo=1.5,atrim=end=9,afade=t=out:st=8:d=1,{AFMT}[tk1]" in graph
+
+
+def test_source_aligned_track_never_gets_atempo():
+    # The schema forbids speed there; the builder must not emit one even if a stray value slips in.
+    track = {"id": "au_s", "asset_id": "a_voice0001", "align": "source", "t": [0, 3]}
+    assert "atempo" not in fc(audio_build(audio_spec(tracks=[track])))
+
+
 def test_source_gain_alone_maps_the_base_without_amix():
     plan = audio_build(audio_spec(source_volume=0.5))
     graph, argv = fc(plan), plan.argv

@@ -7,7 +7,7 @@
 import { useEffect, useRef } from 'react';
 import { useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
-import { resolveTrack, trackGain, trackMediaTime } from '../../lib/audioTracks';
+import { resolveTrack, trackGain, trackMediaTime, trackSpeed } from '../../lib/audioTracks';
 import { sequenceSourceTime } from '../../lib/sequence';
 import { isAssetReady, type AudioTrack } from '../../types';
 
@@ -37,6 +37,8 @@ function TrackAudio({ track }: { track: AudioTrack }) {
     const el = elRef.current;
     if (!el) return;
     const r = resolveTrack(track);
+    // 音轨变速（HIG-75）叠在编辑器倍速之上：成片端是 atempo，浏览器的 playbackRate 同样保持音高
+    const speed = trackSpeed(r);
     const tolerance = r.role === 'voice' ? 0.1 : 0.25;
     const sync = (postTime: number, playing: boolean, sourceTime: number) => {
       // align = source 的音轨（分离出的人声 / 伴奏）按源时间定位，剪辑跳过的段它也跳过
@@ -48,8 +50,9 @@ function TrackAudio({ track }: { track: AudioTrack }) {
         if (at !== null && Math.abs(el.currentTime - at) > 0.01) el.currentTime = at;
         return;
       }
-      if (el.playbackRate !== player.mediaRate) el.playbackRate = player.mediaRate;
-      if (Math.abs(el.currentTime - at) > tolerance * player.mediaRate) el.currentTime = at;
+      const rate = player.mediaRate * speed;
+      if (el.playbackRate !== rate) el.playbackRate = rate;
+      if (Math.abs(el.currentTime - at) > tolerance * rate) el.currentTime = at;
       if (el.paused) void el.play().catch(() => undefined);
     };
     // 封面段（t < 0）不放 BGM / 口播：按暂停对齐（契约 §2 cover）

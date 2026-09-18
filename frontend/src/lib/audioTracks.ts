@@ -9,7 +9,16 @@ import { cleanTrackName } from './trackNames';
 
 const EPS = 1e-6;
 
-export const TRACK_DEFAULTS = { role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, fade_in: 0, fade_out: 0 } as const satisfies Omit<AudioTrack, 'id' | 'asset_id' | 't'>;
+export const TRACK_DEFAULTS = { role: 'bgm', align: 'post', offset: 0, volume: 1, loop: false, speed: 1, fade_in: 0, fade_out: 0 } as const satisfies Omit<AudioTrack, 'id' | 'asset_id' | 't'>;
+
+/** 变速范围（契约 §2 audio.tracks[].speed，HIG-75）：一条 atempo 就够，不用串联。 */
+export const SPEED_MIN = 0.5;
+export const SPEED_MAX = 2;
+
+export function clampSpeed(v: number): number {
+  if (!Number.isFinite(v)) return TRACK_DEFAULTS.speed;
+  return Math.max(SPEED_MIN, Math.min(SPEED_MAX, v));
+}
 
 export type ResolvedTrack = Required<AudioTrack>;
 
@@ -43,6 +52,13 @@ export function isDefaultAudio(audio: AudioSpec | null | undefined): boolean {
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
+/** 这条轨实际生效的速度：源对齐轨契约上禁止变速，一律按 1 算。 */
+export function trackSpeed(track: AudioTrack | ResolvedTrack): number {
+  if ((track.align ?? TRACK_DEFAULTS.align) === 'source') return 1;
+  const v = track.speed;
+  return typeof v === 'number' && v > 0 ? clampSpeed(v) : TRACK_DEFAULTS.speed;
+}
+
 /** 发送给后端的 audio 块；缺省时返回 undefined（不带此字段）。 */
 export function contractAudio(audio: AudioSpec | null | undefined): AudioSpec | undefined {
   if (isDefaultAudio(audio) || !audio) return undefined;
@@ -54,6 +70,8 @@ export function contractAudio(audio: AudioSpec | null | undefined): AudioSpec | 
     tracks: audio.tracks.map((t) => {
       const copy: AudioTrack = { ...t };
       if (!copy.hidden) delete copy.hidden;
+      if (copy.speed === undefined || Math.abs(copy.speed - 1) < EPS) delete copy.speed;
+      else copy.speed = round3(copy.speed);
       const name = cleanTrackName(t.name);
       if (name) copy.name = name;
       else delete copy.name;
@@ -73,7 +91,8 @@ export function audibleSpan(track: AudioTrack, postDuration: number, mediaDurati
   const window = Math.max(0, end - start);
   if (r.loop || r.align === 'source') return window; // 对齐源时间轴：素材覆盖整条源片，按时段长算
   if (!(mediaDuration > 0)) return 0;
-  return Math.max(0, Math.min(window, mediaDuration - r.offset));
+  // 变速（HIG-75）：素材剩下的 L 秒在成片时间轴上只占 L / speed 秒，淡出要落在那里
+  return Math.max(0, Math.min(window, (mediaDuration - r.offset) / trackSpeed(r)));
 }
 
 /**
@@ -91,7 +110,8 @@ export function trackMediaTime(postTime: number, track: AudioTrack, postDuration
     if (sourceTime === undefined || sourceTime < 0 || sourceTime >= mediaDuration - EPS) return null;
     return sourceTime;
   }
-  const elapsed = Math.max(0, postTime - start);
+  // 时间轴上过了 elapsed 秒，素材里走了 elapsed × speed 秒（预览端用 playbackRate 复现）
+  const elapsed = Math.max(0, postTime - start) * trackSpeed(r);
   if (r.loop) return (r.offset + elapsed) % mediaDuration;
   const available = mediaDuration - r.offset;
   if (available <= EPS || elapsed >= available - EPS) return null;
@@ -176,6 +196,19 @@ export function splitTrackAt(track: AudioTrack, p: number, postDuration: number,
     right.offset = round3(offset);
   }
   return [left, right];
+}
+
+/**
+ * 改变速度时这条轨该占多长（契约 §2 speed）：素材里播到的那一段内容不变，只是占的时间轴长度变了。
+ * 全程 / 循环 / 源对齐的轨不动 t——它们本来就填满时段。
+ */
+export function windowForSpeed(track: AudioTrack, postDuration: number, mediaDuration: number, speed: number): TimeWindow {
+  const r = resolveTrack(track);
+  if (r.t === 'all' || r.loop || r.align === 'source') return r.t;
+  const [a, b] = windowRange(r.t, postDuration);
+  const covered = Math.min((b - a) * trackSpeed(r), Math.max(0, mediaDuration - r.offset));
+  if (!(covered > 0)) return r.t;
+  return [round3(a), round3(a + covered / clampSpeed(speed))];
 }
 
 /**

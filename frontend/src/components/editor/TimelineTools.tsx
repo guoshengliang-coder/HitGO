@@ -1,12 +1,14 @@
 // 时间线工具（挂在 Transport 工具条里）：设入点 / 设出点 / 删左 / 删右（剪辑）、
 // 拆分 / 删左 / 删右（音频：作用于选中的音轨；选中源音轨行时删左 / 删右是给原声加静音区间，HIG-25）、
+// 拆分（图层模块：作用于选中的图层，HIG-79）、
 // 删除（剪辑删区间 / 音频删音轨或原声静音区间 / 文本、贴纸、字幕删图层）。
 // 提示文案走 lib/shortcuts 的 hintFor；这里用原生 title 而非 data-tip——.timeline 是 overflow: hidden，
 // 纯 CSS tooltip 从表头向上弹出会被裁掉。
 
-import { useEditor } from '../../store/editor';
+import { selectPostDuration, selectPostTime, useEditor } from '../../store/editor';
 import { hintFor } from '../../lib/shortcuts';
 import { SOURCE_TRACK_ID } from '../../lib/audioTracks';
+import { splitLayerBlockedReason } from '../../lib/layerSplit';
 import { IconCutLeft, IconCutRight, IconSplit, IconTrash } from '../ui/Icons';
 
 export function TimelineTools() {
@@ -28,8 +30,6 @@ export function TimelineTools() {
   const copyTimelineItems = useEditor((s) => s.copyTimelineItems);
   const pasteTimelineItems = useEditor((s) => s.pasteTimelineItems);
   const deleteTimelineItems = useEditor((s) => s.deleteTimelineItems);
-  const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
-  const setMarqueeEnabled = useEditor((s) => s.setMarqueeEnabled);
   const selectAllLayers = useEditor((s) => s.selectAllLayers);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const removeSelectedLayers = useEditor((s) => s.removeSelectedLayers);
@@ -46,6 +46,10 @@ export function TimelineTools() {
   const cutTrackBefore = useEditor((s) => s.cutTrackBefore);
   const cutTrackAfter = useEditor((s) => s.cutTrackAfter);
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
+  const splitLayer = useEditor((s) => s.splitLayer);
+  const layers = useEditor((s) => s.currentSpec()?.layers);
+  const postTime = useEditor(selectPostTime);
+  const postDuration = useEditor(selectPostDuration);
   const deleteMute = useEditor((s) => s.deleteSourceMute);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
 
@@ -61,11 +65,14 @@ export function TimelineTools() {
       } else if (selectedTrackId) removeTrack(selectedTrackId);
     } else if (selectedLayerId) removeLayer(selectedLayerId);
   };
+  // 图层拆分（HIG-79）：剪辑和音频模块各有自己的拆分 / 删左删右，这里只管图层那几个模块
+  const layerStep = step !== 'trim' && step !== 'audio';
+  const selectedLayer = layers?.find((l) => l.id === selectedLayerId) ?? null;
+  const splitBlocked = splitLayerBlockedReason(selectedLayer, postTime, postDuration);
   const deleteHint = hintFor(step === 'trim' ? 'delete-range' : step === 'audio' ? 'delete-track' : 'delete-layer');
 
   return (
     <div className="tl-tools">
-      <button className={`btn ${marqueeEnabled ? 'on' : ''}`} aria-pressed={marqueeEnabled} title="在时间轴拖出选择框；Shift 追加，Alt/Ctrl 排除" onClick={() => setMarqueeEnabled(!marqueeEnabled)}>框选</button>
       <button className="btn" onClick={selectAllLayers} title="选中当前视频所有可见且未锁定的视觉图层">全选图层</button>
       <button className="btn" onClick={() => { selectTimelineItems([]); setSelectedLayer(null); }} disabled={!selectedLayerIds.length && !timelineSelection.length}>取消选择</button>
       <button className="btn" onClick={copyTimelineItems} disabled={!timelineSelection.length} title="复制选中的视频、图片、字幕或音频片段">复制所选</button>
@@ -102,6 +109,11 @@ export function TimelineTools() {
             <IconCutRight /> 删右
           </button>
         </>
+      )}
+      {layerStep && (
+        <button className="btn" onClick={() => selectedLayerId && splitLayer(selectedLayerId)} disabled={!!splitBlocked} title={splitBlocked ?? hintFor('split-layer')}>
+          <IconSplit /> 拆分
+        </button>
       )}
       <button className="btn icon danger" onClick={onDelete} disabled={!canDelete} aria-label="删除" title={deleteHint}>
         <IconTrash />
