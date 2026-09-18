@@ -84,7 +84,7 @@ function TranscriptSection({ video, loc, options, blocked, sourceLang, setSource
         </select>
       </Field>
       <div className="inline">
-        <button className="btn sm" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新翻译已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并翻译成勾选的语言（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
+        <button className="btn action" disabled={blocked} title={t?.status === 'done' ? '丢掉现在的模板重新听写，并重新翻译已有的（或已勾选的）语言版本' : '把源音轨听写成文字模板并翻译成勾选的语言（后台任务）'} onClick={() => transcribe(t?.status === 'done')}>
           {transcribing ? '听写中…' : t?.status === 'done' ? '重新听写' : '听写'}
         </button>
         <span className={`small ${t?.status === 'failed' ? 'error-text' : 'muted'}`}>{transcriptStatusText(t)}</span>
@@ -162,7 +162,7 @@ function GenerateSection({ loc, options, blocked, requestFor, draft }: SectionPr
         <span className="small muted">术语表 · 每行「原词=译词」，翻译时强制替换</span>
         <textarea className="textarea" rows={3} placeholder="HitGO=힛고" value={termsText} disabled={blocked} aria-label="术语表" onChange={(e) => setTermsText(e.target.value)} />
       </div>
-      <button className="btn primary" disabled={blocked || !n} onClick={generate} title="后台任务：每种语言十几秒，翻译期间可以继续编辑">
+      <button className="btn action" disabled={blocked || !n} onClick={generate} title="后台任务：每种语言十几秒，翻译期间可以继续编辑">
         {n === 0 ? '先勾选目标语言' : transcriptDone ? `翻译 ${n} 种语言` : `听写并翻译 ${n} 种语言`}
       </button>
     </Section>
@@ -220,7 +220,7 @@ function DubSection({ loc, options, blocked, voices, setVoices }: SectionProps &
         />
         生成后自动套用到这条视频
       </label>
-      <button className="btn primary" disabled={blocked || !n} onClick={start} title="后台任务：每种语言约半分钟，生成期间可以继续编辑">
+      <button className="btn action" disabled={blocked || !n} onClick={start} title="后台任务：每种语言约半分钟，生成期间可以继续编辑">
         {n === 0 ? '先勾选要生成口播的语言' : `生成 ${n} 种语言口播`}
       </button>
     </Section>

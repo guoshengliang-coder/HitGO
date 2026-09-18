@@ -115,7 +115,7 @@ export function BatchesPage() {
         <span className="spacer" />
         <Seg className="page-sort" label="排序" options={[{ v: 'recent', label: '最近创建' }, { v: 'name', label: '名称' }]} value={sort} onChange={setSort} />
         <input className="input search-input" type="search" placeholder="搜索批次名" aria-label="搜索批次名" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <button className="btn primary" onClick={() => setCreating((v) => !v)}>
+        <button className={`btn ${creating ? 'action' : 'primary'}`} aria-expanded={creating} onClick={() => setCreating((v) => !v)}>
           <IconPlus /> 新建批次
         </button>
       </div>
@@ -224,7 +224,7 @@ export function BatchesPage() {
                 <span className="mono">
                   {b.video_count} 条 · {fmtDate(b.created_at)}
                 </span>
-                <button className="btn ghost sm" onClick={(e) => { e.stopPropagation(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
+                <button className="btn sm" onClick={(e) => { e.stopPropagation(); navigate(`/outputs?batch=${encodeURIComponent(b.id)}`); }}>
                   <IconExport /> 产物
                 </button>
               </div>

@@ -214,9 +214,9 @@ function TracksSection() {
   const tracks = audio?.tracks ?? [];
   return (
     <Section id="audio.tracks" title="BGM / 口播" bodyClass="stack" summary={<span>{tracks.length ? `${tracks.length} 条` : '无'}</span>} hint="时间线上可拖动条与两端" help={TRACKS_HELP}>
-      <div className="inline">
-        <button className="btn sm" onClick={() => setPicking('bgm')}>+ BGM</button>
-        <button className="btn sm" onClick={() => setPicking('voice')}>+ 口播</button>
+      <div className="inline panel-add-row">
+        <button className="btn action" onClick={() => setPicking('bgm')}>＋ BGM</button>
+        <button className="btn action" onClick={() => setPicking('voice')}>＋ 口播</button>
       </div>
       {tracks.length === 0 ? (
         <div className="hint">还没有叠加音轨。</div>
@@ -275,7 +275,7 @@ function SeparateSection() {
         <Seg className="inner" label="分离模型" options={MODEL_OPTIONS} value={model} onChange={setModel} disabled={active} />
       </Field>
       <div className="inline">
-        <button className="btn sm" disabled={!hasAudio || active} title={hasAudio ? '用 AI 把源音轨拆成人声和伴奏两条音轨（后台任务）' : '源视频没有音轨'} onClick={() => void separateVideo(model)}>
+        <button className="btn action" disabled={!hasAudio || active} title={hasAudio ? '用 AI 把源音轨拆成人声和伴奏两条音轨（后台任务）' : '源视频没有音轨'} onClick={() => void separateVideo(model)}>
           {active ? '分离中…' : sep?.status === 'done' ? '重新分离' : '分离人声 / 伴奏'}
         </button>
         {sep && <span className={`small ${sep.status === 'failed' ? 'error-text' : 'muted'}`}>{status}</span>}

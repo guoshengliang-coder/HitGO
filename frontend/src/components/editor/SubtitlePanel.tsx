@@ -62,7 +62,7 @@ export function SubtitlePanel() {
       <div className="panel-body inspector">
         <Section id="subtitle.import" title="导入字幕" bodyClass="stack" hint="每条字幕一个文字图层" help={IMPORT_HELP}>
           <div className="inline">
-            <button className="btn sm" onClick={() => inputRef.current?.click()}>
+            <button className="btn action" onClick={() => inputRef.current?.click()}>
               <IconText /> 选择 .srt 文件
             </button>
           </div>
@@ -81,7 +81,7 @@ export function SubtitlePanel() {
 
         <Section id="subtitle.mask" title="遮盖原字幕" bodyClass="stack" hint="在画布上拖到原字幕的位置" help={MASK_HELP}>
           <div className="inline">
-            <button className="btn sm" onClick={() => addLayer(newMaskLayer(newLayerId), { belowType: 'text' })}>
+            <button className="btn action" onClick={() => addLayer(newMaskLayer(newLayerId), { belowType: 'text' })}>
               <IconMask /> 添加遮盖
             </button>
             <button

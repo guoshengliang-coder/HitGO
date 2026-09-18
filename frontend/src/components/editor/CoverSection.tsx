@@ -111,9 +111,10 @@ export function CoverSection() {
   return (
     <Section id="trim.cover" title="封面" defaultOpen={false} bodyClass="stack" summary={<span className="mono">{coverSummary(cover, preroll)}</span>} help={COVER_HELP}>
       {!cover ? (
-        <div className="inline">
-          <button className="btn" onClick={() => setPicking(true)}>
-            添加封面
+        <div className="cover-empty">
+          <span className="cover-empty-thumb" aria-hidden="true">▧</span>
+          <button className="btn action" onClick={() => setPicking(true)}>
+            ＋ 添加封面
           </button>
         </div>
       ) : (

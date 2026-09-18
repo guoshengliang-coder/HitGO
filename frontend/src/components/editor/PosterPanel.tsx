@@ -110,7 +110,7 @@ function EmptyState() {
       <textarea className="textarea" rows={8} value={text} placeholder="把整篇文案粘到这里…" aria-label="文案" onChange={(e) => setText(e.target.value)} onPaste={(e) => pasteSplit(e, prefs, setText)} />
       <PasteSplitPrefs prefs={prefs} setPrefs={setPrefs} />
       <div className="inline">
-        <button className="btn primary" disabled={!text.trim()} onClick={() => addPosterLayer(text.trim())}>
+        <button className="btn action" disabled={!text.trim()} onClick={() => addPosterLayer(text.trim())}>
           生成滚动文字
         </button>
         <span className="hint">{charCount(text)} 字</span>
@@ -290,7 +290,7 @@ function VoiceSection({ layer, voice }: { layer: TextLayer; voice: { track: Audi
         </select>
       </Field>
       <div className="inline">
-        <button className="btn sm" disabled={!canGenerate} title={ready ? '重新合成，替换现在的朗读轨' : '把当前文案合成一条朗读音轨（后台任务）'} onClick={() => void generate()}>
+        <button className="btn action" disabled={!canGenerate} title={ready ? '重新合成，替换现在的朗读轨' : '把当前文案合成一条朗读音轨（后台任务）'} onClick={() => void generate()}>
           {busy ? (
             <>
               <IconSpinner /> 合成中…
@@ -449,7 +449,7 @@ function BackgroundSection() {
         />
       </div>
       <div className="inline">
-        <button className="btn primary sm" disabled={busy || !!applyReason} title={applyReason || '把滚动文字、成片时长、画面和朗读轨复制到所选背景（覆盖它们原有的这几项，可撤销）'} onClick={() => void apply()}>
+        <button className="btn action sm" disabled={busy || !!applyReason} title={applyReason || '把滚动文字、成片时长、画面和朗读轨复制到所选背景（覆盖它们原有的这几项，可撤销）'} onClick={() => void apply()}>
           {busy ? '应用中…' : `应用到所选 ${targets.length} 个背景`}
         </button>
         <button className="btn sm" disabled={!targets.length} title="打开导出：范围是当前这条 + 所选背景" onClick={exportAll}>
