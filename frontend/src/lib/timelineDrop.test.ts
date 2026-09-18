@@ -23,10 +23,13 @@ describe('dropKind（HIG-46）', () => {
     expect(dropKind([ASSET_DRAG_MIME, assetDragTypeMime('sticker')], [])).toBe('sticker');
     expect(dropKind([ASSET_DRAG_MIME, assetDragTypeMime('audio')], [])).toBe('audio');
   });
-  it('系统文件全是图片才算贴纸', () => {
+  it('系统文件全是图片或视频才算叠加素材（视频 HIG-67）', () => {
     const file = (type: string) => ({ kind: 'file', type });
     expect(dropKind(['Files'], [file('image/png'), file('image/jpeg')])).toBe('sticker');
+    expect(dropKind(['Files'], [file('video/mp4')])).toBe('sticker');
+    expect(dropKind(['Files'], [file('image/png'), file('video/quicktime')])).toBe('sticker');
     expect(dropKind(['Files'], [file('image/png'), file('audio/mpeg')])).toBe('audio');
+    expect(dropKind(['Files'], [file('video/mp4'), file('audio/mpeg')])).toBe('audio');
     expect(dropKind(['Files'], [file('')])).toBe('audio');
     expect(dropKind(['Files'], [])).toBe('audio');
   });

@@ -11,7 +11,7 @@
 // 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），上下边把手改框高（style.box_height，
 // 不小于文字本身，文字在框内垂直居中）。拖边时逐帧同步重画 PNG，字号、字形不变，被拖边的对边不动。
 // 有封面（HIG-9）时播放头的封面段（time < 0）由 CoverPreview 盖住正片，图层不显示、贴纸与音轨不出声。
-// 把 JPG / PNG 或贴纸卡片拖到画布上（HIG-46）：以落点为中心加贴纸图层（useCanvasImageDrop）。
+// 把图片 / 视频或贴纸卡片拖到画布上（图片 HIG-46，视频 HIG-67）：以落点为中心加贴纸图层（useCanvasImageDrop）。
 // 滚动文字（HIG-50 大字报）：PNG 在裁切框（scroll.box）里按 lib/poster 的曲线向上滚，框外裁掉；不能拖动 / 缩放，
 // 选中且暂停时画出框线。成片时长（trim.duration）交给 player 循环补足，播放头的成片时刻从 usePostTime 取（跨遍累加）。
 

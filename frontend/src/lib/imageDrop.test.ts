@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assetAspect, canvasDropMargin, defaultMargin, IMAGE_ACCEPT, newStickerLayer, timelineDropWindow } from './imageDrop';
+import { assetAspect, canvasDropMargin, defaultMargin, IMAGE_ACCEPT, newStickerLayer, OVERLAY_ACCEPT, timelineDropWindow } from './imageDrop';
 import { splitByAccept } from './fileDrop';
 
 describe('IMAGE_ACCEPT', () => {
@@ -14,6 +14,25 @@ describe('IMAGE_ACCEPT', () => {
     const { accepted, rejected } = splitByAccept(files, IMAGE_ACCEPT);
     expect(accepted.map((f) => f.name)).toEqual(['a.PNG', 'b.jpeg', 'c']);
     expect(rejected.map((f) => f.name)).toEqual(['d.webp', 'e.mp4']);
+  });
+});
+
+describe('OVERLAY_ACCEPT（HIG-67）', () => {
+  it('收图片和视频，与素材库的 STICKER_ACCEPT 对齐；音频仍然拒绝', () => {
+    const files = [
+      { name: 'a.PNG', type: '' },
+      { name: 'b.jpeg', type: 'image/jpeg' },
+      { name: 'c.webp', type: 'image/webp' },
+      { name: 'd.gif', type: 'image/gif' },
+      { name: 'e.mp4', type: 'video/mp4' },
+      { name: 'f.mov', type: 'video/quicktime' },
+      { name: 'g.webm', type: 'video/webm' },
+      { name: 'h.mp3', type: 'audio/mpeg' },
+      { name: 'i.txt', type: 'text/plain' },
+    ];
+    const { accepted, rejected } = splitByAccept(files, OVERLAY_ACCEPT);
+    expect(accepted.map((f) => f.name)).toEqual(['a.PNG', 'b.jpeg', 'c.webp', 'd.gif', 'e.mp4', 'f.mov', 'g.webm']);
+    expect(rejected.map((f) => f.name)).toEqual(['h.mp3', 'i.txt']);
   });
 });
 

@@ -1,15 +1,16 @@
 // 「贴纸」模块右侧面板（HIG-8）：图层 / 原料库 / 我上传的 三个 tab，素材再按图片 / 视频筛选。
 // 只管贴纸图层；分类只用素材已有的 source 与 kind，不改契约。
-// HIG-46：面板整体可拖入 JPG / PNG，也可点「上传图片」选文件，上传后直接加为图层；素材卡片可拖到画布 / 时间线上。
+// HIG-46 / HIG-67：面板整体可拖入图片或视频，也可点「上传素材」选文件，上传后直接加为图层；素材卡片可拖到画布 / 时间线上。
+// 视频素材上传后要先预处理，就绪才加图层（stickerDrop.settleAssets）。
 
 import { useMemo, useRef, useState } from 'react';
 import { useEditor } from '../../store/editor';
 import { isAssetReady, type Asset } from '../../types';
 import { newLayerId } from '../../lib/spec';
-import { defaultMargin, IMAGE_ACCEPT, IMAGE_ACCEPT_TEXT, newStickerLayer } from '../../lib/imageDrop';
+import { defaultMargin, newStickerLayer, OVERLAY_ACCEPT, OVERLAY_ACCEPT_TEXT } from '../../lib/imageDrop';
 import { rejectedText } from '../../lib/fileDrop';
 import { DropZone } from '../ui/DropZone';
-import { dropImages } from './stickerDrop';
+import { dropOverlays } from './stickerDrop';
 import { filterAssets, type AssetBucket, type StickerKindFilter } from '../../lib/assets';
 import { AssetCard } from '../../pages/AssetsPage';
 import { IconSticker } from '../ui/Icons';
@@ -56,7 +57,7 @@ export function StickerPanel() {
   const addImages = (files: File[]) => {
     if (!files.length || uploading) return;
     setUploading(true);
-    void dropImages(files, (_a: Asset, i: number) => ({ margin: defaultMargin(i) })).finally(() => {
+    void dropOverlays(files, (_a: Asset, i: number) => ({ margin: defaultMargin(i) })).finally(() => {
       setUploading(false);
       setTab('layers');
     });
@@ -65,13 +66,13 @@ export function StickerPanel() {
   return (
     <DropZone
       className="panel"
-      accept={IMAGE_ACCEPT}
+      accept={OVERLAY_ACCEPT}
       disabled={uploading}
-      hint="松手添加为贴纸（JPG / PNG）"
+      hint="松手添加为叠加素材（图片 / 视频）"
       onFiles={(accepted, rejected) => {
-        // 有可收的图片时，跳过提示会被上传进度盖掉，所以一并交给上传（uploadImages 会带上跳过的文件名）
+        // 有可收的素材时，跳过提示会被上传进度盖掉，所以一并交给上传（uploadOverlays 会带上跳过的文件名）
         if (!accepted.length) {
-          const skipped = rejectedText(rejected, IMAGE_ACCEPT_TEXT);
+          const skipped = rejectedText(rejected, OVERLAY_ACCEPT_TEXT);
           if (skipped) setToast(skipped);
           return;
         }
@@ -81,7 +82,7 @@ export function StickerPanel() {
       <input
         ref={fileRef}
         type="file"
-        accept={IMAGE_ACCEPT}
+        accept={OVERLAY_ACCEPT}
         multiple
         hidden
         onChange={(e) => {
@@ -102,11 +103,11 @@ export function StickerPanel() {
             <button className="btn action" onClick={() => setTab('library')}>
               <IconSticker /> 添加贴纸
             </button>
-            <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading} title="选择 JPG / PNG，上传后直接加为贴纸；也可以把图片拖进这里、画布或时间线">
-              {uploading ? '上传中…' : '上传图片'}
+            <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading} title="选择图片或视频，上传后直接加为图层；也可以把文件拖进这里、画布或时间线">
+              {uploading ? '上传中…' : '上传素材'}
             </button>
           </div>
-          <LayerList type="sticker" emptyHint="还没有贴纸。去「原料库」或「我上传的」里点选添加，或把 JPG / PNG 拖进来；加入后可在画布上拖动、缩放、旋转。" />
+          <LayerList type="sticker" emptyHint="还没有叠加素材。去「原料库」或「我上传的」里点选添加，或把图片 / 视频拖进来；加入后可在画布上拖动、缩放、旋转。" />
           {selected && <LayerProps key={selected.id} layer={selected} />}
         </div>
       ) : (
@@ -127,7 +128,7 @@ export function StickerPanel() {
                 ? '没有匹配的贴纸。'
                 : tab === 'library'
                   ? '原料库为空 · 把文件放进仓库的 samples/stickers 作为内置示例，正式环境接原料库 API'
-                  : '还没有贴纸：把 JPG / PNG 拖进来、点「图层」页的「上传图片」，或去「素材库」上传。'}
+                  : '还没有叠加素材：把图片 / 视频拖进来、点「图层」页的「上传素材」，或去「素材库」上传。'}
             </div>
           ) : (
             <div className="sticker-grid">
