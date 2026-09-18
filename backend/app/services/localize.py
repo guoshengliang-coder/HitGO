@@ -42,7 +42,7 @@ from app.models import (
     Asset,
     Video,
 )
-from app.services import storage
+from app.services import media_ticket, storage
 from app.services.highlight import HighlightProvider, RuleHighlight
 
 log = logging.getLogger(__name__)
@@ -57,6 +57,17 @@ STAGE_TTS = "tts"
 STAGE_MIX = "mix"
 STEM_DUBBED = "dubbed"
 AUTO = "auto"
+# Voice cloning (HIG-58). A cloned voice is bound to the model it was created against, and
+# that model only speaks these languages (help.aliyun.com/zh/model-studio/cosyvoice-clone-api,
+# checked 2026-09-18 for cosyvoice-v3-flash: Mandarin and its dialects incl. Cantonese, plus
+# en / fr / de / ja / ko / ru / pt / th / id / vi). Spanish, Italian and Arabic are not in it.
+CLONE_MODEL_LANGS = ("zh", "yue", "en", "fr", "de", "ja", "ko", "ru", "pt", "th", "id", "vi")
+CLONE_VOICE_PREFIX = "hitgo"
+# The vendor wants 10–20 seconds of clean speech, at least 16 kHz, at most 10 MB.
+CLONE_SAMPLE_MIN_SECONDS = 10.0
+CLONE_SAMPLE_MAX_SECONDS = 20.0
+SAMPLE_FROM_VOCALS = "vocals"
+SAMPLE_FROM_SOURCE = "source"
 # CosyVoice speech_rate range; a clip longer than its slot is re-synthesized faster before atempo.
 MAX_SPEECH_RATE = 2.0
 MT_DOMAINS = (
@@ -282,9 +293,25 @@ def voice_out(lang: str, voice: dict[str, str], cfg: Settings | None = None) -> 
     }
 
 
+def clone_supported(lang: str, cfg: Settings | None = None) -> bool:
+    """Whether ``lang`` can be spoken by a cloned voice (contract §3 ``clone``, HIG-58).
+
+    The clone is bound to ``LOCALIZE_TTS_MODEL``; a language whose own voice belongs to a
+    different model can still be cloned, as long as the clone's model speaks it.
+    """
+    cfg = cfg or settings
+    return lang in CLONE_MODEL_LANGS and tts_api_for(cfg.localize_tts_model) == "tts_v2"
+
+
 def target_langs(cfg: Settings | None = None) -> list[dict[str, Any]]:
     return [
-        {"code": lang, "label": LANGS[lang]["label"], "rtl": bool(LANGS[lang].get("rtl")), "voices": [voice_out(lang, v, cfg) for v in voices]}
+        {
+            "code": lang,
+            "label": LANGS[lang]["label"],
+            "rtl": bool(LANGS[lang].get("rtl")),
+            "clone": clone_supported(lang, cfg),
+            "voices": [voice_out(lang, v, cfg) for v in voices],
+        }
         for lang, voices in voice_table(cfg).items()
     ]
 
@@ -336,6 +363,51 @@ def extract_args(src: Path, dst: Path, ffmpeg_bin: str | None = None) -> list[st
         "-i", str(src),
         "-vn", "-map", "0:a:0",
         "-ac", "1", "-ar", str(ASR_SAMPLE_RATE), "-c:a", "pcm_s16le",
+        str(dst),
+    ]  # fmt: skip
+
+
+def plan_voice_sample(
+    cues: list[dict[str, Any]],
+    min_seconds: float = CLONE_SAMPLE_MIN_SECONDS,
+    max_seconds: float = CLONE_SAMPLE_MAX_SECONDS,
+) -> dict[str, float] | None:
+    """A window of the source timeline to clone the speaker's voice from (HIG-58).
+
+    Walks the transcript picking up consecutive cues, and keeps the run whose *spoken*
+    seconds first reach ``min_seconds`` while the window itself stays within
+    ``max_seconds``. A long silence between two cues therefore ends the run rather than
+    being counted as speech: the vendor wants continuous reading, not a sparse window.
+
+    Returns ``{"start", "seconds"}`` in seconds, or None when no such run exists.
+    """
+    for first in range(len(cues)):
+        start = float(cues[first]["start"])
+        spoken = 0.0
+        for cue in cues[first:]:
+            end = float(cue["end"])
+            if end - start > max_seconds:
+                break
+            spoken += max(end - float(cue["start"]), 0.0)
+            if spoken >= min_seconds:
+                return {"start": round(start, 3), "seconds": round(end - start, 3)}
+    return None
+
+
+def sample_args(src: Path, dst: Path, start: float, seconds: float, *, mono_pcm: bool, ffmpeg_bin: str | None = None) -> list[str]:
+    """Cut ``seconds`` of audio starting at ``start`` for the cloning sample (HIG-58).
+
+    ``mono_pcm`` writes a 16 kHz mono wav (straight from source.mp4); otherwise the input is
+    an already vocals-only m4a and is re-encoded to aac, since a stream copy cannot cut
+    cleanly on an arbitrary second.
+    """
+    codec = ["-ac", "1", "-ar", str(ASR_SAMPLE_RATE), "-c:a", "pcm_s16le"] if mono_pcm else ["-c:a", "aac", "-b:a", "128k"]
+    return [
+        ffmpeg_bin or settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-ss", _fmt(start), "-t", _fmt(seconds),
+        "-i", str(src),
+        "-vn", "-map", "0:a:0",
+        *codec,
         str(dst),
     ]  # fmt: skip
 
@@ -650,6 +722,24 @@ class TtsProvider(Protocol):
     def synthesize(self, text: str, voice: str, speech_rate: float = 1.0, *, model: str | None = None, lang: str | None = None) -> bytes: ...
 
 
+class VoiceCloneProvider(Protocol):
+    def create(self, sample_url: str, model: str) -> str: ...
+
+
+@dataclass
+class FakeVoiceClone:
+    """Clones without calling anyone: tests get a stable id and a record of every call."""
+
+    fail: str = ""
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def create(self, sample_url: str, model: str) -> str:
+        self.calls.append((sample_url, model))
+        if self.fail:
+            raise LocalizeError(self.fail)
+        return f"{CLONE_VOICE_PREFIX}-fake-{len(self.calls)}"
+
+
 @dataclass
 class Providers:
     asr: AsrProvider
@@ -657,6 +747,8 @@ class Providers:
     tts: TtsProvider
     # Poster highlight picking (HIG-50) rides on the same key / provider switch.
     highlight: HighlightProvider = field(default_factory=RuleHighlight)
+    # Voice cloning for 「用原声配音」 (HIG-58).
+    clone: VoiceCloneProvider = field(default_factory=FakeVoiceClone)
 
 
 @dataclass
@@ -713,7 +805,7 @@ class FakeTts:
 
 
 def fake_providers() -> Providers:
-    return Providers(asr=FakeAsr(), mt=FakeTranslate(), tts=FakeTts(), highlight=RuleHighlight())
+    return Providers(asr=FakeAsr(), mt=FakeTranslate(), tts=FakeTts(), highlight=RuleHighlight(), clone=FakeVoiceClone())
 
 
 def make_providers(cfg: Settings | None = None) -> Providers:
@@ -756,6 +848,7 @@ def _save(
     langs: list[str] | tuple[str, ...] = (),
     stale_all: bool = False,
     clear_pending: bool = False,
+    clone_voice: bool = False,
 ) -> None:
     """Write back only the parts this task owns (the transcript and / or the given versions).
 
@@ -769,6 +862,8 @@ def _save(
     if transcript:
         fresh["transcript"] = copy.deepcopy(loc["transcript"])
         fresh["source_lang"] = loc.get("source_lang", fresh.get("source_lang"))
+    if clone_voice:
+        fresh["clone_voice"] = copy.deepcopy(loc.get("clone_voice"))
     if stale_all:
         for version in fresh["versions"].values():
             version["stale"] = True
@@ -809,6 +904,103 @@ def transcribe(video: Video, source_lang: str, asr: AsrProvider, tmp: Path) -> t
     return cues, lang
 
 
+# ---------------------------------------------------------------------------
+# voice cloning (HIG-58)
+# ---------------------------------------------------------------------------
+
+
+def clone_voice_id(loc: dict[str, Any] | None, cfg: Settings | None = None) -> str | None:
+    """The reusable cloned voice of this video, or None when there is none to reuse.
+
+    A clone is bound to the model it was created against, so one made for another model is
+    not reusable and has to be redone.
+    """
+    cfg = cfg or settings
+    clone = (loc or {}).get("clone_voice") or {}
+    if clone.get("status") != LOC_DONE or not clone.get("voice_id"):
+        return None
+    if str(clone.get("model") or "") != cfg.localize_tts_model:
+        return None
+    return str(clone["voice_id"])
+
+
+def _sample_source(db: Session, video: Video) -> tuple[Path, str, bool]:
+    """Where to cut the cloning sample from: (path, ``clone_voice.sample.from``, mono pcm?).
+
+    Prefers the separated vocals (HIG-58 asks for the cleanest speech available); falls back
+    to the source video, which is all there is when separation was never run.
+    """
+    asset_id = ((video.separation or {}).get("vocals_asset_id")) if video.separation else None
+    if asset_id:
+        asset = db.get(Asset, str(asset_id))
+        if asset is not None and asset.status == ASSET_READY:
+            path = storage.asset_path(asset.id, asset.ext)
+            if path.is_file():
+                return path, SAMPLE_FROM_VOCALS, False
+    source = storage.source_path(video.batch_id, video.id, video.source_ext)
+    if not source.is_file():
+        raise LocalizeError("源视频文件不存在")
+    return source, SAMPLE_FROM_SOURCE, True
+
+
+def sample_url(path: Path, cfg: Settings | None = None) -> str:
+    """Absolute /media URL of the sample plus a read ticket, for the vendor to fetch."""
+    cfg = cfg or settings
+    rel = storage.media_url(path)[len(storage.MEDIA_PREFIX) + 1 :]
+    url = cfg.public_base_url + storage.media_url(path)
+    if not cfg.access_code:
+        return url  # nothing gating /media; a ticket would be noise
+    ticket = media_ticket.issue(rel, cfg.access_code, cfg.media_ticket_ttl_seconds)
+    return f"{url}?{media_ticket.PARAM}={ticket}"
+
+
+def ensure_clone_voice(db: Session, video: Video, loc: dict[str, Any], providers: Providers) -> str:
+    """The cloned voice id for this video, creating it once and reusing it afterwards.
+
+    Raises ``LocalizeError`` (with ``clone_voice`` left at ``failed``) when the sample cannot
+    be produced or the vendor refuses it. The caller fails the versions that wanted it.
+    """
+    existing = clone_voice_id(loc)
+    if existing:
+        return existing
+
+    clone: dict[str, Any] = {"voice_id": None, "model": settings.localize_tts_model, "sample": None}
+    loc["clone_voice"] = clone
+    _stamp(clone, status=LOC_RUNNING, error=None)
+    _save(db, video, loc, clone_voice=True)
+
+    try:
+        cues = (loc.get("transcript") or {}).get("cues") or []
+        window = plan_voice_sample(cues)
+        if window is None:
+            raise LocalizeError(
+                f"可用于复刻的连续人声不足 {CLONE_SAMPLE_MIN_SECONDS:.0f} 秒，"
+                "请换一条口播更连贯的视频，或关掉「用原声配音」"
+            )
+        src, origin, mono_pcm = _sample_source(db, video)
+        dst = storage.voice_sample_path(video.id, "wav" if mono_pcm else VOICE_EXT)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        storage.remove_file(dst)
+        _run(sample_args(src, dst, window["start"], window["seconds"], mono_pcm=mono_pcm), "截取复刻样本")
+        if not dst.is_file() or dst.stat().st_size == 0:
+            raise LocalizeError("截取复刻样本失败：没有生成音频")
+        clone["sample"] = {"from": origin, **window}
+        voice_id = providers.clone.create(sample_url(dst), settings.localize_tts_model)
+        if not voice_id:
+            raise LocalizeError("复刻接口没有返回音色 id")
+    except SoftTimeLimitExceeded:
+        raise
+    except Exception as exc:  # noqa: BLE001 - lands in clone_voice.error and fails the versions
+        log.exception("voice cloning for %s failed", video.id)
+        _stamp(clone, status=LOC_FAILED, error=str(exc)[:4000])
+        _save(db, video, loc, clone_voice=True)
+        raise LocalizeError(f"音色复刻失败：{exc}") from exc
+
+    _stamp(clone, status=LOC_DONE, error=None, voice_id=str(voice_id))
+    _save(db, video, loc, clone_voice=True)
+    return str(voice_id)
+
+
 def transcript_status(loc: dict[str, Any]) -> str | None:
     return (loc.get("transcript") or {}).get("status")
 
@@ -842,8 +1034,15 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     _stamp(version, status=LOC_RUNNING, stage=STAGE_TTS, error=None)
     _save(db, video, loc, langs=[lang])
     translated_by_i = {int(c["i"]): str(c.get("translated") or "").strip() for c in version["cues"]}
-    voice = str(version.get("voice") or resolve_voice(lang, None))
-    model = voice_model(lang, voice)
+    if version.get("source_voice"):
+        # The clone is not in the voice table; it belongs to the configured TTS model (HIG-58).
+        voice = str(clone_voice_id(loc) or "")
+        model = settings.localize_tts_model
+        if not voice:
+            raise LocalizeError("音色复刻还没有完成，无法用原声合成")
+    else:
+        voice = str(version.get("voice") or resolve_voice(lang, None))
+        model = voice_model(lang, voice)
     spoken: list[dict[str, Any]] = []
     clip_paths: list[Path] = []
     clip_durations: list[float] = []
@@ -902,7 +1101,12 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
             derived_from={"video_id": video.id, "video_name": video.name, "stem": STEM_DUBBED, "lang": lang},
         )
     )
-    _stamp(version, status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False, voice=voice, voice_asset_id=asset_id, dub=True, voice_stale=False)
+    _stamp(
+        version,
+        status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False,
+        voice=voice, voice_asset_id=asset_id, dub=True, voice_stale=False,
+        source_voice=bool(version.get("source_voice")),
+    )  # fmt: skip
     _save(db, video, loc, langs=[lang])
 
 
@@ -956,6 +1160,20 @@ def run_localization(db: Session, video_id: str, providers: Providers | None = N
             for version in loc["versions"].values():  # every translation came from the old template
                 version["stale"] = True
             _save(db, video, loc, transcript=True, stale_all=True, clear_pending=True)
+
+        # One clone for the whole video, before any language needs it (HIG-58). Failing it
+        # fails only the versions that asked for the original voice; the rest carry on.
+        clone_langs = [lang for lang in langs if (loc["versions"].get(lang) or {}).get("source_voice")]
+        if clone_langs and clone_voice_id(loc) is None:
+            try:
+                ensure_clone_voice(db, video, loc, providers)
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001 - lands on the versions that wanted it
+                db.rollback()
+                _fail_versions(loc, clone_langs, str(exc)[:4000])
+                _save(db, video, loc, langs=clone_langs)
+                langs = [lang for lang in langs if lang not in clone_langs]
 
         for lang in langs:
             try:

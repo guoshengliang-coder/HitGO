@@ -6,6 +6,7 @@ import logging
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -18,7 +19,7 @@ from app.config import settings
 from app.db import init_db
 from app.routers import assets, auth, batches, config, jobs, localize, outputs, poster, presets, render, uploads, videos
 from app.routers.auth import access_ok
-from app.services import storage, upload_ticket
+from app.services import media_ticket, storage, upload_ticket
 
 log = logging.getLogger("hitgo")
 
@@ -186,10 +187,22 @@ class AccessGate:
         gated = path.startswith("/api/") or path.startswith("/media/") or path in ("/api", "/media")
         # /api/auth issues the cookie; /api/health is polled by the compose healthcheck.
         if gated and settings.access_code and path not in ("/api/auth", "/api/health"):
-            if not access_ok(Request(scope)) and not _ticket_ok(scope):
+            if not access_ok(Request(scope)) and not _ticket_ok(scope) and not _media_ticket_ok(scope, path):
                 await JSONResponse({"detail": "需要访问码"}, status_code=401)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+def _media_ticket_ok(scope: Scope, path: str) -> bool:
+    """GET /media/<path>?t=<ticket> from a cookie-less fetcher (contract §0, HIG-58).
+
+    The blocked-prefix check above already ran, so a ticket can never reach hitgo.db or tmp/.
+    """
+    if scope.get("method") not in ("GET", "HEAD") or not path.startswith("/media/"):
+        return False
+    query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    ticket = next(iter(query.get(media_ticket.PARAM, [])), "")
+    return bool(ticket) and media_ticket.verify(path[len("/media/") :], ticket, settings.access_code)
 
 
 def _ticket_ok(scope: Scope) -> bool:

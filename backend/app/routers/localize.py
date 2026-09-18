@@ -29,6 +29,14 @@ def _active(part: dict | None) -> bool:
     return bool(part) and part.get("status") in LOC_ACTIVE
 
 
+def _require_clonable(langs: list[str]) -> None:
+    """Every language must be one the cloned voice can speak (contract §3 ``clone``, HIG-58)."""
+    bad = [lang for lang in langs if not localize.clone_supported(lang, settings)]
+    if bad:
+        labels = "、".join(localize.LANGS[lang]["label"] for lang in bad)
+        raise HTTPException(400, f"{labels}暂不支持用原声配音，请改用系统音色")
+
+
 def _queue(db: Session, video: Video, previous: dict | None, loc: dict) -> VideoOut:
     """Persist ``loc``, enqueue the task; on a dead queue put ``previous`` back and 503."""
     video.localization = loc
@@ -62,10 +70,14 @@ def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db
     for lang in body.target_langs:
         if lang not in table:
             raise HTTPException(400, f"不支持的目标语言：{lang}")
-    try:
-        voices = {lang: localize.resolve_voice(lang, (body.voices or {}).get(lang), table) for lang in body.target_langs}
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    if body.use_source_voice:
+        _require_clonable(body.target_langs)
+        voices = dict.fromkeys(body.target_langs, "")  # filled in by the task from clone_voice
+    else:
+        try:
+            voices = {lang: localize.resolve_voice(lang, (body.voices or {}).get(lang), table) for lang in body.target_langs}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     previous = copy.deepcopy(video.localization) if video.localization else None
     loc = copy.deepcopy(previous) if previous else {}
@@ -102,6 +114,7 @@ def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db
             "voice_asset_id": old.get("voice_asset_id"),
             "dub": body.dub,
             "voice_stale": bool(old.get("voice_stale", False)),
+            "source_voice": bool(body.use_source_voice),
             "updated_at": now,
         }
     loc["versions"] = versions
@@ -160,12 +173,20 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
         raise HTTPException(400, "该版本还没有译文，请先生成")
     # No voice-over yet (translated only) or an outdated one: an empty body means "dub it as it is" (HIG-56).
     undubbed = not version.get("voice_asset_id") or bool(version.get("voice_stale"))
-    if not body.cues and body.voice is None and not undubbed:
+    if not body.cues and body.voice is None and body.use_source_voice is None and not undubbed:
         raise HTTPException(400, "没有改动：请修改译文或选择音色")
     if _active(version) or _active(loc.get("transcript")):
         raise HTTPException(409, "这个版本正在生成中，请等它完成")
+    # None keeps whatever this version used last time — unless a voice was picked, which is
+    # how the version row switches a cloned version back to a system voice (HIG-58).
+    source_voice = (bool(version.get("source_voice")) and body.voice is None) if body.use_source_voice is None else body.use_source_voice
+    if source_voice:
+        _require_clonable([lang])
     voice = version.get("voice")
-    if body.voice is not None:
+    if source_voice:
+        voice = ""  # the task fills it in from clone_voice
+    elif body.voice is not None or version.get("source_voice"):
+        # Switching back off the cloned voice with no voice given falls back to the default.
         try:
             voice = localize.resolve_voice(lang, body.voice, localize.voice_table(settings))
         except ValueError as exc:
@@ -180,6 +201,7 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
         stage=localize.STAGE_TTS,
         dub=True,
         voice=voice,
+        source_voice=source_voice,
         cues=cues,
         error=None,
         warnings=[],

@@ -6,6 +6,7 @@
     {DATA_DIR}/uploads/{upload_id}.png
     {DATA_DIR}/outputs/{job_id}.mp4
     {DATA_DIR}/tmp/                          ({video_id}.loc/ while a localization runs)
+    {DATA_DIR}/voice-samples/{video_id}.{m4a|wav}   voice-cloning sample (HIG-58)
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ def data_dir() -> Path:
 
 
 def ensure_dirs() -> None:
-    for sub in ("batches", "assets", "uploads", "outputs", "tmp"):
+    for sub in ("batches", "assets", "uploads", "outputs", "tmp", "voice-samples"):
         (data_dir() / sub).mkdir(parents=True, exist_ok=True)
 
 
@@ -101,6 +102,16 @@ def tmp_dir() -> Path:
 
 def tmp_output_path(job_id: str) -> Path:
     return tmp_dir() / f"{job_id}.mp4"
+
+
+def voice_sample_path(video_id: str, ext: str) -> Path:
+    """Sample a voice clone was made from (HIG-58). Served through /media with a read ticket."""
+    return data_dir() / "voice-samples" / f"{video_id}.{ext}"
+
+
+def find_voice_sample(video_id: str) -> Path | None:
+    """The stored sample of a video, whichever extension it was written with."""
+    return next(iter(sorted((data_dir() / "voice-samples").glob(f"{video_id}.*"))), None)
 
 
 def localize_tmp_dir(video_id: str) -> Path:

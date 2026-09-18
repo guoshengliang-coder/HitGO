@@ -9,7 +9,7 @@
 - 所有几何量用**相对比例**（0–1），相对于所在画布的宽或高；时间用秒（float）。
 - ID 用短随机字符串（例如 `nanoid` 12 位），前后端都当不透明字符串处理。
 - 错误统一返回 `{ "detail": "人类可读的中文说明" }`，HTTP 状态码按语义（400 / 404 / 409 / 500）。
-- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。**唯一例外**：`POST /api/assets` 带有效的请求头 `X-Upload-Ticket`（由 `POST /api/assets/upload-ticket` 签发）时不看 Cookie，见第 3 节「素材」的上传子域名。
+- 访问控制：环境变量 `ACCESS_CODE` 非空时，所有 `/api` 与 `/media` 请求需要 Cookie `hitgo_access=<code>`；`POST /api/auth {code}` 校验后下发 Cookie（HttpOnly, SameSite=Lax, 30 天）。`GET /api/auth` 返回 `{ "required": bool, "ok": bool }`。前端未通过时显示访问码输入页。**两个例外**：① `POST /api/assets` 带有效的请求头 `X-Upload-Ticket`（由 `POST /api/assets/upload-ticket` 签发）时不看 Cookie，见第 3 节「素材」的上传子域名；② `GET /media/...` 带有效的查询参数 `?t=<ticket>` 时不看 Cookie（HIG-58）——票据是对「这一个路径 + 过期时间」的 HMAC 签名（密钥由 `ACCESS_CODE` 派生，`MEDIA_TICKET_TTL_SECONDS` 缺省 1800 秒），只放行签名里那一个文件，`hitgo.db` 和 `tmp/` 仍然 404。它存在的唯一理由是百炼的声音复刻接口要从公网拉取样本。
 
 ## 1. 数据模型
 
@@ -81,6 +81,14 @@
 ```jsonc
 {
   "source_lang": "en",              // 听写用的源语言；请求 "auto" 时为识别结果（模型没报语言则仍是 "auto"）
+  "clone_voice": {                  // 可选，缺省 null（HIG-58）：这条视频复刻出来的「原声」音色，各语言版本共用
+    "voice_id": "hitgo-abc123",     // 复刻接口返回的音色 id，合成时直接当 voice 传
+    "model": "cosyvoice-v3-flash",  // 复刻时绑定的 TTS 模型；音色不能跨模型用，模型换了要重刻
+    "status": "done",               // queued | running | done | failed
+    "error": null,                  // failed 时的中文原因
+    "sample": { "from": "vocals", "start": 3.2, "seconds": 14.5 },  // 样本来源（vocals | source）与源时间轴上的时段
+    "updated_at": "..."
+  },
   "transcript": {                   // 模板：听写一次，可人工修正
     "status": "done",               // queued | running | done | failed
     "error": null,                  // failed 时的中文原因
@@ -99,6 +107,7 @@
       "voice_asset_id": "a_d0bb3d", // 合成过才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
       "dub": true,                  // 可选，缺省 true（HIG-56）：false = 这次只翻译不合成，done 时可能没有 voice_asset_id
       "voice_stale": false,         // 可选，缺省 false（HIG-56）：只翻译覆盖了译文，旧配音还在但对不上新译文，需再合成
+      "source_voice": false,        // 可选，缺省 false（HIG-58）：这一版用复刻出来的原声合成（voice 里是 clone_voice.voice_id），界面显示"原声"而不是音色名
       "updated_at": "..."
     }
   }
@@ -108,6 +117,12 @@
 `transcript.cues[].start / end` 基于**源时间轴**，前端要经 `trim.remove` 换算到剪后时间轴再生成字幕图层；版本
 `cues` 只有译文，按 `i` 对齐模板。一条视频同一时间只能「套用」一个语言版本（一份 `edit_spec`）；切换版本 =
 把旧的 `origin = "localize"` 层 / 轨换成新的。配音只含人声（其余静音），背景音乐由前端另加分离出的伴奏轨。
+
+**原声配音 `clone_voice`**（可选，缺省 null，HIG-58）：从这条视频自己的人声里截一段样本，用百炼 CosyVoice 的声音
+复刻得到一个音色，之后各语言版本都用它合成，听感仍是原说话人。整条视频只复刻一次：`status = done` 且 `model` 与
+当前 TTS 模型一致就直接复用，不重复调用复刻接口。复刻失败时 `status = failed`、`error` 写中文原因，本次请求里要用
+原声的版本一并 failed，用系统音色的版本不受影响。哪些目标语言能用原声由 `GET /api/localize/options` 的
+`target_langs[].clone` 下发，前端不写死。
 
 ### Asset（素材）
 
@@ -591,20 +606,26 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   视频未 `ready` 或没有音轨 400；已有 queued / running 的分离 409；队列不可用 503。完成后 `separation` 变 `done`
   并带两个素材 id；前端轮询 `GET /api/videos/{id}`。分离由独立的 `separator` worker（带 torch + Demucs 的镜像）
   执行；没有起这个 worker 时任务会一直停在 queued。
-- `POST /api/videos/{id}/localize` `{ source_lang?: "auto", target_langs: ["ko","ja"], voices?: { ko: "loongkyong_v3" }, terms?: [{ source, target }], retranscribe?: false, dub?: true }`
+- `POST /api/videos/{id}/localize` `{ source_lang?: "auto", target_langs: ["ko","ja"], voices?: { ko: "loongkyong_v3" }, terms?: [{ source, target }], retranscribe?: false, dub?: true, use_source_voice?: false }`
   → 202 `Video`。一个任务：`transcript` 不是 `done`（或 `retranscribe`）就先听写，再对每个目标语言依次 翻译 → 合成 → 混音，
   每个版本独立 done / failed。`dub = false`（HIG-56，前端「翻译」按钮）翻译完就 done，不合成不混音：没有配音的版本
   `voice_asset_id = null`，已有配音的保留旧素材并置 `voice_stale = true`；之后用下面的 `PUT …/versions/{lang}` 生成口播。`source_lang` 只在听写时生效；`target_langs` 1–5 个且必须在 options 的 `target_langs` 里，
-  `voices` 缺省取该语言第一个音色。视频未 `ready` / 没有音轨 / 不支持的语言或音色 400；`transcript` 或任一请求的版本
-  正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`。
+  `voices` 缺省取该语言第一个音色。`use_source_voice`（可选，缺省 false，HIG-58）= 用这条视频复刻出来的原声合成，此时
+  `voices` 被忽略，每个目标语言都必须是 options 里 `clone = true` 的语言，否则 400。视频未 `ready` / 没有音轨 / 不支持的
+  语言或音色 400；`transcript` 或任一请求的版本正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503
+  （状态回滚）。前端轮询 `GET /api/videos/{id}`。
 - `PUT /api/videos/{id}/localize/transcript` `{ cues: [{ i, text }], source_lang? }` → 200 `Video`。修正模板文本（只传改动的句子），
   不触发任务；所有已有译文的版本 `stale = true`，之后对该语言再 `POST` 即重译。还没有听写结果 400；有版本正在生成 409。
-- `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice? }` → 202 `Video`。改译文 / 换音色后只重跑
-  合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice`——例外（HIG-56）：版本还没有配音（`voice_asset_id = null`）或 `voice_stale = true` 时
-  允许空 body `{}`，表示按现有译文和音色直接合成（「生成口播」）。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。
+- `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice?, use_source_voice? }` → 202 `Video`。改译文 /
+  换音色后只重跑合成 + 混音（`stage = "tts"`，不重译）。`cues` 可为空但此时必须带 `voice` 或 `use_source_voice`——例外（HIG-56）：
+  版本还没有配音（`voice_asset_id = null`）或 `voice_stale = true` 时
+  允许空 body `{}`，表示按现有译文和音色直接合成（「生成口播」）。`use_source_voice`（可选，缺省 null = 沿用这个版本上次的
+  选择，HIG-58）：true 用复刻的原声合成，该语言必须 `clone = true` 否则 400；false 改回系统音色，此时没带 `voice` 就取
+  该语言缺省音色。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。
 - `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
-- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, voices: [{ id, label, gender?, style?, speech_rate }] }] }`。
-  `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。
+- `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, clone, voices: [{ id, label, gender?, style?, speech_rate }] }] }`。
+  `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。`clone`（可选，缺省 false，HIG-58）= 该语言能不能用复刻的
+  原声合成——复刻音色绑在 `LOCALIZE_TTS_MODEL` 上，只覆盖该模型支持的语言，西班牙语 / 意大利语 / 阿拉伯语目前不在其中。
   音色（HIG-42）：`label` 是名字（龙小淳 / Abby），`gender` = `female | male | neutral`（`neutral` 是童声 / 角色音，前端按它分组；
   `LOCALIZE_VOICES` 加进来的音色为 null，不分组），`style` 是一句话风格（可为 null），`speech_rate`（缺省 true）= 该音色的模型接受语速
   参数——qwen3-tts 的音色为 false，前端应禁用语速，后端合成时也会忽略。每种语言第一个音色是缺省音色。
@@ -723,6 +744,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 /data/tmp/{video_id}.loc/                     改语言运行中的临时目录（16 kHz wav、逐句配音片段），结束即删
 /data/tmp/{asset_id}.tts/                     朗读合成中的临时目录（分段 wav），结束即删
 /data/tts-preview/{lang}-{voice}-{hash}.wav   音色试听缓存（HIG-42，hash 取自模型 + 试听文案），可随时整目录清空
+/data/voice-samples/{video_id}.{m4a|wav}      声音复刻的样本（HIG-58），复刻接口要拉它，复刻成功后留着备查
 ```
 `/media` 直接映射到 `DATA_DIR`（`hitgo.db` 和 `tmp/` 不对外）。
 
@@ -756,11 +778,18 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    `paraformer-realtime-v2` 逐句给出毫秒起止；`source_lang = auto` 时不传语言提示、取识别到的语言。去掉空句、裁到
    源时长、最多 400 句，写成 `transcript.cues`（源时间轴）；一句都没有则 failed。听写失败时本次请求的所有版本一并 failed；
    重新听写后所有已有版本 `stale = true`。
-2. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
+2. **复刻原声**（本次有任何 `source_voice = true` 的版本，且 `clone_voice` 还不是 done / 绑的模型不是当前模型，HIG-58）：
+   从 `transcript.cues` 里挑一段连续说话、累计 ≥ 10 秒且窗口 ≤ 20 秒的时段（凑不够就 failed，写「可用于复刻的人声不足
+   10 秒」），按这个时段截出样本存到 `/data/voice-samples/{video_id}.{m4a|wav}`——有人声分离出来的 vocals 素材就从它截
+   （`from = "vocals"`），否则从 `source.mp4` 抽 16 kHz 单声道（`from = "source"`）。样本的 `/media` 地址加上只读票据
+   拼成绝对地址（`PUBLIC_BASE_URL` + `?t=<ticket>`）交给百炼 `VoiceEnrollmentService.create_voice`，拿到的 `voice_id`
+   写进 `clone_voice`。整条视频只做一次，之后重新生成直接复用。这一步失败时 `clone_voice.status = failed`，本次要用原声的
+   版本一并 failed 且 `error` 以「音色复刻失败：」开头，**同一批里用系统音色的版本照常进行**。
+3. **每个目标语言**（`stage` 依次 `translate → tts → mix`，各版本独立 done / failed）：
    - translate：整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（语言用英文全名，任意配对直译不经英语中转，带 `terms`）；
      回来的编号对不上就逐句重译一遍。`stage = "tts"` 排队的版本跳过这一步，直接用已有译文。`dub = false` 的版本到此为止：
      `status = done`、`stage = null`，有旧配音则 `voice_stale = true`，不进 tts / mix。
-   - tts：每句用版本的 `voice` 出 wav。音色表写在 `services/localize.py` `DEFAULT_VOICES`（照官方 cosyvoice 音色表，HIG-42 起中文约 30 个、
+   - tts：每句用版本的 `voice` 出 wav（`source_voice = true` 的版本用 `clone_voice.voice_id` 与 `LOCALIZE_TTS_MODEL`）。音色表写在 `services/localize.py` `DEFAULT_VOICES`（照官方 cosyvoice 音色表，HIG-42 起中文约 30 个、
      英文 14 个，每条带 gender / style），`GET /api/localize/options` 原样下发。音色各自属于某个 TTS 模型：中 / 英 / 日 / 韩 / 粤 / 印尼用 `cosyvoice-v3-flash`（每句一个新实例），
      西 / 葡 / 法 / 德 / 意 / 俄用 `qwen3-tts-flash`（HTTP 调用，返回 24 小时有效的 wav 地址，worker 立即下载；这个模型没有语速参数，
      超长只靠下一步的 `atempo`）；`LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），
@@ -769,7 +798,8 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`
      → `{asset_id}.m4a`（aac 192k，44.1 kHz 立体声），建一条 `type = audio`、`source = derived`、`stem = dubbed` 的素材，
      `stale = false`，上一次这个语言的配音素材连文件一起删掉。
-3. 临时目录 `tmp/{video_id}.loc/` 结束即删；`LOCALIZE_PROVIDER = fake` 时三步都用假实现（静音配音），只给测试 / 演示。
+4. 临时目录 `tmp/{video_id}.loc/` 结束即删（样本文件不在里面，留着备查）；`LOCALIZE_PROVIDER = fake` 时听写 / 翻译 /
+   合成 / 复刻都用假实现（静音配音、固定 voice_id），只给测试 / 演示。
 
 ### 朗读（`POST /api/tts` 之后，普通 worker，HIG-50）
 任务 `hitgo.synthesize_tts`，软超时同改语言。文案按句读切成 ≤ 500 字的段，每段用改语言同一套 TTS（音色决定模型，`speech_rate`
@@ -855,5 +885,6 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 - 本地开发：`backend/` 用 `uv run uvicorn app.main:app --reload`（端口 8000），`frontend/` 用 `npm run dev`（Vite，`/api` 与 `/media` 代理到 8000）。
 - 容器：单一镜像 `hitgo`（多阶段：node 构建前端 → python:3.12-slim + apt ffmpeg + uv），`api` 与 `worker` 两个服务共用；`redis:7-alpine`。API 同时托管前端静态文件（`/` → `frontend/dist`，SPA fallback）。
 - 环境变量：`DATA_DIR`、`DATABASE_URL`、`REDIS_URL`、`ACCESS_CODE`、`PUBLIC_BASE_URL`、`WORKER_CONCURRENCY`（默认 1）、`UPLOAD_BASE_URL`（可选，上传子域名，如 `https://hitgo-upload.mrlgs.net`；空 = 不启用）、
-  `HIGHLIGHT_MODEL`（HIG-50 重点词挑选用的百炼对话模型，默认 `qwen-plus`；`DASHSCOPE_API_KEY` / `LOCALIZE_PROVIDER` 与改语言共用）。
+  `HIGHLIGHT_MODEL`（HIG-50 重点词挑选用的百炼对话模型，默认 `qwen-plus`；`DASHSCOPE_API_KEY` / `LOCALIZE_PROVIDER` 与改语言共用）、
+  `MEDIA_TICKET_TTL_SECONDS`（HIG-58 只读媒体票据的有效期，默认 1800 秒）。
 - 服务器：`docker compose` 监听 `127.0.0.1:8790`，nginx `hitgo.mrlgs.net` 反代，见 `docs/DEPLOY.md`。

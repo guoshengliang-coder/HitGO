@@ -244,6 +244,19 @@ function fakeTranslate(lang: string, cues: TranscriptCue[], terms: LocalizationT
  * 每个版本独立 done / failed；V03 在 tts 阶段一半概率失败（和渲染 mock 一样，用来看失败路径）。
  * stage 已是 tts 的版本（PUT versions 触发）跳过翻译；dub = false 的版本翻译完就 done（HIG-56）。
  */
+// 能用复刻原声的语言（HIG-58），与后端 CLONE_MODEL_LANGS 一致
+const CLONE_LANGS = ['zh', 'yue', 'en', 'fr', 'de', 'ja', 'ko', 'ru', 'pt', 'th', 'id', 'vi'];
+for (const t of LOCALIZE_OPTIONS.target_langs) t.clone = CLONE_LANGS.includes(t.code);
+
+/** 假的复刻：第一次要几秒，之后整条视频复用（HIG-58）。 */
+function ensureCloneVoice(v: Video, at: (ms: number, fn: () => void) => void, delay: number): number {
+  const loc = v.localization!;
+  if (loc.clone_voice?.status === 'done' && loc.clone_voice.voice_id) return delay;
+  loc.clone_voice = { status: 'queued', voice_id: null, model: 'cosyvoice-v3-flash', error: null, sample: null, updated_at: now() };
+  at(delay + 400, () => { v.localization!.clone_voice = { ...v.localization!.clone_voice!, status: 'running', updated_at: now() }; });
+  return delay + 2400;
+}
+
 function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
   const at = (ms: number, fn: () => void) => window.setTimeout(() => { if (v.localization) fn(); }, ms);
   let delay = 0;
@@ -259,6 +272,19 @@ function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
       l.transcript = { status: 'done', error: null, cues: fakeTranscript(v.duration), updated_at: now() };
       if (l.source_lang === 'auto') l.source_lang = 'en';
       for (const ver of Object.values(l.versions)) if (ver.status === 'done') ver.stale = true;
+    });
+  }
+  if (targetLangs.some((l) => loc.versions[l]?.source_voice)) {
+    delay = ensureCloneVoice(v, at, delay);
+    at(delay, () => {
+      const l = v.localization!;
+      if (l.clone_voice?.status !== 'done') {
+        l.clone_voice = { ...l.clone_voice!, status: 'done', voice_id: `hitgo-${v.id.slice(-6)}`, sample: { from: 'source', start: 0, seconds: 14 }, updated_at: now() };
+      }
+      for (const lang of targetLangs) {
+        const ver = l.versions[lang];
+        if (ver?.source_voice) ver.voice = l.clone_voice!.voice_id!;
+      }
     });
   }
   for (const lang of targetLangs) {
@@ -870,10 +896,15 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     if (tActive) throw new ApiError(409, '这条视频正在听写中，请等它完成');
     if (targetLangs.some((l) => loc.versions[l]?.status === 'queued' || loc.versions[l]?.status === 'running')) throw new ApiError(409, '请求的语言版本正在生成中，请等它完成');
     if (sourceLang !== 'auto' || !loc.transcript || body.retranscribe) loc.source_lang = sourceLang;
+    const sourceVoice = !!body.use_source_voice;
+    if (sourceVoice) {
+      const unclonable = targetLangs.find((l) => !CLONE_LANGS.includes(l));
+      if (unclonable) throw new ApiError(400, `${LOCALIZE_OPTIONS.target_langs.find((t) => t.code === unclonable)?.label ?? unclonable}暂不支持用原声配音，请改用系统音色`);
+    }
     for (const lang of targetLangs) {
-      const voice = body.voices?.[lang] ?? LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.voices[0]?.id ?? null;
+      const voice = sourceVoice ? '' : (body.voices?.[lang] ?? LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.voices[0]?.id ?? null);
       const prev = loc.versions[lang];
-      const ver: LocalizationVersion = { status: 'queued', stage: null, voice, terms: clone(body.terms ?? []), cues: prev?.cues ?? [], stale: false, error: null, warnings: [], voice_asset_id: prev?.voice_asset_id ?? null, dub: body.dub ?? true, voice_stale: prev?.voice_stale ?? false, updated_at: now() };
+      const ver: LocalizationVersion = { status: 'queued', stage: null, voice, terms: clone(body.terms ?? []), cues: prev?.cues ?? [], stale: false, error: null, warnings: [], voice_asset_id: prev?.voice_asset_id ?? null, dub: body.dub ?? true, voice_stale: prev?.voice_stale ?? false, source_voice: sourceVoice, updated_at: now() };
       loc.versions[lang] = ver;
     }
     v.localization = loc;
@@ -910,15 +941,21 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
       return undefined;
     }
     if (!ver.cues.length) throw new ApiError(400, '这个版本还没有译文，请先生成');
-    const body = body_ as { cues: { i: number; translated: string }[]; voice?: string };
+    const body = body_ as { cues: { i: number; translated: string }[]; voice?: string; use_source_voice?: boolean };
     const undubbed = !ver.voice_asset_id || !!ver.voice_stale;
-    if (!(body.cues ?? []).length && !body.voice && !undubbed) throw new ApiError(400, '没有改动的句子时必须指定音色');
+    if (!(body.cues ?? []).length && !body.voice && body.use_source_voice === undefined && !undubbed) throw new ApiError(400, '没有改动的句子时必须指定音色');
+    const sourceVoice = body.use_source_voice === undefined ? !!ver.source_voice && !body.voice : body.use_source_voice;
+    if (sourceVoice && !CLONE_LANGS.includes(lang)) {
+      throw new ApiError(400, `${LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.label ?? lang}暂不支持用原声配音，请改用系统音色`);
+    }
     for (const e of body.cues ?? []) {
       const c = ver.cues.find((x) => x.i === e.i);
       if (c) c.translated = e.translated;
     }
-    if (body.voice) ver.voice = body.voice;
-    Object.assign(ver, { status: 'queued', stage: 'tts', dub: true, error: null, warnings: [], updated_at: now() });
+    if (sourceVoice) ver.voice = '';
+    else if (body.voice) ver.voice = body.voice;
+    else if (ver.source_voice) ver.voice = LOCALIZE_OPTIONS.target_langs.find((t) => t.code === lang)?.voices[0]?.id ?? null;
+    Object.assign(ver, { status: 'queued', stage: 'tts', dub: true, source_voice: sourceVoice, error: null, warnings: [], updated_at: now() });
     runLocalize(v, [lang], false);
     return clone(v);
   }

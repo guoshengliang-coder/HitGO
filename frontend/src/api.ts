@@ -201,8 +201,9 @@ export const api = {
   localizeVideo: (id: string, body: LocalizeIn) => request<Video>('POST', `/api/videos/${id}/localize`, body),
   /** 修正模板文本，不触发任务；所有版本会被标为 stale。 */
   updateTranscript: (id: string, body: { cues: { i: number; text: string }[]; source_lang?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/transcript`, body),
-  /** 改译文 / 换音色后只重跑 TTS + 混音。 */
-  updateVersionCues: (id: string, lang: string, body: { cues: { i: number; translated: string }[]; voice?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/versions/${lang}`, body),
+  /** 改译文 / 换音色后只重跑 TTS + 混音。use_source_voice 缺省沿用该版本上次的选择（HIG-58）。 */
+  updateVersionCues: (id: string, lang: string, body: { cues: { i: number; translated: string }[]; voice?: string; use_source_voice?: boolean }) =>
+    request<Video>('PUT', `/api/videos/${id}/localize/versions/${lang}`, body),
   deleteVersion: (id: string, lang: string) => request<void>('DELETE', `/api/videos/${id}/localize/versions/${lang}`),
   getLocalizeOptions: () => request<LocalizeOptions>('GET', '/api/localize/options'),
 

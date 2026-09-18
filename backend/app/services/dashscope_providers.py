@@ -8,6 +8,7 @@ worker when a localization actually runs, and tests must never touch it or the n
     TTS  cosyvoice-v3-flash      SpeechSynthesizer(model, voice, WAV 22.05 kHz mono).call(text) → bytes
          qwen3-tts-flash         MultiModalConversation.call(text, voice, language_type) → wav URL → bytes
     HL   qwen-plus               Generation.call(system prompt + copy) → JSON array of phrases (HIG-50)
+    CLONE  voice-enrollment      VoiceEnrollmentService.create_voice(target_model, prefix, url) → voice_id (HIG-58)
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from typing import Any
 
 from app.config import Settings
 from app.services.highlight import parse_phrase_json
-from app.services.localize import MT_DOMAINS, AsrResult, LocalizeError, Providers, language_type_for, tts_api_for
+from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
 
@@ -244,6 +245,42 @@ class DashScopeHighlight:
         return phrases[:max_phrases]
 
 
+@dataclass
+class DashScopeVoiceClone:
+    """Voice cloning (HIG-58): a sample URL the vendor fetches itself → a reusable voice id.
+
+    The sample must be reachable from the public internet, which is why it is served through
+    ``/media`` with a read ticket rather than uploaded here. The voice is bound to
+    ``target_model`` and cannot be used with any other one.
+    """
+
+    api_key: str
+
+    def create(self, sample_url: str, model: str) -> str:
+        import dashscope  # noqa: PLC0415
+        from dashscope.audio.tts_v2 import VoiceEnrollmentService  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        service = VoiceEnrollmentService()
+
+        def call() -> Any:
+            return service.create_voice(target_model=model, prefix=CLONE_VOICE_PREFIX, url=sample_url)
+
+        result = _with_retry("音色复刻", call)
+        # The SDK returns the id directly; older/other shapes carry it on the response object.
+        voice_id = result if isinstance(result, str) else getattr(result, "voice_id", None) or _voice_id_from(result)
+        if not voice_id:
+            raise LocalizeError(f"音色复刻没有返回音色 id：{result!r:.200}")
+        return str(voice_id)
+
+
+def _voice_id_from(result: Any) -> str | None:
+    output = getattr(result, "output", None)
+    if isinstance(output, dict):
+        return output.get("voice_id")
+    return getattr(output, "voice_id", None)
+
+
 def make_providers(cfg: Settings) -> Providers:
     key = cfg.dashscope_api_key
     return Providers(
@@ -251,4 +288,5 @@ def make_providers(cfg: Settings) -> Providers:
         mt=DashScopeTranslate(api_key=key, model=cfg.localize_mt_model),
         tts=DashScopeTts(api_key=key, model=cfg.localize_tts_model),
         highlight=DashScopeHighlight(api_key=key, model=cfg.highlight_model),
+        clone=DashScopeVoiceClone(api_key=key),
     )

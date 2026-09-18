@@ -1018,6 +1018,9 @@ class LocalizeIn(BaseModel):
     retranscribe: bool = False
     # False: stop after translating (HIG-56); the voice-over is a later PUT …/versions/{lang}.
     dub: bool = True
+    # True: synthesize with the voice cloned from this video instead of a system one (HIG-58);
+    # ``voices`` is then ignored and every target language must have options' ``clone``.
+    use_source_voice: bool = False
 
     @field_validator("target_langs")
     @classmethod
@@ -1066,6 +1069,8 @@ class VersionCueIn(BaseModel):
 class VersionCuesIn(BaseModel):
     cues: list[VersionCueIn] = Field(default_factory=list, max_length=400)
     voice: str | None = Field(default=None, min_length=1, max_length=64)
+    # None: keep what this version used last time (HIG-58).
+    use_source_voice: bool | None = None
 
 
 class TranscriptCueOut(BaseModel):
@@ -1104,6 +1109,26 @@ class VersionOut(BaseModel):
     voice_asset_id: str | None = None
     dub: bool = True
     voice_stale: bool = False
+    source_voice: bool = False  # HIG-58：这一版用复刻的原声合成，界面显示"原声"
+    updated_at: str | None = None
+
+
+class CloneSampleOut(BaseModel):
+    source: str = Field(default="", alias="from")  # vocals | source
+    start: float = 0.0
+    seconds: float = 0.0
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CloneVoiceOut(BaseModel):
+    """The voice cloned from this video (HIG-58); one per video, shared by every language."""
+
+    status: str
+    voice_id: str | None = None
+    model: str | None = None
+    error: str | None = None
+    sample: CloneSampleOut | None = None
     updated_at: str | None = None
 
 
@@ -1112,6 +1137,7 @@ class LocalizationOut(BaseModel):
 
     source_lang: str = "auto"
     transcript: TranscriptOut | None = None
+    clone_voice: CloneVoiceOut | None = None
     versions: dict[str, VersionOut] = Field(default_factory=dict)
 
 
@@ -1130,6 +1156,7 @@ class VoiceOut(BaseModel):
 
 class TargetLangOut(LangOut):
     rtl: bool = False  # 从右到左书写（阿拉伯语等），前端排字幕时用
+    clone: bool = False  # HIG-58：该语言能否用复刻的原声合成（复刻音色绑在 LOCALIZE_TTS_MODEL 上）
     voices: list[VoiceOut] = Field(default_factory=list)
 
 
