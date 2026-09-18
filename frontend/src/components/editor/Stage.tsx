@@ -52,6 +52,9 @@ import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from '.
 import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
 
 // Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、四条边改换行宽度 / 框高（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
+/** 指针移开这么多舞台像素才算框选，而不是一次点击（HIG-77，与时间轴同一个阈值）。 */
+const MARQUEE_PX = 4;
+
 const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const EDGE_ANCHORS = ['middle-left', 'middle-right'];
 const ALL_ANCHORS = [...CORNER_ANCHORS, 'top-center', ...EDGE_ANCHORS, 'bottom-center'];
@@ -682,6 +685,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const drawingShape = useEditor((s) => s.drawingShape);
   const addLayer = useEditor((s) => s.addLayer);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
+  const selectLayers = useEditor((s) => s.selectLayers);
   const focusLayer = useEditor((s) => s.focusLayer);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
@@ -693,6 +697,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   // 正在拖动 / 拉伸的遮盖的实时框：预览 div 跟着它走，松手后回到 spec 算出的框
   const [liveMask, setLiveMask] = useState<{ id: string; box: LayerBox } | null>(null);
   const [shapeDraft, setShapeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  // 画布框选（HIG-77）：与时间轴同一套语义（⇧ 追加、⌥/Ctrl 排除），坐标用舞台自己的像素，
+  // 和 node.getClientRect() 同一个坐标系，省掉容器偏移的换算。
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const marqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number; mode: 'replace' | 'add' | 'subtract'; active: boolean } | null>(null);
   const backdrop = useMemo(supportsBackdropBlur, []);
 
   // 换选中 / 换视频 / 换步骤时退出内联编辑
@@ -800,16 +808,60 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         if (p) setShapeDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
         return;
       }
-      if (e.target === e.target.getStage()) setSelectedLayer(null);
+      // 空白处：先只记起点。是「点一下取消选中」还是「拉框多选」，等松手时才知道。
+      if (e.target === e.target.getStage()) {
+        const p = e.target.getStage()?.getPointerPosition();
+        const ev = e.evt as MouseEvent;
+        if (p) marqueeRef.current = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, mode: ev.altKey || ev.ctrlKey ? 'subtract' : ev.shiftKey ? 'add' : 'replace', active: false };
+      }
     },
-    [setSelectedLayer, drawingShape, spec, video, coverActive],
+    [drawingShape, spec, video, coverActive],
   );
   const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
-    if (!shapeDraft) return;
+    if (shapeDraft) {
+      const p = e.target.getStage()?.getPointerPosition();
+      if (p) setShapeDraft((d) => d && { ...d, x1: Math.max(0, Math.min(W, p.x)), y1: Math.max(0, Math.min(H, p.y)) });
+      return;
+    }
+    const m = marqueeRef.current;
+    if (!m) return;
     const p = e.target.getStage()?.getPointerPosition();
-    if (p) setShapeDraft((d) => d && { ...d, x1: Math.max(0, Math.min(W, p.x)), y1: Math.max(0, Math.min(H, p.y)) });
+    if (!p) return;
+    // 移开超过阈值才算框选，没动就还是一次普通点击
+    if (!m.active && Math.abs(p.x - m.x0) < MARQUEE_PX && Math.abs(p.y - m.y0) < MARQUEE_PX) return;
+    m.active = true;
+    m.x1 = Math.max(0, Math.min(W, p.x));
+    m.y1 = Math.max(0, Math.min(H, p.y));
+    setMarquee({ x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1 });
+  };
+  /** 框选结束：命中判定用舞台坐标，和 node.getClientRect() 同一个坐标系。 */
+  const finishMarquee = () => {
+    const m = marqueeRef.current;
+    marqueeRef.current = null;
+    setMarquee(null);
+    if (!m) return;
+    if (!m.active) {
+      setSelectedLayer(null); // 只是点了一下空白：取消选中（原行为）
+      return;
+    }
+    const left = Math.min(m.x0, m.x1), right = Math.max(m.x0, m.x1);
+    const top = Math.min(m.y0, m.y1), bottom = Math.max(m.y0, m.y1);
+    const hits = (spec?.layers ?? [])
+      .filter((l) => layerTypes.includes(l.type))
+      .filter((l) => {
+        const node = nodes.current[l.id];
+        if (!node) return false;
+        const r = node.getClientRect({ skipShadow: true, skipStroke: true });
+        return r.x <= right && r.x + r.width >= left && r.y <= bottom && r.y + r.height >= top;
+      })
+      .map((l) => l.id);
+    selectLayers(hits, m.mode);
   };
   const onStageMouseUp = () => {
+    if (!shapeDraft) {
+      finishMarquee();
+      return;
+    }
     const d = shapeDraft;
     setShapeDraft(null);
     if (!d || !drawingShape || Math.abs(d.x1 - d.x0) < 8 || Math.abs(d.y1 - d.y0) < 8) return;
@@ -826,6 +878,15 @@ export function Stage({ hidden }: { hidden?: boolean }) {
       flip_x: d.x1 < d.x0, flip_y: d.y1 < d.y0,
     });
   };
+
+  // 拖出画布再松手时 Konva 收不到 mouseup，兜一层（框选跨出画面是常事）
+  useEffect(() => {
+    const onUp = () => {
+      if (marqueeRef.current) finishMarquee();
+    };
+    window.addEventListener('mouseup', onUp);
+    return () => window.removeEventListener('mouseup', onUp);
+  });
 
   // 缩放角点吸附到参考线（旋转把手不吸附；按住 ⌘/Ctrl 关闭）
   const anchorDragBoundFunc = useCallback((_oldPos: Konva.Vector2d, newPos: Konva.Vector2d, evt: MouseEvent | TouchEvent | undefined) => {
@@ -953,6 +1014,19 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             </KLayer>
             <KLayer listening={false}>
               {shapeDraft && <Rect x={Math.min(shapeDraft.x0, shapeDraft.x1)} y={Math.min(shapeDraft.y0, shapeDraft.y1)} width={Math.abs(shapeDraft.x1 - shapeDraft.x0)} height={Math.abs(shapeDraft.y1 - shapeDraft.y0)} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 4]} />}
+              {marquee && (
+                <Rect
+                  x={Math.min(marquee.x0, marquee.x1)}
+                  y={Math.min(marquee.y0, marquee.y1)}
+                  width={Math.abs(marquee.x1 - marquee.x0)}
+                  height={Math.abs(marquee.y1 - marquee.y0)}
+                  stroke={GUIDE_COLOR}
+                  strokeWidth={1}
+                  dash={[4, 3]}
+                  fill="rgba(255,255,255,0.08)"
+                  listening={false}
+                />
+              )}
               {overlayUrl && <SafeZoneOverlay url={overlayUrl} W={W} H={H} />}
               {hitGuides.xs.map((x) => (
                 <KLine key={`x${x}`} points={[x, 0, x, H]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
