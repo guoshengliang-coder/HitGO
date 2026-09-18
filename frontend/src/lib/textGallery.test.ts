@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fontChoices, galleryItemKey, galleryLayerSeed, groupPresets, missingCatalogFonts, searchFontChoices, type FontChoice } from './textGallery';
+import { fontChoices, galleryItemKey, galleryLayerSeed, groupPresets, searchFontChoices, type FontChoice } from './textGallery';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import type { Asset, TextStylePreset } from '../types';
 
@@ -17,12 +17,12 @@ describe('groupPresets', () => {
 });
 
 describe('fontChoices', () => {
-  it('开放网页字体可直接选择，其余五款需官方文件', () => {
+  it('十六款清单字体都可直接选择', () => {
     const choices = fontChoices([]);
-    expect(choices).toHaveLength(11);
+    expect(choices).toHaveLength(16);
     expect(choices.map((f) => f.label)).toContain('抖音美好体');
     expect(choices.map((f) => f.label)).toContain('霞鹜文楷');
-    expect(missingCatalogFonts([]).map((f) => f.label)).toEqual(['方正黑体', '方正书宋', '方正楷体', '方正仿宋', '站酷高端黑']);
+    expect(choices.map((f) => f.label)).toEqual(expect.arrayContaining(['IBM Plex Sans SC', 'Noto Serif SC', '霞鹜臻楷', '朱雀仿宋', '站酷高端黑']));
   });
   it('网页字体排在前面，只收就绪字体素材，并按 family 去重', () => {
     const assets = [
@@ -40,15 +40,10 @@ describe('fontChoices', () => {
     expect(choices.filter((f) => f.family === '得意黑')).toEqual([choice('得意黑')]);
     expect(choices.some((f) => f.family === '阿里巴巴普惠体')).toBe(false);
   });
-  it('已选的文件字体仅在上传后出现，未上传时列为待补齐', () => {
-    expect(fontChoices([]).some((f) => f.label === '方正黑体')).toBe(false);
-    expect(missingCatalogFonts([]).some((f) => f.label === '方正黑体')).toBe(true);
-    expect(fontChoices([font('f1', '方正黑体简体')]).find((f) => f.label === '方正黑体')?.family).toBe('方正黑体简体');
-    expect(missingCatalogFonts([font('f1', '方正黑体简体')]).some((f) => f.label === '方正黑体')).toBe(false);
-  });
   it('字体搜索支持名称、中文风格和别名', () => {
-    const choices = fontChoices([font('f1', '方正黑体简体')]);
-    expect(searchFontChoices(choices, '方正 黑体').map((f) => f.label)).toEqual(['方正黑体']);
+    const choices = fontChoices([]);
+    expect(searchFontChoices(choices, '思源宋体').map((f) => f.label)).toEqual(['Noto Serif SC']);
+    expect(searchFontChoices(choices, '朱雀 仿宋').map((f) => f.label)).toEqual(['朱雀仿宋']);
     expect(searchFontChoices(choices, '英文手写').map((f) => f.label)).toEqual(['Caveat']);
   });
 });

@@ -2,7 +2,7 @@
 // 纯函数，组件只负责渲染与交互。
 
 import type { Asset, TextStyle, TextStylePreset } from '../types';
-import { FONT_CATALOG, catalogFontFor, fontMatchesQuery, type CatalogFont, type FontGroup } from './fontCatalog';
+import { FONT_CATALOG, catalogFontFor, fontMatchesQuery, type FontGroup } from './fontCatalog';
 
 /** 预设分组：带背景的算「气泡」，其余算「花字」。 */
 export type PresetGroup = 'text' | 'bubble';
@@ -46,12 +46,6 @@ export function fontChoices(assets: Asset[]): FontChoice[] {
     out.push({ family, label: family, style: '已上传', sample: '字体', group: 'uploaded', builtin: asset.source === 'builtin' });
   }
   return out;
-}
-
-/** 尚需从官方来源取得并上传字体文件的已选字体。 */
-export function missingCatalogFonts(assets: Asset[]): CatalogFont[] {
-  const ready = readyFontAssets(assets);
-  return FONT_CATALOG.filter((entry) => entry.delivery === 'asset' && !ready.some((a) => catalogFontFor(a.family!) === entry));
 }
 
 export function searchFontChoices(fonts: FontChoice[], query: string): FontChoice[] {

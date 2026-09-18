@@ -1,5 +1,5 @@
 // HIG-66: names, styles and source links for the selected publishing fonts.
-// User supplied font bytes stay in the asset library; open web faces load from index.html or styles.css.
+// Catalog web faces load from index.html or styles.css; uploaded fonts stay in the asset library.
 
 export type FontGroup = 'basic' | 'popular' | 'more';
 export type FontDelivery = 'web' | 'asset';
@@ -23,12 +23,12 @@ export const FONT_GROUP_LABEL: Record<FontGroup, string> = {
 
 export const FONT_CATALOG: CatalogFont[] = [
   { family: 'Noto Sans SC', label: 'Noto Sans SC', group: 'basic', style: '黑体', sample: '字体', delivery: 'web', sourceUrl: 'https://github.com/google/fonts/tree/main/ofl/notosanssc' },
-  { family: '方正黑体', label: '方正黑体', group: 'basic', style: '黑体', sample: '字体', delivery: 'asset', aliases: ['方正黑体简体', 'FZHei', 'FZHei-B01'], sourceUrl: 'https://www.foundertype.com/index.php/About/powerbus' },
-  { family: '方正书宋', label: '方正书宋', group: 'basic', style: '宋体', sample: '字体', delivery: 'asset', aliases: ['方正书宋简体', 'FZShuSong', 'FZShuSong-Z01'], sourceUrl: 'https://www.foundertype.com/index.php/About/powerbus' },
-  { family: '方正楷体', label: '方正楷体', group: 'basic', style: '楷体', sample: '字体', delivery: 'asset', aliases: ['方正楷体简体', 'FZKai', 'FZKai-Z03'], sourceUrl: 'https://www.foundertype.com/index.php/About/powerbus' },
-  { family: '方正仿宋', label: '方正仿宋', group: 'basic', style: '仿宋', sample: '字体', delivery: 'asset', aliases: ['方正仿宋简体', 'FZFangSong', 'FZFangSong-Z02'], sourceUrl: 'https://www.foundertype.com/index.php/About/powerbus' },
+  { family: 'IBM Plex Sans SC', label: 'IBM Plex Sans SC', group: 'basic', style: '黑体', sample: '字体', delivery: 'web', aliases: ['IBM Plex 中文黑体'], sourceUrl: 'https://github.com/IBM/plex/tree/master/packages/plex-sans-sc' },
+  { family: 'Noto Serif SC', label: 'Noto Serif SC', group: 'basic', style: '宋体', sample: '字体', delivery: 'web', aliases: ['思源宋体'], sourceUrl: 'https://github.com/google/fonts/tree/main/ofl/notoserifsc' },
+  { family: 'LXGW ZhenKai GB', label: '霞鹜臻楷', group: 'basic', style: '楷体', sample: '字体', delivery: 'web', aliases: ['LXGW ZhenKai GB'], sourceUrl: 'https://github.com/lxgw/LxgwZhenKai' },
+  { family: 'Zhuque Fangsong (technical preview)', label: '朱雀仿宋', group: 'basic', style: '仿宋', sample: '字体', delivery: 'web', aliases: ['Zhuque Fangsong'], sourceUrl: 'https://github.com/TrionesType/zhuque' },
   { family: '抖音美好体', label: '抖音美好体', group: 'popular', style: '标题黑体', sample: '字体', delivery: 'web', aliases: ['Douyin Sans', 'DouyinSans'], sourceUrl: 'https://github.com/bytedance/fonts' },
-  { family: '站酷高端黑', label: '站酷高端黑', group: 'popular', style: '标题黑体', sample: '字体', delivery: 'asset', aliases: ['ZCOOL GaoDuanHei'], sourceUrl: 'https://www.zcool.com.cn/assets/ZNTY0OA%3D%3D.html' },
+  { family: 'zcool-gdh', label: '站酷高端黑', group: 'popular', style: '标题黑体', sample: '字体', delivery: 'web', aliases: ['ZCOOL GaoDuanHei'], sourceUrl: 'https://www.zcool.com.cn/assets/ZNTY0OA%3D%3D.html' },
   { family: '霞鹜文楷', label: '霞鹜文楷', group: 'popular', style: '手写楷体', sample: '字体', delivery: 'web', aliases: ['LXGW WenKai', 'LXGWWenKai-Regular', 'LXGWWenKaiLite-Regular'], sourceUrl: 'https://github.com/lxgw/LxgwWenKai-Lite' },
   { family: 'Poppins', label: 'Poppins', group: 'popular', style: '英文无衬线', sample: 'Aa', delivery: 'web', sourceUrl: 'https://github.com/google/fonts/tree/main/ofl/poppins' },
   { family: 'Montserrat', label: 'Montserrat', group: 'popular', style: '英文无衬线', sample: 'Aa', delivery: 'web', sourceUrl: 'https://github.com/google/fonts/tree/main/ofl/montserrat' },
