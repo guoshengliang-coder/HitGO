@@ -1996,7 +1996,10 @@ export const useEditor = create<EditorState>((set, get) => {
             const spec = cloneSpec(baked[it.video_id]);
             if (it.lang === null) stripLocalization(spec, video.id);
             else {
-              applyLocalizationToSpec(spec, it.lang, { video, assets, langLabel: langLabel(get().localizeOptions, it.lang), newLayerId, newTrackId });
+              const bgm = loadLocalizeBgm(video.id);
+              const bgmAssetId = bgm.mode === 'replace' ? bgm.assetId : video.separation?.status === 'done' ? video.separation.instrumental_asset_id : null;
+              if (!isAssetReady(assets.find((a) => a.id === bgmAssetId))) throw new Error(`${video.name} 的 BGM 尚未就绪，未提交多语言导出`);
+              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, langLabel: langLabel(get().localizeOptions, it.lang), newLayerId, newTrackId });
               for (let i = 0; i < spec.layers.length; i++) {
                 const l = spec.layers[i];
                 if (l.type !== 'text' || l.origin !== LOCALIZE_ORIGIN) continue;
