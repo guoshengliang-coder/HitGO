@@ -841,3 +841,146 @@ describe('大字报（HIG-50）', () => {
     expect(selectPostDuration(useEditor.getState())).toBe(3);
   });
 });
+
+// --- 多选与批量编辑（HIG-77）-------------------------------------------------------
+
+describe('图层多选', () => {
+  const twoLayers = () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [textLayer('一'), { ...textLayer('二'), id: 'L2' }, { ...textLayer('三'), id: 'L3' }] };
+    useEditor.getState().replaceSpec('v1', spec);
+  };
+
+  it('单选时主选中与集合一致；多选时 ids[0] 是主选中', () => {
+    twoLayers();
+    useEditor.getState().setSelectedLayer('L2');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L2']);
+    expect(useEditor.getState().selectedLayerId).toBe('L2');
+
+    useEditor.getState().setSelectedLayers(['L2', 'L3']);
+    expect(useEditor.getState().selectedLayerId).toBe('L2');
+
+    useEditor.getState().setSelectedLayer(null);
+    expect(useEditor.getState().selectedLayerIds).toEqual([]);
+  });
+
+  it('Shift 点击翻转一条，取消掉主选中时下一条顶上', () => {
+    twoLayers();
+    useEditor.getState().setSelectedLayers(['L1', 'L2']);
+    useEditor.getState().toggleSelectedLayer('L3');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L1', 'L2', 'L3']);
+    useEditor.getState().toggleSelectedLayer('L1');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L2', 'L3']);
+    expect(useEditor.getState().selectedLayerId).toBe('L2');
+  });
+
+  it('切模块、切视频、删掉图层都会把集合清干净', () => {
+    twoLayers();
+    useEditor.getState().setSelectedLayers(['L1', 'L2']);
+    useEditor.getState().setStep('audio');
+    expect(useEditor.getState().selectedLayerIds).toEqual([]);
+
+    useEditor.getState().setSelectedLayers(['L1', 'L2']);
+    useEditor.getState().removeLayer('L1');
+    expect(useEditor.getState().selectedLayerIds).toEqual(['L2']);
+    expect(useEditor.getState().selectedLayerId).toBe('L2');
+  });
+
+  it('updateLayers 改三条只记一步历史——逐条改要按三次撤销才回得去', () => {
+    twoLayers();
+    const before = useEditor.getState().canUndo();
+    useEditor.getState().updateLayers(['L1', 'L2', 'L3'], (l) => {
+      if (l.type === 'text') l.style.color = '#ff0000';
+    });
+    const colors = () => (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
+    expect(colors()).toEqual(['#ff0000', '#ff0000', '#ff0000']);
+    expect(before).toBe(false);
+    useEditor.getState().undo();
+    expect(colors().every((c) => c !== '#ff0000')).toBe(true);
+    expect(useEditor.getState().canUndo()).toBe(false); // 只压了一条
+  });
+
+  it('多选时粘贴样式贴到全部选中的文字图层上', () => {
+    twoLayers();
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().updateLayer('L1', (l) => {
+      if (l.type === 'text') l.style.color = '#00ff00';
+    });
+    useEditor.getState().copyStyle();
+    useEditor.getState().setSelectedLayers(['L2', 'L3']);
+    useEditor.getState().pasteStyle();
+    const colors = (useEditor.getState().currentSpec()!.layers as TextLayer[]).map((l) => l.style.color);
+    expect(colors).toEqual(['#00ff00', '#00ff00', '#00ff00']);
+  });
+});
+
+// --- 拆分图层（HIG-79）-------------------------------------------------------------
+
+describe('splitLayer', () => {
+  const at = (sourceTime: number) => useEditor.setState({ time: sourceTime, lap: 0 });
+
+  it('在播放头处拆成两条，选中右半段，可一步撤销', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字'), t: [0, 8] }] });
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    const layers = useEditor.getState().currentSpec()!.layers;
+    expect(layers.map((l) => l.t)).toEqual([[0, 4], [4, 8]]);
+    expect(useEditor.getState().selectedLayerId).toBe(layers[1].id);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+  });
+
+  it("t = 'all' 的图层先展开成成片时段再拆", () => {
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers.map((l) => l.t)).toEqual([[0, 4], [4, 10]]);
+  });
+
+  it('播放头在时段外时不拆，给出可照做的提示', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字'), t: [5, 9] }] });
+    at(1);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().toast).toContain('播放头');
+  });
+
+  it('大字报不拆，提示说明原因', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('文案'), scroll: { speed: 0.08, box: DEFAULT_SCROLL_BOX } }] });
+    at(4);
+    useEditor.getState().splitLayer('L1');
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().toast).toContain('大字报');
+  });
+});
+
+// --- 音轨变速（HIG-75）-------------------------------------------------------------
+
+describe('setTrackSpeed', () => {
+  const withTrack = (t: [number, number] | 'all') => {
+    useEditor.setState({ assets: [{ id: 'a_v', name: 'v.wav', type: 'audio', status: 'ready', duration: 8 } as Asset] });
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), audio: { source_volume: 1, tracks: [{ id: 'au_1', asset_id: 'a_v', t }] } });
+  };
+
+  it('提速时时段跟着缩短，播的素材内容不变', () => {
+    withTrack([0, 8]);
+    useEditor.getState().setTrackSpeed('au_1', 2);
+    const track = useEditor.getState().currentSpec()!.audio!.tracks[0];
+    expect(track.speed).toBe(2);
+    expect(track.t).toEqual([0, 4]);
+  });
+
+  it('速度夹在契约范围内', () => {
+    withTrack([0, 8]);
+    useEditor.getState().setTrackSpeed('au_1', 9);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks[0].speed).toBe(2);
+    useEditor.getState().setTrackSpeed('au_1', 0.01);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks[0].speed).toBe(0.5);
+  });
+
+  it("t = 'all' 的轨只改速度不动时段", () => {
+    withTrack('all');
+    useEditor.getState().setTrackSpeed('au_1', 1.5);
+    const track = useEditor.getState().currentSpec()!.audio!.tracks[0];
+    expect(track.speed).toBe(1.5);
+    expect(track.t).toBe('all');
+  });
+});
