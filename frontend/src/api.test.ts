@@ -79,3 +79,77 @@ describe('batch video upload', () => {
     });
   });
 });
+
+describe('asset upload (HIG-6 return)', () => {
+  const largeVideo = () => {
+    const file = new File(['video'], 'large.mp4', { type: 'video/mp4' });
+    Object.defineProperty(file, 'size', { value: 120 * 1024 * 1024 });
+    return file;
+  };
+
+  it('does not send a large sticker through the proxied origin when ticketing fails', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ticket offline')));
+    vi.stubGlobal('XMLHttpRequest', FakeXHR);
+    await expect(api.uploadAssets('sticker', [largeVideo()])).rejects.toMatchObject({ code: 'UPLOAD_TICKET_REQUEST_FAILED' });
+    expect(FakeXHR.last?.url).not.toBe('/api/assets');
+  });
+
+  it('uses the direct host and ticket for a large sticker', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({
+      upload_url: 'https://up.example/api/assets', ticket: 'signed', expires_at: 'soon',
+    }) }));
+    vi.stubGlobal('XMLHttpRequest', FakeXHR);
+    await api.uploadAssets('sticker', [largeVideo()]);
+    expect(FakeXHR.last.url).toBe('https://up.example/api/assets');
+    expect(FakeXHR.last.headers['X-Upload-Ticket']).toBe('signed');
+  });
+
+  it('keeps the same-origin fallback for small images', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('old backend')));
+    vi.stubGlobal('XMLHttpRequest', FakeXHR);
+    await api.uploadAssets('sticker', [new File(['png'], 'small.png', { type: 'image/png' })]);
+    expect(FakeXHR.last.url).toBe('/api/assets');
+  });
+
+  it('reencodes a PNG once when the server rejects it but the browser can decode it', async () => {
+    class ImageXHR extends FakeXHR {
+      static bodies: FormData[] = [];
+      override send(body: FormData) {
+        ImageXHR.bodies.push(body);
+        if (ImageXHR.bodies.length === 1) {
+          this.status = 400;
+          this.responseText = JSON.stringify({ detail: 'LINE Pay.png：无法解析图片' });
+        }
+        super.send(body);
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ upload_url: null, ticket: null }) }));
+    vi.stubGlobal('XMLHttpRequest', ImageXHR);
+    vi.stubGlobal('createImageBitmap', vi.fn().mockResolvedValue({ width: 2, height: 2, close: vi.fn() }));
+    vi.stubGlobal('document', { createElement: () => ({
+      width: 0, height: 0, getContext: () => ({ drawImage: vi.fn() }),
+      toBlob: (callback: (blob: Blob) => void) => callback(new Blob(['normalized'], { type: 'image/png' })),
+    }) });
+    await api.uploadAssets('sticker', [new File(['original'], 'LINE Pay.png', { type: 'image/png' })]);
+    expect(ImageXHR.bodies).toHaveLength(2);
+    expect((ImageXHR.bodies[1].get('files') as File).name).toBe('LINE Pay.png');
+    expect((ImageXHR.bodies[1].get('files') as File).size).toBe(10);
+  });
+
+  it('reports a damaged PNG instead of retrying it indefinitely', async () => {
+    class ImageXHR extends FakeXHR {
+      static sends = 0;
+      override send(body: FormData) {
+        ImageXHR.sends++;
+        this.status = 400;
+        this.responseText = JSON.stringify({ detail: 'LINE Pay.png：无法解析图片' });
+        super.send(body);
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ upload_url: null, ticket: null }) }));
+    vi.stubGlobal('XMLHttpRequest', ImageXHR);
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new Error('decode failed')));
+    await expect(api.uploadAssets('sticker', [new File(['broken'], 'LINE Pay.png', { type: 'image/png' })])).rejects.toMatchObject({ code: 'UPLOAD_IMAGE_DECODE_FAILED' });
+    expect(ImageXHR.sends).toBe(1);
+  });
+});

@@ -6,6 +6,40 @@ import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
 
+// Cloudflare's 100 MB body limit includes multipart framing. Keep margin so a
+// large asset never silently falls back to the proxied origin when ticketing fails.
+const DIRECT_ASSET_UPLOAD_MIN_BYTES = 90 * 1024 * 1024;
+
+/** Browser-decodable PNGs which Pillow rejects can be rewritten as plain PNGs once. */
+async function reencodeRejectedPng(files: File[], error: unknown): Promise<File[] | null> {
+  if (!(error instanceof ApiError) || error.status !== 400) return null;
+  const index = files.findIndex((file) => file.name.toLowerCase().endsWith('.png') && error.message.startsWith(`${file.name}：无法解析图片`));
+  if (index < 0) return null;
+  const file = files[index];
+  try {
+    const bitmap = await createImageBitmap(file);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      context.drawImage(bitmap, 0, 0);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) return null;
+      const rewritten = new File([blob], file.name, { type: 'image/png' });
+      const tooBig = oversizedUpload('sticker', [rewritten]);
+      if (tooBig) throw new ApiError(400, `${file.name}：重新编码后${tooBig}`, 'UPLOAD_IMAGE_TOO_LARGE');
+      return files.map((item, i) => i === index ? rewritten : item);
+    } finally {
+      bitmap.close();
+    }
+  } catch (decodeError) {
+    if (decodeError instanceof ApiError) throw decodeError;
+    throw new ApiError(400, `${file.name}：浏览器也无法读取图片内容，请重新导出为 PNG 后上传`, 'UPLOAD_IMAGE_DECODE_FAILED');
+  }
+}
+
 /** 批量应用 layers 模块的方式：replace 整体替换；style_only 只覆盖样式，保留目标的 anchor / margin / t。 */
 export type ApplyLayerMode = 'replace' | 'style_only';
 
@@ -290,16 +324,31 @@ export const api = {
   uploadAssets: async (type: AssetType, files: File[], onProgress?: (f: number) => void) => {
     const tooBig = oversizedUpload(type, files);
     if (tooBig) throw new ApiError(400, tooBig);
-    const form = new FormData();
-    form.append('type', type);
-    for (const f of files) form.append('files', f, f.name);
+    const needsDirect = files.reduce((total, file) => total + file.size, 0) >= DIRECT_ASSET_UPLOAD_MIN_BYTES;
     // 主域名走 CDN，单个请求超过 100 MB 会被直接拒掉；配置了上传子域名时直传过去（契约 §3）。
-    // 取票失败（旧后端没有这个接口等）就退回同源上传，小文件照样能传。
-    const target = await request<UploadTicket>('POST', '/api/assets/upload-ticket').catch(() => null);
-    if (target?.upload_url && target.ticket) {
-      return uploadWithProgress<Asset[]>(target.upload_url, form, onProgress, { 'X-Upload-Ticket': target.ticket });
+    // 小文件可兼容未配置票据的旧后端；大文件必须直传，不能退回会被 CDN 拒绝的主域名。
+    const target = await request<UploadTicket>('POST', '/api/assets/upload-ticket').catch(() => {
+      if (needsDirect) throw new ApiError(0, '大文件上传无法取得直传票据，请稍后重试', 'UPLOAD_TICKET_REQUEST_FAILED');
+      return null;
+    });
+    if (needsDirect && !(target?.upload_url && target.ticket)) throw new ApiError(0, '大文件上传通道未就绪，无法经主站上传，请联系管理员检查上传服务', target?.upload_url || target?.ticket ? 'UPLOAD_TICKET_INVALID' : 'UPLOAD_DIRECT_REQUIRED');
+    const send = (uploadFiles: File[]) => {
+      const form = new FormData();
+      form.append('type', type);
+      for (const file of uploadFiles) form.append('files', file, file.name);
+      return target?.upload_url && target.ticket
+        ? uploadWithProgress<Asset[]>(target.upload_url, form, onProgress, { 'X-Upload-Ticket': target.ticket })
+        : uploadWithProgress<Asset[]>('/api/assets', form, onProgress);
+    };
+    try {
+      return await send(files);
+    } catch (error) {
+      if (type !== 'sticker') throw error;
+      const rewritten = await reencodeRejectedPng(files, error);
+      if (!rewritten) throw error;
+      onProgress?.(0);
+      return send(rewritten);
     }
-    return uploadWithProgress<Asset[]>('/api/assets', form, onProgress);
   },
   deleteAsset: (id: string) => request<void>('DELETE', `/api/assets/${id}`),
 

@@ -554,6 +554,50 @@ describe('删除视频（HIG-20）', () => {
     expect(s.toast).toBe('已删除 1 条视频');
   });
 
+  it('删掉最后的视频后清空关联的编辑选择和弹窗状态（HIG-78）', async () => {
+    useEditor.setState({
+      batch: { id: 'b1', name: '批次', videos: [v('v2')], video_count: 1 } as unknown as BatchDetail,
+      videos: [v('v2')],
+      currentVideoId: 'v2',
+      selectedClipId: 'clip-old',
+      selectedLayerId: 'layer-old',
+      replacingLayerId: 'layer-old',
+      selectedMuteIndex: 0,
+      exportDialog: { scope: 'current' },
+      saveState: 'dirty',
+      saveError: '旧视频保存失败',
+      time: 4,
+      timelinePps: 400,
+    });
+    vi.spyOn(api, 'deleteVideo').mockResolvedValue(undefined);
+    await useEditor.getState().deleteVideos(['v2']);
+    const s = useEditor.getState();
+    expect(s.videos).toEqual([]);
+    expect(s.currentVideoId).toBeNull();
+    expect(s.currentSpec()).toBeNull();
+    expect([s.selectedClipId, s.selectedLayerId, s.replacingLayerId, s.selectedMuteIndex, s.exportDialog]).toEqual([null, null, null, null, null]);
+    expect(s.time).toBe(0);
+    expect(s.timelinePps).toBeNull();
+    expect(s.saveState).toBe('idle');
+    expect(s.saveError).toBeNull();
+  });
+
+  it('删除后晚到的草稿保存响应不恢复旧视频状态', async () => {
+    useEditor.setState({ batch: { id: 'b1', name: '批次', videos: [v('v2')], video_count: 1 } as unknown as BatchDetail,
+      videos: [v('v2')], currentVideoId: 'v2' });
+    let resolveSave!: (video: Video) => void;
+    vi.spyOn(api, 'putSpec').mockReturnValue(new Promise<Video>((resolve) => { resolveSave = resolve; }));
+    vi.spyOn(api, 'deleteVideo').mockResolvedValue(undefined);
+    useEditor.getState().replaceSpec('v2', emptySpec());
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(useEditor.getState().saveState).toBe('saving');
+    await useEditor.getState().deleteVideos(['v2']);
+    resolveSave(v('v2'));
+    await Promise.resolve();
+    expect(useEditor.getState().videos).toEqual([]);
+    expect(useEditor.getState().saveState).toBe('idle');
+  });
+
   it('接口拒绝（有渲染在跑）的那条留着，并提示原因', async () => {
     const { ApiError } = await import('../api');
     vi.spyOn(api, 'deleteVideo').mockImplementation(async (id) => {

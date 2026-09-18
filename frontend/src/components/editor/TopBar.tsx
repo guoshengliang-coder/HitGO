@@ -69,7 +69,7 @@ export function TopBar({ onExport }: { onExport: () => void }) {
       <Link to={batch ? `/outputs?batch=${encodeURIComponent(batch.id)}` : '/outputs'} className="btn">
         <IconGrid /> 产物
       </Link>
-      <button className="btn primary" onClick={onExport} disabled={rendering} title="保存并导出成片：选择导出这一批、勾选的几条或仅当前这条">
+      <button className="btn primary" onClick={onExport} disabled={rendering || !batch?.videos.length} title="保存并导出成片：选择导出这一批、勾选的几条或仅当前这条">
         <IconExport /> {rendering ? '导出中…' : '导出'}
       </button>
     </div>
