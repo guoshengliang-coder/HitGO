@@ -6,6 +6,9 @@ import { cloneSpec } from './spec';
 const MIN_CLIP = 0.1;
 export const VIDEO_DRAG = 'application/x-hitgo-source-video';
 export const CLIP_DRAG = 'application/x-hitgo-sequence-clip';
+let activeSourceId: string | null = null;
+export const setActiveSourceDrag = (id: string | null) => { activeSourceId = id; };
+export const activeSourceDrag = () => activeSourceId;
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 
 export function clipLength(clip: SequenceClip): number {
@@ -188,7 +191,7 @@ export function updateClip(spec: EditSpec, clipId: string, patch: Partial<Sequen
 }
 
 /** A clip keeps its own timed content when it moves or changes length. */
-function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
+export function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
   if (!before.sequence || !after.sequence) return after;
   const oldWindows = clipWindows(before.sequence);
   const newWindows = new Map(clipWindows(after.sequence).map((w) => [w.clip.id, w]));
@@ -298,6 +301,40 @@ export function moveClipGroup(spec: EditSpec, ownerId: string, groupKey: string,
   next.sequence.clips = groups.flatMap((g) => g.clips.map((w) => w.clip));
   sanitizeTransitions(next.sequence);
   return retimeContent(spec, next);
+}
+
+/** Move several selected clips together, keeping their original relative order. */
+export function moveClipSet(spec: EditSpec, ids: string[], to: number): EditSpec {
+  const next = cloneSpec(spec);
+  if (!next.sequence || !ids.length) return next;
+  const selected = new Set(ids);
+  const moving = next.sequence.clips.filter((clip) => selected.has(clip.id));
+  if (!moving.length) return next;
+  const remaining = next.sequence.clips.filter((clip) => !selected.has(clip.id));
+  const index = Math.max(0, Math.min(remaining.length, to));
+  next.sequence.clips = [...remaining.slice(0, index), ...moving, ...remaining.slice(index)];
+  sanitizeTransitions(next.sequence);
+  return retimeContent(spec, next);
+}
+
+export function removeClipSet(spec: EditSpec, ids: string[]): EditSpec | null {
+  const next = cloneSpec(spec);
+  if (!next.sequence) return null;
+  const selected = new Set(ids);
+  next.sequence.clips = next.sequence.clips.filter((clip) => !selected.has(clip.id));
+  if (!next.sequence.clips.length) return null;
+  sanitizeTransitions(next.sequence);
+  return retimeContent(spec, next);
+}
+
+export function pasteClipSet(spec: EditSpec, clips: SequenceClip[], to: number): { spec: EditSpec; ids: string[] } {
+  const next = cloneSpec(spec);
+  if (!next.sequence || !clips.length) return { spec: next, ids: [] };
+  const copies = clips.map((clip) => ({ ...structuredClone(clip), id: id('c'), transition: null }));
+  const index = Math.max(0, Math.min(next.sequence.clips.length, to));
+  next.sequence.clips.splice(index, 0, ...copies);
+  sanitizeTransitions(next.sequence);
+  return { spec: retimeContent(spec, next), ids: copies.map((clip) => clip.id) };
 }
 
 /** Delete a visible video block as one unit, including legacy keep-ranges. */

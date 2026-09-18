@@ -36,7 +36,9 @@ def resolve_sequence(db: Session, owner: Video, spec: EditSpec) -> list[ClipSour
         source = cache[clip.video_id]
         if source is None or source.batch_id != owner.batch_id:
             raise ValueError(f"片段 {clip.id} 的源视频不存在或不属于当前批次")
-        if source.kind != "video" or source.status != VIDEO_READY or not source.duration or not source.width or not source.height:
+        # Uploaded images are preprocessed into five-second source.mp4 files and can
+        # therefore use the same trim, preview and render path as a video clip.
+        if source.kind not in ("video", "image") or source.status != VIDEO_READY or not source.duration or not source.width or not source.height:
             raise ValueError(f"片段 {clip.id} 的源视频尚未就绪")
         if clip.source_out > source.duration + 1e-3:
             raise ValueError(f"片段 {clip.id} 的结束时间超出源视频时长")

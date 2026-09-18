@@ -20,6 +20,7 @@ import { variantDef, type VariantKey } from '../types';
 import { OutputPlayerModal } from '../components/OutputPlayerModal';
 import { langLabel } from '../lib/localize';
 import { ORIGINAL_LANG } from '../lib/langExport';
+import { canPickOutputDirectory, pickOutputDirectory, saveOutputFile } from '../lib/folderDownload';
 
 const PAGE = 100;
 /** 批次视图还有任务在跑时的重拉间隔。进度弹窗用 1.5s，这里是看板，慢一点够用。 */
@@ -279,6 +280,7 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<string[]>([]);
   const [zipNote, setZipNote] = useState<string | null>(null);
+  const [savingFolder, setSavingFolder] = useState(false);
   const [playing, setPlaying] = useState<Job | null>(null);
   const headRef = useRef<HTMLInputElement>(null);
   // 刷新 / 搜索 / 加载更多之后，去掉已经不在列表里的勾
@@ -307,6 +309,32 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
     const ok = api.downloadOutputsZip(summary.ids, (msg) => setZipNote(`打包下载失败：${msg}`));
     setZipNote(ok ? `正在打包 ${summary.ids.length} 个文件，浏览器会直接开始下载；文件多时要等一会儿。` : '演示模式没有后端，无法打包下载。');
   };
+  const saveToFolder = async () => {
+    // Keep the picker in the click's user activation; do not await a network request first.
+    let directory;
+    try {
+      directory = await pickOutputDirectory();
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      setZipNote(error instanceof Error ? error.message : '无法选择文件夹');
+      return;
+    }
+    setSavingFolder(true);
+    const picked = jobs.filter((j) => summary.ids.includes(j.id) && j.output_url);
+    let saved = 0;
+    const failures: string[] = [];
+    for (const [index, job] of picked.entries()) {
+      setZipNote(`正在保存 ${index + 1}/${picked.length}：${outputFileName(job, { batchName })}`);
+      try {
+        await saveOutputFile(directory, job.output_url!, outputFileName(job, { batchName }));
+        saved++;
+      } catch (error) {
+        failures.push(`${job.video_name ?? job.id}：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    setSavingFolder(false);
+    setZipNote(`已保存 ${saved}/${picked.length} 个文件${failures.length ? `；失败：${failures.slice(0, 3).join('；')}${failures.length > 3 ? ' 等' : ''}` : ''}`);
+  };
 
   return (
     <>
@@ -314,6 +342,9 @@ function OutputsTable({ jobs, mode, batchName, emptyText, emptyAction }: { jobs:
       <span className="mono muted">已勾选 {summary.ids.length}{summary.bytes > 0 ? ` · 约 ${fmtSize(summary.bytes)}` : ''}</span>
       <button className="btn primary sm" disabled={summary.ids.length === 0 || tooMany} onClick={downloadZip} title={tooMany ? `一次最多打包 ${MAX_ZIP_JOBS} 个` : '打成一个 zip 下载（不压缩，大小约等于所选文件之和）'}>
         批量下载{summary.ids.length ? ` (${summary.ids.length})` : ''}
+      </button>
+      <button className="btn sm" disabled={!canPickOutputDirectory() || !summary.ids.length || savingFolder} onClick={() => void saveToFolder()} title={canPickOutputDirectory() ? '选择文件夹后逐个保存，已有同名文件会自动改名' : '当前浏览器不支持选择文件夹，请使用 ZIP 下载'}>
+        {savingFolder ? '保存中…' : '保存到文件夹'}
       </button>
       {summary.ids.length > 0 && (
         <button className="btn ghost sm" onClick={() => { setSelected([]); setZipNote(null); }}>

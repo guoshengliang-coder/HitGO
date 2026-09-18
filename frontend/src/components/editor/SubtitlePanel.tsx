@@ -22,6 +22,8 @@ export function SubtitlePanel() {
   const updateLayer = useEditor((s) => s.updateLayer);
   const setToast = useEditor((s) => s.setToast);
   const postDuration = usePostDuration();
+  const subtitleSyncEnabled = useEditor((s) => s.subtitleSyncEnabled);
+  const setSubtitleSyncEnabled = useEditor((s) => s.setSubtitleSyncEnabled);
   const inputRef = useRef<HTMLInputElement>(null);
   const selectedMask = useEditor((s) => {
     const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
@@ -42,6 +44,7 @@ export function SubtitlePanel() {
     const preset = BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar');
     const style = { ...defaultTextStyle(), ...(preset?.style ?? {}) };
     const layers = cuesToTextLayers(cues, { style, newId: newLayerId, maxEnd: postDuration > 0 ? postDuration : undefined });
+    layers.forEach((layer) => { layer.origin = 'subtitle'; });
     if (!layers.length) {
       setToast('没有解析到字幕');
       return;
@@ -60,6 +63,7 @@ export function SubtitlePanel() {
     <div className="panel">
       <div className="panel-head">字幕</div>
       <div className="panel-body inspector">
+        <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>
         <Section id="subtitle.import" title="导入字幕" bodyClass="stack" hint="每条字幕一个文字图层" help={IMPORT_HELP}>
           <div className="inline">
             <button className="btn action" onClick={() => inputRef.current?.click()}>

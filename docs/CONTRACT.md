@@ -266,6 +266,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `video_id` 指向同批次已就绪视频的**原始源片**；来源视频的 `edit_spec` 不会嵌套套用。
   当前视频也可重复引用。`in` / `out` 是该源片的秒数，`0 ≤ in < out ≤ 源片时长`；
   `id` 在序列中唯一。至少一个片段，每段不少于 0.1 秒。
+  已就绪图片也可作为主轨来源：上传预处理把静帧做成默认 5 秒的无声源片，序列引用该源片。
 - 每段的 `transition` 表示**该段进入时**与前一段的转场；首段不设。`type` 为
   `cut | fade | slide_left | slide_right | wipe_left | wipe_right`；`cut` 时 `duration = 0`，
   其它效果的时长为 0.1–1.5 秒且小于相邻片段时长。拼接总时长等于各片段时长之和减去转场重叠时长。
@@ -637,6 +638,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     浏览器显示不了剩余时间；包大小约等于所选成片大小之和。
 
 ### 视频
+- `POST /api/media-export/files`（HIG-71）→ `application/zip`，文件名 `HitGO_media.zip`。JSON 请求：
+  `video_ids`（1–50 个就绪视频）、`kind`（`subtitle | audio | batch`）、`languages`（语言代码数组或 `all`）、
+  `subtitle_mode`（`original | translated | edited | bilingual`）、`subtitle_format`（`srt | vtt | ass | txt | json`）、
+  `audio_stem`（`original | vocals | instrumental | dubbing | mixed | speaker | selected_track`）、
+  `audio_format`（`mp3 | wav | m4a | aac`）、`range_mode`（`whole | selected | in_out | single | speaker`）。
+  范围参数可带 `start`、`end`、`selected_layer_ids`、`selected_track_id`、`speaker`；字幕可带
+  `keep_timecodes`、`keep_speaker`、`merge_short`；音频可带 `include_background`、`sample_rate`、
+  `bitrate`、`channels`、`normalize_loudness`。只包含已有且就绪的源字幕、译文和音轨；没有匹配文件返回 422。
+  用户在输出页选择文件夹逐个保存时调用既有成片 URL，浏览器需支持 File System Access API。
 - `GET /api/videos/{id}` → `Video`
 - `PATCH /api/videos/{id}` `{ name }` → `Video`（改显示名，不动源文件；`name` 规则同批次改名）
 - `PUT /api/videos/{id}/spec` `{ edit_spec }` → `Video`（服务端做 schema 校验，400 返回具体字段）

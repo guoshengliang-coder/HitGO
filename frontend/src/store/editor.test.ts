@@ -30,8 +30,56 @@ beforeEach(() => {
   vi.stubGlobal('window', globalThis);
   vi.useFakeTimers();
   const spec: EditSpec = { ...emptySpec(), layers: [textLayer('原文')] };
-  useEditor.setState({ videos: [VIDEO], currentVideoId: 'v1', specs: {}, history: {} });
+  useEditor.setState({ videos: [VIDEO], currentVideoId: 'v1', specs: {}, history: {}, subtitleSyncEnabled: false, timelineSelection: [], hasTimelineClipboard: false });
   useEditor.getState().replaceSpec('v1', spec);
+});
+
+describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
+  it('只同步本次样式和位置属性，保留各条文字与时段；关闭后恢复单条编辑', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };
+    const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const, t: [2, 3] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().setSubtitleSyncEnabled(true);
+    useEditor.getState().updateLayer('L1', (layer) => { if (layer.type === 'text') { layer.style.background = '#00000066'; layer.margin = [0.1, 0.2]; } });
+    const layers = useEditor.getState().currentSpec()!.layers as TextLayer[];
+    expect(layers.map((layer) => layer.style.background)).toEqual(['#00000066', '#00000066']);
+    expect(layers.map((layer) => layer.margin)).toEqual([[0.1, 0.2], [0.1, 0.2]]);
+    expect(layers.map((layer) => [layer.text, layer.t])).toEqual([['甲', [0, 1]], ['乙', [2, 3]]]);
+    useEditor.getState().setSubtitleSyncEnabled(false);
+    useEditor.getState().updateLayer('L1', (layer) => { if (layer.type === 'text') layer.style.background = '#00000022'; });
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.background).toBe('#00000066');
+  });
+
+  it('同一次复制、粘贴和删除覆盖视频、字幕、音频且可撤销', () => {
+    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] }, layers: [{ ...textLayer('字幕'), t: [1, 2] }], audio: { source_volume: 1, tracks: [{ id: 't1', asset_id: 'a1', role: 'bgm', align: 'post', t: [1, 3], volume: 1, loop: false }] } };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().selectTimelineItems(['clip:c2', 'layer:L1', 'track:t1']);
+    useEditor.getState().copyTimelineItems();
+    useEditor.getState().setTime(4);
+    useEditor.getState().pasteTimelineItems();
+    expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(3);
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(2);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks).toHaveLength(2);
+    useEditor.getState().deleteTimelineItems();
+    expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(2);
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().currentSpec()!.audio!.tracks).toHaveLength(1);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(3);
+  });
+
+  it('多选字幕和音频后整体平移，并保留锁定图层', () => {
+    const spec: EditSpec = { ...emptySpec(), layers: [{ ...textLayer('字幕'), t: [1, 2] }, { ...textLayer('锁定'), id: 'L2', locked: true, t: [2, 3] }], audio: { source_volume: 1, tracks: [{ id: 't1', asset_id: 'a1', t: [3, 4] }] } };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().selectTimelineItems(['layer:L1', 'layer:L2', 'track:t1']);
+    useEditor.getState().shiftTimelineItems(2);
+    const moved = useEditor.getState().currentSpec()!;
+    expect(moved.layers.map((layer) => layer.t)).toEqual([[3, 4], [2, 3]]);
+    expect(moved.audio!.tracks[0].t).toEqual([5, 6]);
+    useEditor.getState().deleteTimelineItems();
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().currentSpec()!.layers[0].id).toBe('L2');
+  });
 });
 
 afterEach(() => {

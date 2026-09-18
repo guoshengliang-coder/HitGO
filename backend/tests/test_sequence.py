@@ -86,6 +86,9 @@ def test_sequence_sources_must_be_ready_and_same_batch(client, ready_video, db):
     spec["sequence"]["clips"][1]["out"] = 1
     second.kind = "image"
     db.commit()
+    assert client.put(f"/api/videos/{ready_video.id}/spec", json={"edit_spec": spec}).status_code == 200
+    second.kind = "blank"
+    db.commit()
     assert client.put(f"/api/videos/{ready_video.id}/spec", json={"edit_spec": spec}).status_code == 400
 
 

@@ -16,7 +16,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
-import { clipDisplayGroups, insertClip, moveClipGroup, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
+import { activeSourceDrag, clipDisplayGroups, clipWindows, insertClip, moveClipGroup, moveClipSet, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
 import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
 import { layerName } from '../../lib/spec';
 import { timelineThumbnails } from '../../lib/timelineThumbnails';
@@ -209,8 +209,10 @@ export function Timeline() {
   const setSelectedRange = useEditor((s) => s.setSelectedRange);
   const updateRemoveRange = useEditor((s) => s.updateRemoveRange);
   const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
+  const timelineSelection = useEditor((s) => s.timelineSelection);
+  const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
+  const shiftTimelineItems = useEditor((s) => s.shiftTimelineItems);
   const marqueeEnabled = useEditor((s) => s.marqueeEnabled);
-  const selectLayers = useEditor((s) => s.selectLayers);
   const shiftSelectedLayers = useEditor((s) => s.shiftSelectedLayers);
   const [marqueeDraft, setMarqueeDraft] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const marqueeStart = useRef<{ x: number; y: number; mode: 'replace' | 'add' | 'subtract' } | null>(null);
@@ -401,12 +403,14 @@ export function Timeline() {
     return true;
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => {
-    if (sequence && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) {
+    const videoTrack = !!(e.target as HTMLElement).closest('.tl-video .body');
+    if (video && spec && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
       e.preventDefault();
       e.dataTransfer.dropEffect = e.dataTransfer.types.includes(CLIP_DRAG) ? 'move' : 'copy';
       setSequenceDropAt(Math.max(0, Math.min(duration, xToTime(e.clientX))));
       return;
     }
+    setSequenceDropAt(null);
     if (!video || !spec || (!isAssetDrag(e.dataTransfer.types) && !isFileDrag(e.dataTransfer.types))) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
@@ -420,18 +424,19 @@ export function Timeline() {
     setDropHint(null);
     setSequenceDropAt(null);
     if (!video || !spec) return;
-    if (sequence) {
+    if ((e.target as HTMLElement).closest('.tl-video .body')) {
       const at = Math.max(0, Math.min(duration, xToTime(e.clientX)));
       const moving = e.dataTransfer.getData(CLIP_DRAG);
-      if (moving) {
+      if (moving && sequence) {
         e.preventDefault();
         const index = sequenceGroups.findIndex((g) => at < (g.start + g.end) / 2);
-        replaceSpec(video.id, moveClipGroup(spec, video.id, moving, index < 0 ? sequenceGroups.length - 1 : index), { history: true });
+        const selected = timelineSelection.filter((key) => key.startsWith('clip:')).map((key) => key.slice(5));
+        replaceSpec(video.id, selected.length > 1 && selected.includes(moving) ? moveClipSet(spec, selected, index < 0 ? sequence.clips.length : index) : moveClipGroup(spec, video.id, moving, index < 0 ? sequenceGroups.length - 1 : index), { history: true });
         setSelectedClip(moving);
         return;
       }
       const sourceId = e.dataTransfer.getData(VIDEO_DRAG);
-      const source = videos.find((v) => v.id === sourceId && v.status === 'ready' && (v.kind ?? 'video') === 'video');
+      const source = videos.find((v) => v.id === sourceId && v.status === 'ready' && (v.kind === 'image' || (v.kind ?? 'video') === 'video'));
       if (source) {
         e.preventDefault();
         const inserted = insertClip(spec, video.id, video.duration, source.id, source.duration, at);
@@ -440,6 +445,7 @@ export function Timeline() {
         player.seek(at);
         return;
       }
+      if (sourceId) { e.preventDefault(); setToast('素材尚未就绪，或不是可拼接的视频/图片'); return; }
     }
     const card = parseAssetDrag(e.dataTransfer.getData(ASSET_DRAG_MIME));
     const files = isFileDrag(e.dataTransfer.types) ? Array.from(e.dataTransfer.files) : [];
@@ -590,11 +596,15 @@ export function Timeline() {
         } else if (isTrack) {
           // 只点了一下没拖：不写 spec，免得多出一条空的撤销记录
           const track = tracks[d.index];
-          if (track && (a !== d.orig[0] || b !== d.orig[1])) updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
+          if (track && (a !== d.orig[0] || b !== d.orig[1])) {
+            if (d.kind === 'track-move' && timelineSelection.length > 1 && timelineSelection.includes(`track:${track.id}`)) shiftTimelineItems(a - d.orig[0]);
+            else updateAudioTrack(track.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
+          }
         } else {
           const layer = spec?.layers[d.index];
           if (layer) {
-            if (d.kind === 'bar-move' && selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id)) shiftSelectedLayers(a - d.orig[0]);
+            if (d.kind === 'bar-move' && timelineSelection.length > 1 && timelineSelection.includes(`layer:${layer.id}`)) shiftTimelineItems(a - d.orig[0]);
+            else if (d.kind === 'bar-move' && selectedLayerIds.length > 1 && selectedLayerIds.includes(layer.id)) shiftSelectedLayers(a - d.orig[0]);
             else updateLayer(layer.id, { t: [Math.round(a * 100) / 100, Math.round(b * 100) / 100] });
           }
         }
@@ -632,6 +642,19 @@ export function Timeline() {
     if (l.t === 'all') return 'all';
     return drag && drag.kind.startsWith('bar') && drag.index === i && dragVal ? dragVal : l.t;
   };
+  const pickTimeline = (key: string, e: RPointerEvent<HTMLElement>) => {
+    if (!e.metaKey && !e.ctrlKey && !e.shiftKey && timelineSelection.length > 1 && timelineSelection.includes(key)) return;
+    const all = [...new Set([...e.currentTarget.closest('.tl-inner')?.querySelectorAll<HTMLElement>('[data-timeline-key]') ?? []].map((node) => node.dataset.timelineKey!).filter(Boolean))];
+    if (e.shiftKey && timelineSelection.length) {
+      const anchor = all.indexOf(timelineSelection[timelineSelection.length - 1]);
+      const target = all.indexOf(key);
+      if (anchor >= 0 && target >= 0) selectTimelineItems(all.slice(Math.min(anchor, target), Math.max(anchor, target) + 1), 'add');
+    } else if (e.metaKey || e.ctrlKey) {
+      selectTimelineItems([key], timelineSelection.includes(key) ? 'subtract' : 'add');
+    } else {
+      selectTimelineItems([key]);
+    }
+  };
   const marqueeDown = (e: RPointerEvent<HTMLDivElement>) => {
     if (!marqueeEnabled || e.button !== 0 || !(e.target as HTMLElement).closest('.body')) return;
     e.preventDefault();
@@ -658,11 +681,11 @@ export function Timeline() {
     const x1 = e.clientX - innerRect.left, y1 = e.clientY - innerRect.top;
     const left = Math.min(start.x, x1) + innerRect.left, right = Math.max(start.x, x1) + innerRect.left;
     const top = Math.min(start.y, y1) + innerRect.top, bottom = Math.max(start.y, y1) + innerRect.top;
-    const hits = [...inner.querySelectorAll<HTMLElement>('.tl-layer .tl-bar[data-layer-id]')].filter((bar) => {
+    const hits = [...inner.querySelectorAll<HTMLElement>('[data-timeline-key]')].filter((bar) => {
       const r = bar.getBoundingClientRect();
       return r.left <= right && r.right >= left && r.top <= bottom && r.bottom >= top;
-    }).map((bar) => bar.dataset.layerId!);
-    selectLayers(hits, start.mode);
+    }).map((bar) => bar.dataset.timelineKey!);
+    selectTimelineItems(hits, start.mode);
     marqueeStart.current = null;
     setMarqueeDraft(null);
     inner.releasePointerCapture(e.pointerId);
@@ -690,6 +713,10 @@ export function Timeline() {
               {video ? <TrackName value={video.name} label="视频名" onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}
             </div>
             <div className="body" {...scrub.handlers}>
+              {sequenceDropAt !== null && activeSourceDrag() && (() => {
+                const source = videos.find((v) => v.id === activeSourceDrag());
+                return source ? <div className="tl-ghost-clip" style={{ left: off + sequenceDropAt * pps, width: Math.max(24, source.duration * pps) }} title={`插入 ${source.name} · ${sequenceDropAt.toFixed(1)}s`}>{source.name} · {sequenceDropAt.toFixed(1)}s</div> : null;
+              })()}
               {off > 0 && (
                 <div
                   className="tl-cover"
@@ -700,6 +727,7 @@ export function Timeline() {
                 </div>
               )}
               {tiles.map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: off + tile.left, pointerEvents: 'none' }} />)}
+              {sequence && clipWindows(sequence).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps) }} draggable onDragStart={(e) => { e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s`} />)}
               {remove.map((r, i) => {
                 const [a, b] = cutVal(i, r);
                 return (
@@ -800,7 +828,7 @@ export function Timeline() {
               const problem = trackAssetProblem(t, assets);
               const hidden = !!t.hidden;
               return (
-                <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={() => pickTrack(t.id)}>
+                <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pickTrack(t.id); }}>
                   <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
                     <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
                     <TrackName value={name} label="音轨名" onSave={(v) => renameAudioTrack(t.id, v)} />
@@ -809,19 +837,20 @@ export function Timeline() {
                   <div className="body" {...scrub.handlers}>
                     <CoverGap width={off} />
                     {sequence && video && r.align === 'source' ? sequenceTrackWindows(sequence, video.id, [postToSource(pa, remove), postToSource(pb, remove)]).map(([start, end]) => (
-                      <div key={start} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
+                      <div key={start} data-timeline-key={`track:${t.id}`} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
                         style={{ left: off + start * pps, width: Math.max(4, (end - start) * pps), cursor: all ? 'default' : 'grab' }}
                         title="只随原视频片段播放；插入的其他视频期间不播放这条配音"
-                        onPointerDown={(e) => { pickTrack(t.id); if (all) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
+                        onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id); pickTimeline(`track:${t.id}`, e); if (all || e.metaKey || e.ctrlKey || e.shiftKey) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
                         随原片 · {start.toFixed(1)}s–{end.toFixed(1)}s
                         {!all && <><div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} /><div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} /></>}
                       </div>
-                    )) : <div
+                    )) : <div data-timeline-key={`track:${t.id}`}
                       className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 || hidden ? 'muted' : ''} ${hidden ? 'hidden' : ''}`}
                       style={{ left, width: Math.max(4, right - left), cursor: all ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
-                        pickTrack(t.id);
-                        if (all) {
+                        if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id);
+                        pickTimeline(`track:${t.id}`, e);
+                        if (all || e.metaKey || e.ctrlKey || e.shiftKey) {
                           e.stopPropagation();
                           return;
                         }
@@ -885,7 +914,7 @@ export function Timeline() {
             // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
             const pick = () => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); };
             return (
-              <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`} onClick={pick}>
+              <div key={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pick(); }}>
                 <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
                   <TrackName value={layerName(l, assets)} label="图层名" onSave={(v) => renameLayer(l, v)} />
                   <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
@@ -901,11 +930,13 @@ export function Timeline() {
                   <CoverGap width={off} />
                   <div
                     data-layer-id={l.id}
+                    data-timeline-key={`layer:${l.id}`}
                     className={`tl-bar ${l.type === 'mask' ? 'mask' : isOverlayVideo(l, assets) ? 'overlay' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
                     style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
                     onPointerDown={(e) => {
-                      pick();
-                      if (all || locked) {
+                      if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`layer:${l.id}`))) pick();
+                      pickTimeline(`layer:${l.id}`, e);
+                      if (all || locked || e.metaKey || e.ctrlKey || e.shiftKey) {
                         e.stopPropagation();
                         return;
                       }
