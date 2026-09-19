@@ -25,7 +25,7 @@ from app.models import (
     Job,
     Video,
 )
-from app.services import asset_preprocess, ffprobe, localize, preprocess, render, separate, storage, tts
+from app.services import asset_preprocess, erase, ffprobe, localize, preprocess, render, screentext, separate, storage, tts
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +64,19 @@ def enqueue(task, *args) -> None:  # noqa: ANN001
         task.apply_async(args=args)
     except (OperationalError, ConnectionError, OSError) as exc:
         log.warning("enqueue %s failed: %s", getattr(task, "name", task), exc)
+        raise QueueUnavailable(str(exc)) from exc
+
+
+def enqueue_later(task, countdown: int, *args) -> None:  # noqa: ANN001
+    """Publish a task to run after ``countdown`` seconds.
+
+    Used by the erase poll (HIG-38): each tick re-enqueues the next one instead of sleeping, so
+    a minutes-long cloud job never occupies the single worker slot.
+    """
+    try:
+        task.apply_async(args=args, countdown=max(0, countdown))
+    except (OperationalError, ConnectionError, OSError) as exc:
+        log.warning("enqueue_later %s failed: %s", getattr(task, "name", task), exc)
         raise QueueUnavailable(str(exc)) from exc
 
 
@@ -232,6 +245,41 @@ def localize_video(self, video_id: str) -> None:  # noqa: ANN001
         except SoftTimeLimitExceeded:
             # run_localization already wrote the failed state; only the retry bookkeeping is left.
             log.error("localize %s exceeded %ss", video_id, settings.localize_timeout_seconds)
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    name="hitgo.screen_text_video",
+    bind=True,
+    max_retries=3,
+    soft_time_limit=settings.screentext_timeout_seconds,
+    time_limit=settings.screentext_timeout_seconds + 60,
+)
+def screen_text_video(self, video_id: str) -> None:  # noqa: ANN001
+    """Detect / translate on-screen text and hand erasure off (contract §6, HIG-38)."""
+    db = SessionLocal()
+    try:
+        if db.get(Video, video_id) is None:
+            if self.request.retries < self.max_retries:
+                raise self.retry(countdown=1)
+            log.info("screen text: video %s vanished", video_id)
+            return
+        try:
+            screentext.run_screen_text(db, video_id)
+        except SoftTimeLimitExceeded:
+            # run_screen_text already wrote the failed state; only retry bookkeeping is left.
+            log.error("screen text %s exceeded %ss", video_id, settings.screentext_timeout_seconds)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="hitgo.erase_poll", bind=True, max_retries=3, soft_time_limit=300, time_limit=360)
+def erase_poll(self, video_id: str) -> None:  # noqa: ANN001
+    """One tick of the erase job; re-enqueues itself until done, failed or past the deadline."""
+    db = SessionLocal()
+    try:
+        erase.poll_once(db, video_id)
     finally:
         db.close()
 

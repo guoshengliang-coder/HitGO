@@ -859,6 +859,15 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .localize-advanced > summary { color: var(--ink-2); cursor: pointer; font-size: 12px; padding: 4px 2px 8px; }
 .localize-advanced[open] > summary { color: var(--ink); }
 .cue-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+/* 画面文字（HIG-38）：识别出来的块列表，跟着逐句列表的密度走 */
+.st-blocks { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; overflow-x: hidden; padding-right: 2px; }
+.st-block { display: flex; flex-direction: column; gap: 3px; padding: 4px 5px; border-radius: 5px; background: var(--s1); }
+.st-block.off { opacity: 0.55; }
+.st-block-head { display: flex; align-items: center; gap: 6px; }
+.st-block-head input[type='checkbox'] { margin: 0; }
+.st-block-text { width: 100%; min-width: 0; font-size: 12px; padding: 3px 5px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--s0); color: var(--ink); }
+.st-block-text:disabled { background: transparent; border-color: transparent; }
+.st-block-translated { padding-left: 2px; }
 /* 大字报（HIG-55）：粘贴分行设置、背景列表 */
 .paste-prefs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .paste-prefs .select { width: auto; min-width: 0; }

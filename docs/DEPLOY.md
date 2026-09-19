@@ -158,6 +158,14 @@ Cloudflare 免费版单次上传上限 100 MB（超过直接回 413，到不了�
 | `LOCALIZE_TIMEOUT_SECONDS` | `900` | 一次改语言任务的软超时（秒）；超时后进行中的版本记 failed |
 | `LOCALIZE_VOICES` | 空 | `lang=voice[@model]`，如 `ko=loongjihun_v3,ar=loongmary@qwen-audio-3.0-tts-flash`：按语言覆盖默认音色或给还没有默认音色的语言加一个（该语言随即出现在目标语言列表）；`@model` 缺省为 `LOCALIZE_TTS_MODEL` |
 | `MINIMAX_TTS_MODEL` | 空 | 百炼托管的 MiniMax 语音模型（HIG-59），第二家系统音色来源，仍用 `DASHSCOPE_API_KEY`。**缺省留空 = 不启用**；开启前必须先在百炼控制台开通 MiniMax 语音模型（只有华北2（北京）提供），没开通时百炼回 400 `The product is not activated`，而后端无法预先判断，界面上会出现音色但每次合成都 502。建议值 `MiniMax/speech-2.8-hd`；也可 `speech-2.8-turbo` / `speech-02-hd` / `speech-02-turbo`（turbo 2 元/万字符、hd 3.5 元/万字符，cosyvoice 约 0.8–1 元）。留空则泰 / 越 / 阿 不出现在目标语言列表。**该模型限 20 RPM**，worker 每进程已强制 3.1 秒间隔自我节流，`WORKER_CONCURRENCY` 调大或多语言并行配音时建议在百炼控制台申请提高 RPM 配额 |
+| `SCREENTEXT_PROVIDER` | 跟随 `LOCALIZE_PROVIDER` | 画面文字识别（HIG-38）：`dashscope` \| `fake`。与改语言共用 `DASHSCOPE_API_KEY`，没有 key 时 `GET /api/screen-text/options` 返回 `enabled=false`，前端禁用该模块 |
+| `SCREENTEXT_MODEL` | `qwen-vl-max-latest` | 识别用的视觉模型。`qwen-vl-ocr` 更便宜但返回结构不同，换之前要改 `dashscope_providers.parse_detection_json` |
+| `SCREENTEXT_SAMPLE_FPS` / `SCREENTEXT_MAX_FRAMES` | `0.5` / `20` | 抽帧密度与上限。**费用按帧算**；抽完还会做一次感知去重（静止画面的重复帧直接丢掉），一条 60 秒素材典型只送 8–14 帧 |
+| `SCREENTEXT_MAX_BLOCKS` | `40` | 一条视频最多保留多少个画面文字块，超出按面积取前 N |
+| `SCREENTEXT_MAX_SECONDS` | `180` | 画面文字处理接受的最长源视频（秒），更长直接 400 |
+| `SCREENTEXT_TIMEOUT_SECONDS` | `1200` | 一次画面文字任务的软超时（秒）；超时后进行中的部分记 failed |
+| `ERASE_PROVIDER` | `local` | 擦除供应商。`local` = ffmpeg `delogo`，**不出网、不需要任何凭据**，从区域边缘插值补画面：比遮盖层好，比真正的无痕修复差，是这个功能的保底档，也是云厂商不可用时的降级。`fake` 只用于测试。接入云厂商后填它的标识并配上它的 key |
+| `ERASE_POLL_INTERVAL_SECONDS` / `ERASE_MAX_WAIT_SECONDS` | `10` / `1800` | 云端擦除是异步任务：每隔多少秒轮询一次、总共等多久。超过就判 failed，防止云端任务丢了把条目永远卡在「处理中」 |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 

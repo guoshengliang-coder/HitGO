@@ -768,12 +768,16 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     };
   }, [video?.id, video?.duration, setPlayhead]);
 
+  // 正片切到无字版时预览也要跟着换（HIG-38）：否则画面上是原文 + 译文两层字叠着，
+  // 而导出的成片是干净的——所见与所得正好相反。无字版预览缺失时回落原片代理。
+  const previewUrl = spec?.source_variant === 'clean' ? video?.screen_text?.erase?.clean_proxy_url || video?.proxy_url : video?.proxy_url;
+
   useEffect(() => {
     const el = videoRef.current;
     if (!spec?.sequence || !video) {
       player.setSequence(null);
-      if (el && video?.proxy_url && el.getAttribute('src') !== video.proxy_url) {
-        el.setAttribute('src', video.proxy_url);
+      if (el && previewUrl && el.getAttribute('src') !== previewUrl) {
+        el.setAttribute('src', previewUrl);
         el.load();
       }
       player.duration = video?.duration ?? 0;
@@ -784,7 +788,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
       return { id: clip.id, src: source?.proxy_url ?? '', sourceIn: clip.in, sourceOut: clip.out, start, end };
     });
     player.setSequence(clips);
-  }, [spec?.sequence, video?.id, video?.duration]);
+  }, [spec?.sequence, video?.id, video?.duration, previewUrl]);
 
   useEffect(() => {
     player.remove = spec?.trim.remove ?? [];
@@ -915,7 +919,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   // 大字报拖的是裁切框（HIG-75）：八向、不锁比例、不旋转，与遮盖同一档
   const selectedIsScrollBox = selectedType === 'text' && !!(selectedLayer as TextLayer | undefined)?.scroll;
   const activeAnchor = useCallback(() => trRef.current?.getActiveAnchor() ?? null, []);
-  const hasSrc = !!video?.proxy_url;
+  const hasSrc = !!previewUrl;
   const overlayUrl = isRef && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
   const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
 
@@ -925,11 +929,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
         {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
         <video
           ref={videoRef}
-          src={video?.proxy_url || undefined}
+          src={previewUrl || undefined}
           poster={video?.poster_url}
           playsInline
           preload="auto"
-          key={video?.id}
+          key={`${video?.id}:${spec?.source_variant ?? 'original'}`}
           style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: mainVideoHidden || (needsFill && fill === 'crop') ? 'hidden' : undefined }}
           onLoadedMetadata={(e) => {
             e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);

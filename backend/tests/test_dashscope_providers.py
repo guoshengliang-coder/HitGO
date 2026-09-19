@@ -260,3 +260,83 @@ def test_only_minimax_is_paced(fake_sdk, monkeypatch):
     fake_sdk.results = [_response({"data": {"audio": WAV.hex()}})]
     _tts().synthesize("t", "v", 1.0, model=MINIMAX_MODEL)
     assert called == ["paced"]
+
+
+# --- on-screen text detection (HIG-38) --------------------------------------
+
+
+def _vl_response(text: str) -> Any:
+    """What MultiModalConversation returns for a vision chat call."""
+    message = types.SimpleNamespace(content=[{"text": text}])
+    choice = types.SimpleNamespace(message=message)
+    return _response(types.SimpleNamespace(choices=[choice]))
+
+
+def test_parse_detection_json_reads_a_plain_array():
+    out = dp.parse_detection_json('[{"text": "限时免费", "box": [0.1, 0.8, 0.5, 0.06], "confidence": 0.93}]')
+
+    assert len(out) == 1
+    assert out[0].text == "限时免费"
+    assert out[0].box == {"x": 0.1, "y": 0.8, "w": 0.5, "h": 0.06}
+    assert out[0].confidence == 0.93
+
+
+def test_parse_detection_json_survives_a_chatty_model():
+    """Told not to, the model still wraps the array in prose or a code fence often enough."""
+    out = dp.parse_detection_json('好的，识别结果如下：\n```json\n[{"text": "SALE", "box": [0, 0, 0.2, 0.1]}]\n```')
+
+    assert [d.text for d in out] == ["SALE"]
+
+
+def test_parse_detection_json_skips_malformed_items_instead_of_failing_the_frame():
+    out = dp.parse_detection_json(
+        '[{"text": "好的", "box": [0.1, 0.1, 0.2, 0.05]},'
+        ' {"text": "", "box": [0, 0, 1, 1]},'
+        ' {"text": "缺框"},'
+        ' {"text": "零宽", "box": [0.1, 0.1, 0, 0.05]},'
+        ' "不是对象"]'
+    )
+
+    assert [d.text for d in out] == ["好的"]
+
+
+def test_parse_detection_json_returns_nothing_for_junk():
+    assert dp.parse_detection_json("模型今天不想说话") == []
+    assert dp.parse_detection_json("") == []
+    assert dp.parse_detection_json("[不是合法 JSON}") == []
+
+
+def test_screen_text_provider_sends_the_frame_and_the_model(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_vl_response('[{"text": "买一送一", "box": [0.2, 0.1, 0.3, 0.06]}]')]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen-vl-max-latest")
+
+    out = provider.detect(frame, hint_lang="zh")
+
+    assert [d.text for d in out] == ["买一送一"]
+    call = fake_sdk.calls[0]
+    assert call["model"] == "qwen-vl-max-latest"
+    content = call["messages"][0]["content"]
+    assert content[0]["image"].startswith("file://")
+    assert "zh" in content[1]["text"]
+
+
+def test_screen_text_provider_retries_a_throttled_call(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_response(None, status=429), _vl_response("[]")]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen-vl-max-latest")
+
+    assert provider.detect(frame, hint_lang=None) == []
+    assert len(fake_sdk.calls) == 2
+
+
+def test_screen_text_provider_raises_chinese_on_a_hard_error(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_response(None, status=400)]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen-vl-max-latest")
+
+    with pytest.raises(LocalizeError, match="画面文字识别"):
+        provider.detect(frame, hint_lang=None)

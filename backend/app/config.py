@@ -51,6 +51,19 @@ class Settings:
     # Chat model that picks the phrases worth highlighting in poster copy (HIG-50); shares
     # DASHSCOPE_API_KEY / LOCALIZE_PROVIDER with localization.
     highlight_model: str
+    # On-screen text (detect → translate → erase, contract §6, HIG-38). Detection shares
+    # DASHSCOPE_API_KEY with localization; provider = dashscope | fake.
+    screentext_provider: str
+    screentext_model: str
+    screentext_sample_fps: float
+    screentext_max_frames: int
+    screentext_max_blocks: int
+    screentext_max_seconds: int
+    screentext_timeout_seconds: int
+    # Erase provider: fake (tests) | local (ffmpeg delogo, no network) | a cloud vendor.
+    erase_provider: str
+    erase_poll_interval_seconds: int
+    erase_max_wait_seconds: int
 
     @property
     def is_dev(self) -> bool:
@@ -102,6 +115,21 @@ def load_settings() -> Settings:
         # until this is set, the voice table and the target languages are exactly as they were.
         minimax_tts_model=_env("MINIMAX_TTS_MODEL", "").strip(),
         highlight_model=_env("HIGHLIGHT_MODEL", "qwen-plus").strip(),
+        # Defaults to whatever localization uses, so a deployment that already has a key gets
+        # on-screen text detection without a second variable to set.
+        screentext_provider=_env("SCREENTEXT_PROVIDER", _env("LOCALIZE_PROVIDER", "dashscope")).strip().lower(),
+        screentext_model=_env("SCREENTEXT_MODEL", "qwen-vl-max-latest").strip(),
+        screentext_sample_fps=float(_env("SCREENTEXT_SAMPLE_FPS", "0.5")),
+        screentext_max_frames=int(_env("SCREENTEXT_MAX_FRAMES", "20")),
+        screentext_max_blocks=int(_env("SCREENTEXT_MAX_BLOCKS", "40")),
+        screentext_max_seconds=int(_env("SCREENTEXT_MAX_SECONDS", "180")),
+        screentext_timeout_seconds=int(_env("SCREENTEXT_TIMEOUT_SECONDS", "1200")),
+        # "local" needs no credentials and no network: ffmpeg delogo over the detected boxes.
+        # It is the default so the whole chain works out of the box, blur-quality rather than
+        # inpainting-quality, until a cloud vendor is picked (HIG-38).
+        erase_provider=_env("ERASE_PROVIDER", "local").strip().lower(),
+        erase_poll_interval_seconds=int(_env("ERASE_POLL_INTERVAL_SECONDS", "10")),
+        erase_max_wait_seconds=int(_env("ERASE_MAX_WAIT_SECONDS", "1800")),
     )
 
 

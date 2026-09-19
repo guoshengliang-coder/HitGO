@@ -12,6 +12,7 @@ import { IconChevron } from '../ui/Icons';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
 import { VoiceSelect } from './VoiceSelect';
+import { ScreenTextSection } from './ScreenTextSection';
 import { AudioAssetList } from './AudioPanel';
 import { Modal } from '../ui/Modal';
 import { isAssetReady } from '../../types';
@@ -524,9 +525,11 @@ export function LocalizePanel() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const options = useEditor((s) => s.localizeOptions);
   const loadLocalizeOptions = useEditor((s) => s.loadLocalizeOptions);
+  const loadScreenTextOptions = useEditor((s) => s.loadScreenTextOptions);
   useEffect(() => {
     void loadLocalizeOptions();
-  }, [loadLocalizeOptions]);
+    void loadScreenTextOptions();
+  }, [loadLocalizeOptions, loadScreenTextOptions]);
   const loc = video?.localization ?? null;
   const [sourceLang, setSourceLang] = useState(loc?.source_lang ?? 'auto');
   // 换视频 / 服务器识别出语言后跟着更新
@@ -584,6 +587,7 @@ export function LocalizePanel() {
           <>
             <QuickSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} draft={draft} />
             <ApplySection video={video} loc={loc} options={options} blocked={blocked} />
+            <ScreenTextSection video={video} options={options} langs={draft.selected} />
             <details className="localize-advanced">
               <summary>高级操作：修正听写、单独翻译、重新配音和管理版本</summary>
               <TranscriptSection video={video} loc={loc} options={options} blocked={blocked} sourceLang={sourceLang} setSourceLang={setSourceLang} requestFor={requestFor} />

@@ -18,6 +18,8 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
   // 成片时长（HIG-50）：只在正数时发送，null / 0 / 缺省 = 剪后时长，保持旧 spec 形状
   const fixedDuration = spec.trim.duration;
   return {
+    // HIG-38：缺省 original 不发，保持旧 spec 的形状不变
+    ...(spec.source_variant === 'clean' ? { source_variant: 'clean' as const } : {}),
     ...(spec.video_hidden ? { video_hidden: true } : {}),
     ...(spec.video_locked ? { video_locked: true } : {}),
     ...(audio ? { audio } : {}),

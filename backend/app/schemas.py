@@ -796,6 +796,9 @@ class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     spec_version: Literal[1] = 1
+    # HIG-38: render from source.mp4 ("original") or from the erased copy clean.mp4 ("clean").
+    # The two are frame-identical, so every other field means the same thing either way.
+    source_variant: Literal["original", "clean"] = "original"
     video_hidden: bool = False  # HIG-62: black canvas in place of the main video picture
     video_locked: bool = False  # HIG-62: timeline editing only
     trim: Trim = Field(default_factory=Trim)
@@ -810,6 +813,9 @@ class EditSpec(BaseModel):
         if self.sequence is not None:
             if self.trim.duration is not None:
                 raise ValueError("多片段序列的成片时长必须先转换为片段")
+            if self.source_variant != "original":
+                # The concatenated source is virtual; there is no single clean.mp4 behind it.
+                raise ValueError("多片段序列暂不支持使用无字版源片")
             self.trim = Trim.model_validate(self.trim.model_dump(), context={"duration": self.sequence.duration})
         keys = [o.variant_key for o in self.outputs]
         dupes = sorted({k for k in keys if keys.count(k) > 1})
@@ -1231,6 +1237,185 @@ class LocalizeOptionsOut(BaseModel):
     target_langs: list[TargetLangOut]
 
 
+# --- on-screen text (contract §1 Video.screen_text, §3 /screen-text, HIG-38) ---------------
+
+
+class BoxIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+
+class EraseScopeIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    band: bool = True
+    # None = every enabled block; a list narrows it to those ids.
+    block_ids: list[str] | None = Field(default=None, max_length=200)
+
+
+class ScreenTextIn(BaseModel):
+    """``target_langs`` may be empty: detecting and erasing does not need a language."""
+
+    detect: bool = False
+    source_lang: str = Field(default="auto", min_length=2, max_length=8)
+    target_langs: list[str] = Field(default_factory=list, max_length=5)
+    terms: list[TermIn] = Field(default_factory=list, max_length=200)
+    erase: bool = False
+    scope: EraseScopeIn | None = None
+
+    @field_validator("target_langs")
+    @classmethod
+    def _unique_langs(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for lang in v:
+            lang = lang.strip()
+            if lang and lang not in out:
+                out.append(lang)
+        return out
+
+
+class BlockEditIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(min_length=1, max_length=32)
+    text: str | None = Field(default=None, max_length=2000)
+    box: BoxIn | None = None
+    t: tuple[float, float] | None = None
+    enabled: bool | None = None
+
+    @field_validator("t")
+    @classmethod
+    def _ordered(cls, v: tuple[float, float] | None) -> tuple[float, float] | None:
+        if v is None:
+            return v
+        a, b = float(v[0]), float(v[1])
+        if a < 0 or b < a:
+            raise ValueError("时段必须是升序且不小于 0")
+        return (a, b)
+
+
+class BlocksIn(BaseModel):
+    blocks: list[BlockEditIn] = Field(default_factory=list, max_length=200)
+
+
+class ScreenTextEditIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(min_length=1, max_length=32)
+    translated: str = Field(max_length=2000)
+
+
+class ScreenTextsIn(BaseModel):
+    texts: list[ScreenTextEditIn] = Field(default_factory=list, max_length=200)
+
+
+class BoxOut(BaseModel):
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class BlockStyleOut(BaseModel):
+    """Every field is optional: what we could not estimate is left out, never guessed."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    font_size: float | None = None
+    color: str | None = None
+    stroke_color: str | None = None
+    stroke_width: float | None = None
+    background: str | None = None
+    align: str | None = None
+    line_height: float | None = None
+    confidence: float | None = None
+
+
+class ScreenBlockOut(BaseModel):
+    id: str
+    text: str
+    box: BoxOut
+    t: tuple[float, float]
+    lines: int = 1
+    style: BlockStyleOut | None = None
+    confidence: float | None = None
+    # Text that drifts between frames (animated captions, text on a moving object): detected so
+    # the user can see it, deliberately not erased or written back (contract §1).
+    moving: bool = False
+    enabled: bool = True
+
+
+class SubtitleBandOut(BaseModel):
+    box: BoxOut
+    style: BlockStyleOut | None = None
+    confidence: float | None = None
+
+
+class ScreenDetectOut(BaseModel):
+    status: str
+    error: str | None = None
+    model: str | None = None
+    frames: int = 0
+    subtitle_band: SubtitleBandOut | None = None
+    blocks: list[ScreenBlockOut] = Field(default_factory=list)
+    updated_at: str | None = None
+
+
+class EraseScopeOut(BaseModel):
+    band: bool = True
+    block_ids: list[str] | None = None
+
+
+class EraseOut(BaseModel):
+    status: str
+    provider: str | None = None
+    error: str | None = None
+    task_id: str | None = None
+    polls: int = 0
+    deadline: str | None = None
+    # Which regions this run covered (contract §1); the editor shows it as "重新擦除" guidance.
+    scope: EraseScopeOut | None = None
+    stale: bool = False
+    clean_url: str | None = None
+    clean_proxy_url: str | None = None
+    clean_poster_url: str | None = None
+    updated_at: str | None = None
+
+
+class ScreenTextOut(BaseModel):
+    id: str
+    translated: str
+
+
+class ScreenVersionOut(BaseModel):
+    status: str
+    texts: list[ScreenTextOut] = Field(default_factory=list)
+    stale: bool = False
+    error: str | None = None
+    updated_at: str | None = None
+
+
+class ScreenTextStateOut(BaseModel):
+    """``pending`` (the worker's to-do) is internal and deliberately not exposed."""
+
+    detect: ScreenDetectOut | None = None
+    erase: EraseOut | None = None
+    versions: dict[str, ScreenVersionOut] = Field(default_factory=dict)
+
+
+class ScreenTextOptionsOut(BaseModel):
+    enabled: bool
+    erase_enabled: bool
+    erase_provider: str
+    max_seconds: int
+    max_frames: int
+    max_blocks: int
+
+
 class VideoOut(BaseModel):
     id: str
     batch_id: str
@@ -1254,6 +1439,7 @@ class VideoOut(BaseModel):
     render_status: str
     separation: SeparationOut | None = None
     localization: LocalizationOut | None = None
+    screen_text: ScreenTextStateOut | None = None
     updated_at: str
 
 

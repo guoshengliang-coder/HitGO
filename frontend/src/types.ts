@@ -60,7 +60,125 @@ export interface Video {
   separation?: Separation | null;
   /** 可选；改语言状态（契约 §1 localization）：一份听写模板 + 按目标语言的版本，null / 缺省 = 从未生成。 */
   localization?: Localization | null;
+  /** 可选（HIG-38）；画面文字状态（契约 §1 screen_text）：识别一次 + 擦除一次 + 按目标语言的译文，null / 缺省 = 从未识别。 */
+  screen_text?: ScreenText | null;
   updated_at: string;
+}
+
+// ---- 画面文字（契约 §1 screen_text，HIG-38）----
+
+export type SourceVariant = 'original' | 'clean';
+
+export type ScreenTextStatus = 'queued' | 'running' | 'done' | 'failed';
+
+/** 归一化矩形：相对源画面宽 / 高，取值 0–1。 */
+export interface ScreenBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 从画面估出来的样式。估不出的字段缺席——不猜，让人自己调。 */
+export interface ScreenBlockStyle {
+  /** 相对画布高。 */
+  font_size?: number | null;
+  color?: string | null;
+  stroke_color?: string | null;
+  stroke_width?: number | null;
+  background?: string | null;
+  align?: string | null;
+  line_height?: number | null;
+  /** 这份估计有多可信，低于 0.6 时界面提示「请核对」。 */
+  confidence?: number | null;
+}
+
+/** 一块静态画面文字（标题 / 角标 / 价格牌）。 */
+export interface ScreenBlock {
+  id: string;
+  text: string;
+  box: ScreenBox;
+  /** 源时间轴，秒。 */
+  t: [number, number];
+  lines?: number;
+  style?: ScreenBlockStyle | null;
+  confidence?: number | null;
+  /** 会动 / 带透视的文字：识别出来给人看，但不擦、不译、不写回（契约 §1）。 */
+  moving?: boolean;
+  enabled?: boolean;
+}
+
+/** 硬字幕带：整条视频共用一个矩形，内容复用改语言的译文（契约 §1）。 */
+export interface SubtitleBand {
+  box: ScreenBox;
+  style?: ScreenBlockStyle | null;
+  confidence?: number | null;
+}
+
+export interface ScreenDetect {
+  status: ScreenTextStatus;
+  error?: string | null;
+  model?: string | null;
+  /** 实际送去识别的帧数（去重之后）。 */
+  frames?: number;
+  subtitle_band?: SubtitleBand | null;
+  blocks: ScreenBlock[];
+  updated_at?: string | null;
+}
+
+export interface ScreenErase {
+  status: ScreenTextStatus;
+  provider?: string | null;
+  error?: string | null;
+  task_id?: string | null;
+  polls?: number;
+  deadline?: string | null;
+  /** 这次擦了哪些区域；block_ids 为 null = 所有启用的块。 */
+  scope?: { band: boolean; block_ids: string[] | null } | null;
+  /** 识别结果改过之后为 true：无字版对不上当前的框，建议重擦。 */
+  stale?: boolean;
+  clean_url?: string | null;
+  clean_proxy_url?: string | null;
+  clean_poster_url?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ScreenTextTranslation {
+  id: string;
+  translated: string;
+}
+
+export interface ScreenVersion {
+  status: ScreenTextStatus;
+  texts: ScreenTextTranslation[];
+  stale?: boolean;
+  error?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ScreenText {
+  detect?: ScreenDetect | null;
+  erase?: ScreenErase | null;
+  versions: Record<string, ScreenVersion>;
+}
+
+/** POST /api/videos/{id}/screen-text 的请求体；target_langs 可以为空（只识别 + 擦除）。 */
+export interface ScreenTextIn {
+  detect?: boolean;
+  source_lang?: string;
+  target_langs?: string[];
+  terms?: LocalizationTerm[];
+  erase?: boolean;
+  scope?: { band?: boolean; block_ids?: string[] | null } | null;
+}
+
+export interface ScreenTextOptions {
+  enabled: boolean;
+  erase_enabled: boolean;
+  erase_provider: string;
+  max_seconds: number;
+  max_frames: number;
+  max_blocks: number;
 }
 
 // ---- 改语言（契约 §1 localization）----
@@ -421,10 +539,16 @@ export interface LayerBase {
   rotate: number;
   opacity: number;
   t: TimeWindow;
-  /** 可选；改语言模块生成的图层打 'localize'（契约 §2），套用别的语言版本时按它整批替换。发送给后端，原样存取。 */
-  origin?: 'localize' | 'subtitle';
+  /**
+   * 可选；改语言模块生成的图层打 'localize'（契约 §2），套用别的语言版本时按它整批替换。
+   * 'screen' 是画面文字本地化生成的（HIG-38）：译文文字层，或擦除还没就位时的顶替遮盖。
+   * 两者各清各的，切换语言时互不误伤。发送给后端，原样存取。
+   */
+  origin?: 'localize' | 'subtitle' | 'screen';
   /** 可选；与 origin 配套：这层译文字幕属于哪个目标语言。 */
   lang?: string;
+  /** 可选（HIG-38）；origin='screen' 时这层来自哪个识别块，重新套用时靠它接回人调过的位置和字号。 */
+  screen_block?: string;
   /** 可选（HIG-33）：时间线上关掉眼睛。留在 spec 里，成片不渲染（视频贴纸的声音一起去掉）；缺省 false，false 时不发。 */
   hidden?: boolean;
   /** 可选（HIG-48）：时间线 / 图层列表里改的名字；缺省按内容自动命名，只在非空时发（契约 §2）。 */
@@ -794,6 +918,11 @@ export interface SequenceSpec {
 
 export interface EditSpec {
   spec_version: 1;
+  /**
+   * 可选，缺省 'original'（HIG-38）：正片用原片还是擦掉画面文字的无字版。
+   * 两者逐帧对齐，所以 trim、图层时段、源对齐音轨在两种取值下含义完全一样。
+   */
+  source_variant?: SourceVariant;
   /** 可选（HIG-62）：主视频画面隐藏，以黑底代替；封面、图层和音频保留。 */
   video_hidden?: boolean;
   /** 可选（HIG-62）：编辑器禁止修改主视频片段；worker 忽略。 */
