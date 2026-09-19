@@ -18,6 +18,8 @@ os.environ["ENV"] = "dev"
 os.environ["FRONTEND_DIST"] = str(_TMP / "no-dist")
 os.environ["LOCALIZE_PROVIDER"] = "fake"  # never dashscope / the network in tests
 os.environ["MINIMAX_TTS_MODEL"] = "MiniMax/speech-2.8-hd"  # opt-in in prod (HIG-59); tests cover it on
+os.environ["SCREENTEXT_PROVIDER"] = "fake"  # HIG-38: no vision model, no network
+os.environ["ERASE_PROVIDER"] = "fake"  # HIG-38: no ffmpeg, no cloud vendor
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -52,18 +54,27 @@ def clean_db():
 class EnqueueRecorder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple]] = []
+        # (task name, countdown, args) for the delayed variant (erase polling, HIG-38).
+        self.later: list[tuple[str, int, tuple]] = []
 
     def __call__(self, task, *args) -> None:  # noqa: ANN001
         self.calls.append((task.name, args))
 
+    def call_later(self, task, countdown: int, *args) -> None:  # noqa: ANN001
+        self.later.append((task.name, countdown, args))
+
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]
+
+    def later_names(self) -> list[str]:
+        return [name for name, _, _ in self.later]
 
 
 @pytest.fixture
 def enqueued(monkeypatch) -> EnqueueRecorder:
     rec = EnqueueRecorder()
     monkeypatch.setattr(worker, "enqueue", rec)
+    monkeypatch.setattr(worker, "enqueue_later", rec.call_later)
     return rec
 
 

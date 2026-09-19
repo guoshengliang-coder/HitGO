@@ -5,7 +5,8 @@
 
 import { installMock, ApiError, type ApplyLayerMode } from '../api';
 import { langLabel } from '../lib/localize';
-import type { Asset, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightPhrase, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, SeparationModel, TranscriptCue, TtsIn, VersionCue, Video } from '../types';
+import { screenTextActive } from '../lib/screentext';
+import type { Asset, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightPhrase, Job, Layer, LocalizationTerm, LocalizationVersion, LocalizeIn, LocalizeOptions, Preset, SafeZone, ScreenBlock, ScreenText, ScreenTextIn, ScreenTextOptions, SeparationModel, TranscriptCue, TtsIn, VersionCue, Video } from '../types';
 
 const now = () => new Date().toISOString();
 let seq = 100;
@@ -262,6 +263,70 @@ function ensureCloneVoice(v: Video, at: (ms: number, fn: () => void) => void, de
   loc.clone_voice = { status: 'queued', voice_id: null, model: 'cosyvoice-v3-flash', error: null, sample: null, updated_at: now() };
   at(delay + 400, () => { v.localization!.clone_voice = { ...v.localization!.clone_voice!, status: 'running', updated_at: now() }; });
   return delay + 2400;
+}
+
+// ---- 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）----
+
+const SCREEN_TEXT_OPTIONS: ScreenTextOptions = {
+  enabled: true,
+  erase_enabled: true,
+  erase_provider: 'local',
+  max_seconds: 180,
+  max_frames: 20,
+  max_blocks: 40,
+};
+
+/** 一条投放素材上典型的画面文字：一条硬字幕带 + 一个角标 + 一处会动的花字。 */
+function fakeScreenBlocks(duration: number): ScreenBlock[] {
+  const end = Math.max(2, duration);
+  return [
+    { id: 's0', text: '限时免费', box: { x: 0.62, y: 0.06, w: 0.3, h: 0.07 }, t: [1, Math.min(6, end)], lines: 1, style: { font_size: 0.052, color: '#E3312B', stroke_color: '#FFFFFF', stroke_width: 0.004, align: 'right', confidence: 0.82 }, confidence: 0.93, moving: false, enabled: true },
+    { id: 's1', text: '立即下载体验', box: { x: 0.26, y: 0.44, w: 0.48, h: 0.06 }, t: [Math.min(7, end - 1), Math.min(12, end)], lines: 1, style: { font_size: 0.046, color: '#FFFFFF', align: 'center', confidence: 0.45 }, confidence: 0.88, moving: false, enabled: true },
+    { id: 's2', text: '飘过的花字', box: { x: 0.1, y: 0.3, w: 0.3, h: 0.05 }, t: [Math.min(3, end - 1), Math.min(5, end)], lines: 1, style: { confidence: 0.3 }, confidence: 0.6, moving: true, enabled: true },
+  ];
+}
+
+function runScreenText(v: Video, langs: string[], needDetect: boolean, erase: boolean) {
+  const at = (ms: number, fn: () => void) => window.setTimeout(() => { if (v.screen_text) fn(); }, ms);
+  let delay = 0;
+  if (needDetect) {
+    delay += 600;
+    at(delay, () => { v.screen_text!.detect = { ...(v.screen_text!.detect ?? { blocks: [] }), status: 'running', updated_at: now() }; });
+    delay += 2000;
+    at(delay, () => {
+      const st = v.screen_text!;
+      st.detect = { status: 'done', error: null, model: 'qwen-vl-max-latest', frames: 9, subtitle_band: { box: { x: 0.06, y: 0.8, w: 0.88, h: 0.075 }, style: { font_size: 0.048, color: '#FFFFFF', stroke_color: '#000000', stroke_width: 0.004, align: 'center', confidence: 0.8 }, confidence: 0.8 }, blocks: fakeScreenBlocks(v.duration), updated_at: now() };
+      for (const ver of Object.values(st.versions)) if (ver.status === 'done') ver.stale = true;
+      if (st.erase && st.erase.status === 'done') st.erase.stale = true;
+    });
+  }
+  for (const lang of langs) {
+    delay += 500;
+    at(delay, () => { v.screen_text!.versions[lang] = { ...v.screen_text!.versions[lang], status: 'running', updated_at: now() }; });
+    delay += 1200;
+    at(delay, () => {
+      const st = v.screen_text!;
+      const label = langLabel(LOCALIZE_OPTIONS, lang);
+      st.versions[lang] = {
+        status: 'done',
+        texts: (st.detect?.blocks ?? []).filter((b) => !b.moving && b.enabled !== false).map((b) => ({ id: b.id, translated: `[${label}] ${b.text}` })),
+        stale: false,
+        error: null,
+        updated_at: now(),
+      };
+    });
+  }
+  if (erase) {
+    delay += 600;
+    at(delay, () => { v.screen_text!.erase = { ...(v.screen_text!.erase ?? {}), status: 'running', provider: 'local', polls: 1, updated_at: now() }; });
+    delay += 2600;
+    at(delay, () => {
+      // 内置示例视频没有真实文件（source_url 为空），但无字版的地址必须非空，
+      // 否则前端会判定「还没有可用的无字版」而不显示原片 / 无字版切换。
+      const cleanUrl = v.source_url || `/media/batches/${v.batch_id}/${v.id}/clean.mp4`;
+      v.screen_text!.erase = { status: 'done', provider: 'local', error: null, polls: 3, stale: false, clean_url: cleanUrl, clean_proxy_url: v.proxy_url || cleanUrl, clean_poster_url: v.poster_url, updated_at: now() };
+    });
+  }
 }
 
 function runLocalize(v: Video, targetLangs: string[], retranscribe: boolean) {
@@ -861,6 +926,7 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     return clone(v);
   }
   if (path === '/api/localize/options') return clone(LOCALIZE_OPTIONS);
+  if (path === '/api/screen-text/options') return clone(SCREEN_TEXT_OPTIONS);
   if ((mm = m(/^\/api\/tts\/preview\/([^/]+)\/([^/]+)$/))) {
     // 音色试听（HIG-42）：每个音色一个不同音高的 1.5 秒提示音，听得出换了
     const lang = decodeURIComponent(mm[1]);
@@ -900,6 +966,22 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     }
     return { phrases };
   }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/screen-text$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    if (v.status !== 'ready') throw new ApiError(400, '视频尚未预处理完成，暂时不能处理画面文字');
+    const body = (body_ as ScreenTextIn | undefined) ?? {};
+    const st: ScreenText = v.screen_text ?? { detect: null, erase: null, versions: {} };
+    const langs = Array.from(new Set(body.target_langs ?? []));
+    if (screenTextActive(st)) throw new ApiError(409, '这条视频的画面文字任务正在进行中，请等它完成');
+    const needDetect = body.detect || st.detect?.status !== 'done';
+    if (needDetect) st.detect = { ...(st.detect ?? { blocks: [] }), status: 'queued', error: null };
+    for (const lang of langs) st.versions[lang] = { ...(st.versions[lang] ?? { texts: [] }), status: 'queued', error: null };
+    if (body.erase) st.erase = { ...(st.erase ?? {}), status: 'queued', error: null };
+    v.screen_text = st;
+    runScreenText(v, langs, !!needDetect, !!body.erase);
+    return clone(v);
+  }
   if ((mm = m(/^\/api\/videos\/([^/]+)\/localize$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');
@@ -930,6 +1012,51 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     }
     v.localization = loc;
     runLocalize(v, targetLangs, !!body.retranscribe);
+    return clone(v);
+  }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/screen-text\/blocks$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    const st = v.screen_text;
+    if (st?.detect?.status !== 'done') throw new ApiError(400, '还没有识别结果，不能修正');
+    if (screenTextActive(st)) throw new ApiError(409, '有画面文字任务正在进行中，请等它完成再修正');
+    const body = body_ as { blocks: { id: string; text?: string; enabled?: boolean }[] };
+    for (const e of body.blocks ?? []) {
+      const b = st.detect.blocks.find((x) => x.id === e.id);
+      if (!b) throw new ApiError(400, `没有这些画面文字块：${e.id}`);
+      if (e.text !== undefined) b.text = e.text;
+      if (e.enabled !== undefined) b.enabled = e.enabled;
+    }
+    st.detect.updated_at = now();
+    for (const ver of Object.values(st.versions)) if (ver.texts.length) ver.stale = true;
+    if (st.erase) st.erase.stale = true;
+    return clone(v);
+  }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/screen-text\/erase$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    if (!v.screen_text?.erase) throw new ApiError(404, '这条视频没有无字版');
+    if (v.screen_text.erase.status === 'queued' || v.screen_text.erase.status === 'running') throw new ApiError(409, '正在擦除中，请等它完成再删除');
+    v.screen_text.erase = null;
+    return undefined;
+  }
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/screen-text\/versions\/([^/]+)$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    const ver = v.screen_text?.versions[mm[2]];
+    if (!ver) throw new ApiError(404, '没有这个语言的画面文字版本');
+    if (ver.status === 'queued' || ver.status === 'running') throw new ApiError(409, '这个版本正在翻译中，请等它完成');
+    if (method === 'DELETE') {
+      delete v.screen_text!.versions[mm[2]];
+      return undefined;
+    }
+    const body = body_ as { texts: { id: string; translated: string }[] };
+    for (const e of body.texts ?? []) {
+      const t = ver.texts.find((x) => x.id === e.id);
+      if (!t) throw new ApiError(400, `没有这些画面文字块：${e.id}`);
+      t.translated = e.translated;
+    }
+    ver.updated_at = now();
     return clone(v);
   }
   if ((mm = m(/^\/api\/videos\/([^/]+)\/localize\/transcript$/))) {

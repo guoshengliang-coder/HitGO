@@ -7,11 +7,12 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
+import { applyScreenTextToSpec, bandHint, cleanReady, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
@@ -325,6 +326,19 @@ export interface EditorState {
    */
   applyVersion: (lang: string, opts?: { force?: boolean }) => boolean;
 
+  // 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）
+  /** GET /api/screen-text/options 的结果；null = 还没拉。拉失败按 enabled=false 处理。 */
+  screenTextOptions: ScreenTextOptions | null;
+  loadScreenTextOptions: () => Promise<void>;
+  /** POST screen-text：识别（未识别过时）+ 逐语言翻译 + 可选擦除；发起后轮询到结束。 */
+  runScreenText: (body: ScreenTextIn) => Promise<boolean>;
+  /** 修正识别结果（PUT blocks）；不触发任务，译文与无字版会被标为 stale。 */
+  updateScreenBlocks: (edits: { id: string; text?: string; enabled?: boolean }[]) => Promise<boolean>;
+  /** 删掉无字版并切回原片。 */
+  deleteScreenErase: () => Promise<boolean>;
+  /** 手动切换正片用原片还是无字版；无字版不可用时 toast 原因并返回 false。 */
+  setSourceVariant: (variant: SourceVariant) => boolean;
+
   // 图层
   /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省放最上层。 */
   addLayer: (layer: Layer, opts?: { belowType?: LayerType }) => void;
@@ -515,7 +529,7 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
 }
 
 /** 视频上会异步变化、需要轮询的字段：分离（separation）和改语言（localization）。 */
-type PolledField = 'separation' | 'localization';
+type PolledField = 'separation' | 'localization' | 'screen_text';
 const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
@@ -580,6 +594,7 @@ function fieldActive(video: Video | null | undefined, field: PolledField): boole
     const st = video?.separation?.status;
     return st === 'queued' || st === 'running';
   }
+  if (field === 'screen_text') return screenTextActive(video?.screen_text);
   return isLocalizationActive(video?.localization);
 }
 
@@ -608,6 +623,8 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
         if (fresh.separation?.status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
         else get().setToast(`分离失败：${fresh.separation?.error ?? '未知原因'}`);
         applyQuickWhenReady(videoId, get);
+      } else if (field === 'screen_text') {
+        get().setToast(screenTextFinishText(fresh.screen_text));
       } else {
         const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
         if (text) get().setToast(text);
@@ -1671,6 +1688,74 @@ export const useEditor = create<EditorState>((set, get) => {
         get().setToast(e instanceof ApiError ? e.message : '分离请求失败');
       }
     },
+    screenTextOptions: null,
+    loadScreenTextOptions: async () => {
+      if (get().screenTextOptions) return;
+      try {
+        set({ screenTextOptions: await api.getScreenTextOptions() });
+      } catch {
+        // 旧后端没有这个接口：当作没开，界面把入口禁掉
+        set({ screenTextOptions: { enabled: false, erase_enabled: false, erase_provider: '', max_seconds: 0, max_frames: 0, max_blocks: 0 } });
+      }
+    },
+    runScreenText: async (body) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        const updated = await api.screenText(video.id, body);
+        mergeVideoField(set, updated, 'screen_text');
+        pollVideoField(video.id, 'screen_text', set, get);
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '画面文字请求失败');
+        return false;
+      }
+    },
+    updateScreenBlocks: async (edits) => {
+      const video = get().currentVideo();
+      if (!video || !edits.length) return false;
+      try {
+        mergeVideoField(set, await api.updateScreenBlocks(video.id, edits), 'screen_text');
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '保存修正失败');
+        return false;
+      }
+    },
+    deleteScreenErase: async () => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        await api.deleteScreenErase(video.id);
+        mergeVideoField(set, await api.getVideo(video.id), 'screen_text');
+        // spec 里还写着 clean 的话，渲染会自动回落原片；这里顺手切回来，免得预览和成片不一致。
+        if (get().currentSpec()?.source_variant === 'clean') get().updateSpec((sp) => void (sp.source_variant = 'original'));
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '删除无字版失败');
+        return false;
+      }
+    },
+    setSourceVariant: (variant) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return false;
+      if (variant === 'clean') {
+        if (spec.sequence) {
+          get().setToast('多片段拼接暂不支持无字版源片');
+          return false;
+        }
+        if (!cleanReady(video.screen_text)) {
+          get().setToast(video.screen_text?.erase?.stale ? '无字版对不上当前的识别结果，请重新擦除' : '这条视频还没有可用的无字版');
+          return false;
+        }
+      }
+      if (spec.source_variant === variant) return false;
+      get().updateSpec((sp) => void (sp.source_variant = variant));
+      get().setToast(variant === 'clean' ? '正片已切到无字版' : '正片已切回原片', { label: '撤销', run: () => get().undo() });
+      return true;
+    },
+
     useStem: (stem) => {
       if (get().currentSpec()?.audio?.source_locked) return null;
       const video = get().currentVideo();
@@ -1820,7 +1905,12 @@ export const useEditor = create<EditorState>((set, get) => {
       }
       let warnings: string[] = [];
       get().updateSpec((s) => {
-        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+        // 一次 updateSpec = 一步历史：配音 / 字幕和画面文字一起进去，⌘Z 一次全撤。
+        // 两个函数各清各的 origin，互不误伤（HIG-38）。
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, band: bandHint(video.screen_text, lang), langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+        if (video.screen_text?.detect?.status === 'done') {
+          warnings = [...warnings, ...applyScreenTextToSpec(s, lang, { screen: video.screen_text, remove: s.trim.remove, postDuration: postTrimDuration(video.duration, s.trim.remove), newLayerId })];
+        }
       });
       set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
       get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
@@ -2411,16 +2501,23 @@ export const useEditor = create<EditorState>((set, get) => {
           for (const it of plan.items) {
             const video = targets.find((v) => v.id === it.video_id)!;
             const spec = cloneSpec(baked[it.video_id]);
-            if (it.lang === null) stripLocalization(spec, video.id);
-            else {
+            if (it.lang === null) {
+              stripLocalization(spec, video.id);
+              // HIG-38：原版必须同时去掉画面文字层并切回原片，否则导出的会是
+              // 「用了无字版、但画面上一个字都没有」的空画面。
+              stripScreenText(spec);
+            } else {
               const bgm = loadLocalizeBgm(video.id);
               const bgmAssetId = bgm.mode === 'replace' ? bgm.assetId : video.separation?.status === 'done' ? video.separation.instrumental_asset_id : null;
               if (!isAssetReady(assets.find((a) => a.id === bgmAssetId))) throw new Error(`${video.name} 的 BGM 尚未就绪，未提交多语言导出`);
               // 和预览用同一个开关：否则画面上拆了、导出的成片没拆（HIG-36）
-              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, band: bandHint(video.screen_text, it.lang), langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+              if (video.screen_text?.detect?.status === 'done') {
+                applyScreenTextToSpec(spec, it.lang, { screen: video.screen_text, remove: spec.trim.remove, postDuration: postTrimDuration(video.duration, spec.trim.remove), newLayerId });
+              }
               for (let i = 0; i < spec.layers.length; i++) {
                 const l = spec.layers[i];
-                if (l.type !== 'text' || l.origin !== LOCALIZE_ORIGIN) continue;
+                if (l.type !== 'text' || (l.origin !== LOCALIZE_ORIGIN && l.origin !== 'screen')) continue;
                 const one = await bakeTextLayer(l as TextLayer);
                 spec.layers[i] = await bakeTextLayerVariants(one, spec, variantKeys, video.width, video.height);
               }

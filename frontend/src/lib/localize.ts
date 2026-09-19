@@ -3,7 +3,7 @@
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算基于 lib/time.sourceRangeToPost：
 // 模板句子在源时间轴上，字幕层的 t 在剪后时间轴上。
 
-import type { Asset, AudioTrack, CloneVoice, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
+import type { Anchor, Asset, AudioTrack, CloneVoice, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
 import { defaultTextStyle, isAssetReady } from '../types';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
@@ -471,6 +471,8 @@ export type LocalizeBgmChoice = { mode: 'keep' } | { mode: 'replace'; assetId: s
 export interface ApplyContext {
   video: Video;
   assets: Asset[];
+  /** 可选（HIG-38）：识别出来的硬字幕带，只在没有上一版译文字幕可参照时使用。 */
+  band?: SubtitleBandHint | null;
   bgm?: LocalizeBgmChoice;
   /** 语言的中文名（图层名用）。 */
   langLabel: string;
@@ -478,6 +480,16 @@ export interface ApplyContext {
   split?: boolean;
   newLayerId: () => string;
   newTrackId: () => string;
+}
+
+/**
+ * 识别出来的硬字幕带（HIG-38）：第一次套用时让译文字幕落在原字幕的位置和样式上，
+ * 而不是固定贴底 12%。人调过之后由 localizeLayerTemplate 接管，这里不再插手。
+ */
+export interface SubtitleBandHint {
+  anchor: Anchor;
+  margin: [number, number];
+  style?: Partial<TextStyle>;
 }
 
 /**
@@ -524,8 +536,10 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   if (!version || version.status !== 'done' || !version.voice_asset_id) return ['该语言版本还没有配音，不能套用'];
   const warnings: string[] = [];
 
-  // 上一次生成的译文字幕：样式与位置沿用
-  const { style, placement } = localizeLayerTemplate(spec, lang);
+  // 上一次生成的译文字幕：样式与位置沿用；没有上一版时才用识别出来的字幕带（HIG-38）
+  const template = localizeLayerTemplate(spec, lang);
+  const style = template.style ?? (ctx.band?.style ? { ...localizeTextStyle(lang), ...ctx.band.style } : undefined);
+  const placement = template.placement ?? (ctx.band ? { anchor: ctx.band.anchor, margin: ctx.band.margin } : undefined);
 
   // 1. 清掉旧的层 / 轨；明确替换配乐时也移除已有 BGM，避免叠音。
   spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
@@ -605,5 +619,8 @@ export function applyCrossVideoWarnings(spec: EditSpec | null | undefined): stri
   const out: string[] = [];
   if (spec.audio?.tracks.some((t) => t.align === 'source')) out.push('当前音频里有对齐源时间轴的音轨（分离结果 / 配音），它们是按这条视频生成的，套到别的视频会错位。');
   if (spec.layers.some((l) => l.origin === LOCALIZE_ORIGIN)) out.push('当前图层里有改语言生成的译文字幕，时段按这条视频的听写结果排的，套到别的视频会错位。');
+  // HIG-38：画面文字的框和时段是这条视频画面独有的，换一条视频必然对不上。
+  if (spec.layers.some((l) => l.origin === 'screen')) out.push('当前图层里有画面文字本地化生成的层，位置和时段按这条视频的画面识别出来的，套到别的视频会错位。');
+  if (spec.source_variant === 'clean') out.push('当前正片用的是这条视频的无字版源片，别的视频没有对应的无字版，套过去会自动回落到原片。');
   return out;
 }

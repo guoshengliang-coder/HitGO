@@ -1,0 +1,642 @@
+"""On-screen text localization: detect → estimate style → translate (contract §6, HIG-38).
+
+The second half of "改语言": `localize.py` replaces what the video *says*, this replaces what
+it *shows*. The two run independently — detecting and erasing does not need a target language,
+and a failure here never touches the dubbing.
+
+Pipeline (``run_screen_text``):
+    source.mp4 → ffmpeg sampled frames → perceptual de-dupe → vision model per frame
+               → cross-frame clustering into blocks → style estimate per block
+               → the bottom-centre cluster becomes ``subtitle_band``, the rest ``blocks``
+               → numbered-block translation per target language
+
+**Hard subtitles are deliberately not read line by line.** Their content *is* the speech, and
+the translation and timing of the speech are already solved (``localization.versions[lang]
+.cues[].dub_start / dub_duration``, HIG-36). So we only measure where the subtitle band sits and
+what it looks like; the editor then moves the existing translated subtitle layers there. This
+takes the per-video vision calls from hundreds down to a dozen. The known cost: a clip that has
+burnt-in subtitles but no speech has no translation to reuse, and is out of scope for now.
+
+Everything above the provider boundary is a pure function so the tests can drive it without
+ffmpeg, Pillow-heavy fixtures or a network.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+import re
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from sqlalchemy.orm import Session
+
+from app.config import Settings, settings
+from app.db import iso, utcnow
+from app.models import ST_DONE, ST_FAILED, ST_QUEUED, ST_RUNNING, Video
+from app.services import storage
+
+log = logging.getLogger(__name__)
+
+
+class ScreenTextError(RuntimeError):
+    """Anything the user should see as a Chinese reason on the item."""
+
+
+# --- geometry ---------------------------------------------------------------
+
+Box = dict[str, float]
+
+
+def box(x: float, y: float, w: float, h: float) -> Box:
+    return {"x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+
+
+def clamp_box(b: Box) -> Box:
+    """Into the unit square, keeping at least a sliver of width and height."""
+    x = min(max(float(b.get("x", 0.0)), 0.0), 1.0)
+    y = min(max(float(b.get("y", 0.0)), 0.0), 1.0)
+    w = min(max(float(b.get("w", 0.0)), 0.0), 1.0 - x)
+    h = min(max(float(b.get("h", 0.0)), 0.0), 1.0 - y)
+    return box(x, y, max(w, 0.001), max(h, 0.001))
+
+
+def iou(a: Box, b: Box) -> float:
+    ax2, ay2 = a["x"] + a["w"], a["y"] + a["h"]
+    bx2, by2 = b["x"] + b["w"], b["y"] + b["h"]
+    ix = max(0.0, min(ax2, bx2) - max(a["x"], b["x"]))
+    iy = max(0.0, min(ay2, by2) - max(a["y"], b["y"]))
+    inter = ix * iy
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def union_box(boxes: list[Box]) -> Box:
+    x = min(b["x"] for b in boxes)
+    y = min(b["y"] for b in boxes)
+    x2 = max(b["x"] + b["w"] for b in boxes)
+    y2 = max(b["y"] + b["h"] for b in boxes)
+    return box(x, y, x2 - x, y2 - y)
+
+
+def center(b: Box) -> tuple[float, float]:
+    return (b["x"] + b["w"] / 2, b["y"] + b["h"] / 2)
+
+
+# --- provider boundary ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DetectedText:
+    """One piece of text the vision model found in one frame."""
+
+    text: str
+    box: Box
+    confidence: float | None = None
+
+
+class ScreenTextProvider(Protocol):
+    def detect(self, frame: Path, hint_lang: str | None) -> list[DetectedText]: ...
+
+
+@dataclass
+class FakeScreenText:
+    """Replays canned results frame by frame; the last one repeats once exhausted."""
+
+    results: list[list[DetectedText]] = field(default_factory=list)
+    calls: list[Path] = field(default_factory=list)
+
+    def detect(self, frame: Path, hint_lang: str | None) -> list[DetectedText]:
+        self.calls.append(frame)
+        if not self.results:
+            return []
+        i = min(len(self.calls) - 1, len(self.results) - 1)
+        return self.results[i]
+
+
+@dataclass
+class Providers:
+    detect: ScreenTextProvider
+    # Translation reuses localization's provider: same terms, same retry, same numbered block.
+    mt: Any
+
+
+def enabled(cfg: Settings | None = None) -> bool:
+    cfg = cfg or settings
+    return cfg.screentext_provider == "fake" or bool(cfg.dashscope_api_key)
+
+
+def make_providers(cfg: Settings | None = None) -> Providers:
+    from app.services import localize  # noqa: PLC0415  (avoid a circular import at module load)
+
+    cfg = cfg or settings
+    loc = localize.make_providers(cfg)
+    if cfg.screentext_provider == "fake":
+        return Providers(detect=FakeScreenText(), mt=loc.mt)
+    from app.services import dashscope_providers  # noqa: PLC0415  (keep the vendor SDK lazy)
+
+    return Providers(
+        detect=dashscope_providers.DashScopeScreenText(api_key=cfg.dashscope_api_key, model=cfg.screentext_model),
+        mt=loc.mt,
+    )
+
+
+# --- frame sampling ---------------------------------------------------------
+
+FRAME_PREFIX = "f"
+FRAME_HEIGHT = 720  # what we send to the model: enough to read overlay text, cheap to upload
+
+
+def sample_args(src: Path, out_dir: Path, fps: float, max_frames: int, ffmpeg_bin: str | None = None) -> list[str]:
+    """Evenly sampled frames, scaled down, at most ``max_frames`` of them."""
+    return [
+        ffmpeg_bin or settings.ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", str(src),
+        "-vf", f"fps={fps},scale=-2:{FRAME_HEIGHT}",
+        "-frames:v", str(max_frames),
+        "-q:v", "3",
+        str(out_dir / f"{FRAME_PREFIX}%04d.jpg"),
+    ]  # fmt: skip
+
+
+def frame_time(index: int, fps: float) -> float:
+    """Source-timeline seconds of the ``index``-th sampled frame (0-based).
+
+    ``fps=0.5`` samples at 0 s, 2 s, 4 s … — ffmpeg emits the first frame at t=0, not at t=1/fps.
+    """
+    return round(index / fps, 3) if fps > 0 else 0.0
+
+
+def frame_paths(out_dir: Path) -> list[Path]:
+    return sorted(out_dir.glob(f"{FRAME_PREFIX}*.jpg"))
+
+
+def dedupe_frames(paths: list[Path], threshold: float = 4.0) -> list[Path]:
+    """Drop frames that look the same as the one we last kept.
+
+    Ad creatives hold a still frame for seconds at a time, and the vision model is billed per
+    frame, so this is where most of the cost goes away. Comparison is a 32×32 grey thumbnail
+    mean absolute difference — cheap, and insensitive to encoder noise.
+    """
+    from PIL import Image  # noqa: PLC0415
+
+    kept: list[Path] = []
+    last: list[int] | None = None
+    for path in paths:
+        try:
+            with Image.open(path) as im:
+                thumb = list(im.convert("L").resize((32, 32)).getdata())
+        except Exception:  # noqa: BLE001  unreadable frame: keep it, the model will decide
+            kept.append(path)
+            last = None
+            continue
+        if last is not None:
+            diff = sum(abs(a - b) for a, b in zip(thumb, last, strict=False)) / len(thumb)
+            if diff < threshold:
+                continue
+        kept.append(path)
+        last = thumb
+    return kept
+
+
+# --- clustering -------------------------------------------------------------
+
+_WS = re.compile(r"\s+")
+
+MIN_IOU = 0.5  # same text at the same place across frames = one block
+MOVE_TOLERANCE = 0.02  # centre drift (relative) above which we call a block "moving"
+
+
+def normalize_text(text: str) -> str:
+    return _WS.sub(" ", (text or "").strip())
+
+
+@dataclass
+class _Track:
+    text: str
+    boxes: list[Box]
+    times: list[float]
+    confidences: list[float]
+
+    def moved(self) -> float:
+        if len(self.boxes) < 2:
+            return 0.0
+        xs = [center(b)[0] for b in self.boxes]
+        ys = [center(b)[1] for b in self.boxes]
+        return max(max(xs) - min(xs), max(ys) - min(ys))
+
+
+def cluster_blocks(
+    per_frame: list[tuple[float, list[DetectedText]]],
+    step: float,
+    *,
+    min_iou: float = MIN_IOU,
+) -> list[dict[str, Any]]:
+    """Per-frame detections → blocks with a time range.
+
+    Matching is "same normalised text, boxes overlap": a caption that re-appears later in a
+    different spot becomes two blocks, which is what the editor wants — two layers with two
+    time ranges rather than one that jumps.
+    """
+    tracks: list[_Track] = []
+    open_tracks: dict[int, float] = {}  # track index → time it was last seen
+    for time, items in per_frame:
+        seen: set[int] = set()
+        for item in items:
+            text = normalize_text(item.text)
+            if not text:
+                continue
+            b = clamp_box(item.box)
+            match: int | None = None
+            for i, track in enumerate(tracks):
+                if i in seen or track.text != text:
+                    continue
+                # Only continue a track that was alive in the previous sampled frame.
+                if open_tracks.get(i) is None or time - open_tracks[i] > step * 1.5 + 1e-6:
+                    continue
+                if iou(track.boxes[-1], b) >= min_iou:
+                    match = i
+                    break
+            if match is None:
+                tracks.append(_Track(text=text, boxes=[b], times=[time], confidences=[item.confidence or 0.0]))
+                match = len(tracks) - 1
+            else:
+                tracks[match].boxes.append(b)
+                tracks[match].times.append(time)
+                tracks[match].confidences.append(item.confidence or 0.0)
+            seen.add(match)
+            open_tracks[match] = time
+
+    half = step / 2
+    out: list[dict[str, Any]] = []
+    for i, track in enumerate(tracks):
+        start = max(0.0, track.times[0] - half)
+        end = track.times[-1] + half
+        confidences = [c for c in track.confidences if c > 0]
+        out.append(
+            {
+                "id": f"s{i}",
+                "text": track.text,
+                "box": union_box(track.boxes),
+                "t": [round(start, 3), round(end, 3)],
+                "lines": 1,
+                "confidence": round(sum(confidences) / len(confidences), 3) if confidences else None,
+                "moving": track.moved() > MOVE_TOLERANCE,
+                "enabled": True,
+            }
+        )
+    out.sort(key=lambda b: (b["t"][0], b["box"]["y"], b["box"]["x"]))
+    for i, b in enumerate(out):
+        b["id"] = f"s{i}"
+    return out
+
+
+# Where burnt-in subtitles live: lower part of the frame, horizontally centred.
+BAND_MIN_Y = 0.62
+BAND_CENTER_TOLERANCE = 0.18
+
+
+def is_subtitle_like(b: dict[str, Any]) -> bool:
+    cx, cy = center(b["box"])
+    return cy >= BAND_MIN_Y and abs(cx - 0.5) <= BAND_CENTER_TOLERANCE
+
+
+def split_band(blocks: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Pull the burnt-in subtitle blocks out into a single band.
+
+    It takes at least two of them before we call it a subtitle band: one line low in the frame
+    is just as likely to be a slogan, and blurring a slogan for the whole clip is worse than
+    leaving it to the user.
+    """
+    subtitle_like = [b for b in blocks if is_subtitle_like(b) and not b["moving"]]
+    if len(subtitle_like) < 2:
+        return None, blocks
+    band = {
+        "box": union_box([b["box"] for b in subtitle_like]),
+        "style": {},
+        "confidence": round(min(1.0, len(subtitle_like) / 4), 2),
+    }
+    rest = [b for b in blocks if b not in subtitle_like]
+    for i, b in enumerate(rest):
+        b["id"] = f"s{i}"
+    return band, rest
+
+
+def limit_blocks(blocks: list[dict[str, Any]], max_blocks: int) -> list[dict[str, Any]]:
+    """Keep the ``max_blocks`` largest; re-number so ids stay dense."""
+    if len(blocks) <= max_blocks:
+        return blocks
+    kept = sorted(blocks, key=lambda b: b["box"]["w"] * b["box"]["h"], reverse=True)[:max_blocks]
+    kept.sort(key=lambda b: (b["t"][0], b["box"]["y"], b["box"]["x"]))
+    for i, b in enumerate(kept):
+        b["id"] = f"s{i}"
+    return kept
+
+
+def apply_block_edits(blocks: list[dict[str, Any]], edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge the user's corrections into the detected blocks (only the keys they sent)."""
+    by_id = {b["id"]: b for b in blocks}
+    unknown = [e["id"] for e in edits if e["id"] not in by_id]
+    if unknown:
+        raise ValueError(f"没有这些画面文字块：{'、'.join(unknown)}")
+    out = copy.deepcopy(blocks)
+    index = {b["id"]: b for b in out}
+    for edit in edits:
+        target = index[edit["id"]]
+        if edit.get("text") is not None:
+            target["text"] = normalize_text(edit["text"])
+        if edit.get("box") is not None:
+            target["box"] = clamp_box(edit["box"])
+        if edit.get("t") is not None:
+            a, b = float(edit["t"][0]), float(edit["t"][1])
+            target["t"] = [round(max(0.0, a), 3), round(max(a, b), 3)]
+        if edit.get("enabled") is not None:
+            target["enabled"] = bool(edit["enabled"])
+    return out
+
+
+def enabled_blocks(detect: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Blocks the user left on and we can actually handle (moving text is out of scope)."""
+    if not detect:
+        return []
+    return [b for b in detect.get("blocks") or [] if b.get("enabled", True) and not b.get("moving")]
+
+
+def apply_text_edits(texts: list[dict[str, Any]], edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge corrected translations into a version's ``texts``."""
+    known = {t["id"] for t in texts}
+    unknown = [e["id"] for e in edits if e["id"] not in known]
+    if unknown:
+        raise ValueError(f"没有这些画面文字块：{'、'.join(unknown)}")
+    out = copy.deepcopy(texts)
+    index = {t["id"]: t for t in out}
+    for edit in edits:
+        index[edit["id"]]["translated"] = (edit.get("translated") or "").strip()
+    return out
+
+
+# --- orchestration ----------------------------------------------------------
+
+
+def _run(argv: list[str], what: str, timeout: int = 600) -> subprocess.CompletedProcess[bytes]:
+    try:
+        proc = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise ScreenTextError(f"找不到 ffmpeg 可执行文件：{argv[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ScreenTextError(f"{what}超时") from exc
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-8:])
+        raise ScreenTextError(f"{what}失败（exit {proc.returncode}）：{tail}")
+    return proc
+
+
+def stamp(part: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """Update a status part and refresh its ``updated_at``; ``erase.py`` writes through it too."""
+    part.update(fields)
+    part["updated_at"] = iso(utcnow())
+    return part
+
+
+def save(
+    db: Session,
+    video: Video,
+    st: dict[str, Any],
+    *,
+    detect: bool = False,
+    erase: bool = False,
+    langs: list[str] | tuple[str, ...] = (),
+    stale_all: bool = False,
+    clear_pending: bool = False,
+) -> None:
+    """Write back only the parts this task owns.
+
+    Same reason as ``localize._save``: the API keeps taking requests while the task runs, so the
+    row is re-read and merged instead of overwritten — otherwise a language queued a second ago
+    disappears under a running task.
+    """
+    db.refresh(video)
+    fresh: dict[str, Any] = copy.deepcopy(video.screen_text or {})
+    fresh.setdefault("versions", {})
+    if detect:
+        fresh["detect"] = copy.deepcopy(st.get("detect"))
+    if erase:
+        fresh["erase"] = copy.deepcopy(st.get("erase"))
+    if stale_all:
+        for version in fresh["versions"].values():
+            version["stale"] = True
+        if fresh.get("erase"):
+            fresh["erase"]["stale"] = True
+    for lang in langs:
+        if lang in st.get("versions", {}):
+            fresh["versions"][lang] = copy.deepcopy(st["versions"][lang])
+    if clear_pending:
+        fresh.pop("pending", None)
+    video.screen_text = fresh  # a new object so the JSON column notices
+    video.updated_at = utcnow()
+    db.commit()
+
+
+def detect_blocks(
+    video: Video,
+    provider: ScreenTextProvider,
+    tmp: Path,
+    hint_lang: str | None,
+    cfg: Settings | None = None,
+) -> dict[str, Any]:
+    """Sample, de-duplicate, recognise, cluster and style — the whole ``detect`` part."""
+    cfg = cfg or settings
+    src = storage.source_path(video.batch_id, video.id, video.source_ext)
+    if not src.exists():
+        raise ScreenTextError("找不到源视频文件")
+    tmp.mkdir(parents=True, exist_ok=True)
+    _run(sample_args(src, tmp, cfg.screentext_sample_fps, cfg.screentext_max_frames), "抽帧")
+    frames = frame_paths(tmp)
+    if not frames:
+        raise ScreenTextError("没有抽到任何画面帧")
+    index_of = {path: i for i, path in enumerate(frames)}
+    kept = dedupe_frames(frames)
+    step = 1.0 / cfg.screentext_sample_fps if cfg.screentext_sample_fps > 0 else 1.0
+
+    per_frame: list[tuple[float, list[DetectedText]]] = []
+    for path in kept:
+        per_frame.append((frame_time(index_of[path], cfg.screentext_sample_fps), provider.detect(path, hint_lang)))
+
+    blocks = cluster_blocks(per_frame, step)
+    band, blocks = split_band(blocks)
+    blocks = limit_blocks(blocks, cfg.screentext_max_blocks)
+
+    # Style: measured on the frame where each block first shows up.
+    by_time = {time: path for (time, _), path in zip(per_frame, kept, strict=False)}
+    _estimate_styles(blocks, band, by_time, step)
+
+    return {
+        "status": ST_DONE,
+        "error": None,
+        "model": cfg.screentext_model if cfg.screentext_provider != "fake" else "fake",
+        "frames": len(kept),
+        "subtitle_band": band,
+        "blocks": blocks,
+        "updated_at": iso(utcnow()),
+    }
+
+
+def _nearest_frame(by_time: dict[float, Path], when: float, step: float) -> Path | None:
+    if not by_time:
+        return None
+    best = min(by_time, key=lambda t: abs(t - when))
+    return by_time[best] if abs(best - when) <= step * 1.5 + 1e-6 else by_time[best]
+
+
+def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, by_time: dict[float, Path], step: float) -> None:
+    """Fill in each block's ``style`` from the frame it first appears on.
+
+    A failure here is never fatal: a block without a style still gets written back, the editor
+    just falls back to the default subtitle look.
+    """
+    from PIL import Image  # noqa: PLC0415
+
+    from app.services import screen_style  # noqa: PLC0415
+
+    cache: dict[Path, Any] = {}
+
+    def frame_for(when: float) -> Any:
+        path = _nearest_frame(by_time, when, step)
+        if path is None:
+            return None
+        if path not in cache:
+            try:
+                with Image.open(path) as im:
+                    cache[path] = im.convert("RGB").copy()
+            except Exception:  # noqa: BLE001
+                cache[path] = None
+        return cache[path]
+
+    for block in blocks:
+        image = frame_for(block["t"][0])
+        if image is None:
+            continue
+        try:
+            style = screen_style.estimate_style(image, block["box"])
+        except Exception:  # noqa: BLE001  estimation is best-effort by design
+            log.warning("style estimation failed for block %s", block["id"], exc_info=True)
+            continue
+        block["lines"] = style.pop("lines", block.get("lines", 1))
+        block["style"] = style
+    if band is not None:
+        image = frame_for(0.0)
+        if image is not None:
+            try:
+                band["style"] = screen_style.estimate_style(image, band["box"])
+                band["style"].pop("lines", None)
+            except Exception:  # noqa: BLE001
+                log.warning("style estimation failed for the subtitle band", exc_info=True)
+
+
+def translate_blocks(
+    blocks: list[dict[str, Any]],
+    source_lang: str,
+    target_lang: str,
+    terms: list[dict[str, str]],
+    mt: Any,
+) -> list[dict[str, Any]]:
+    """One numbered request for all the on-screen text, same protocol as the dubbing."""
+    from app.services import localize  # noqa: PLC0415
+
+    if not blocks:
+        return []
+    texts = [b["text"] for b in blocks]
+    translated = localize.translate_with_fallback(mt, texts, source_lang, target_lang, terms)
+    return [{"id": b["id"], "translated": t.strip()} for b, t in zip(blocks, translated, strict=False)]
+
+
+def run_screen_text(db: Session, video_id: str, providers: Providers | None = None, cfg: Settings | None = None) -> None:
+    """The ``hitgo.screen_text_video`` task body: detect, translate, and hand erasure off."""
+    from celery.exceptions import SoftTimeLimitExceeded  # noqa: PLC0415
+
+    from app.services import erase as erase_service  # noqa: PLC0415
+
+    cfg = cfg or settings
+    video = db.get(Video, video_id)
+    if video is None:
+        return
+    providers = providers or make_providers(cfg)
+    st: dict[str, Any] = copy.deepcopy(video.screen_text or {})
+    st.setdefault("versions", {})
+    pending = dict(st.get("pending") or {})
+    langs: list[str] = [l for l in pending.get("target_langs") or [] if st["versions"].get(l, {}).get("status") == ST_QUEUED]
+    want_erase = bool(pending.get("erase"))
+    scope = pending.get("scope") or {}
+    terms: list[dict[str, str]] = list(pending.get("terms") or [])
+    source_lang = pending.get("source_lang") or "auto"
+    tmp = storage.tmp_dir() / f"{video_id}.st"
+
+    try:
+        if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
+            st["detect"] = stamp(dict(st.get("detect") or {}), status=ST_RUNNING, error=None)
+            save(db, video, st, detect=True)
+            try:
+                st["detect"] = detect_blocks(video, providers.detect, tmp, source_lang if source_lang != "auto" else None, cfg)
+            except ScreenTextError as exc:
+                st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=str(exc))
+                save(db, video, st, detect=True)
+                _fail_versions(db, video, st, langs, "画面文字识别失败，无法翻译")
+                _fail_erase(db, video, st, str(exc))
+                return
+            save(db, video, st, detect=True, stale_all=True)
+
+        detect = st.get("detect") or {}
+        if detect.get("status") != ST_DONE:
+            _fail_versions(db, video, st, langs, "还没有画面文字识别结果")
+            _fail_erase(db, video, st, "还没有画面文字识别结果")
+            return
+
+        blocks = enabled_blocks(detect)
+        for lang in langs:
+            version = dict(st["versions"].get(lang) or {})
+            st["versions"][lang] = stamp(version, status=ST_RUNNING, error=None)
+            save(db, video, st, langs=[lang])
+            try:
+                texts = translate_blocks(blocks, source_lang, lang, terms, providers.mt)
+            except Exception as exc:  # noqa: BLE001  one language failing must not stop the rest
+                log.warning("screen text translation failed for %s", lang, exc_info=True)
+                st["versions"][lang] = stamp(dict(st["versions"][lang]), status=ST_FAILED, error=f"翻译失败：{exc}")
+            else:
+                st["versions"][lang] = stamp(dict(st["versions"][lang]), status=ST_DONE, texts=texts, stale=False, error=None)
+            save(db, video, st, langs=[lang])
+
+        if want_erase:
+            erase_service.start(db, video, st, scope, cfg)
+    except SoftTimeLimitExceeded:
+        log.error("screen text %s exceeded %ss", video_id, cfg.screentext_timeout_seconds)
+        note = f"画面文字处理超过 {cfg.screentext_timeout_seconds} 秒仍未完成，已中止"
+        if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
+            st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=note)
+            save(db, video, st, detect=True)
+        _fail_versions(db, video, st, [l for l in langs if st["versions"].get(l, {}).get("status") in (ST_QUEUED, ST_RUNNING)], note)
+        _fail_erase(db, video, st, note)
+        raise
+    finally:
+        storage.remove_tree(tmp)
+        db.refresh(video)
+        save(db, video, st, clear_pending=True)
+
+
+def _fail_versions(db: Session, video: Video, st: dict[str, Any], langs: list[str], reason: str) -> None:
+    touched = []
+    for lang in langs:
+        version = st["versions"].get(lang)
+        if version and version.get("status") in (ST_QUEUED, ST_RUNNING):
+            st["versions"][lang] = stamp(dict(version), status=ST_FAILED, error=reason)
+            touched.append(lang)
+    if touched:
+        save(db, video, st, langs=touched)
+
+
+def _fail_erase(db: Session, video: Video, st: dict[str, Any], reason: str) -> None:
+    er = st.get("erase")
+    if er and er.get("status") in (ST_QUEUED, ST_RUNNING):
+        st["erase"] = stamp(dict(er), status=ST_FAILED, error=reason)
+        save(db, video, st, erase=True)

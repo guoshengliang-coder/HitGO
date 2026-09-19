@@ -31,6 +31,10 @@ the source must loop to fill it (-stream_loop + shifted trim windows), so every 
 much longer, and the image sticker doubles as a scrolling copy (layers[].scroll) clipped to the
 safe-area box. A blank source clip (POST /api/batches/{id}/blank, kind = "blank") is created on
 the batch and must preprocess to a ready video of the requested length.
+On-screen text (HIG-38) is detected and erased when the server has a key
+(SMOKE_SCREENTEXT_TIMEOUT, default 300; 0 skips): every detected box must sit inside the
+frame and inside the clip, and when a clean copy comes out, one more 9x16 output is rendered
+with source_variant = "clean" to prove the whole chain reads the erased source.
 No dependencies beyond the standard library.
 
 Usage: smoke_render.py <base_url> <access_code>
@@ -158,6 +162,54 @@ if separate_timeout > 0 and video["has_audio"]:
     stem_asset_id = sep["vocals_asset_id"]
 elif separate_timeout > 0:
     print("first video has no audio — skipping the separation part of the smoke test")
+
+# On-screen text (HIG-38): detect, then erase into clean.mp4. Detection needs the vision model,
+# so it only runs when the server has a key; erasure defaults to the local ffmpeg delogo path and
+# needs nothing. SMOKE_SCREENTEXT_TIMEOUT=0 skips both.
+screentext_timeout = int(os.environ.get("SMOKE_SCREENTEXT_TIMEOUT", "300"))
+clean_ready = False
+if screentext_timeout > 0:
+    st_options = call("GET", "/api/screen-text/options")[1] or {}
+    if not st_options.get("enabled"):
+        print("screen text disabled on this server (no DASHSCOPE_API_KEY) — skipping")
+    elif video["duration"] > st_options.get("max_seconds", 0):
+        print(f"first video is longer than {st_options.get('max_seconds')}s — skipping screen text")
+    else:
+        status, resp = call("POST", f"/api/videos/{video['id']}/screen-text",
+                            {"detect": True, "erase": bool(st_options.get("erase_enabled"))})
+        if status != 202:
+            print("screen-text", status, resp)
+            sys.exit(1)
+        t0 = time.time()
+        st = {}
+        while time.time() - t0 < screentext_timeout:
+            st = call("GET", f"/api/videos/{video['id']}")[1].get("screen_text") or {}
+            det, era = st.get("detect") or {}, st.get("erase") or {}
+            busy = det.get("status") in ("queued", "running") or era.get("status") in ("queued", "running")
+            if not busy:
+                break
+            time.sleep(3)
+        det, era = st.get("detect") or {}, st.get("erase") or {}
+        print(f"detect {det.get('status')} after {time.time() - t0:.0f}s:",
+              f"{len(det.get('blocks') or [])} blocks, band={bool(det.get('subtitle_band'))},",
+              f"frames={det.get('frames')}", (det.get("error") or "")[:300])
+        if det.get("status") != "done":
+            print("detection failed — check DASHSCOPE_API_KEY and the worker log")
+            sys.exit(1)
+        # Boxes and times must be inside the frame and inside the clip, or every layer we
+        # generate from them lands somewhere wrong.
+        for b in det.get("blocks") or []:
+            bx = b["box"]
+            assert 0 <= bx["x"] <= 1 and 0 <= bx["y"] <= 1, b
+            assert 0 < bx["w"] <= 1 and 0 < bx["h"] <= 1, b
+            assert bx["x"] + bx["w"] <= 1.001 and bx["y"] + bx["h"] <= 1.001, b
+            assert 0 <= b["t"][0] <= b["t"][1] <= video["duration"] + 0.5, b
+        if era.get("status") == "done":
+            print("erase done:", era.get("provider"), era.get("clean_url"))
+            clean_ready = True
+        elif era.get("status") == "failed":
+            print("erase failed:", (era.get("error") or "")[:300])
+            sys.exit(1)
 
 layers = [
     {"id": "l_1", "type": "sticker", "asset_id": ready[0]["id"], "anchor": "top-left",
@@ -304,3 +356,32 @@ if all(j["status"] == "done" for j in jobs):
     print("callback:", json.dumps(jobs[0]["callback"], ensure_ascii=False)[:280])
 else:
     sys.exit(1)
+
+# One more render off the erased copy (HIG-38): same spec, source_variant = "clean". The clean
+# file is frame-identical to the original, so the output must come out at the same duration —
+# that is what proves the renderer really read clean.mp4 and not something re-timed.
+if clean_ready:
+    clean_spec = json.loads(json.dumps(spec))
+    clean_spec["source_variant"] = "clean"
+    status, resp = call("PUT", f"/api/videos/{video['id']}/spec", {"edit_spec": clean_spec})
+    print("put clean spec", status, "ok" if status == 200 else resp)
+    status, clean_jobs = call("POST", "/api/render", {"video_ids": [video["id"]], "variant_keys": ["9x16"]})
+    if status not in (200, 201):
+        print("clean render", status, clean_jobs)
+        sys.exit(1)
+    ids = ",".join(j["id"] for j in clean_jobs)
+    t0 = time.time()
+    while True:
+        clean_jobs = call("GET", f"/api/jobs?ids={ids}")[1]
+        if all(j["status"] in ("done", "failed") for j in clean_jobs):
+            break
+        time.sleep(2)
+    j = clean_jobs[0]
+    print("clean render", j["status"], j["output"], (j["error"] or "")[:400])
+    if j["status"] != "done":
+        sys.exit(1)
+    if abs(j["output"]["duration"] - post_duration) > 0.3:
+        print(f"clean output duration {j['output']['duration']} != original {post_duration}")
+        sys.exit(1)
+    # Put the original spec back so a re-run starts from the same place.
+    call("PUT", f"/api/videos/{video['id']}/spec", {"edit_spec": spec})

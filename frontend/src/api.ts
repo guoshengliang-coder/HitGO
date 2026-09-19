@@ -1,7 +1,7 @@
 // 类型化 API 客户端，路由与契约第 3 节一一对应。
 // VITE_MOCK=1 时由 src/mocks 提供内存实现（见 request()）。
 
-import type { Asset, AssetType, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightOut, Job, LocalizeIn, LocalizeOptions, Preset, PresetType, SafeZone, SeparationModel, TtsIn, UploadTicket, Video } from './types';
+import type { Asset, AssetType, Batch, BatchDetail, BlankVideoIn, EditSpec, HighlightOut, Job, LocalizeIn, LocalizeOptions, Preset, PresetType, SafeZone, ScreenTextIn, ScreenTextOptions, TtsIn, UploadTicket, Video, SeparationModel } from './types';
 import { oversizedUpload } from './lib/assets';
 
 export const MOCK = import.meta.env.VITE_MOCK === '1';
@@ -330,6 +330,20 @@ export const api = {
     request<Video>('PUT', `/api/videos/${id}/localize/versions/${lang}`, body),
   deleteVersion: (id: string, lang: string) => request<void>('DELETE', `/api/videos/${id}/localize/versions/${lang}`),
   getLocalizeOptions: () => request<LocalizeOptions>('GET', '/api/localize/options'),
+
+  // 画面文字（契约 §3，HIG-38）：识别 → 逐语言翻译 → 擦除；202 + Video，之后轮询 GET /api/videos/{id}。
+  // target_langs 可以为空——只识别 + 擦除（去掉旧字幕再自己配字）是合法用法。
+  screenText: (id: string, body: ScreenTextIn) => request<Video>('POST', `/api/videos/${id}/screen-text`, body),
+  /** 修正识别出来的文字 / 框 / 时段，不触发任务；所有译文与无字版会被标为 stale。 */
+  updateScreenBlocks: (id: string, blocks: { id: string; text?: string; box?: { x: number; y: number; w: number; h: number }; t?: [number, number]; enabled?: boolean }[]) =>
+    request<Video>('PUT', `/api/videos/${id}/screen-text/blocks`, { blocks }),
+  /** 修正某个语言的画面文字译文，不触发任务。 */
+  updateScreenTexts: (id: string, lang: string, texts: { id: string; translated: string }[]) =>
+    request<Video>('PUT', `/api/videos/${id}/screen-text/versions/${lang}`, { texts }),
+  deleteScreenVersion: (id: string, lang: string) => request<void>('DELETE', `/api/videos/${id}/screen-text/versions/${lang}`),
+  /** 删掉无字版（连文件）；spec 里仍写着 clean 的会在渲染时自动回落原片。 */
+  deleteScreenErase: (id: string) => request<void>('DELETE', `/api/videos/${id}/screen-text/erase`),
+  getScreenTextOptions: () => request<ScreenTextOptions>('GET', '/api/screen-text/options'),
 
   // 大字报（契约 §3，HIG-50）
   /** 朗读文案：202 + preparing 的音频素材，之后轮询 GET /api/assets/{id} 直到 ready / failed。lang / voice 取自 getLocalizeOptions。 */

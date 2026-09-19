@@ -71,6 +71,20 @@ def sprite_path(batch_id: str, video_id: str) -> Path:
     return video_dir(batch_id, video_id) / "sprite.jpg"
 
 
+# On-screen text erasure (contract §1 screen_text.erase, HIG-38). Same geometry, frame rate,
+# duration and audio as source.mp4, so nothing in edit_spec needs converting between the two.
+def clean_path(batch_id: str, video_id: str) -> Path:
+    return video_dir(batch_id, video_id) / "clean.mp4"
+
+
+def clean_proxy_path(batch_id: str, video_id: str) -> Path:
+    return video_dir(batch_id, video_id) / "clean_proxy.mp4"
+
+
+def clean_poster_path(batch_id: str, video_id: str) -> Path:
+    return video_dir(batch_id, video_id) / "clean_poster.jpg"
+
+
 # --- assets / uploads / outputs / tmp ----------------------------------------
 
 
