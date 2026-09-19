@@ -70,6 +70,10 @@ SAMPLE_FROM_VOCALS = "vocals"
 SAMPLE_FROM_SOURCE = "source"
 # CosyVoice speech_rate range; a clip longer than its slot is re-synthesized faster before atempo.
 MAX_SPEECH_RATE = 2.0
+# HIG-73 conservative picture retiming. A result outside this range falls back to the historical
+# source timeline instead of making the picture look unnaturally fast / slow.
+ADAPTIVE_VIDEO_SPEED_MIN = 0.8
+ADAPTIVE_VIDEO_SPEED_MAX = 1.25
 MT_DOMAINS = (
     "Voice-over script for a short marketing video. Translate naturally and concisely so that "
     "each numbered line, when spoken aloud, takes about as long as the source line."
@@ -822,6 +826,28 @@ def translate_with_fallback(provider: TranslateProvider, texts: list[str], sourc
     return [provider.translate(t, source, target, terms).strip() for t in texts]
 
 
+def localize_for_speech(
+    provider: TranslateProvider,
+    sources: list[str],
+    translations: list[str],
+    target: str,
+    terms: list[dict[str, str]],
+    target_seconds: list[float],
+) -> tuple[list[str], str | None]:
+    """Optional HIG-73 spoken-copy pass; old/custom providers keep literal MT unchanged."""
+    rewrite = getattr(provider, "localize_for_speech", None)
+    if not callable(rewrite) or not sources:
+        return translations, None
+    try:
+        out = list(rewrite(sources, translations, target, terms, target_seconds))
+        if len(out) != len(translations) or any(not str(text).strip() for text in out):
+            raise LocalizeError("口播本地化返回的句数不一致")
+        return [str(text).strip() for text in out], None
+    except Exception as exc:  # noqa: BLE001 - literal MT is the deliberate production fallback
+        log.warning("spoken localization failed; keeping literal translation: %s", exc)
+        return translations, f"口播化改写失败，已使用直译：{exc}"
+
+
 def plan_placements(cues: list[dict[str, Any]], clip_durations: list[float], total: float, max_tempo: float) -> tuple[list[dict[str, Any]], list[str]]:
     """Where each clip goes on the source timeline.
 
@@ -853,11 +879,51 @@ def plan_placements(cues: list[dict[str, Any]], clip_durations: list[float], tot
     return placements, warnings
 
 
-DUB_KEYS = ("dub_start", "dub_duration")
+def plan_adaptive_placements(
+    cues: list[dict[str, Any]],
+    clip_durations: list[float],
+    total: float,
+    min_speed: float = ADAPTIVE_VIDEO_SPEED_MIN,
+    max_speed: float = ADAPTIVE_VIDEO_SPEED_MAX,
+) -> tuple[list[dict[str, Any]] | None, float, list[str]]:
+    """Map each spoken source span to its natural voice length, preserving silent gaps at 1×.
+
+    The whole plan is rejected when any cue needs picture speed outside the conservative range;
+    callers then use :func:`plan_placements`, the backwards-compatible audio-only fallback.
+    """
+    placements: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    cursor = 0.0
+    previous_end = 0.0
+    for cue, voice_seconds in zip(cues, clip_durations, strict=True):
+        source_start = float(cue["start"])
+        source_end = float(cue["end"])
+        source_seconds = max(source_end - source_start, 0.1)
+        voice_seconds = max(float(voice_seconds), 0.01)
+        speed = source_seconds / voice_seconds
+        if speed < min_speed - 1e-6 or speed > max_speed + 1e-6:
+            warnings.append(
+                f"第 {int(cue['i']) + 1} 句需画面 {speed:.2f}×，超出保守范围 {min_speed:.2f}–{max_speed:.2f}×，已沿用原时间轴"
+            )
+            return None, total, warnings
+        cursor += max(0.0, source_start - previous_end)
+        placements.append({
+            "i": cue["i"],
+            "start": round(cursor, 3),
+            "tempo": 1.0,
+            "duration": round(voice_seconds, 3),
+            "video_speed": round(speed, 3),
+        })
+        cursor += voice_seconds
+        previous_end = source_end
+    return placements, round(cursor + max(0.0, total - previous_end), 3), warnings
+
+
+DUB_KEYS = ("dub_start", "dub_duration", "video_speed")
 
 
 def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Version cues + where each line's dubbed audio actually sits on the source timeline (HIG-36).
+    """Version cues + where each line's dubbed audio sits on its version timeline (HIG-36/HIG-73).
 
     ``placements`` is what ``plan_placements`` returned. An empty list strips the fields, which is
     how "the voice-over no longer matches this text" is recorded (translate-only, edited cues); a
@@ -871,6 +937,8 @@ def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]
         if hit is not None:
             clean["dub_start"] = round(float(hit["start"]), 3)
             clean["dub_duration"] = round(float(hit["duration"]), 3)
+            if hit.get("video_speed") is not None:
+                clean["video_speed"] = round(float(hit["video_speed"]), 3)
         out.append(clean)
     return out
 
@@ -1278,16 +1346,32 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     cues = transcript.get("cues") or []
     source_lang = str(loc.get("source_lang") or AUTO)
     terms = list(version.get("terms") or [])
+    fresh_translation = not (version.get("stage") == STAGE_TTS and version.get("cues"))
+    adaptive_candidate = callable(getattr(providers.mt, "localize_for_speech", None))
+    warnings: list[str] = []
 
-    if not (version.get("stage") == STAGE_TTS and version.get("cues")):
+    if fresh_translation:
         _stamp(version, status=LOC_RUNNING, stage=STAGE_TRANSLATE, error=None)
         _save(db, video, loc, langs=[lang])
         translated = translate_with_fallback(providers.mt, [c["text"] for c in cues], mt_name(source_lang), mt_name(lang), terms)
+        translated, rewrite_warning = localize_for_speech(
+            providers.mt,
+            [str(c["text"]) for c in cues],
+            translated,
+            mt_name(lang),
+            terms,
+            [max(0.1, float(c["end"]) - float(c["start"])) for c in cues],
+        )
+        if rewrite_warning:
+            warnings.append(rewrite_warning)
         # Rebuilt from scratch, so any dub_start / dub_duration from the previous mix is gone with it (HIG-36).
         version["cues"] = [{"i": c["i"], "translated": t} for c, t in zip(cues, translated, strict=True)]
         if version.get("dub") is False:
             # Translate only (HIG-56): an older voice-over no longer matches the text, but stays until re-dubbed.
-            _stamp(version, status=LOC_DONE, stage=None, error=None, warnings=[], stale=False, voice_stale=bool(version.get("voice_asset_id")))
+            _stamp(
+                version, status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False,
+                voice_stale=bool(version.get("voice_asset_id")), adaptive_timing=False, timeline_duration=None,
+            )
             _save(db, video, loc, langs=[lang])
             return
 
@@ -1317,9 +1401,9 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
         clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
         seconds = wav_duration(clip)
-        # Translations often run longer than the source (Korean ≈ 2× English): ask the model to
-        # speak faster before falling back to atempo, which only sounds fine up to ~1.3×.
-        rate = speech_rate_for(seconds, slots[int(cue["i"])]) if supports_speech_rate(model) else 1.0
+        # Old/custom providers retain the historical audio-only fit. HIG-73-capable providers keep
+        # natural TTS speed and adapt the picture after measuring the actual clip.
+        rate = speech_rate_for(seconds, slots[int(cue["i"])]) if not adaptive_candidate and supports_speech_rate(model) else 1.0
         if rate > 1.0:
             clip.write_bytes(providers.tts.synthesize(text, voice, rate, model=model, lang=lang, emotion=emotion))
             seconds = wav_duration(clip)
@@ -1329,15 +1413,59 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     if not spoken:
         raise LocalizeError("没有可合成的译文")
 
+    # The first script pass only estimated duration from the source cue. Give outliers one bounded
+    # rewrite using the measured voice result, then synthesize those cues once more.
+    if fresh_translation and adaptive_candidate:
+        retry_indexes = [
+            k for k, (cue, seconds) in enumerate(zip(spoken, clip_durations, strict=True))
+            if (float(cue["end"]) - float(cue["start"])) / max(seconds, 0.01)
+            < ADAPTIVE_VIDEO_SPEED_MIN - 1e-6
+            or (float(cue["end"]) - float(cue["start"])) / max(seconds, 0.01)
+            > ADAPTIVE_VIDEO_SPEED_MAX + 1e-6
+        ]
+        if retry_indexes:
+            current = [str(version["cues"][int(spoken[k]["i"])]["translated"]) for k in retry_indexes]
+            rewritten, retry_warning = localize_for_speech(
+                providers.mt,
+                [str(spoken[k]["text"]) for k in retry_indexes],
+                current,
+                mt_name(lang),
+                terms,
+                [max(0.1, float(spoken[k]["end"]) - float(spoken[k]["start"])) for k in retry_indexes],
+            )
+            if retry_warning:
+                warnings.append(retry_warning)
+            else:
+                for k, text in zip(retry_indexes, rewritten, strict=True):
+                    cue_i = int(spoken[k]["i"])
+                    version["cues"][cue_i]["translated"] = text
+                    clip_paths[k].write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
+                    clip_durations[k] = wav_duration(clip_paths[k])
+
     _stamp(version, stage=STAGE_MIX)
     _save(db, video, loc, langs=[lang])
-    placements, warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
+    adaptive = False
+    mix_total = total
+    placements: list[dict[str, Any]]
+    if adaptive_candidate:
+        adaptive_placements, adapted_total, adaptive_warnings = plan_adaptive_placements(spoken, clip_durations, total)
+        warnings.extend(adaptive_warnings)
+        if adaptive_placements is not None:
+            placements = adaptive_placements
+            mix_total = adapted_total
+            adaptive = True
+        else:
+            placements, legacy_warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
+            warnings.extend(legacy_warnings)
+    else:
+        placements, legacy_warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
+        warnings.extend(legacy_warnings)
     asset_id = ids.asset_id()
     dst = storage.asset_path(asset_id, VOICE_EXT)
     dst.parent.mkdir(parents=True, exist_ok=True)
     clips = [(path, p["start"], p["tempo"]) for path, p in zip(clip_paths, placements, strict=True)]
     try:
-        _run(mix_args(clips, total, dst), "混音")
+        _run(mix_args(clips, mix_total, dst), "混音")
     except Exception:
         storage.remove_file(dst)
         raise
@@ -1357,9 +1485,12 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
             name=voice_name(video.name, lang),
             ext=VOICE_EXT,
             source=ASSET_SOURCE_DERIVED,
-            duration=video.duration,
+            duration=mix_total,
             has_audio=True,
-            derived_from={"video_id": video.id, "video_name": video.name, "stem": STEM_DUBBED, "lang": lang},
+            derived_from={
+                "video_id": video.id, "video_name": video.name, "stem": STEM_DUBBED, "lang": lang,
+                **({"adaptive_timing": True} if adaptive else {}),
+            },
         )
     )
     # Where each line's voice-over actually landed, so the editor can time split subtitles by it (HIG-36).
@@ -1369,6 +1500,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False,
         voice=voice, voice_asset_id=asset_id, dub=True, voice_stale=False,
         source_voice=bool(version.get("source_voice")),
+        adaptive_timing=adaptive, timeline_duration=mix_total if adaptive else None,
     )  # fmt: skip
     _save(db, video, loc, langs=[lang])
 

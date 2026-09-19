@@ -548,11 +548,13 @@ def build_render_command(
         elapsed = 0.0
         for i, src in enumerate(sequence_sources):
             clip = src.clip
-            length = clip.source_out - clip.source_in
+            speed = float(clip.speed or 1.0)
+            length = (clip.source_out - clip.source_in) / speed
             raw = f"[seqraw{i}]"
+            tempo = f",setpts=(PTS-STARTPTS)/{_fmt(speed)}" if abs(speed - 1.0) > 1e-6 else ",setpts=PTS-STARTPTS"
             chains.append(
                 f"[{i}:v]trim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
-                f"setpts=PTS-STARTPTS,fps={fps},setsar=1{raw}"
+                f"{tempo[1:]},fps={fps},setsar=1{raw}"
             )
             filled = f"[seqfill{i}]"
             chains += fill_chains(
@@ -562,9 +564,10 @@ def build_render_command(
             chains.append(f"{filled}format=yuv420p,setsar=1[seqv{i}]")
             if source_heard:
                 if src.has_audio and clip_gains[i] > 0:
+                    atempo = f",atempo={_fmt(speed)}" if abs(speed - 1.0) > 1e-6 else ""
                     chains.append(
                         f"[{i}:a]atrim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
-                        f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},volume={_fmt(clip_gains[i])},apad,atrim=end={_fmt(length)}[seqa{i}]"
+                        f"asetpts=PTS-STARTPTS{atempo},{AUDIO_FORMAT},volume={_fmt(clip_gains[i])},apad,atrim=end={_fmt(length)}[seqa{i}]"
                     )
                 else:
                     chains.append(f"anullsrc=r=48000:cl=stereo,atrim=end={_fmt(length)}[seqa{i}]")
@@ -980,13 +983,15 @@ def build_render_command(
                 for k, segment in enumerate(sequence_sources):
                     c = segment.clip
                     position -= c.transition.duration if c.transition else 0.0
-                    length = c.source_out - c.source_in
+                    speed = float(c.speed or 1.0)
+                    length = (c.source_out - c.source_in) / speed
                     if c.video_id == video_meta.get("video_id"):
                         label = f"[tk{n_track}s{k}]"
                         delay = round(position * 1000)
+                        atempo = f",atempo={_fmt(speed)}" if abs(speed - 1.0) > 1e-6 else ""
                         chains.append(
                             f"{head}atrim=start={_fmt(c.source_in)}:end={_fmt(c.source_out)},"
-                            f"asetpts=PTS-STARTPTS,{AUDIO_FORMAT},adelay={delay}:all=1{label}"
+                            f"asetpts=PTS-STARTPTS{atempo},{AUDIO_FORMAT},adelay={delay}:all=1{label}"
                         )
                         pieces.append(label)
                     position += length

@@ -50,7 +50,9 @@ function TrackAudio({ track }: { track: AudioTrack }) {
         if (at !== null && Math.abs(el.currentTime - at) > 0.01) el.currentTime = at;
         return;
       }
-      const rate = player.mediaRate * speed;
+      // A separated stem is tied to raw source frames, so a retimed sequence clip must
+      // retime that stem too. Post-aligned dubbing already lives on the adapted clock.
+      const rate = (r.align === 'source' ? player.sourceMediaRate : player.mediaRate) * speed;
       if (el.playbackRate !== rate) el.playbackRate = rate;
       if (Math.abs(el.currentTime - at) > tolerance * rate) el.currentTime = at;
       if (el.paused) void el.play().catch(() => undefined);

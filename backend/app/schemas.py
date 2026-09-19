@@ -755,6 +755,9 @@ class SequenceClip(BaseModel):
     video_id: str = Field(min_length=1)
     source_in: float = Field(alias="in", ge=0)
     source_out: float = Field(alias="out", gt=0)
+    # HIG-73: visual playback rate. Optional on the wire through its default so old specs stay valid.
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    localize_cue: int | None = Field(default=None, ge=0)
     # None distinguishes legacy sequences whose owner gain was stored as master gain.
     source_volume: float | None = Field(default=None, ge=0, le=1)
     transition: ClipTransition | None = None
@@ -770,6 +773,7 @@ class SequenceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     clips: list[SequenceClip] = Field(min_length=1)
+    origin: Literal["localize"] | None = None
 
     @model_validator(mode="after")
     def _check_clips(self) -> SequenceSpec:
@@ -781,15 +785,15 @@ class SequenceSpec(BaseModel):
         for previous, clip in zip(self.clips, self.clips[1:]):
             transition = clip.transition
             if transition and transition.duration >= min(
-                previous.source_out - previous.source_in,
-                clip.source_out - clip.source_in,
+                (previous.source_out - previous.source_in) / previous.speed,
+                (clip.source_out - clip.source_in) / clip.speed,
             ) - 1e-6:
                 raise ValueError("转场时长必须小于相邻片段时长")
         return self
 
     @property
     def duration(self) -> float:
-        return sum(c.source_out - c.source_in - (c.transition.duration if c.transition else 0) for c in self.clips)
+        return sum((c.source_out - c.source_in) / c.speed - (c.transition.duration if c.transition else 0) for c in self.clips)
 
 
 class EditSpec(BaseModel):
@@ -1155,11 +1159,14 @@ class TranscriptOut(BaseModel):
 class VersionCueOut(BaseModel):
     i: int
     translated: str
-    # HIG-36: where this line's voice-over actually sits on the source timeline (seconds).
+    # HIG-36/HIG-73: where this line's voice-over sits. This is the adapted output
+    # timeline when adaptive_timing is true, otherwise the historical source timeline.
     # Absent for translate-only versions and for cues waiting to be re-dubbed; the editor then
     # falls back to the transcript cue's own start / end.
     dub_start: float | None = None
     dub_duration: float | None = None
+    # HIG-73: source-picture playback rate when the version uses adaptive timing.
+    video_speed: float | None = None
 
 
 class TermOut(BaseModel):
@@ -1180,6 +1187,8 @@ class VersionOut(BaseModel):
     dub: bool = True
     voice_stale: bool = False
     source_voice: bool = False  # HIG-58：这一版用复刻的原声合成，界面显示"原声"
+    adaptive_timing: bool = False  # HIG-73：dub_* 位于适配后的成片时间轴
+    timeline_duration: float | None = None
     updated_at: str | None = None
 
 

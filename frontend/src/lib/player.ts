@@ -12,7 +12,7 @@ import { lapsFor, postTimeOf, postToSource, postTrimDuration, removedRangeAt, sk
 
 type Listener = (t: number, playing: boolean, lap: number) => void;
 type FrameListener = () => void;
-export interface SequencePlaybackClip { id: string; src: string; sourceIn: number; sourceOut: number; start: number; end: number }
+export interface SequencePlaybackClip { id: string; src: string; sourceIn: number; sourceOut: number; start: number; end: number; speed?: number }
 
 export class Player {
   private video: HTMLVideoElement | null = null;
@@ -128,7 +128,7 @@ export class Player {
     const video = this.video;
     const clip = this.sequenceClipAt(Math.max(0, this.time));
     if (!video || !clip) return;
-    const mediaTime = Math.min(clip.sourceOut, clip.sourceIn + Math.max(0, this.time - clip.start));
+    const mediaTime = Math.min(clip.sourceOut, clip.sourceIn + Math.max(0, this.time - clip.start) * (clip.speed ?? 1));
     if (video.getAttribute('src') !== clip.src) {
       video.pause();
       this.synthetic = true;
@@ -138,6 +138,7 @@ export class Player {
     } else if (Math.abs(video.currentTime - mediaTime) > 0.08) {
       try { video.currentTime = mediaTime; } catch { /* metadata not loaded yet */ }
     }
+    this.applyRate();
   }
 
   get isSynthetic() {
@@ -257,10 +258,18 @@ export class Player {
     return this.playing && this.rateValue > 0 ? this.rateValue : 0;
   }
 
+  /** Source-aligned media follows the active sequence clip's retiming as well as J/K/L. */
+  get sourceMediaRate() {
+    if (!this.playing || this.rateValue <= 0) return 0;
+    const clipSpeed = this.sequence ? this.sequenceClipAt(Math.max(0, this.time))?.speed ?? 1 : 1;
+    return this.rateValue * clipSpeed;
+  }
+
   private applyRate() {
     if (this.video && !this.synthetic) {
       try {
-        this.video.playbackRate = this.rateValue > 0 ? this.rateValue : 1;
+        const clipSpeed = this.sequence ? this.sequenceClipAt(Math.max(0, this.time))?.speed ?? 1 : 1;
+        this.video.playbackRate = this.rateValue > 0 ? this.rateValue * clipSpeed : 1;
       } catch {
         /* ignore */
       }
@@ -381,7 +390,7 @@ export class Player {
         if (this.time >= 0) { this.time = skipRemoved(0, this.remove); this.syncSequenceMedia(); this.playVideo(); }
       } else {
         const clip = this.sequenceClipAt(this.time);
-        if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn);
+        if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn) / (clip.speed ?? 1);
         else this.time += dt * this.rateValue;
         const next = this.sequence.find((c) => c.start > (clip?.start ?? 0) + 1e-6 && c.start <= this.time + 1e-3);
         if (next) { this.time = next.start; this.syncSequenceMedia(); this.playVideo(); }

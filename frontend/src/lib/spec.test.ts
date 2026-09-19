@@ -24,6 +24,17 @@ describe('toContractSpec · 素材内裁剪（HIG-67）', () => {
   });
 });
 
+describe('toContractSpec · 变速序列（HIG-73）', () => {
+  it('按成片时长规范删除区间', () => {
+    const spec: EditSpec = {
+      ...emptySpec(),
+      sequence: { clips: [{ id: 'c', video_id: 'v', in: 0, out: 4, speed: 0.8 }] },
+      trim: { remove: [[4.5, 8]] },
+    };
+    expect(toContractSpec(spec).trim.remove).toEqual([[4.5, 5]]);
+  });
+});
+
 describe('toContractSpec · audio', () => {
   it('没有 audio 块、或全是缺省值时不带此字段（保持旧 spec 形状）', () => {
     expect('audio' in toContractSpec(emptySpec())).toBe(false);

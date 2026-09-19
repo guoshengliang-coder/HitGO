@@ -115,6 +115,8 @@ def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db
             "dub": body.dub,
             "voice_stale": bool(old.get("voice_stale", False)),
             "source_voice": bool(body.use_source_voice),
+            "adaptive_timing": False,
+            "timeline_duration": None,
             "updated_at": now,
         }
     loc["versions"] = versions
@@ -207,6 +209,8 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
         cues=cues,
         error=None,
         warnings=[],
+        adaptive_timing=False,
+        timeline_duration=None,
         updated_at=iso(utcnow()),
     )
     pending = dict(loc.get("pending") or {})

@@ -106,7 +106,7 @@ const ids = () => {
   seq += 1;
   return `id${seq}`;
 };
-const ctx = (v: Video, label = '韩语') => ({ video: v, assets: ASSETS, langLabel: label, newLayerId: ids, newTrackId: ids });
+const ctx = (v: Video, label = '韩语') => ({ video: v, assets: ASSETS, langLabel: label, newLayerId: ids, newTrackId: ids, newClipId: ids });
 
 describe('目标语言多选（HIG-74 返工）', () => {
   it('保留勾选顺序、最多五种，取消后能再选', () => {
@@ -366,6 +366,42 @@ describe('canApplyVersion', () => {
 });
 
 describe('applyLocalizationToSpec', () => {
+  it('自然口播按句切分并保守变速画面，配音和字幕改走适配后的成片时间轴', () => {
+    const adaptive = version({
+      adaptive_timing: true,
+      timeline_duration: 10.1,
+      cues: [
+        { i: 0, translated: '第一句', dub_start: 0.4, dub_duration: 2.5, video_speed: 0.8 },
+        { i: 1, translated: '第二句', dub_start: 3.9, dub_duration: 1.6, video_speed: 1.25 },
+        { i: 2, translated: '第三句', dub_start: 6.5, dub_duration: 2, video_speed: 1 },
+      ],
+    });
+    const v = video({ localization: { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: adaptive } } });
+    const spec: EditSpec = {
+      ...emptySpec(),
+      layers: [{ id: 'timed', type: 'text', text: '跟画面', style: defaultTextStyle(), anchor: 'top-center', margin: [0, 0.1], width: 0.5, rotate: 0, opacity: 1, t: [6.4, 8.4] }],
+    };
+    expect(applyLocalizationToSpec(spec, 'ko', ctx(v))).toEqual([]);
+    expect(spec.sequence?.origin).toBe('localize');
+    expect(spec.sequence?.clips.filter((clip) => clip.localize_cue !== undefined).map((clip) => [clip.localize_cue, clip.speed])).toEqual([
+      [0, 0.8], [1, 1.25], [2, 1],
+    ]);
+    expect(spec.layers.find((layer) => layer.id === 'timed')?.t).toEqual([6.5, 8.5]);
+    expect(spec.audio?.tracks.find((track) => track.role === 'voice')).toMatchObject({ align: 'post', t: 'all' });
+    expect(spec.layers.filter((layer) => layer.origin === 'localize').map((layer) => layer.t)).toEqual([
+      [0.4, 2.9], [3.9, 5.5], [6.5, 8.5],
+    ]);
+  });
+
+  it('已有手工视频拼接时不覆盖，只返回明确警告', () => {
+    const adaptive = version({ adaptive_timing: true, cues: [{ i: 0, translated: '第一句', dub_start: 0.4, dub_duration: 2.5, video_speed: 0.8 }] });
+    const v = video({ localization: { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko: adaptive } } });
+    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: 'manual', video_id: 'v1', in: 0, out: 10 }] } };
+    const warnings = applyLocalizationToSpec(spec, 'ko', ctx(v));
+    expect(warnings.some((warning) => warning.includes('手工视频拼接'))).toBe(true);
+    expect(spec.sequence?.clips).toEqual([{ id: 'manual', video_id: 'v1', in: 0, out: 10, source_volume: 0 }]);
+  });
+
   it('拼接后重新套用配音只静音原片；导出原版不改插入片段的音量', () => {
     const v = video();
     const spec: EditSpec = { ...emptySpec(), sequence: { clips: [

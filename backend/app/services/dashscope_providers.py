@@ -238,6 +238,8 @@ class DashScopeAsr:
 class DashScopeTranslate:
     api_key: str
     model: str
+    # Default keeps the standalone diagnostic script and any external construction compatible.
+    script_model: str = "qwen-plus"
 
     def translate(self, text: str, source: str, target: str, terms: list[dict[str, str]]) -> str:
         dashscope = _import_dashscope()
@@ -267,6 +269,54 @@ class DashScopeTranslate:
             return str(result.output.choices[0].message.content)
         except (AttributeError, IndexError, KeyError, TypeError) as exc:
             raise LocalizeError("翻译结果为空") from exc
+
+    def localize_for_speech(
+        self,
+        sources: list[str],
+        translations: list[str],
+        target: str,
+        terms: list[dict[str, str]],
+        target_seconds: list[float],
+    ) -> list[str]:
+        """Rewrite literal MT as natural spoken copy while preserving cue numbering (HIG-73)."""
+        dashscope = _import_dashscope()
+        from dashscope import Generation  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        term_text = "；".join(f"{t.get('source')} → {t.get('target')}" for t in terms if t.get("source") and t.get("target")) or "无"
+        rows = "\n".join(
+            f"{i}. 原文：{src}\n直译：{translated}\n目标时长：{seconds:.2f} 秒"
+            for i, (src, translated, seconds) in enumerate(zip(sources, translations, target_seconds, strict=True), start=1)
+        )
+        system = (
+            "你是专业影视配音本地化编剧。把直译改写为目标语言里自然、口语化、便于 TTS 朗读的台词；"
+            "准确保留原意、事实、语气和术语，不添加新信息。按目标语言习惯重组语序，展开容易误读的数字、缩写和符号，"
+            "用自然标点控制停顿和重音。每句尽量匹配给定时长，不用生硬堆词，不输出 SSML、注音、解释或引号。"
+            "必须逐行输出与输入相同数量、相同顺序的编号，格式严格为“1. 台词”。"
+        )
+
+        def call() -> Any:
+            return Generation.call(
+                api_key=self.api_key,
+                model=self.script_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": f"目标语言：{target}\n术语：{term_text}\n\n{rows}"},
+                ],
+                result_format="message",
+            )
+
+        result = _with_retry("口播本地化", call)
+        try:
+            raw = str(result.output.choices[0].message.content)
+        except (AttributeError, IndexError, KeyError, TypeError) as exc:
+            raise LocalizeError("口播本地化结果为空") from exc
+        from app.services.localize import parse_numbered_block  # noqa: PLC0415
+
+        parsed = parse_numbered_block(raw, len(sources))
+        if parsed is None:
+            raise LocalizeError("口播本地化没有按句返回")
+        return parsed
 
 
 @dataclass
@@ -436,7 +486,7 @@ def make_providers(cfg: Settings) -> Providers:
     key = cfg.dashscope_api_key
     return Providers(
         asr=DashScopeAsr(api_key=key, model=cfg.localize_asr_model),
-        mt=DashScopeTranslate(api_key=key, model=cfg.localize_mt_model),
+        mt=DashScopeTranslate(api_key=key, model=cfg.localize_mt_model, script_model=cfg.localize_script_model),
         tts=DashScopeTts(api_key=key, model=cfg.localize_tts_model),
         highlight=DashScopeHighlight(api_key=key, model=cfg.highlight_model),
         clone=DashScopeVoiceClone(api_key=key),

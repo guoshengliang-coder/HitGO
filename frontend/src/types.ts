@@ -215,11 +215,14 @@ export interface VersionCue {
   i: number;
   translated: string;
   /**
-   * 可选（HIG-36）：这句配音在源时间轴上实际占用的起点与时长（秒，含变速）。
+   * 可选（HIG-36 / HIG-73）：这句配音实际占用的起点与时长。
+   * adaptive_timing=true 时是适配后的成片时间轴，否则是旧版源时间轴（秒，含变速）。
    * 只翻译、等待重新合成时没有；字幕拆分按它定时，缺席就回落到模板 cue 的 start / end。
    */
   dub_start?: number | null;
   dub_duration?: number | null;
+  /** 可选（HIG-73）：套用时该句原画面的播放速度。 */
+  video_speed?: number | null;
 }
 
 export interface LocalizationVersion {
@@ -240,6 +243,9 @@ export interface LocalizationVersion {
   voice_stale?: boolean;
   /** 缺省 false（HIG-58）：这一版用复刻出来的原声合成，voice 里是 clone_voice.voice_id，界面显示「原声」。 */
   source_voice?: boolean;
+  /** HIG-73：dub_* 已位于适配后的成片时间轴，套用时按 video_speed 重排画面。 */
+  adaptive_timing?: boolean;
+  timeline_duration?: number | null;
   updated_at?: string | null;
 }
 
@@ -907,6 +913,10 @@ export interface SequenceClip {
   video_id: string;
   in: number;
   out: number;
+  /** 可选（HIG-73）：画面播放速度，0.5–2.0；缺省 1。大于 1 缩短片段，小于 1 延长片段。 */
+  speed?: number;
+  /** 可选（HIG-73）：自动转语言时对应的听写句编号；非口播间隔不带。 */
+  localize_cue?: number;
   /** 本片段原声音量；缺省 1。旧序列全部未设置时由 normalizeSequenceAudio 迁移。 */
   source_volume?: number | null;
   /** 当前片段与前一段之间的转场；首段不设。 */
@@ -914,6 +924,8 @@ export interface SequenceClip {
 }
 export interface SequenceSpec {
   clips: SequenceClip[];
+  /** 可选；自动生成的转语言画面时序，可在切换语言时安全替换。 */
+  origin?: 'localize';
 }
 
 export interface EditSpec {

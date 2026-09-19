@@ -133,6 +133,17 @@ describe('HIG-39 composed timeline', () => {
     expect(sequenceDuration(spec.sequence!)).toBe(6.5);
   });
 
+  it('uses clip speed for composed duration and raw-source mapping', () => {
+    const spec = withSequence(
+      { ...clip('slow', 'owner', 0, 2), speed: 0.8 },
+      { ...clip('fast', 'owner', 2, 4), speed: 1.25 },
+    );
+    expect(clipWindows(spec.sequence!).map((window) => [window.start, window.end])).toEqual([[0, 2.5], [2.5, 4.1]]);
+    expect(sequenceDuration(spec.sequence!)).toBeCloseTo(4.1);
+    expect(sequenceSourceTime(spec.sequence!, 'owner', 1)).toBeCloseTo(0.8);
+    expect(sequenceSourceTime(spec.sequence!, 'owner', 3.5)).toBeCloseTo(3.25);
+  });
+
   it('moves and deletes local windows with their footage, without moving all-film windows', () => {
     const spec: EditSpec = {
       ...withSequence(clip('a', 'one', 0, 4), clip('b', 'two', 0, 3)),

@@ -218,6 +218,22 @@ def test_plan_placements_speeds_up_then_warns():
     assert len(warnings) == 1 and "第 3 句" in warnings[0] and "1.30×" in warnings[0]
 
 
+def test_adaptive_placements_preserve_gaps_and_reject_unnatural_picture_speed():
+    cues = [
+        {"i": 0, "start": 0.5, "end": 2.5},
+        {"i": 1, "start": 3.0, "end": 5.0},
+    ]
+    placements, total, warnings = localize.plan_adaptive_placements(cues, [2.5, 1.6], 6.0)
+    assert warnings == []
+    assert placements == [
+        {"i": 0, "start": 0.5, "tempo": 1.0, "duration": 2.5, "video_speed": 0.8},
+        {"i": 1, "start": 3.5, "tempo": 1.0, "duration": 1.6, "video_speed": 1.25},
+    ]
+    assert total == 6.1  # leading / inter-cue / trailing silence all stay at 1×
+    placements, total, warnings = localize.plan_adaptive_placements(cues, [4.0, 1.6], 6.0)
+    assert placements is None and total == 6.0 and "保守范围" in warnings[0]
+
+
 def test_with_placements_writes_and_strips_dub_windows():
     cues = [{"i": 0, "translated": "a"}, {"i": 1, "translated": "b"}, {"i": 2, "translated": ""}]
     placements = [{"i": 0, "start": 0.0, "tempo": 1.0, "duration": 1.5}, {"i": 1, "start": 2.0, "tempo": 1.2, "duration": 2.0}]
@@ -417,6 +433,30 @@ def test_run_localization_transcribes_once_and_builds_one_asset_per_language(rea
     ]  # fmt: skip
     # extract once + mix twice; scratch dir is gone.
     assert len(no_ffmpeg) == 3 and not storage.localize_tmp_dir(VIDEO).exists()
+
+
+def test_spoken_localization_builds_an_adaptive_picture_timeline(ready_video, db, no_ffmpeg):
+    class AdaptiveTranslate(localize.FakeTranslate):
+        def localize_for_speech(self, sources, translations, target, terms, target_seconds):  # noqa: ANN001
+            return [f"自然口播 {i + 1}" for i in range(len(sources))]
+
+    queue(db, ["ko"], transcript=DONE_TRANSCRIPT, source_lang="en")
+    providers = localize.Providers(
+        asr=localize.FakeAsr(),
+        mt=AdaptiveTranslate(),
+        tts=localize.FakeTts(seconds=2.0),
+    )
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    version = db.get(Video, VIDEO).localization["versions"]["ko"]
+    assert version["adaptive_timing"] is True
+    assert version["timeline_duration"] == pytest.approx(23.61)
+    assert [c["translated"] for c in version["cues"]] == ["自然口播 1", "自然口播 2"]
+    assert [c["video_speed"] for c in version["cues"]] == [pytest.approx(1.245), pytest.approx(1.25)]
+    assert [c["dub_start"] for c in version["cues"]] == [0.42, 2.51]
+    asset = db.get(Asset, version["voice_asset_id"])
+    assert asset.duration == pytest.approx(23.61)
+    assert asset.derived_from["adaptive_timing"] is True
 
 
 def test_running_task_does_not_clobber_a_version_queued_meanwhile(ready_video, db, no_ffmpeg):
@@ -786,8 +826,8 @@ def test_put_version_requeues_only_tts_and_mix(client, ready_video, enqueued, db
     assert r.status_code == 202, r.text
     ko = r.json()["localization"]["versions"]["ko"]
     assert ko["status"] == "queued" and ko["stage"] == "tts" and ko["voice"] == KO_VOICE and ko["error"] is None
-    assert ko["cues"] == [{"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None},
-                          {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None}]  # fmt: skip
+    assert ko["cues"] == [{"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None},
+                          {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None}]  # fmt: skip
     assert ko["voice_asset_id"] == "a_ko"  # kept until the worker replaces it
     assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
     assert current_loc(db)["pending"] == {"target_langs": ["ko"], "retranscribe": False}
@@ -856,8 +896,8 @@ def test_put_version_clears_the_dub_windows_and_ignores_them_in_the_body(client,
     r = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"cues": [{"i": 1, "translated": "시작합시다", "dub_start": 99.0, "dub_duration": 99.0}]})
     assert r.status_code == 202, r.text
     assert r.json()["localization"]["versions"]["ko"]["cues"] == [
-        {"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None},
-        {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None},
+        {"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None},
+        {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None},
     ]
     assert all("dub_start" not in c for c in current_loc(db)["versions"]["ko"]["cues"])
 
@@ -899,7 +939,7 @@ def test_video_serialization_carries_the_full_localization_block(client, ready_v
     assert loc["source_lang"] == "en"
     assert loc["transcript"]["cues"][0] == {"i": 0, "start": 0.42, "end": 2.91, "text": "Welcome to HitGO."}
     ko = loc["versions"]["ko"]
-    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "dub", "voice_stale", "source_voice", "updated_at"}
+    assert set(ko) == {"status", "stage", "voice", "terms", "cues", "stale", "error", "warnings", "voice_asset_id", "dub", "voice_stale", "source_voice", "adaptive_timing", "timeline_duration", "updated_at"}
     assert ko["dub"] is True and ko["voice_stale"] is False  # old rows without the fields
     assert ko["warnings"][0].startswith("第 2 句") and ko["voice_asset_id"] == "a_ko"
     listed = client.get("/api/assets?source=derived").json()

@@ -104,8 +104,9 @@
       "terms": [ { "source": "HitGO", "target": "힛고" } ],   // 翻译术语表
       "cues": [                     // 与 transcript.cues 按 i 对齐
         { "i": 0, "translated": "힛고에 오신 것을 환영합니다.",
-          "dub_start": 0.42,        // 可选（HIG-36）：这句配音在源时间轴上的起点，秒
-          "dub_duration": 2.13 }    // 可选（HIG-36）：变速后实际占用的秒数
+          "dub_start": 0.42,        // 可选：配音起点；adaptive_timing=true 时为适配后的成片时间轴，否则为源时间轴
+          "dub_duration": 2.13,     // 可选：这句配音实际占用的秒数
+          "video_speed": 1.17 }     // 可选（HIG-73）：套用时这句原画面的播放速度
       ],
       "stale": false,               // 模板改过之后为 true：译文不是最新模板译出来的，需重译
       "error": null, "warnings": [],   // warnings：配音塞不进原句时段等提示
@@ -113,6 +114,8 @@
       "dub": true,                  // 可选，缺省 true（HIG-56）：false = 这次只翻译不合成，done 时可能没有 voice_asset_id
       "voice_stale": false,         // 可选，缺省 false（HIG-56）：只翻译覆盖了译文，旧配音还在但对不上新译文，需再合成
       "source_voice": false,        // 可选，缺省 false（HIG-58）：这一版用复刻出来的原声合成（voice 里是 clone_voice.voice_id），界面显示"原声"而不是音色名
+      "adaptive_timing": true,      // 可选，缺省 false（HIG-73）：配音与字幕使用适配后的成片时间轴，套用时按句重排画面
+      "timeline_duration": 23.61,   // 可选：adaptive_timing=true 时适配后的正片总时长
       "updated_at": "..."
     }
   }
@@ -127,13 +130,22 @@
 时改用所选音频素材作为唯一 BGM，不要求源视频分离。分离或新 BGM 不可用时不得自动套用成缺少背景音乐的版本。
 听写修正、只翻译和逐版本重新配音仍由高级操作提供。
 
-**译文字幕的配音时段 `dub_start` / `dub_duration`**（可选，缺省缺席，HIG-36）：这句译文合成出来的配音在
-**源时间轴**上实际占用的起点与时长（秒，已含为塞进原句时段而做的变速），因此常常和模板 cue 的
+**译文字幕的配音时段 `dub_start` / `dub_duration`**（可选，缺省缺席，HIG-36 / HIG-73）：这句译文合成出来的配音
+实际占用的起点与时长。旧版或 `adaptive_timing = false` 时位于**源时间轴**（含为塞进原句时段而做的变速）；
+`adaptive_timing = true` 时位于**适配后的成片时间轴**，同一句另带 `video_speed`，编辑器按模板 cue 的源区间切片并以该速度
+播放画面，非口播间隔保持 1×。因此这些字段常常和模板 cue 的
 `[start, end]` 不等长。只有本版配音与当前译文一致时才下发——只翻译（`dub = false`）、`voice_stale = true`、
 改过译文 / 换过音色还没重新合成、以及该句译文为空时都没有这两个字段。服务端在混音成功后自己写，
 `PUT /api/videos/{id}/localize/versions/{lang}` 不接收它们（传了忽略）。前端用它给译文字幕定时：
 **字段在就按它，缺席就回落到 `transcript.cues[].start / end`**；一条原句被拆成多条字幕时，各段在这个
 时段里按字数摊分。
+
+**自然口播与保守画面适配（HIG-73）**：Qwen-MT 先保证语义与术语，再由 `LOCALIZE_SCRIPT_MODEL`（缺省
+`qwen-plus`）按目标语言口语习惯重组语序、展开容易误读的数字/缩写/符号并补自然标点，同时以原句时长为目标。
+服务端按自然语速合成并测量每句；超出画面 `0.8–1.25×` 可适配范围的句子再改写、重合成一次。全部句子都能落在范围内才
+写 `adaptive_timing = true`；否则整版沿用旧的源时间轴与音频变速兜底，并在 `warnings` 明说哪句超限。该能力只调整原画面
+速度和切分，不做生成式口型重绘。编辑器只在没有手工视频拼接、删除区间或固定成片时长时自动建立画面时序；有这些编辑时
+保留用户时序并给警告。
 
 **原声配音 `clone_voice`**（可选，缺省 null，HIG-58）：从这条视频自己的人声里截一段样本，用百炼 CosyVoice 的声音
 复刻得到一个音色，之后各语言版本都用它合成，听感仍是原说话人。整条视频只复刻一次：`status = done` 且 `model` 与
@@ -256,8 +268,9 @@
 跳过并记警告）。
 
 **配音**（`source = "derived"`，`derived_from.stem = "dubbed"`）：由改语言产生，每个语言版本一条（`derived_from.lang`
-是语言码），`type = audio`、`kind = audio`、`status = ready`，时长等于源视频，内容是按源时间轴铺好的合成人声（其余
-静音）。重新合成同一语言会换新 id 并删掉旧素材（连文件）；`DELETE …/localize/versions/{lang}` 也会删掉它。
+是语言码），`type = audio`、`kind = audio`、`status = ready`。保守画面适配成功时，时长等于适配后的 `timeline_duration`、
+内容按成片时间轴铺好；否则时长等于源视频，内容按源时间轴铺好（其余时段静音）。重新合成同一语言会换新 id
+并删掉旧素材（连文件）；`DELETE …/localize/versions/{lang}` 也会删掉它。
 
 **朗读**（`source = "derived"`，`derived_from.stem = "tts"`，HIG-50）：由 `POST /api/tts` 产生，不属于任何视频：`type = audio`、
 `kind = audio`，先以 `status = preparing` 返回，worker 合成完转 `ready` 并带 `duration`（失败 `failed` + `error`）。
@@ -338,8 +351,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 
 ```jsonc
 "sequence": {
+  "origin": "localize",
   "clips": [
-    { "id": "c_1", "video_id": "v_a1b2c3", "in": 0, "out": 4.2 },
+    { "id": "c_1", "video_id": "v_a1b2c3", "in": 0, "out": 4.2,
+      "speed": 0.92, "localize_cue": 0 },
     { "id": "c_2", "video_id": "v_d4e5f6", "in": 1, "out": 5.5,
       "transition": { "type": "fade", "duration": 0.4 } }
   ]
@@ -350,6 +365,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   当前视频也可重复引用。`in` / `out` 是该源片的秒数，`0 ≤ in < out ≤ 源片时长`；
   `id` 在序列中唯一。至少一个片段，每段不少于 0.1 秒。
   已就绪图片也可作为主轨来源：上传预处理把静帧做成默认 5 秒的无声源片，序列引用该源片。
+- 每段可选 `speed`（0.5–2.0，缺省 1）：成片时长为 `(out - in) / speed`，画面用 `setpts`、该片段原声及
+  源对齐音轨用 `atempo` 同步变速且不变调。`origin = "localize"`、`localize_cue` 是 HIG-73 自动画面适配标记；
+  切换语言版本时只替换这种自动时序，不覆盖用户手工拼接。
 - 每段的 `transition` 表示**该段进入时**与前一段的转场；首段不设。`type` 为
   `cut | fade | slide_left | slide_right | wipe_left | wipe_right`；`cut` 时 `duration = 0`，
   其它效果的时长为 0.1–1.5 秒且小于相邻片段时长。拼接总时长等于各片段时长之和减去转场重叠时长。
@@ -997,10 +1015,12 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      泰语 / 越南语 / 阿拉伯语只有 MiniMax 音色——`MINIMAX_TTS_MODEL` 留空（缺省）时这三种语言没有音色，`voice_table()` 把它们整个过滤掉，
      于是不出现在 `target_langs` 里（界面与接 MiniMax 之前完全一致）。音色表条目内部可带 `voice`（真实的厂商 voice_id，缺省 = `id`）
      与 `emotion`（同一个厂商音色的「情绪版」条目，`id` 形如 `<voice>~happy` 以保证音色 id 唯一），两者都不外泄。
-     `LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。译文常比原句长（韩语约为英文 2 倍），
-     一句配音超过它到下一句起点的间隔时，按比例用 `speech_rate`（上限 2.0）加速重合成一次，剩余再交给下一步的 `atempo`。
-   - mix：每句放在模板里该句的源起点；配音比到下一句起点的间隔长时 `atempo` 加速，上限 `LOCALIZE_MAX_TEMPO`（缺省 1.3），
-     仍超出则保留重叠并写进 `warnings`。一条 ffmpeg：`anullsrc` 静音底（源时长）+ 每句 `adelay` + `amix normalize=0`
+     `LOCALIZE_VOICES` 里 `lang=voice@model` 可给任意语言指定音色和模型。支持 HIG-73 的正式 provider 会先用
+     `LOCALIZE_SCRIPT_MODEL` 生成适合自然朗读的台词，并按实测 TTS 时长做一次超限重写；旧 / fake provider 仍沿用原逻辑：
+     一句配音超过它到下一句起点的间隔时，按比例用 `speech_rate`（上限 2.0）加速重合成一次。
+   - mix：HIG-73 自然口播全部能以 `0.8–1.25×` 画面速度承接时，按适配后的连续时间轴放置配音，原句间空白保持 1×；
+     否则回退为每句放在模板源起点，并用 `atempo`（上限 `LOCALIZE_MAX_TEMPO`，缺省 1.3）压入原槽位，仍超出则警告。
+     一条 ffmpeg：`anullsrc` 静音底（适配后或源时长）+ 每句 `adelay` + `amix normalize=0`
      → `{asset_id}.m4a`（aac 192k，44.1 kHz 立体声），建一条 `type = audio`、`source = derived`、`stem = dubbed` 的素材，
      `stale = false`，上一次这个语言的配音素材连文件一起删掉。
 4. 临时目录 `tmp/{video_id}.loc/` 结束即删（样本文件不在里面，留着备查）；`LOCALIZE_PROVIDER = fake` 时听写 / 翻译 /

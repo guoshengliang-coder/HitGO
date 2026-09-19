@@ -12,7 +12,7 @@ export const activeSourceDrag = () => activeSourceId;
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 
 export function clipLength(clip: SequenceClip): number {
-  return clip.out - clip.in;
+  return (clip.out - clip.in) / (clip.speed ?? 1);
 }
 
 export function sequenceDuration(sequence: SequenceSpec): number {
@@ -75,7 +75,7 @@ export function setOwnerSourceGain(spec: EditSpec, ownerId: string, gain: number
 export function sequenceSourceTime(sequence: SequenceSpec, ownerId: string, time: number): number | undefined {
   const window = clipAt(sequence, time);
   if (!window || time < 0 || time >= sequenceDuration(sequence) || window.clip.video_id !== ownerId) return undefined;
-  return window.clip.in + time - window.start;
+  return window.clip.in + (time - window.start) * (window.clip.speed ?? 1);
 }
 
 /** Visible spans for an owner-aligned track; never paint it over other sources. */
@@ -167,7 +167,7 @@ export function insertClip(spec: EditSpec, ownerId: string, ownerDuration: numbe
     sequence.clips.splice(index + 1, 0, clip);
   } else {
     const original = sequence.clips[index];
-    const cut = Math.max(original.in + MIN_CLIP, Math.min(original.out - MIN_CLIP, original.in + position - window.start));
+    const cut = Math.max(original.in + MIN_CLIP, Math.min(original.out - MIN_CLIP, original.in + (position - window.start) * (original.speed ?? 1)));
     const tail: SequenceClip = { ...original, id: id('c'), in: cut, transition: null };
     original.out = cut;
     sequence.clips.splice(index + 1, 0, clip, tail);
@@ -187,7 +187,7 @@ export function updateClip(spec: EditSpec, clipId: string, patch: Partial<Sequen
   const clip = next.sequence?.clips.find((c) => c.id === clipId);
   if (clip) Object.assign(clip, patch);
   if (next.sequence) sanitizeTransitions(next.sequence);
-  return 'in' in patch || 'out' in patch || 'transition' in patch ? retimeContent(spec, next) : next;
+  return 'in' in patch || 'out' in patch || 'speed' in patch || 'transition' in patch ? retimeContent(spec, next) : next;
 }
 
 /** A clip keeps its own timed content when it moves or changes length. */
@@ -204,10 +204,10 @@ export function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
     if (hi - lo < 0.01) return [];
     // Match frames by their raw-source timestamp, so changing a clip's in/out
     // point trims the attached timed content instead of sliding it over new footage.
-    const sourceLo = old.clip.in + lo - old.start;
-    const sourceHi = old.clip.in + hi - old.start;
-    const mappedA = next.start + Math.max(sourceLo, next.clip.in) - next.clip.in;
-    const mappedB = next.start + Math.min(sourceHi, next.clip.out) - next.clip.in;
+    const sourceLo = old.clip.in + (lo - old.start) * (old.clip.speed ?? 1);
+    const sourceHi = old.clip.in + (hi - old.start) * (old.clip.speed ?? 1);
+    const mappedA = next.start + (Math.max(sourceLo, next.clip.in) - next.clip.in) / (next.clip.speed ?? 1);
+    const mappedB = next.start + (Math.min(sourceHi, next.clip.out) - next.clip.in) / (next.clip.speed ?? 1);
     return mappedB - mappedA >= 0.01 ? [[mappedA, mappedB]] : [];
   });
   after.trim.remove = normalizeRanges(before.trim.remove.flatMap(mapRawRange), sequenceDuration(after.sequence));
@@ -247,7 +247,7 @@ export function splitClip(spec: EditSpec, clipId: string, time: number): EditSpe
   const index = windows.findIndex((w) => w.clip.id === clipId);
   if (index < 0) return null;
   const { clip, start } = windows[index];
-  const cut = clip.in + time - start;
+  const cut = clip.in + (time - start) * (clip.speed ?? 1);
   if (cut - clip.in < MIN_CLIP || clip.out - cut < MIN_CLIP) return null;
   const tail: SequenceClip = { ...clip, id: id('c'), in: cut, transition: null };
   clip.out = cut;

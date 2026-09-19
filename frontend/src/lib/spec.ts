@@ -27,7 +27,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
     ...(spec.sequence ? { sequence: spec.sequence } : {}),
     spec_version: 1,
     trim: {
-      remove: normalizeRanges(spec.trim.remove, spec.sequence ? spec.sequence.clips.reduce((n, c) => n + c.out - c.in - (c.transition?.duration ?? 0), 0) : duration).map(([a, b]) => [round3(a), round3(b)]),
+      remove: normalizeRanges(spec.trim.remove, spec.sequence ? spec.sequence.clips.reduce((n, c) => n + (c.out - c.in) / (c.speed ?? 1) - (c.transition?.duration ?? 0), 0) : duration).map(([a, b]) => [round3(a), round3(b)]),
       ...(typeof fixedDuration === 'number' && fixedDuration > 0 ? { duration: round3(fixedDuration) } : {}),
     },
     layers: spec.layers.map((l) => {
