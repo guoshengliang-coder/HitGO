@@ -36,11 +36,16 @@ def test_clamp_box_keeps_everything_inside_the_frame():
 # --- clustering -------------------------------------------------------------
 
 
+def seen(t, items):
+    """A frame that was actually sent to the model: it speaks only for its own timestamp."""
+    return (t, t, items)
+
+
 def test_same_text_across_frames_becomes_one_block_with_a_time_range():
     per_frame = [
-        (0.0, [DetectedText("限时免费", box(0.6, 0.06, 0.3, 0.07), 0.9)]),
-        (2.0, [DetectedText("限时免费", box(0.61, 0.06, 0.3, 0.07), 0.95)]),
-        (4.0, [DetectedText("限时免费", box(0.6, 0.061, 0.3, 0.07), 0.8)]),
+        seen(0.0, [DetectedText("限时免费", box(0.6, 0.06, 0.3, 0.07), 0.9)]),
+        seen(2.0, [DetectedText("限时免费", box(0.61, 0.06, 0.3, 0.07), 0.95)]),
+        seen(4.0, [DetectedText("限时免费", box(0.6, 0.061, 0.3, 0.07), 0.8)]),
     ]
     blocks = screentext.cluster_blocks(per_frame, step=2.0)
 
@@ -52,13 +57,43 @@ def test_same_text_across_frames_becomes_one_block_with_a_time_range():
     assert blocks[0]["moving"] is False
 
 
+def test_a_deduplicated_frame_keeps_the_full_time_range():
+    """The regression this file most needs.
+
+    De-duplication drops frames *because* they look identical, which is exactly the evidence
+    that the text is still on screen. If the kept frame only spoke for its own timestamp, a
+    title held on a static shot would come back one sampling interval long — the translated
+    layer would vanish after a second and the erase would only cover that second.
+    """
+    b = box(0.6, 0.06, 0.3, 0.07)
+    every_frame = [seen(t, [DetectedText("限时免费", b, 0.9)]) for t in (0.0, 2.0, 4.0, 6.0, 8.0)]
+    # The same ten seconds after de-duplication: one frame kept, standing in through 8.0 s.
+    deduplicated = [(0.0, 8.0, [DetectedText("限时免费", b, 0.9)])]
+
+    assert screentext.cluster_blocks(deduplicated, step=2.0)[0]["t"] == screentext.cluster_blocks(every_frame, step=2.0)[0]["t"]
+    assert screentext.cluster_blocks(deduplicated, step=2.0)[0]["t"] == [0.0, 9.0]
+
+
+def test_coverage_gaps_still_split_a_track():
+    """A kept frame's span must not paper over a stretch where the text was really gone."""
+    b = box(0.2, 0.1, 0.3, 0.06)
+    per_frame = [
+        (0.0, 2.0, [DetectedText("买一送一", b)]),   # covers 0–2
+        seen(4.0, []),                                # nothing here
+        seen(6.0, [DetectedText("买一送一", b)]),
+    ]
+    blocks = screentext.cluster_blocks(per_frame, step=2.0)
+
+    assert len(blocks) == 2
+
+
 def test_the_same_text_reappearing_later_is_two_blocks():
     """Two layers with two time ranges beats one layer that jumps back on screen."""
     per_frame = [
-        (0.0, [DetectedText("买一送一", box(0.2, 0.1, 0.3, 0.06))]),
-        (2.0, []),
-        (4.0, []),
-        (6.0, [DetectedText("买一送一", box(0.2, 0.1, 0.3, 0.06))]),
+        seen(0.0, [DetectedText("买一送一", box(0.2, 0.1, 0.3, 0.06))]),
+        seen(2.0, []),
+        seen(4.0, []),
+        seen(6.0, [DetectedText("买一送一", box(0.2, 0.1, 0.3, 0.06))]),
     ]
     blocks = screentext.cluster_blocks(per_frame, step=2.0)
 
@@ -68,8 +103,8 @@ def test_the_same_text_reappearing_later_is_two_blocks():
 
 def test_text_that_drifts_is_flagged_as_moving():
     per_frame = [
-        (0.0, [DetectedText("飘字", box(0.1, 0.5, 0.2, 0.05))]),
-        (2.0, [DetectedText("飘字", box(0.16, 0.5, 0.2, 0.05))]),
+        seen(0.0, [DetectedText("飘字", box(0.1, 0.5, 0.2, 0.05))]),
+        seen(2.0, [DetectedText("飘字", box(0.16, 0.5, 0.2, 0.05))]),
     ]
     blocks = screentext.cluster_blocks(per_frame, step=2.0)
 
@@ -81,7 +116,7 @@ def test_text_that_drifts_is_flagged_as_moving():
 
 def test_blocks_far_apart_do_not_merge_even_with_the_same_text():
     per_frame = [
-        (0.0, [DetectedText("标题", box(0.1, 0.05, 0.2, 0.05)), DetectedText("标题", box(0.7, 0.9, 0.2, 0.05))]),
+        seen(0.0, [DetectedText("标题", box(0.1, 0.05, 0.2, 0.05)), DetectedText("标题", box(0.7, 0.9, 0.2, 0.05))]),
     ]
     assert len(screentext.cluster_blocks(per_frame, step=2.0)) == 2
 
@@ -91,9 +126,9 @@ def test_blocks_far_apart_do_not_merge_even_with_the_same_text():
 
 def test_bottom_centred_lines_become_the_subtitle_band():
     per_frame = [
-        (0.0, [DetectedText("第一句话", box(0.15, 0.82, 0.7, 0.05))]),
-        (2.0, [DetectedText("第二句话", box(0.12, 0.82, 0.76, 0.05))]),
-        (4.0, [DetectedText("角标", box(0.75, 0.05, 0.2, 0.05))]),
+        seen(0.0, [DetectedText("第一句话", box(0.15, 0.82, 0.7, 0.05))]),
+        seen(2.0, [DetectedText("第二句话", box(0.12, 0.82, 0.76, 0.05))]),
+        seen(4.0, [DetectedText("角标", box(0.75, 0.05, 0.2, 0.05))]),
     ]
     blocks = screentext.cluster_blocks(per_frame, step=2.0)
     band, rest = screentext.split_band(blocks)
@@ -101,28 +136,52 @@ def test_bottom_centred_lines_become_the_subtitle_band():
     assert band is not None
     assert band["box"]["y"] == pytest.approx(0.81, abs=0.02)
     assert [b["text"] for b in rest] == ["角标"]
-    assert [b["id"] for b in rest] == ["s0"]  # ids stay dense after the band is pulled out
+    # The remaining block keeps the id it had before the band was pulled out (ids are derived
+    # from the text, so pulling the band out cannot renumber anything).
+    assert rest[0]["id"] == screentext.block_id("角标")
 
 
 def test_a_single_low_line_is_not_a_subtitle_band():
     """One line low in frame is as likely a slogan; blurring it for the whole clip is worse."""
-    per_frame = [(0.0, [DetectedText("立即下载", box(0.3, 0.85, 0.4, 0.05))])]
+    per_frame = [seen(0.0, [DetectedText("立即下载", box(0.3, 0.85, 0.4, 0.05))])]
     band, rest = screentext.split_band(screentext.cluster_blocks(per_frame, step=2.0))
 
     assert band is None
     assert len(rest) == 1
 
 
-def test_limit_blocks_keeps_the_largest_and_renumbers():
+def test_limit_blocks_keeps_the_largest_in_time_order():
     blocks = [
-        {"id": "s0", "text": "小", "box": box(0, 0, 0.05, 0.02), "t": [0, 1]},
-        {"id": "s1", "text": "大", "box": box(0, 0.3, 0.6, 0.1), "t": [1, 2]},
-        {"id": "s2", "text": "中", "box": box(0, 0.6, 0.3, 0.06), "t": [2, 3]},
+        {"id": "a", "text": "小", "box": box(0, 0, 0.05, 0.02), "t": [0, 1]},
+        {"id": "b", "text": "大", "box": box(0, 0.3, 0.6, 0.1), "t": [1, 2]},
+        {"id": "c", "text": "中", "box": box(0, 0.6, 0.3, 0.06), "t": [2, 3]},
     ]
     kept = screentext.limit_blocks(blocks, 2)
 
-    assert {b["text"] for b in kept} == {"大", "中"}
-    assert [b["id"] for b in kept] == ["s0", "s1"]
+    assert [b["text"] for b in kept] == ["大", "中"]
+    assert [b["id"] for b in kept] == ["b", "c"]  # ids are not reassigned
+
+
+def test_block_ids_survive_a_re_detection():
+    """The point of content-derived ids: a re-detect that finds one block more must not shift
+    every existing translation and hand-adjusted position onto a different piece of text."""
+    b1, b2 = box(0.6, 0.06, 0.3, 0.07), box(0.2, 0.5, 0.3, 0.06)
+    first = screentext.cluster_blocks([seen(0.0, [DetectedText("限时免费", b1)])], step=2.0)
+    # Second pass picks up an extra block that sorts *before* the original one.
+    second = screentext.cluster_blocks(
+        [seen(0.0, [DetectedText("新标题", b2), DetectedText("限时免费", b1)])], step=2.0
+    )
+
+    original_id = first[0]["id"]
+    assert original_id in [b["id"] for b in second]
+    assert next(b for b in second if b["id"] == original_id)["text"] == "限时免费"
+
+
+def test_the_same_text_twice_gets_distinct_ids():
+    b1, b2 = box(0.1, 0.1, 0.2, 0.05), box(0.7, 0.8, 0.2, 0.05)
+    blocks = screentext.cluster_blocks([seen(0.0, [DetectedText("下载", b1), DetectedText("下载", b2)])], step=2.0)
+
+    assert len({b["id"] for b in blocks}) == 2
 
 
 # --- frame sampling ---------------------------------------------------------
@@ -424,3 +483,23 @@ def test_save_merges_instead_of_overwriting(db, ready_video):
     db.refresh(ready_video)
     assert set(ready_video.screen_text["versions"]) == {"ja", "ko"}
     assert ready_video.screen_text["detect"]["status"] == ST_DONE
+
+
+def test_translation_languages_are_not_gated_on_the_tts_voice_table(client, ready_video, monkeypatch):
+    """This chain only translates text. Gating it on TTS voices would 400 Thai / Vietnamese /
+    Arabic whenever MINIMAX_TTS_MODEL is unset — which is the production default."""
+    from app.services import localize
+
+    # Pretend no MiniMax model is configured: those three languages leave the voice table.
+    monkeypatch.setattr(localize, "voice_table", lambda cfg=None: {"ko": [], "ja": []})
+
+    r = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"detect": True, "target_langs": ["th"]})
+
+    assert r.status_code == 202, r.json()
+    assert "th" in r.json()["screen_text"]["versions"]
+
+
+def test_an_unsupported_language_is_still_rejected(client, ready_video):
+    r = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"detect": True, "target_langs": ["xx"]})
+
+    assert r.status_code == 400

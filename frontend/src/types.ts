@@ -133,6 +133,8 @@ export interface ScreenErase {
   task_id?: string | null;
   polls?: number;
   deadline?: string | null;
+  /** 这次擦了哪些区域；block_ids 为 null = 所有启用的块。 */
+  scope?: { band: boolean; block_ids: string[] | null } | null;
   /** 识别结果改过之后为 true：无字版对不上当前的框，建议重擦。 */
   stale?: boolean;
   clean_url?: string | null;

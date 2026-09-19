@@ -43,6 +43,7 @@ log = logging.getLogger(__name__)
 # The clean copy must line up with the original frame for frame, or every layer time in the
 # spec would silently drift. Anything beyond this is treated as a broken result.
 DURATION_TOLERANCE = 0.2
+FPS_TOLERANCE = 0.05
 
 
 class EraseError(RuntimeError):
@@ -233,12 +234,20 @@ def start(db: Session, video: Video, st: dict[str, Any], scope: dict[str, Any] |
         st["erase"] = screentext.stamp(dict(st.get("erase") or {}), status=ST_FAILED, error="没有要擦除的画面文字")
         screentext.save(db, video, st, erase=True)
         return
-    provider = make_provider(video, cfg)
+    # Everything from here on must leave a terminal status behind. An exception escaping this
+    # function would strand ``erase`` on queued / running, and every later request on this video
+    # answers 409 for as long as that lasts — only a database edit gets out of it.
+    try:
+        provider = make_provider(video, cfg)
+    except EraseError as exc:
+        st["erase"] = screentext.stamp(dict(st.get("erase") or {}), status=ST_FAILED, error=str(exc))
+        screentext.save(db, video, st, erase=True)
+        return
     source = storage.source_path(video.batch_id, video.id, video.source_ext)
     try:
         task_id = provider.submit(source, None, regions, float(video.duration or 0.0))
-    except EraseError as exc:
-        st["erase"] = screentext.stamp(dict(st.get("erase") or {}), status=ST_FAILED, error=str(exc), provider=provider.name)
+    except Exception as exc:  # noqa: BLE001  a vendor SDK may raise anything at all
+        st["erase"] = screentext.stamp(dict(st.get("erase") or {}), status=ST_FAILED, error=f"提交擦除失败：{exc}", provider=provider.name)
         screentext.save(db, video, st, erase=True)
         return
     deadline = utcnow() + timedelta(seconds=cfg.erase_max_wait_seconds)
@@ -258,7 +267,11 @@ def start(db: Session, video: Video, st: dict[str, Any], scope: dict[str, Any] |
     )
     screentext.save(db, video, st, erase=True)
     # LocalErase already finished inside submit; poll right away instead of waiting a tick.
-    worker.enqueue_later(worker.erase_poll, 0 if provider.name == "local" else cfg.erase_poll_interval_seconds, video.id)
+    try:
+        worker.enqueue_later(worker.erase_poll, 0 if provider.name == "local" else cfg.erase_poll_interval_seconds, video.id)
+    except Exception as exc:  # noqa: BLE001  a dead broker must not leave a job nobody polls
+        st["erase"] = screentext.stamp(st["erase"], status=ST_FAILED, error=f"无法安排擦除进度查询：{exc}")
+        screentext.save(db, video, st, erase=True)
 
 
 def provider_for(video: Video, cfg: Settings | None = None) -> EraseProvider:
@@ -343,6 +356,12 @@ def _finish(video: Video, provider: EraseProvider, task_id: str, progress: Erase
         if want and abs(got - want) > DURATION_TOLERANCE:
             tmp.unlink(missing_ok=True)
             raise EraseError(f"擦除结果时长 {got:.2f} 秒与原片 {want:.2f} 秒不一致，已丢弃")
+        got_fps = float(meta.get("fps") or 0.0)
+        want_fps = float(video.fps or 0.0)
+        if want_fps and got_fps and abs(got_fps - want_fps) > FPS_TOLERANCE:
+            # A re-timed copy would shift every layer time in the spec by a growing amount.
+            tmp.unlink(missing_ok=True)
+            raise EraseError(f"擦除结果帧率 {got_fps:.2f} 与原片 {want_fps:.2f} 不一致，已丢弃")
 
     dst = storage.clean_path(video.batch_id, video.id)
     storage.move_atomic(tmp, dst)

@@ -67,9 +67,11 @@ def start_screen_text(video_id: str, body: ScreenTextIn, db: Session = Depends(g
     sources = {s["code"] for s in localize.source_langs()}
     if body.source_lang not in sources:
         raise HTTPException(400, f"不支持的源语言：{body.source_lang}")
-    table = localize.voice_table(settings)
+    # Checked against the translation languages, not the voice table: this chain only
+    # translates text. Gating it on TTS voices would 400 Thai / Vietnamese / Arabic whenever
+    # MINIMAX_TTS_MODEL is unset (the default), even though qwen-mt-plus handles them fine.
     for lang in body.target_langs:
-        if lang not in table:
+        if lang not in localize.LANGS:
             raise HTTPException(400, f"不支持的目标语言：{lang}")
     if not screentext.enabled(settings):
         raise HTTPException(503, "没有配置 DASHSCOPE_API_KEY，画面文字识别不可用")

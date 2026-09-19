@@ -296,3 +296,18 @@ describe('辅助判断', () => {
     expect([...tpl.keys()].sort()).toEqual(['s0', 's1']);
   });
 });
+
+describe('与多片段拼接共存（契约 §2）', () => {
+  it('有 sequence 时不写 clean——后端会 400 挡下，写了会让套用整批保存失败', () => {
+    const s = emptySpec();
+    s.sequence = { clips: [{ id: 'c_1', video_id: 'v_1', in: 0, out: 4 }] };
+    const sc = screen({ erase: { status: 'done', stale: false, clean_url: '/x/clean.mp4' } });
+
+    const warnings = applyScreenTextToSpec(s, 'ko', ctx(sc));
+
+    expect(s.source_variant).toBe('original');
+    // 退回原片就还需要遮盖顶替原文字
+    expect(s.layers.filter((l) => l.type === 'mask').length).toBeGreaterThan(0);
+    expect(warnings.join()).toContain('多片段拼接');
+  });
+});

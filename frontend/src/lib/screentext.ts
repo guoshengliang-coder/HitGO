@@ -64,8 +64,11 @@ export function blockTextStyle(style: ScreenBlockStyle | null | undefined, lang:
   if (style?.stroke_color) {
     out.stroke_color = style.stroke_color;
     out.stroke_width = style.stroke_width ?? base.stroke_width;
-  } else if (style && 'stroke_color' in style) {
-    // 明确估出「没有描边」：不要留着默认的黑边，那会让原本干净的字看起来变脏。
+  } else if (style?.color) {
+    // 估出了主色却没测到描边 = 这段文字本来就没有描边：不要留着默认的黑边，
+    // 那会让原本干净的字看起来变脏。
+    // 注意不能用 'stroke_color' in style 判断——后端是 pydantic 模型，缺省不 exclude_none，
+    // 真实响应里这个键永远存在（值为 null），那样写这个分支在生产里恒真。
     out.stroke_width = 0;
   }
   if (style?.background) out.background = style.background;
@@ -214,9 +217,12 @@ export function applyScreenTextToSpec(spec: EditSpec, lang: string, ctx: ScreenA
 
   spec.layers = spec.layers.filter((l) => l.origin !== SCREEN_ORIGIN);
 
-  const useClean = cleanReady(ctx.screen);
+  // 多片段拼接时源片是虚拟的，没有对应的无字版——后端会 400 挡下（契约 §2），
+  // 所以这里就不能写 clean，否则套用 / 多语言导出会整批保存失败。
+  const useClean = cleanReady(ctx.screen) && !spec.sequence;
   spec.source_variant = useClean ? 'clean' : 'original';
-  if (ctx.screen?.erase?.stale) warnings.push('识别结果改过之后还没重新擦除，先用遮盖顶替；重擦一次即可换成无字版');
+  if (cleanReady(ctx.screen) && spec.sequence) warnings.push('这条视频做过多片段拼接，暂不支持无字版源片，已改用原片 + 遮盖');
+  else if (ctx.screen?.erase?.stale) warnings.push('识别结果改过之后还没重新擦除，先用遮盖顶替；重擦一次即可换成无字版');
 
   if (!detect || detect.status !== 'done') {
     if (lang) warnings.push('还没有画面文字识别结果');

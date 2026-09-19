@@ -319,3 +319,51 @@ def test_local_erase_reports_a_missing_result_as_failed():
 
     assert progress.status == "failed"
     assert "不见了" in (progress.error or "")
+
+
+# --- start() must always leave a terminal status ----------------------------
+
+
+def test_an_unknown_provider_fails_the_job_instead_of_stranding_it(db, ready_video, enqueued, monkeypatch):
+    """Anything escaping start() would leave erase on queued forever, and every later request
+    on this video answers 409 — only a database edit gets out of that."""
+    monkeypatch.setattr(erase, "make_provider", lambda *a, **k: (_ for _ in ()).throw(erase.EraseError("不认识的擦除供应商：nope")))
+    st = {"detect": _detect(), "erase": {"status": "queued"}, "versions": {}}
+
+    erase.start(db, ready_video, st, None)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["status"] == ST_FAILED
+    assert "nope" in ready_video.screen_text["erase"]["error"]
+
+
+def test_a_dead_broker_fails_the_job_instead_of_leaving_it_unpolled(db, ready_video, monkeypatch):
+    from app import worker
+
+    def boom(*a, **k):
+        raise worker.QueueUnavailable("broker 不可达")
+
+    monkeypatch.setattr(worker, "enqueue_later", boom)
+    st = {"detect": _detect(), "erase": {"status": "queued"}, "versions": {}}
+
+    erase.start(db, ready_video, st, None)
+
+    db.refresh(ready_video)
+    # Nothing would ever poll it, and the deadline is only checked inside poll_once.
+    assert ready_video.screen_text["erase"]["status"] == ST_FAILED
+    assert "进度查询" in ready_video.screen_text["erase"]["error"]
+
+
+def test_a_provider_that_raises_on_submit_is_reported(db, ready_video, enqueued, monkeypatch):
+    class Exploding(FakeErase):
+        def submit(self, *a, **k):
+            raise RuntimeError("厂商 SDK 炸了")
+
+    monkeypatch.setattr(erase, "make_provider", lambda *a, **k: Exploding())
+    st = {"detect": _detect(), "erase": {"status": "queued"}, "versions": {}}
+
+    erase.start(db, ready_video, st, None)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["status"] == ST_FAILED
+    assert "厂商 SDK 炸了" in ready_video.screen_text["erase"]["error"]

@@ -1365,6 +1365,11 @@ class ScreenDetectOut(BaseModel):
     updated_at: str | None = None
 
 
+class EraseScopeOut(BaseModel):
+    band: bool = True
+    block_ids: list[str] | None = None
+
+
 class EraseOut(BaseModel):
     status: str
     provider: str | None = None
@@ -1372,6 +1377,8 @@ class EraseOut(BaseModel):
     task_id: str | None = None
     polls: int = 0
     deadline: str | None = None
+    # Which regions this run covered (contract §1); the editor shows it as "重新擦除" guidance.
+    scope: EraseScopeOut | None = None
     stale: bool = False
     clean_url: str | None = None
     clean_proxy_url: str | None = None

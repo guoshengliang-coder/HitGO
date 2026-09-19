@@ -24,9 +24,11 @@ ffmpeg, Pillow-heavy fixtures or a network.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -213,11 +215,24 @@ def normalize_text(text: str) -> str:
     return _WS.sub(" ", (text or "").strip())
 
 
+def block_id(text: str) -> str:
+    """A stable id for a piece of on-screen text, derived from the text itself.
+
+    Positional ids (s0, s1, …) look tidier but break the one thing that matters across a
+    re-detection: the translations already written and the geometry already adjusted are keyed
+    by id, and a re-detect that finds one block more would shift every one of them onto the
+    wrong text.
+    """
+    return "s" + hashlib.sha1(normalize_text(text).encode("utf-8")).hexdigest()[:8]
+
+
 @dataclass
 class _Track:
     text: str
     boxes: list[Box]
     times: list[float]
+    # How far each sighting's evidence reaches (see ``cluster_blocks``).
+    ends: list[float]
     confidences: list[float]
 
     def moved(self) -> float:
@@ -229,20 +244,26 @@ class _Track:
 
 
 def cluster_blocks(
-    per_frame: list[tuple[float, list[DetectedText]]],
+    per_frame: list[tuple[float, float, list[DetectedText]]],
     step: float,
     *,
     min_iou: float = MIN_IOU,
 ) -> list[dict[str, Any]]:
     """Per-frame detections → blocks with a time range.
 
+    Each entry is ``(seen_at, covers_until, items)``. The two times differ because of the
+    perceptual de-duplication upstream: a frame that stood in for several identical frames
+    after it *is* evidence that the text was still on screen for all of them, and dropping
+    that would shrink a ten-second title down to one sampling interval. Frames that were
+    actually sent to the model have ``covers_until == seen_at``.
+
     Matching is "same normalised text, boxes overlap": a caption that re-appears later in a
     different spot becomes two blocks, which is what the editor wants — two layers with two
     time ranges rather than one that jumps.
     """
     tracks: list[_Track] = []
-    open_tracks: dict[int, float] = {}  # track index → time it was last seen
-    for time, items in per_frame:
+    open_tracks: dict[int, float] = {}  # track index → the end of its coverage so far
+    for time, until, items in per_frame:
         seen: set[int] = set()
         for item in items:
             text = normalize_text(item.text)
@@ -253,31 +274,39 @@ def cluster_blocks(
             for i, track in enumerate(tracks):
                 if i in seen or track.text != text:
                     continue
-                # Only continue a track that was alive in the previous sampled frame.
+                # Only continue a track whose coverage runs up to this frame.
                 if open_tracks.get(i) is None or time - open_tracks[i] > step * 1.5 + 1e-6:
                     continue
                 if iou(track.boxes[-1], b) >= min_iou:
                     match = i
                     break
             if match is None:
-                tracks.append(_Track(text=text, boxes=[b], times=[time], confidences=[item.confidence or 0.0]))
+                tracks.append(_Track(text=text, boxes=[b], times=[time], ends=[until], confidences=[item.confidence or 0.0]))
                 match = len(tracks) - 1
             else:
                 tracks[match].boxes.append(b)
                 tracks[match].times.append(time)
+                tracks[match].ends.append(until)
                 tracks[match].confidences.append(item.confidence or 0.0)
             seen.add(match)
-            open_tracks[match] = time
+            open_tracks[match] = max(time, until)
 
     half = step / 2
     out: list[dict[str, Any]] = []
+    used: Counter[str] = Counter()
     for i, track in enumerate(tracks):
         start = max(0.0, track.times[0] - half)
-        end = track.times[-1] + half
+        end = max(track.ends[-1], track.times[-1]) + half
         confidences = [c for c in track.confidences if c > 0]
+        # Ids come from the text, not from position. Re-detecting shifts what is found and in
+        # which order, and positional ids would silently re-attach an old translation — and the
+        # geometry someone adjusted by hand — to a different piece of text.
+        base = block_id(track.text)
+        used[base] += 1
+        block_key = base if used[base] == 1 else f"{base}-{used[base]}"
         out.append(
             {
-                "id": f"s{i}",
+                "id": block_key,
                 "text": track.text,
                 "box": union_box(track.boxes),
                 "t": [round(start, 3), round(end, 3)],
@@ -285,11 +314,12 @@ def cluster_blocks(
                 "confidence": round(sum(confidences) / len(confidences), 3) if confidences else None,
                 "moving": track.moved() > MOVE_TOLERANCE,
                 "enabled": True,
+                # Internal: exactly which sampled frame to measure the style on. Popped before
+                # the block is written back, so it never reaches the contract.
+                "first_seen": track.times[0],
             }
         )
     out.sort(key=lambda b: (b["t"][0], b["box"]["y"], b["box"]["x"]))
-    for i, b in enumerate(out):
-        b["id"] = f"s{i}"
     return out
 
 
@@ -318,20 +348,15 @@ def split_band(blocks: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, lis
         "style": {},
         "confidence": round(min(1.0, len(subtitle_like) / 4), 2),
     }
-    rest = [b for b in blocks if b not in subtitle_like]
-    for i, b in enumerate(rest):
-        b["id"] = f"s{i}"
-    return band, rest
+    return band, [b for b in blocks if b not in subtitle_like]
 
 
 def limit_blocks(blocks: list[dict[str, Any]], max_blocks: int) -> list[dict[str, Any]]:
-    """Keep the ``max_blocks`` largest; re-number so ids stay dense."""
+    """Keep the ``max_blocks`` largest, in time order. Ids are content-derived, so they survive."""
     if len(blocks) <= max_blocks:
         return blocks
     kept = sorted(blocks, key=lambda b: b["box"]["w"] * b["box"]["h"], reverse=True)[:max_blocks]
     kept.sort(key=lambda b: (b["t"][0], b["box"]["y"], b["box"]["x"]))
-    for i, b in enumerate(kept):
-        b["id"] = f"s{i}"
     return kept
 
 
@@ -459,18 +484,30 @@ def detect_blocks(
     index_of = {path: i for i, path in enumerate(frames)}
     kept = dedupe_frames(frames)
     step = 1.0 / cfg.screentext_sample_fps if cfg.screentext_sample_fps > 0 else 1.0
+    fps = cfg.screentext_sample_fps
 
-    per_frame: list[tuple[float, list[DetectedText]]] = []
-    for path in kept:
-        per_frame.append((frame_time(index_of[path], cfg.screentext_sample_fps), provider.detect(path, hint_lang)))
+    # Each kept frame stands in for the identical frames that followed it, so it carries their
+    # time as well — otherwise a title held on a static shot would come back one interval long.
+    kept_indices = [index_of[path] for path in kept]
+    covers_until = [
+        frame_time((kept_indices[k + 1] - 1) if k + 1 < len(kept_indices) else (len(frames) - 1), fps)
+        for k in range(len(kept_indices))
+    ]
+
+    per_frame: list[tuple[float, float, list[DetectedText]]] = []
+    for k, path in enumerate(kept):
+        seen_at = frame_time(kept_indices[k], fps)
+        per_frame.append((seen_at, max(seen_at, covers_until[k]), provider.detect(path, hint_lang)))
 
     blocks = cluster_blocks(per_frame, step)
     band, blocks = split_band(blocks)
     blocks = limit_blocks(blocks, cfg.screentext_max_blocks)
 
-    # Style: measured on the frame where each block first shows up.
-    by_time = {time: path for (time, _), path in zip(per_frame, kept, strict=False)}
-    _estimate_styles(blocks, band, by_time, step)
+    # Style: measured on the exact frame each block was first seen on, not the nearest guess.
+    by_time = {seen_at: path for (seen_at, _, _), path in zip(per_frame, kept, strict=False)}
+    _estimate_styles(blocks, band, by_time)
+    for block in blocks:
+        block.pop("first_seen", None)
 
     return {
         "status": ST_DONE,
@@ -483,15 +520,12 @@ def detect_blocks(
     }
 
 
-def _nearest_frame(by_time: dict[float, Path], when: float, step: float) -> Path | None:
-    if not by_time:
-        return None
-    best = min(by_time, key=lambda t: abs(t - when))
-    return by_time[best] if abs(best - when) <= step * 1.5 + 1e-6 else by_time[best]
+def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, by_time: dict[float, Path]) -> None:
+    """Fill in each block's ``style`` from the frame it was first seen on.
 
-
-def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, by_time: dict[float, Path], step: float) -> None:
-    """Fill in each block's ``style`` from the frame it first appears on.
+    The frame is looked up by that exact timestamp rather than by nearest match: after
+    de-duplication the kept frames are far apart and can show completely different shots, so a
+    near miss would measure the wrong picture and report a confident, wrong style.
 
     A failure here is never fatal: a block without a style still gets written back, the editor
     just falls back to the default subtitle look.
@@ -502,8 +536,8 @@ def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, 
 
     cache: dict[Path, Any] = {}
 
-    def frame_for(when: float) -> Any:
-        path = _nearest_frame(by_time, when, step)
+    def frame_for(when: float | None) -> Any:
+        path = by_time.get(when) if when is not None else None
         if path is None:
             return None
         if path not in cache:
@@ -515,7 +549,7 @@ def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, 
         return cache[path]
 
     for block in blocks:
-        image = frame_for(block["t"][0])
+        image = frame_for(block.get("first_seen"))
         if image is None:
             continue
         try:
@@ -526,7 +560,8 @@ def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, 
         block["lines"] = style.pop("lines", block.get("lines", 1))
         block["style"] = style
     if band is not None:
-        image = frame_for(0.0)
+        # The band is measured on the first frame any of its lines showed up on.
+        image = frame_for(next(iter(sorted(by_time))) if by_time else None)
         if image is not None:
             try:
                 band["style"] = screen_style.estimate_style(image, band["box"])

@@ -159,7 +159,7 @@
       "confidence": 0.8
     },
     "blocks": [                      // 静态画面文字（标题 / 角标 / 价格牌），按出现时间升序
-      { "id": "s0",
+      { "id": "s3f2a1b0c",            // 由文字内容派生，不是序号：重新识别后译文与人调过的位置还能对上
         "text": "限时免费",           // 源语言原文，可人工修正
         "box": { "x": 0.62, "y": 0.06, "w": 0.32, "h": 0.07 },
         "t": [1.2, 6.4],             // 源时间轴，秒（与 transcript.cues 同一时间轴）
@@ -179,7 +179,7 @@
     "task_id": "mps-123456",         // 云端任务 id，排查用
     "polls": 7,                      // 已轮询次数
     "deadline": "2026-09-19T10:30:00Z",   // 过了这个时刻仍未完成就判 failed
-    "scope": { "band": true, "block_ids": ["s0", "s2"] },   // 这次擦了哪些区域
+    "scope": { "band": true, "block_ids": ["s3f2a1b0c"] },   // 这次擦了哪些区域；block_ids 为 null = 所有启用的块
     "stale": false,                  // 识别结果改过之后为 true：无字版对不上当前的框，建议重擦
     "clean_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean.mp4",          // done 才有
     "clean_proxy_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean_proxy.mp4",
@@ -1016,7 +1016,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    逐像素平均绝对差低于阈值的帧丢掉）——投放素材里大段画面是静止的，去重通常能把送去识别的帧数再砍掉一半，
    而费用是按帧算的。逐帧调视觉模型拿到文字和框，跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
    抽帧间隔。落在画面底部且横向居中的那一类合并成 `subtitle_band`（整条视频一个矩形），其余是 `blocks`，最多
-   `SCREENTEXT_MAX_BLOCKS` 个（缺省 40，超出按面积取前 N 并写进 `error` 旁的提示）。同一文本在相邻帧之间位移超过
+   `SCREENTEXT_MAX_BLOCKS` 个（缺省 40，超出按面积取前 N，其余丢弃）。同一文本在相邻帧之间位移超过
    阈值的判为「会动」，标出来但不参与擦除和写回。一帧都识别不出内容时 `detect` 仍是 `done`，`blocks` 为空。
 2. **样式估计**：对每个 block 在它首次出现的那一帧上裁出框，用 Pillow 估字号（前景行高 ÷ 画面高 × 1.18，补
    ascender / descender）、主色（前景腐蚀 1px 去抗锯齿边后量化取最大簇）、描边色与粗细（核心像素外扩 2px 环带的
