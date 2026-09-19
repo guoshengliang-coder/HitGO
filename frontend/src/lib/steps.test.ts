@@ -20,9 +20,11 @@ describe('layerTypesForStep', () => {
 describe('stepForLayer（HIG-72）', () => {
   const layer = (type: Layer['type'], extra = {}): Layer => ({ id: type, type, ...extra }) as Layer;
 
-  it('普通文字（含字幕和改语言图层）总到文本属性，滚动文案到大字报', () => {
+  it('普通文字到文本，字幕到字幕，滚动文案到大字报', () => {
     expect(stepForLayer(layer('text'))).toBe('text');
-    expect(stepForLayer(layer('text', { origin: 'localize' }))).toBe('text');
+    expect(stepForLayer(layer('text', { origin: 'localize' }))).toBe('subtitle');
+    expect(stepForLayer(layer('text', { origin: 'subtitle' }))).toBe('subtitle');
+    expect(stepForLayer(layer('text', { name: '字幕 2' }))).toBe('subtitle');
     expect(stepForLayer(layer('text', { scroll: {} }))).toBe('poster');
   });
   it('贴纸与遮盖分别打开自己的属性面板', () => {

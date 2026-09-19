@@ -7,6 +7,7 @@ import { api, ApiError } from '../api';
 import { cloneSpec } from '../lib/spec';
 import { ensureTextRendered } from '../lib/textImage';
 import { DEFAULT_SCROLL_BOX, posterDuration } from '../lib/poster';
+import { player } from '../lib/player';
 
 // node 环境没有 canvas：滚动文案的预览渲染换成固定尺寸（950 × 3000 px，相当于 1080 画布上 0.88 宽的一篇长文案）
 vi.mock('../lib/textImage', async (importOriginal) => ({
@@ -73,6 +74,16 @@ describe('时间线轨道锁定（HIG-62）', () => {
 });
 
 describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
+  it('合并下一句只记一次历史，撤销后恢复两句和各自时段', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };
+    const b = { ...a, id: 'L2', text: '乙', t: [1, 2] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().mergeSubtitleWithNext('L1');
+    expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
+    expect(useEditor.getState().currentSpec()!.layers[0]).toMatchObject({ text: '甲\n乙', t: [0, 2] });
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()!.layers).toEqual([a, b]);
+  });
   it('只同步本次样式和位置属性，保留各条文字与时段；关闭后恢复单条编辑', () => {
     const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };
     const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const, t: [2, 3] as [number, number] };
@@ -126,6 +137,35 @@ afterEach(() => {
 });
 
 describe('focusLayer（HIG-72）', () => {
+  it('定位剪后字幕时映射到正确源时间；拖动选择不定位', () => {
+    const layer = { ...textLayer('字幕'), origin: 'subtitle' as const, t: [4, 6] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), trim: { remove: [[1, 3]] }, layers: [layer] });
+    useEditor.setState({ time: 0, lap: 0, layerRevealVersion: 0, timelineSelection: ['clip:old'], selectedClipId: 'old' });
+    const seek = vi.spyOn(player, 'seek').mockImplementation(() => {});
+    const pause = vi.spyOn(player, 'pause').mockImplementation(() => {});
+    useEditor.getState().focusLayer(layer);
+    expect(seek).toHaveBeenCalledWith(6, 0);
+    expect(pause).toHaveBeenCalled();
+    expect(useEditor.getState()).toMatchObject({ step: 'subtitle', layerRevealVersion: 1, timelineSelection: ['layer:L1'], selectedClipId: null });
+    seek.mockClear();
+    useEditor.setState({ time: 7 });
+    useEditor.getState().focusLayer(layer);
+    expect(seek).not.toHaveBeenCalled();
+    useEditor.setState({ time: 0 });
+    useEditor.getState().focusLayer(layer, { reveal: false });
+    expect(seek).not.toHaveBeenCalled();
+    expect(useEditor.getState().layerRevealVersion).toBe(2);
+    seek.mockRestore(); pause.mockRestore();
+  });
+  it('位于循环补足段的字幕定位到正确遍数', () => {
+    const layer = { ...textLayer('后半段字幕'), t: [12, 14] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), trim: { remove: [[1, 3]], duration: 20 }, layers: [layer] });
+    useEditor.setState({ time: 0, lap: 0 });
+    const seek = vi.spyOn(player, 'seek').mockImplementation(() => {});
+    useEditor.getState().focusLayer(layer);
+    expect(seek).toHaveBeenCalledWith(6, 1);
+    seek.mockRestore();
+  });
   it('跨模块切到图层的编辑面板，并在重复点选时继续发出属性聚焦意图', () => {
     const layer = useEditor.getState().currentSpec()!.layers[0];
     useEditor.setState({ step: 'audio', selectedTrackId: 'track', layerFocusVersion: 0 });

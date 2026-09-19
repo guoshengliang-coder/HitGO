@@ -12,6 +12,7 @@ import { galleryLayerSeed, type GalleryItem } from '../../lib/textGallery';
 import { IconText } from '../ui/Icons';
 import { LayerList, LayerProps, newTextLayer } from './LayerParts';
 import { TextGallery } from './TextGallery';
+import { layerLane } from '../../lib/timelineTracks';
 
 type TextTab = 'layers' | 'gallery' | 'templates';
 
@@ -25,12 +26,10 @@ export function TextPanel() {
   const [tab, setTab] = useState<TextTab>('layers');
   const selected = useEditor((s) => {
     const l = s.currentVideoId && s.selectedLayerId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
-    return l?.type === 'text' ? (l as TextLayer) : null;
+    return l?.type === 'text' && layerLane(l) === 'text' ? (l as TextLayer) : null;
   });
   const addLayer = useEditor((s) => s.addLayer);
   const addLayers = useEditor((s) => s.addLayers);
-  const subtitleSyncEnabled = useEditor((s) => s.subtitleSyncEnabled);
-  const setSubtitleSyncEnabled = useEditor((s) => s.setSubtitleSyncEnabled);
   // 「文字」页双击新建的图层 id：它被自动选中时不切页
   const createdIdRef = useRef<string | null>(null);
   const selectedId = selected?.id ?? null;
@@ -74,8 +73,7 @@ export function TextPanel() {
                 <IconText /> 添加文字
               </button>
             </div>
-            <LayerList type="text" emptyHint="还没有文字图层。点「添加文字」，或在「文字」页双击字体 / 花字 / 气泡卡片、在「模板」页添加；字幕请到顶栏「字幕」模块导入。加入后可在画布上双击直接改字。" />
-            {selected && (selected.origin === 'localize' || selected.origin === 'subtitle' || /^字幕\s*\d+/.test(selected.name ?? '')) && <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>}
+            <LayerList type="text" lane="text" emptyHint="还没有文字图层。点「添加文字」，或在「文字」页双击字体 / 花字 / 气泡卡片、在「模板」页添加；字幕请到顶栏「字幕」模块导入。加入后可在画布上双击直接改字。" />
             {selected && <LayerProps key={selected.id} layer={selected} />}
           </>
         )}

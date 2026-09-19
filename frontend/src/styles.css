@@ -526,10 +526,13 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-ghost-clip { position: absolute; top: 3px; bottom: 3px; z-index: 6; pointer-events: none; border: 1px dashed var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--ink); padding: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
 .tl-clip-hit { position: absolute; top: 1px; height: 14px; z-index: 3; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); cursor: grab; }
 .tl-clip-hit.selected { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 35%, transparent); }
-.tl-playhead .grip { position: absolute; top: 0; left: -7px; width: 14px; height: 20px; cursor: ew-resize; pointer-events: auto; touch-action: none; }
-.tl-row { position: relative; display: grid; grid-template-columns: 96px 1fr; border-bottom: 1px solid var(--s1-line); }
+.timeline { position: relative; }
+.tl-label-resizer { position: absolute; top: 0; bottom: 0; left: calc(var(--tl-label-w) - 4px); width: 8px; z-index: 25; cursor: col-resize; touch-action: none; }
+.tl-label-resizer:hover, .tl-label-resizer:focus-visible { background: var(--accent-soft); outline: none; border-inline: 1px solid var(--accent); }
+.tl-playhead .grip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; cursor: ew-resize; pointer-events: auto; touch-action: none; }
+.tl-row { position: relative; display: grid; grid-template-columns: var(--tl-label-w, 128px) 1fr; border-bottom: 1px solid var(--s1-line); }
 .tl-row .lbl { font-size: 11px; color: var(--ink-2); padding: 2px 8px; border-right: 1px solid var(--line-soft); background: var(--s0); position: sticky; left: 0; z-index: 3; display: flex; align-items: center; gap: 4px; overflow: hidden; white-space: nowrap; }
-/* 标签列 96px：名字占满并省略，显示 / 锁定浮在右侧、悬停或选中时才出现，不和名字抢位置 */
+/* 名称栏可调宽：长名称省略，显示 / 锁定操作在悬停或选中时出现。 */
 .tl-row .lbl .lname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tl-row .lbl .tl-acts { position: absolute; right: 2px; top: 0; bottom: 0; display: flex; align-items: center; flex: none; gap: 0; padding-left: 6px; background: linear-gradient(90deg, transparent, var(--s0) 30%); opacity: 0; transition: opacity 0.12s; }
 .tl-row:hover .lbl .tl-acts, .tl-row.selected .lbl .tl-acts, .tl-row .lbl .tl-acts:focus-within { opacity: 0.9; }
@@ -584,7 +587,7 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-bar.mask.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
 .tl-bar .edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
 .tl-bar .edge.l { left: 0; } .tl-bar .edge.r { right: 0; }
-.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
+.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 2; pointer-events: none; }
 .tl-playhead::before { content: ''; position: absolute; top: 0; left: -6px; border: 5px solid transparent; border-top: 7px solid var(--accent); }
 /* 封面（HIG-9）：视频行最前面的封面块、标尺上的封面段、其余行封面期间的斜纹占位 */
 .tl-cover { position: absolute; top: 0; bottom: 0; left: 0; background-color: var(--media-bg); background-size: auto 100%; background-repeat: repeat-x; background-position: left center; border-right: 2px solid var(--accent); pointer-events: none; overflow: hidden; z-index: 1; }
