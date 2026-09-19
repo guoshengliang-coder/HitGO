@@ -18,6 +18,12 @@ describe('layersOfType', () => {
 });
 
 describe('moveWithinType', () => {
+  it('字幕和普通文字分别换序，不改另一类占据的槽位', () => {
+    const layers = [text('title1'), { ...text('sub1'), origin: 'subtitle' }, text('title2'), { ...text('sub2'), origin: 'localize' }] as Layer[];
+    expect(ids(moveWithinType(layers, 'sub1', 1))).toEqual(['title1', 'sub2', 'title2', 'sub1']);
+    expect(ids(moveWithinType(layers, 'title2', 0))).toEqual(['title2', 'sub1', 'title1', 'sub2']);
+    expect(indexWithinType(layers, 'sub2')).toBe(1);
+  });
   it('只在同类占用的位置之间换序，另一类原地不动', () => {
     // t1 挪到文字里的最上层
     expect(ids(moveWithinType(MIXED, 't1', 2))).toEqual(['s1', 't2', 's2', 't3', 't1']);

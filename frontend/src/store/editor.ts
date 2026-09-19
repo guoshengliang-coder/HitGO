@@ -26,7 +26,9 @@ import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, o
 import { retrimForAsset } from '../lib/sourceTrim';
 import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
-import { clamp, normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { clamp, lapsFor, normalizeRanges, outputDuration, postTimeOf, postToSource, postTrimDuration, sourceToPost, splitPostTime, wouldRemoveAll } from '../lib/time';
+import { layerFocusTime } from '../lib/layerFocus';
+import { mergeSubtitles, nextSubtitle } from '../lib/subtitleMerge';
 import { isSubtitleTextLayer, MIN_SPLIT, splitLayerAt, splitLayerBlockedReason, splitTextLayerByText, textCutForSplit } from '../lib/layerSplit';
 import { charRatio } from '../lib/cueSplit';
 import { windowRange } from '../lib/stickerMedia';
@@ -34,7 +36,7 @@ import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, pos
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
-import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
+import { indexWithinType, insertIndexBelow, layersInCategory, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
 import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
 import { bakeShapeLayer } from '../lib/shapeImage';
@@ -126,6 +128,7 @@ export interface EditorState {
   drawingShape: import('../types').ShapeLayer['shape'] | null;
   /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
   layerFocusVersion: number;
+  layerRevealVersion: number;
   /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
   replacingLayerId: string | null;
   selectedClipId: string | null;
@@ -207,7 +210,7 @@ export interface EditorState {
   updateSelectedTextStyle: (patch: Partial<TextStyle>) => void;
   updateSelectedShapeStyle: (patch: Partial<Pick<ShapeLayer, 'shape' | 'fill' | 'stroke' | 'stroke_width' | 'radius'>>) => void;
   setDrawingShape: (shape: import('../types').ShapeLayer['shape'] | null) => void;
-  focusLayer: (layer: Layer) => void;
+  focusLayer: (layer: Layer, options?: { reveal?: boolean }) => void;
   setSelectedClip: (id: string | null) => void;
   selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract') => void;
   copyTimelineItems: () => void;
@@ -349,6 +352,7 @@ export interface EditorState {
   splitLayer: (id: string) => void;
   /** 在文本下标 offset 处把字幕图层拆成两条（HIG-36）：时段按光标前后的字数比例分。 */
   splitLayerAtCaret: (id: string, offset: number) => void;
+  mergeSubtitleWithNext: (id: string) => void;
   /** 把已套用的长字幕按当前设置补拆成多条（HIG-36）；只动字幕层，配音轨和 BGM 不变。 */
   resplitSubtitleLayers: () => void;
   removeLayer: (id: string) => void;
@@ -459,6 +463,7 @@ const PER_BATCH_INITIAL = {
   subtitleSyncEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
+  layerRevealVersion: 0,
   replacingLayerId: null,
   selectedClipId: null,
   timelineSelection: [],
@@ -1212,10 +1217,26 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => { for (const l of spec.layers) if (l.type === 'shape' && ids.has(l.id) && !l.locked) { Object.assign(l, patch); l.image_url = null; l.image_size = null; } });
     },
     setDrawingShape: (drawingShape) => set({ drawingShape }),
-    focusLayer: (layer) => {
+    focusLayer: (layer, { reveal = true } = {}) => {
+      player.pause();
+      if (reveal) {
+        const state = get();
+        const spec = state.currentSpec();
+        const duration = selectPostDuration(state);
+        const target = layerFocusTime(layer, state.time < 0 ? -1 : selectPostTime(state), duration);
+        if (spec && target !== null) {
+          const postLen = postTrimDuration(selectSourceDuration(state), spec.trim.remove);
+          const { lap, rem } = splitPostTime(target, postLen, lapsFor(duration, postLen));
+          player.seek(postToSource(rem, spec.trim.remove), lap);
+        }
+      }
       const next = stepForLayer(layer);
       if (next !== get().step) get().setStep(next);
-      set((s) => ({ selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
+      set((s) => ({
+        selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null,
+        layerFocusVersion: s.layerFocusVersion + 1, layerRevealVersion: s.layerRevealVersion + (reveal ? 1 : 0),
+        ...(reveal ? { timelineSelection: [`layer:${layer.id}`], selectedClipId: null, selectedRangeIndex: null, selectedMuteIndex: null } : {}),
+      }));
     },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
     selectTimelineItems: (keys, mode = 'replace') => {
@@ -2095,14 +2116,14 @@ export const useEditor = create<EditorState>((set, get) => {
         (spec) => {
           const l = spec.layers.find((x) => x.id === id);
           if (!l) return;
-          const sync = get().subtitleSyncEnabled && l.type === 'text' && (l.origin === 'subtitle' || l.origin === 'localize' || /^字幕\s*\d+/.test(l.name ?? ''));
+          const sync = get().subtitleSyncEnabled && isSubtitleTextLayer(l);
           const before = sync ? structuredClone(l) : null;
           if (typeof patch === 'function') patch(l);
           else Object.assign(l, patch);
           if (before?.type === 'text' && l.type === 'text') {
             const changedStyle = Object.keys(l.style) as (keyof typeof l.style)[];
             for (const other of spec.layers) {
-              if (other.id === id || other.type !== 'text' || other.locked || !(other.origin === 'subtitle' || other.origin === 'localize' || /^字幕\s*\d+/.test(other.name ?? ''))) continue;
+              if (other.id === id || other.locked || !isSubtitleTextLayer(other)) continue;
               for (const key of changedStyle) {
                 if (JSON.stringify(before.style[key]) !== JSON.stringify(l.style[key])) Object.assign(other.style, { [key]: l.style[key] === undefined ? undefined : structuredClone(l.style[key]) });
               }
@@ -2141,6 +2162,17 @@ export const useEditor = create<EditorState>((set, get) => {
       const cutText = parts[0].type === 'text' && parts[1].type === 'text' && parts[0].text !== parts[1].text;
       // 选中右半段：和剪映一样，拆完接着处理后面那截
       set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: cutText ? '已在播放头处拆分字幕' : '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    mergeSubtitleWithNext: (id) => {
+      const layers = get().currentSpec()?.layers ?? [];
+      const current = layers.find(l => l.id === id);
+      if (!isSubtitleTextLayer(current)) return;
+      const next = nextSubtitle(layers, current);
+      const merged = next && mergeSubtitles(current, next);
+      if (!next || !merged) return;
+      get().updateSpec(spec => { spec.layers = spec.layers.filter(l => l.id !== next.id).map(l => l.id === id ? merged : l); });
+      set({ timelineSelection: [`layer:${id}`], toast: '已合并下一条字幕，保留当前字幕样式和位置', toastAction: { label: '撤销', run: () => get().undo() } });
+      get().focusLayer(merged);
     },
     splitLayerAtCaret: (id, offset) => {
       const ctx = playheadPost();
@@ -2205,14 +2237,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const layers = get().currentSpec()?.layers ?? [];
       const layer = layers.find((l) => l.id === id);
       if (!layer) return;
-      get().moveLayerToIndex(id, where === 'top' ? layersOfType(layers, layer.type).length - 1 : 0);
+      get().moveLayerToIndex(id, where === 'top' ? layersInCategory(layers, layer).length - 1 : 0);
     },
     moveLayerToIndex: (id, index) => {
       const layers = get().currentSpec()?.layers ?? [];
       const layer = layers.find((l) => l.id === id);
       if (!layer) return;
       // 越界（到顶了再上移）直接忽略，免得记一条空历史
-      if (index < 0 || index >= layersOfType(layers, layer.type).length || moveWithinType(layers, id, index) === layers) return;
+      if (index < 0 || index >= layersInCategory(layers, layer).length || moveWithinType(layers, id, index) === layers) return;
       get().updateSpec((spec) => {
         spec.layers = moveWithinType(spec.layers, id, index);
       });

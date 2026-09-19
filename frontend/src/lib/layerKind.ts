@@ -4,12 +4,18 @@
 
 import type { Layer } from '../types';
 import { reorder } from './order';
+import { layerLane } from './timelineTracks';
 
 export type LayerType = Layer['type'];
 
 /** 某一类图层，保持 z 序（第一个 = 最下层）。 */
 export function layersOfType<T extends Layer>(layers: T[], type: LayerType): T[] {
   return layers.filter((l) => l.type === type);
+}
+
+/** 编辑分类内的层级：字幕与普通文字独立换序，其他分类的槽位保持不变。 */
+export function layersInCategory<T extends Layer>(layers: T[], layer: Layer): T[] {
+  return layers.filter((l) => l.type === layer.type && layerLane(l) === layerLane(layer));
 }
 
 /**
@@ -21,7 +27,7 @@ export function moveWithinType<T extends Layer>(layers: T[], id: string, index: 
   if (!layer) return layers;
   const slots: number[] = [];
   layers.forEach((l, i) => {
-    if (l.type === layer.type) slots.push(i);
+    if (l.type === layer.type && layerLane(l) === layerLane(layer)) slots.push(i);
   });
   const subset = slots.map((i) => layers[i]);
   const from = subset.indexOf(layer);
@@ -48,6 +54,5 @@ export function insertIndexBelow(layers: Layer[], type: LayerType): number {
 export function indexWithinType(layers: Layer[], id: string): number {
   const layer = layers.find((l) => l.id === id);
   if (!layer) return -1;
-  return layersOfType(layers, layer.type).indexOf(layer);
+  return layersInCategory(layers, layer).indexOf(layer);
 }
-
