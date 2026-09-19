@@ -3,7 +3,7 @@
 // 遮盖层（契约 §2 type = "mask"）也归本模块管：新建时插到第一个文字图层之前，永远压在字幕之下。
 
 import { useRef } from 'react';
-import { useEditor, usePostDuration } from '../../store/editor';
+import { useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { defaultTextStyle, type MaskLayer } from '../../types';
 import { newLayerId } from '../../lib/spec';
 import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
@@ -11,9 +11,10 @@ import { cuesToTextLayers, parseSrt } from '../../lib/srt';
 import { newMaskLayer, timedTextSpan } from '../../lib/mask';
 import { IconMask, IconText } from '../ui/Icons';
 import { Section } from '../ui/Section';
-import { LayerList, LayerProps } from './LayerParts';
+import { LayerList, LayerProps, newTextLayer } from './LayerParts';
+import { isSubtitleTextLayer } from '../../lib/layerSplit';
 
-const IMPORT_HELP = '把 .srt 文件的每条字幕变成一个带时段的文字图层，套「黑底白字字幕条」样式贴底居中；超出剪后时长的字幕会被截掉。样式在「文本」模块里调。';
+const IMPORT_HELP = '导入 .srt 文件，逐句生成带时段的字幕，套用「黑底白字字幕条」样式；超出剪后时长的字幕会被截掉。选中字幕后可在下方编辑内容、样式和位置。';
 const MASK_HELP = '画面里烧死的原字幕先用一条遮盖糊掉或盖住，再叠新字幕。遮盖缺省贴底通栏，在画布上拖动、拉伸到原字幕的位置；它总在字幕之下。';
 
 export function SubtitlePanel() {
@@ -22,6 +23,20 @@ export function SubtitlePanel() {
   const updateLayer = useEditor((s) => s.updateLayer);
   const setToast = useEditor((s) => s.setToast);
   const postDuration = usePostDuration();
+  const postTime = usePostTime();
+  const focusLayer = useEditor((s) => s.focusLayer);
+  const selectedSubtitle = useEditor((s) => {
+    const l = s.currentVideoId ? s.specs[s.currentVideoId]?.layers.find((x) => x.id === s.selectedLayerId) : undefined;
+    return isSubtitleTextLayer(l) ? l : null;
+  });
+  const addSubtitle = () => {
+    const layer = newTextLayer(BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar')?.style, '字幕');
+    layer.origin = 'subtitle';
+    const start = Math.min(Math.max(0, postTime), Math.max(0, postDuration - 0.1));
+    layer.t = postDuration > 0.1 ? [start, Math.min(postDuration, start + 3)] : 'all';
+    addLayer(layer);
+    focusLayer(layer);
+  };
   const subtitleSyncEnabled = useEditor((s) => s.subtitleSyncEnabled);
   const setSubtitleSyncEnabled = useEditor((s) => s.setSubtitleSyncEnabled);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -63,9 +78,9 @@ export function SubtitlePanel() {
     <div className="panel">
       <div className="panel-head">字幕</div>
       <div className="panel-body inspector">
-        <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>
-        <Section id="subtitle.import" title="导入字幕" bodyClass="stack" hint="每条字幕一个文字图层" help={IMPORT_HELP}>
+        <Section id="subtitle.import" title="添加 / 导入字幕" bodyClass="stack" hint="支持逐句编辑" help={IMPORT_HELP}>
           <div className="inline">
+            <button className="btn action" onClick={addSubtitle}><IconText /> 添加字幕</button>
             <button className="btn action" onClick={() => inputRef.current?.click()}>
               <IconText /> 选择 .srt 文件
             </button>
@@ -82,6 +97,10 @@ export function SubtitlePanel() {
             if (file) void importSrt(file);
           }}
         />
+
+        <LayerList type="text" lane="subtitle" emptyHint="还没有字幕。添加字幕或导入 .srt 文件，也可以在「改语言」中生成字幕。" />
+        <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>
+        {selectedSubtitle && <LayerProps key={selectedSubtitle.id} layer={selectedSubtitle} />}
 
         <Section id="subtitle.mask" title="遮盖原字幕" bodyClass="stack" hint="在画布上拖到原字幕的位置" help={MASK_HELP}>
           <div className="inline">

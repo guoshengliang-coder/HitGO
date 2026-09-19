@@ -222,13 +222,30 @@ def job_spec(job: Job, video: Video) -> dict[str, Any] | None:
     return job.edit_spec if job.edit_spec is not None else video.edit_spec
 
 
+def source_for(video: Video, spec: EditSpec) -> tuple[str, str | None]:
+    """Which file the main track reads, and a warning when we could not honour the request.
+
+    ``source_variant = "clean"`` asks for the erased copy (HIG-38). It is frame-identical to the
+    original, so falling back costs nothing but the erasure itself — and falling back is much
+    better than failing an export because somebody deleted the clean copy afterwards.
+    """
+    original = str(storage.source_path(video.batch_id, video.id, video.source_ext))
+    if spec.source_variant != "clean":
+        return original, None
+    clean = storage.clean_path(video.batch_id, video.id)
+    if clean.exists():
+        return str(clean), None
+    return original, "这条视频要求用无字版源片，但无字版文件不存在，已改用原片"
+
+
 def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
     spec = EditSpec.model_validate(job_spec(job, video))
     sequence_sources = resolve_sequence(db, video, spec)
     variant = next((o for o in spec.outputs if o.variant_key == job.variant_key), None)
     if variant is None:
         raise RenderError(f"编辑参数中没有输出变体 {job.variant_key}")
-    return build_render_command(
+    source_path, source_warning = source_for(video, spec)
+    plan = build_render_command(
         spec,
         {
             "video_id": video.id,
@@ -240,7 +257,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         },
         collect_assets(db, spec),
         variant,
-        source_path=str(storage.source_path(video.batch_id, video.id, video.source_ext)),
+        source_path=source_path,
         output_path=str(storage.tmp_output_path(job.id, "mp4" if job.output_format in {"png", "jpg"} else job.output_format)),
         resolve_image_url=resolve_image_url,
         ffmpeg_bin=settings.ffmpeg_bin,
@@ -248,6 +265,9 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         cover=collect_cover(db, spec),
         sequence_sources=sequence_sources,
     )
+    if source_warning:
+        plan.warnings.append(source_warning)
+    return plan
 
 
 def build_callback(job: Job, video: Video, batch: Batch, output: dict[str, Any]) -> dict[str, Any]:

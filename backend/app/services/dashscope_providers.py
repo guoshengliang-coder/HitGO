@@ -14,13 +14,16 @@ worker when a localization actually runs, and tests must never touch it or the n
                                  Only in cn-beijing, which is dashscope's default endpoint anyway.)
     HL   qwen-plus               Generation.call(system prompt + copy) → JSON array of phrases (HIG-50)
     CLONE  voice-enrollment      VoiceEnrollmentService.create_voice(target_model, prefix, url) → voice_id (HIG-58)
+    OCR  qwen-vl-max-latest      MultiModalConversation.call(local image + prompt) → JSON boxes (HIG-38)
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -32,6 +35,7 @@ from typing import Any
 
 from app.config import Settings
 from app.services.highlight import parse_phrase_json
+from app.services.screentext import DetectedText
 from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_boost_for, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
@@ -487,3 +491,106 @@ def make_providers(cfg: Settings) -> Providers:
         highlight=DashScopeHighlight(api_key=key, model=cfg.highlight_model),
         clone=DashScopeVoiceClone(api_key=key),
     )
+
+
+# --- on-screen text detection (HIG-38) --------------------------------------
+
+SCREEN_TEXT_PROMPT = (
+    "识别这张视频截图里所有烧录在画面上的文字（硬字幕、标题、角标、价格牌、提示语）。"
+    "只输出一个 JSON 数组，不要任何解释或 Markdown 代码块。"
+    "数组每一项形如 {\"text\": \"文字内容\", \"box\": [x, y, w, h], \"confidence\": 0.9}，"
+    "其中 x, y 是文字外接矩形左上角相对整幅图宽高的比例，w, h 是宽高的比例，四个数都在 0 到 1 之间。"
+    "同一行文字合并成一项，不同行分开。"
+    "画面里本来就存在的实物文字（招牌、商品包装、衣服印字）不要输出，只输出后期叠加上去的文字。"
+    "没有任何叠加文字时输出 []。"
+)
+
+_JSON_ARRAY = re.compile(r"\[.*\]", re.S)
+
+
+def parse_detection_json(raw: str) -> list[DetectedText]:
+    """Model output → detections; anything malformed is skipped rather than failing the frame.
+
+    The model occasionally wraps the array in prose or a code fence even when told not to, so
+    the first bracketed span is extracted before parsing. A frame that yields nothing usable is
+    simply a frame without text — one bad frame must not sink a whole detection run.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return []
+    match = _JSON_ARRAY.search(text)
+    if not match:
+        return []
+    try:
+        items = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        log.warning("screen text detection did not parse as JSON")
+        return []
+    if not isinstance(items, list):
+        return []
+    out: list[DetectedText] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("text") or "").strip()
+        raw_box = item.get("box")
+        if not content or not isinstance(raw_box, (list, tuple)) or len(raw_box) != 4:
+            continue
+        try:
+            x, y, w, h = (float(v) for v in raw_box)
+        except (TypeError, ValueError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        confidence = item.get("confidence")
+        try:
+            score = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            score = None
+        out.append(DetectedText(text=content, box={"x": x, "y": y, "w": w, "h": h}, confidence=score))
+    return out
+
+
+def _message_text(result: Any) -> str:
+    """The assistant's text out of a MultiModalConversation result."""
+    try:
+        content = result.output.choices[0].message.content
+    except (AttributeError, IndexError, KeyError, TypeError):
+        return ""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for piece in content or []:
+        if isinstance(piece, dict) and piece.get("text"):
+            parts.append(str(piece["text"]))
+        elif isinstance(piece, str):
+            parts.append(piece)
+    return "\n".join(parts)
+
+
+@dataclass
+class DashScopeScreenText:
+    """Vision model over one sampled frame at a time (contract §6, HIG-38).
+
+    One frame per call rather than a batch: the coordinates have to come back per image, and a
+    batched prompt makes the model mix frames up far more often than it saves calls.
+    """
+
+    api_key: str
+    model: str
+
+    def detect(self, frame: Path, hint_lang: str | None) -> list[DetectedText]:
+        dashscope = _import_dashscope()
+        from dashscope import MultiModalConversation  # noqa: PLC0415
+
+        dashscope.api_key = self.api_key
+        prompt = SCREEN_TEXT_PROMPT
+        if hint_lang:
+            prompt += f"画面文字的语言大概率是 {hint_lang}。"
+        messages = [{"role": "user", "content": [{"image": frame.resolve().as_uri()}, {"text": prompt}]}]
+
+        def call() -> Any:
+            return MultiModalConversation.call(api_key=self.api_key, model=self.model, messages=messages)
+
+        result = _with_retry("画面文字识别", call)
+        return parse_detection_json(_message_text(result))

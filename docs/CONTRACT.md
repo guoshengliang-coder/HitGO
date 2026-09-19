@@ -153,6 +153,77 @@
 原声的版本一并 failed，用系统音色的版本不受影响。哪些目标语言能用原声由 `GET /api/localize/options` 的
 `target_langs[].clone` 下发，前端不写死。
 
+**画面文字 `screen_text`**（可选，缺省 null，HIG-38）：把画面上烧死的文字本地化——识别一次，擦除一次，
+再按目标语言各出一份译文。和 `localization` 是**两条独立的链路**：这一条只管画面，不碰音频，不选目标语言也能
+单独跑（只识别 + 擦除，用来去旧字幕再重新配字）。
+
+```jsonc
+{
+  "detect": {                        // 识别：整条视频做一次
+    "status": "done",                // queued | running | done | failed
+    "error": null,                   // failed 时的中文原因
+    "model": "qwen-vl-max-latest",   // 实际用的视觉模型，排查用
+    "frames": 12,                    // 这次真正送去识别的帧数（对账费用用）
+    "subtitle_band": {               // 可选，缺省 null：硬字幕带，整条视频共用一个矩形
+      "box": { "x": 0.06, "y": 0.80, "w": 0.88, "h": 0.075 },   // 相对源画面宽 / 高，0–1
+      "style": { "font_size": 0.048, "color": "#FFFFFF", "stroke_color": "#000000",
+                 "stroke_width": 0.004, "background": null, "align": "center" },
+      "confidence": 0.8
+    },
+    "blocks": [                      // 静态画面文字（标题 / 角标 / 价格牌），按出现时间升序
+      { "id": "s3f2a1b0c",            // 由文字内容派生，不是序号：重新识别后译文与人调过的位置还能对上
+        "text": "限时免费",           // 源语言原文，可人工修正
+        "box": { "x": 0.62, "y": 0.06, "w": 0.32, "h": 0.07 },
+        "t": [1.2, 6.4],             // 源时间轴，秒（与 transcript.cues 同一时间轴）
+        "lines": 1,                  // 估出来的行数
+        "style": { "font_size": 0.052, "color": "#E3312B", "stroke_color": "#FFFFFF",
+                   "stroke_width": 0.004, "background": null, "align": "center",
+                   "confidence": 0.55 },     // 样式估计的把握，低时界面标「请核对」
+        "confidence": 0.93,          // 可选：识别本身的把握
+        "enabled": true }            // 勾掉的块不擦、不译、不生成图层
+    ],
+    "updated_at": "..."
+  },
+  "erase": {                         // 擦除：整条视频做一次，与语言无关
+    "status": "running",             // queued | running | done | failed
+    "provider": "local",             // fake | local | <厂商标识>
+    "error": null,
+    "task_id": "mps-123456",         // 云端任务 id，排查用
+    "polls": 7,                      // 已轮询次数
+    "deadline": "2026-09-19T10:30:00Z",   // 过了这个时刻仍未完成就判 failed
+    "scope": { "band": true, "block_ids": ["s3f2a1b0c"] },   // 这次擦了哪些区域；block_ids 为 null = 所有启用的块
+    "stale": false,                  // 识别结果改过之后为 true：无字版对不上当前的框，建议重擦
+    "clean_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean.mp4",          // done 才有
+    "clean_proxy_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean_proxy.mp4",
+    "clean_poster_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean_poster.jpg",
+    "updated_at": "..."
+  },
+  "versions": {                      // 画面文字译文，按目标语言一份；键 = 语言码
+    "ko": { "status": "done",        // queued | running | done | failed
+            "texts": [ { "id": "s0", "translated": "한정 무료" } ],   // 按 blocks 的 id 对齐
+            "stale": false,          // detect 重跑 / 人工改过 blocks 之后为 true
+            "error": null, "updated_at": "..." }
+  }
+}
+```
+
+`blocks` 之于 `versions` 就是 `transcript.cues` 之于 `localization.versions[lang].cues`：一份语言无关的模板 +
+逐语言的译文，按 id 对齐。
+
+**硬字幕不逐句识别**（HIG-38）：硬字幕的内容就是口播，而口播的译文和时间 `localization` 已经有了
+（`versions[lang].cues[].dub_start / dub_duration`）。所以识别只测出字幕带的位置和样式（`subtitle_band`），
+擦掉这条带之后，直接把改语言生成的译文字幕层挪到 `subtitle_band.box` 并套上估计出来的样式。**代价**：源片有硬字幕
+但没有口播（纯 BGM 卡点素材）时，字幕没有译文来源，当前版本不处理这种片子。
+
+**无字版 `clean.mp4`**（HIG-38）：擦除的产物，和 `source.mp4` 放在同一个目录，**分辨率、帧率、时长、音轨都与原片
+一致**——所以 `trim.remove`、图层 `t`、`align = "source"` 的音轨全都不用换算，原片永远保留。正片用哪一条由第 2 节的
+`source_variant` 决定。`clean_proxy.mp4` / `clean_poster.jpg` 与原片的 `proxy` / `poster` 同规格，给编辑器预览和列表用。
+重新擦除直接覆盖上一版，不留历史。
+
+**样式估计只做到「近似」**（HIG-38）：`style` 里的字号、主色、对齐由画面估出来，可靠；描边色和背景块中等；
+描边粗细只是粗估。**字体识别做不到**，一律落成按语言选的默认字体。生成出来的是样式接近、**可编辑**的普通文字图层，
+需要人微调。会动的、带透视的、带动画的画面文字（花字动效、商品包装上的字）不在处理范围内，识别阶段会标出来但不生成图层。
+
 ### Asset（素材）
 
 ```jsonc
@@ -321,6 +392,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 ```jsonc
 {
   "spec_version": 1,
+  "source_variant": "original",            // 可选，缺省 "original"（HIG-38）：正片用原片还是无字版（clean）。见下方规则
   "video_hidden": false,                   // 可选，缺省 false（HIG-62）：隐藏主视频画面，保留封面、可见图层及音轨；成片正片以黑色为底
   "video_locked": false,                   // 可选，缺省 false（HIG-62）：编辑器时间线禁止修改主视频片段，worker 忽略
   "trim": {
@@ -512,6 +584,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 层级按 `layers` 数组顺序：编辑器新建 / 粘贴遮盖层时插到第一个文字图层之前，所以遮盖永远压在字幕之下；用户仍可在同类里调层级。
   - 批量套用 `style_only` 时复制 `mode | color | blur | height`（+ 公共的 `width | rotate | opacity`），未匹配的遮盖层插到目标第一个文字图层之前而不是追加到末尾。
   - 编辑器预览用 `backdrop-filter` 模糊 / 色块 div 实时叠在画面上，只是近似；成片效果以 worker 为准。遮盖只是模糊 / 色块，不是无痕擦除。
+- **源片选择 `source_variant`**（可选，缺省 `"original"`，HIG-38）：`original` 用 `source.mp4`，`clean` 用画面文字擦除
+  产出的无字版 `clean.mp4`（第 1 节 `screen_text.erase`）。无字版与原片同分辨率、同帧率、同时长、同音轨，所以
+  **`trim.remove`、图层 `t`、`align = "source"` 的音轨语义完全不变**。取 `clean` 但 `erase.status` 不是 `done`、
+  或文件不在时，worker 回落到原片并在 `job.error` 里记警告（不失败）。有 `sequence` 时只能是 `original`，否则 400——
+  拼接后的源片是虚拟的，逐片段的无字版当前不支持。它随 spec 快照进渲染任务，所以多语言导出可以逐条不同（原版走
+  `original`、译版走 `clean`）；**批量套用不复制它**，它属于这条视频自己的素材状态。
 - **隐藏 `hidden`**（HIG-33，图层 / 音轨可选，缺省 `false`；源音轨用 `audio.source_hidden`）：编辑器轨道头的「眼睛」。
   隐藏不是删除，所有设置都留在 spec 里，打开眼睛即恢复。worker 对 `hidden = true` 的图层当作不存在（贴纸的
   `mix_audio` 声音一并去掉），不写警告；`hidden = true` 的 track 不混入，也不计入回传 `audio.skipped`；
@@ -597,6 +675,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **改语言标记 `origin` / `lang`**（可选）：`layers[]` 与 `audio.tracks[]` 上的前端标记，`origin = "localize"` 表示这一层 / 轨
   是套用某个语言版本生成的，`lang` 是语言码。worker 忽略这两个字段（`extra = "ignore"` 校验但原样存取），批量套用
   原样复制；前端靠它们在切换版本时替换旧层 / 轨、判断当前套用的是哪个版本。
+  `origin = "screen"`（HIG-38）表示这一层由**画面文字**本地化生成：文字图层是写回原位的译文，遮盖层是擦除还没就位时
+  的顶替。它和 `"localize"` 各清各的——切换语言时两边分别替换自己的层，互不误伤。画面文字层另带可选
+  `screen_block`（字符串，`screen_text.detect.blocks[].id`），重新套用时靠它把人调过的位置和字号接回去。
+  `layers[].origin` 目前的取值：`localize | subtitle | screen`。
 - **文字动画 `animation`**（文字图层可选，HIG-40）：`{ in?, out?, loop? }`，缺省 / 空对象 = 不动（命令与此前完全一致）。
   - `in` / `out`：`{ preset, duration }`，`preset` ∈ `fade | slide_up | slide_down | slide_left | slide_right | pop`，`duration` 秒，(0, 10]，缺省 0.5。
     `loop`：`{ preset, period }`，`preset` ∈ `breathe | float | blink`，`period` 秒，[0.2, 10]，缺省 1.2。
@@ -743,6 +825,23 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `aliyun` = CosyVoice / Qwen3-TTS，`minimax` = 百炼托管的 MiniMax 语音；前端只在一种语言同时有两家音色时才给分组名加厂商前缀
   （`MiniMax · 女声`），具体模型名不外泄。每种语言第一个音色是缺省音色。
   `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
+- `POST /api/videos/{id}/screen-text` `{ detect?: true, target_langs?: ["ko"], terms?: [{ source, target }], erase?: false, scope?: { band?: true, block_ids?: ["s0"] } }`
+  → 202 `Video`。一个任务：`detect` 为 true（或还没识别过）就先识别画面文字，再对每个目标语言翻译，最后按 `erase`
+  决定要不要提交擦除。`target_langs` 可以为空——**只识别 + 擦除是合法用法**（去掉旧字幕再自己配字，不改语言）。
+  `scope` 指定这次擦哪些区域，缺省 = 字幕带 + 所有 `enabled` 的块。视频未 `ready` 400；超过
+  `SCREENTEXT_MAX_SECONDS` 400；`detect` 或任一请求的版本正在 queued / running 409；没配 `DASHSCOPE_API_KEY`
+  或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`。
+- `PUT /api/videos/{id}/screen-text/blocks` `{ blocks: [{ id, text?, t?, box?, enabled? }] }` → 200 `Video`。修正识别结果
+  （只传改动的块），不触发任务；所有已有译文的版本 `stale = true`，`erase.stale = true`。还没有识别结果 400；
+  有任务进行中 409。
+- `PUT /api/videos/{id}/screen-text/versions/{lang}` `{ texts: [{ id, translated }] }` → 200 `Video`。修正某个语言的译文，
+  不触发任务。没有这个版本 404；进行中 409。
+- `DELETE /api/videos/{id}/screen-text/versions/{lang}` → 204，删掉该语言的画面文字译文；没有这个版本 404；进行中 409。
+- `DELETE /api/videos/{id}/screen-text/erase` → 204，删掉无字版（连 `clean.mp4` / `clean_proxy.mp4` / `clean_poster.jpg`
+  三个文件），`erase` 置 null。引用它的 `edit_spec.source_variant = "clean"` 不会被改写，渲染时按上面的规则回落原片。
+  擦除进行中 409。
+- `GET /api/screen-text/options` → `{ enabled, erase_enabled, erase_provider, max_seconds, max_frames, max_blocks }`。
+  `enabled` = 识别可用（配了 key 或 provider 为 fake）；`erase_enabled` = 擦除可用。前端据此禁用对应入口。
 - `DELETE /api/videos/{id}` → 204（分离出来的素材与配音不随视频删除，仍可在别的视频里用）。
   该视频有 queued / running 的渲染任务时 409（worker 还会往它的路径写文件），等任务结束再删。
 
@@ -926,6 +1025,33 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
      `stale = false`，上一次这个语言的配音素材连文件一起删掉。
 4. 临时目录 `tmp/{video_id}.loc/` 结束即删（样本文件不在里面，留着备查）；`LOCALIZE_PROVIDER = fake` 时听写 / 翻译 /
    合成 / 复刻都用假实现（静音配音、固定 voice_id），只给测试 / 演示。
+
+### 画面文字（`POST /api/videos/{id}/screen-text` 之后，普通 worker，HIG-38）
+识别走阿里云百炼的视觉模型（`DASHSCOPE_API_KEY`，`SCREENTEXT_MODEL` 缺省 `qwen-vl-max-latest`），翻译复用改语言那一套
+`qwen-mt-plus`，两者都是纯网络调用。任务 `hitgo.screen_text_video` 在默认队列，软超时 `SCREENTEXT_TIMEOUT_SECONDS`
+（缺省 1200 秒）。
+
+1. **识别一次**（`detect` 不是 done 或请求带 `detect`）：`ffmpeg -vf "fps=SCREENTEXT_SAMPLE_FPS,scale=-2:720"` 抽帧到
+   `tmp/{video_id}.st/`，最多 `SCREENTEXT_MAX_FRAMES` 帧（缺省 20）。抽完先做一次**感知去重**（缩到 32×32 灰度，
+   逐像素平均绝对差低于阈值的帧丢掉）——投放素材里大段画面是静止的，去重通常能把送去识别的帧数再砍掉一半，
+   而费用是按帧算的。逐帧调视觉模型拿到文字和框，跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
+   抽帧间隔。落在画面底部且横向居中的那一类合并成 `subtitle_band`（整条视频一个矩形），其余是 `blocks`，最多
+   `SCREENTEXT_MAX_BLOCKS` 个（缺省 40，超出按面积取前 N，其余丢弃）。同一文本在相邻帧之间位移超过
+   阈值的判为「会动」，标出来但不参与擦除和写回。一帧都识别不出内容时 `detect` 仍是 `done`，`blocks` 为空。
+2. **样式估计**：对每个 block 在它首次出现的那一帧上裁出框，用 Pillow 估字号（前景行高 ÷ 画面高 × 1.18，补
+   ascender / descender）、主色（前景腐蚀 1px 去抗锯齿边后量化取最大簇）、描边色与粗细（核心像素外扩 2px 环带的
+   最大簇，与主色亮度差够大才采信）、背景块、对齐。估不出的字段缺席，把握写进 `style.confidence`。
+3. **每个目标语言**：`blocks` 里 `enabled` 的原文整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（与改语言同一条路，
+   共用术语表），回来的编号对不上就逐句重译。`target_langs` 为空时跳过这一步。
+4. **擦除**（请求带 `erase`）：把字幕带和 `scope` 指定的块换算成矩形，交给 `ERASE_PROVIDER`。字幕带**整条视频全程擦**，
+   不按句时段擦——更便宜，也不会因为时段边界没对齐而漏擦几帧。提交后写 `erase.status = running` 与 `deadline`，
+   随即**重新入队**一个 `hitgo.erase_poll` 就结束本任务：`WORKER_CONCURRENCY` 缺省 1，阻塞轮询会把改语言任务饿死。
+   `erase_poll` 每次只做一个 tick：完成就下载结果，`ffprobe` 校验时长与帧率和源片一致（容差 0.2 秒），通过才原子替换
+   `clean.mp4` 并生成 `clean_proxy.mp4` / `clean_poster.jpg`；还没完成且未到 `deadline` 就带 `countdown`
+   （`ERASE_POLL_INTERVAL_SECONDS`，缺省 10 秒）再入队一次；到期或云端报错写 `failed` + 中文原因。
+   `ERASE_PROVIDER = local` 时不出网，直接用 ffmpeg `delogo` 按区域出片——本地开发、smoke 和云厂商不可用时的降级都靠它。
+5. 任何一步失败只影响自己那一段：识别失败不影响已有的译文和无字版，擦除失败不影响识别结果，改语言那条链路完全不受牵连。
+   临时目录 `tmp/{video_id}.st/` 结束即删；`SCREENTEXT_PROVIDER = fake` / `ERASE_PROVIDER = fake` 时用假实现，只给测试。
 
 ### 朗读（`POST /api/tts` 之后，普通 worker，HIG-50）
 任务 `hitgo.synthesize_tts`，软超时同改语言。文案按句读切段，每段的字数上限取自音色所属模型（cosyvoice / qwen3-tts 500 字，MiniMax 2000 字——

@@ -2,6 +2,7 @@
 // 再在 EditorPage 的右栏里挂上对应面板；模块之间没有先后顺序。
 
 import type { Layer } from '../types';
+import { layerLane } from './timelineTracks';
 
 export type Step = 'trim' | 'audio' | 'text' | 'sticker' | 'subtitle' | 'localize' | 'poster';
 
@@ -33,6 +34,7 @@ export function stepForLayer(layer: Layer): Step {
   if (layer.type === 'sticker' || layer.type === 'shape') return 'sticker';
   if (layer.type === 'mask') return 'subtitle';
   if (layer.scroll) return 'poster';
+  if (layerLane(layer) === 'subtitle') return 'subtitle';
   return 'text';
 }
 

@@ -33,6 +33,7 @@ from app.schemas import (
     BatchOut,
     JobOut,
     LocalizationOut,
+    ScreenTextStateOut,
     SeparationOut,
     StatusCounts,
     VideoOut,
@@ -94,6 +95,7 @@ def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
         render_status=render_status(jobs),
         separation=SeparationOut(**video.separation) if video.separation else None,
         localization=LocalizationOut.model_validate(video.localization) if video.localization else None,
+        screen_text=ScreenTextStateOut.model_validate(video.screen_text) if video.screen_text else None,
         updated_at=iso(video.updated_at) or "",
     )
 

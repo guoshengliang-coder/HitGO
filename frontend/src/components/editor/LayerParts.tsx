@@ -8,6 +8,7 @@ import { useEditor, usePostDuration } from '../../store/editor';
 import { ANCHORS, defaultTextStyle, isVideoAsset, variantDef, type Anchor, type Asset, type EditSpec, type Layer, type MaskBlur, type MaskLayer, type MaskMode, type Playback, type StickerLayer, type TextGlow, type TextLayer, type TextShadow, type TextSpan, type TextStyle, type TextStylePreset } from '../../types';
 import { cloneSpec, layerName, layerOutsideDuration, newLayerId, outputFor } from '../../lib/spec';
 import { layersOfType, type LayerType } from '../../lib/layerKind';
+import { layerLane, type LayerLane } from '../../lib/timelineTracks';
 import { DEFAULT_MASK_COLOR, MASK_BLUR_LABEL, MASK_MODE_LABEL, maskBlurLevel } from '../../lib/mask';
 import { alignPlacement, placeLayer, reanchor, round4, type AlignEdge } from '../../lib/layout';
 import { layerFollows, overrideDetaches, placementOfBox } from '../../lib/variantLayout';
@@ -19,6 +20,7 @@ import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
 import { clampWrapWidth, TEXT_WIDTH_MAX, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { setLayerWrapWidth } from '../../lib/localize';
 import { isSubtitleTextLayer } from '../../lib/layerSplit';
+import { mergeSubtitles, nextSubtitle } from '../../lib/subtitleMerge';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { fontChoices, groupPresets, searchFontChoices } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
@@ -648,6 +650,9 @@ export function LayerProps({ layer }: { layer: Layer }) {
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const assets = useEditor((s) => s.assets);
   const splitLayerAtCaret = useEditor((s) => s.splitLayerAtCaret);
+  const mergeSubtitleWithNext = useEditor((s) => s.mergeSubtitleWithNext);
+  const nextCue = useEditor((s) => isSubtitleTextLayer(layer) ? nextSubtitle(s.currentSpec()?.layers ?? [], layer) : undefined);
+  const canMerge = isSubtitleTextLayer(layer) && nextCue && !!mergeSubtitles(layer, nextCue);
   // 文本框里的当前选区（[start, end)，UTF-16 索引），给「选中上色」用
   const [sel, setSel] = useState<[number, number] | null>(null);
   // 光标位置（塌缩时也要记），给「在光标处拆分」用（HIG-36）
@@ -721,6 +726,9 @@ export function LayerProps({ layer }: { layer: Layer }) {
               >
                 在光标处拆分
               </button>
+              <button className="btn ghost sm" disabled={!canMerge}
+                title={canMerge ? '与同来源、同语言的下一条字幕合并，保留当前样式和位置；可撤销' : '需要下一条同来源、同语言且时段不重叠的字幕，两条均须未锁定且显示状态一致'}
+                onClick={() => mergeSubtitleWithNext(layer.id)}>合并下一条</button>
             </div>
           )}
           <StylePresetSection layer={layer} />
@@ -796,7 +804,7 @@ const layerIcon = (type: LayerType) => (type === 'text' ? <IconText /> : type ==
 function layerSubtitle(layer: Layer, assets: Asset[]): string {
   if (layer.type === 'text') {
     const n = Array.from(layer.text.replace(/\s+/g, '')).length;
-    return `文字图层 · ${n} 字`;
+    return `${isSubtitleTextLayer(layer) ? '字幕' : '文字图层'} · ${n} 字`;
   }
   if (layer.type === 'mask') return `遮盖图层 · ${MASK_MODE_LABEL[layer.mode]}`;
   if (layer.type === 'shape') return `图形图层 · ${layer.shape}`;
@@ -806,17 +814,17 @@ function layerSubtitle(layer: Layer, assets: Asset[]): string {
 }
 
 /** 某一类（文字 / 贴纸 / 遮盖）图层的列表：上层在前，拖动 / 上下移只在这一类里换序（lib/layerKind）。 */
-export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: ReactNode }) {
+export function LayerList({ type, lane, emptyHint }: { type: LayerType; lane?: LayerLane; emptyHint: ReactNode }) {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const selectedId = useEditor((s) => s.selectedLayerId);
-  const setSelected = useEditor((s) => s.setSelectedLayer);
+  const focusLayer = useEditor((s) => s.focusLayer);
   const updateLayer = useEditor((s) => s.updateLayer);
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
   const moveLayerTo = useEditor((s) => s.moveLayerTo);
   const moveLayerToIndex = useEditor((s) => s.moveLayerToIndex);
   const duplicateLayer = useEditor((s) => s.duplicateLayer);
-  const layers = useMemo(() => layersOfType(spec?.layers ?? [], type), [spec?.layers, type]);
+  const layers = useMemo(() => layersOfType(spec?.layers ?? [], type).filter((l) => !lane || layerLane(l) === lane), [spec?.layers, type, lane]);
   // 正在改名的图层 / 正在拖的图层 / 插入位置指示（列表按 z 序倒序显示：before = 视觉上方 = 更靠上层）
   const [editingId, setEditingId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -845,7 +853,7 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
 
   return (
     <div className="section">
-      <div className="section-title"><span>{LIST_TITLES[type]}（上层在前）</span><span className="mono muted">{layers.length}</span></div>
+      <div className="section-title"><span>{lane === 'subtitle' ? '字幕' : LIST_TITLES[type]}（上层在前）</span><span className="mono muted">{layers.length}</span></div>
       {layers.length === 0 ? (
         <div className="hint">{emptyHint}</div>
       ) : (
@@ -854,10 +862,10 @@ export function LayerList({ type, emptyHint }: { type: LayerType; emptyHint: Rea
             <div
               key={l.id}
               className={`layer-item ${l.id === selectedId ? 'selected' : ''} ${l.hidden ? 'hidden' : ''} ${l.id === dragId ? 'dragging' : ''} ${drop?.id === l.id && l.id !== dragId ? `drop-${drop.side}` : ''}`}
-              onClick={() => setSelected(l.id)}
+              onClick={() => focusLayer(l)}
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && setSelected(l.id)}
+              onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); focusLayer(l); } }}
               draggable={editingId !== l.id}
               onDragStart={(e) => {
                 e.dataTransfer.effectAllowed = 'move';

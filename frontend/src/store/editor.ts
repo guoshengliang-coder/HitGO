@@ -7,11 +7,12 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
+import { applyScreenTextToSpec, bandHint, cleanReady, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
@@ -25,7 +26,9 @@ import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, o
 import { retrimForAsset } from '../lib/sourceTrim';
 import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
-import { clamp, normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { clamp, lapsFor, normalizeRanges, outputDuration, postTimeOf, postToSource, postTrimDuration, sourceToPost, splitPostTime, wouldRemoveAll } from '../lib/time';
+import { layerFocusTime } from '../lib/layerFocus';
+import { mergeSubtitles, nextSubtitle } from '../lib/subtitleMerge';
 import { isSubtitleTextLayer, MIN_SPLIT, splitLayerAt, splitLayerBlockedReason, splitTextLayerByText, textCutForSplit } from '../lib/layerSplit';
 import { charRatio } from '../lib/cueSplit';
 import { windowRange } from '../lib/stickerMedia';
@@ -33,7 +36,7 @@ import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, pos
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
-import { indexWithinType, insertIndexBelow, layersOfType, moveWithinType, type LayerType } from '../lib/layerKind';
+import { indexWithinType, insertIndexBelow, layersInCategory, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
 import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
 import { bakeShapeLayer } from '../lib/shapeImage';
@@ -125,6 +128,7 @@ export interface EditorState {
   drawingShape: import('../types').ShapeLayer['shape'] | null;
   /** 用户主动点选图层的次数；重复点同一图层也要把右栏切回属性。 */
   layerFocusVersion: number;
+  layerRevealVersion: number;
   /** 正在为哪个贴纸图层挑替换素材（HIG-67）；null = 不在替换中。 */
   replacingLayerId: string | null;
   selectedClipId: string | null;
@@ -206,7 +210,7 @@ export interface EditorState {
   updateSelectedTextStyle: (patch: Partial<TextStyle>) => void;
   updateSelectedShapeStyle: (patch: Partial<Pick<ShapeLayer, 'shape' | 'fill' | 'stroke' | 'stroke_width' | 'radius'>>) => void;
   setDrawingShape: (shape: import('../types').ShapeLayer['shape'] | null) => void;
-  focusLayer: (layer: Layer) => void;
+  focusLayer: (layer: Layer, options?: { reveal?: boolean }) => void;
   setSelectedClip: (id: string | null) => void;
   selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract') => void;
   copyTimelineItems: () => void;
@@ -325,6 +329,19 @@ export interface EditorState {
    */
   applyVersion: (lang: string, opts?: { force?: boolean }) => boolean;
 
+  // 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）
+  /** GET /api/screen-text/options 的结果；null = 还没拉。拉失败按 enabled=false 处理。 */
+  screenTextOptions: ScreenTextOptions | null;
+  loadScreenTextOptions: () => Promise<void>;
+  /** POST screen-text：识别（未识别过时）+ 逐语言翻译 + 可选擦除；发起后轮询到结束。 */
+  runScreenText: (body: ScreenTextIn) => Promise<boolean>;
+  /** 修正识别结果（PUT blocks）；不触发任务，译文与无字版会被标为 stale。 */
+  updateScreenBlocks: (edits: { id: string; text?: string; enabled?: boolean }[]) => Promise<boolean>;
+  /** 删掉无字版并切回原片。 */
+  deleteScreenErase: () => Promise<boolean>;
+  /** 手动切换正片用原片还是无字版；无字版不可用时 toast 原因并返回 false。 */
+  setSourceVariant: (variant: SourceVariant) => boolean;
+
   // 图层
   /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省放最上层。 */
   addLayer: (layer: Layer, opts?: { belowType?: LayerType }) => void;
@@ -335,6 +352,7 @@ export interface EditorState {
   splitLayer: (id: string) => void;
   /** 在文本下标 offset 处把字幕图层拆成两条（HIG-36）：时段按光标前后的字数比例分。 */
   splitLayerAtCaret: (id: string, offset: number) => void;
+  mergeSubtitleWithNext: (id: string) => void;
   /** 把已套用的长字幕按当前设置补拆成多条（HIG-36）；只动字幕层，配音轨和 BGM 不变。 */
   resplitSubtitleLayers: () => void;
   removeLayer: (id: string) => void;
@@ -445,6 +463,7 @@ const PER_BATCH_INITIAL = {
   subtitleSyncEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
+  layerRevealVersion: 0,
   replacingLayerId: null,
   selectedClipId: null,
   timelineSelection: [],
@@ -515,7 +534,7 @@ function pollPreparingAssets(set: (fn: (s: EditorState) => Partial<EditorState>)
 }
 
 /** 视频上会异步变化、需要轮询的字段：分离（separation）和改语言（localization）。 */
-type PolledField = 'separation' | 'localization';
+type PolledField = 'separation' | 'localization' | 'screen_text';
 const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
@@ -580,6 +599,7 @@ function fieldActive(video: Video | null | undefined, field: PolledField): boole
     const st = video?.separation?.status;
     return st === 'queued' || st === 'running';
   }
+  if (field === 'screen_text') return screenTextActive(video?.screen_text);
   return isLocalizationActive(video?.localization);
 }
 
@@ -608,6 +628,8 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
         if (fresh.separation?.status === 'done') get().setToast('人声 / 伴奏已分离，可在音频模块里使用');
         else get().setToast(`分离失败：${fresh.separation?.error ?? '未知原因'}`);
         applyQuickWhenReady(videoId, get);
+      } else if (field === 'screen_text') {
+        get().setToast(screenTextFinishText(fresh.screen_text));
       } else {
         const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
         if (text) get().setToast(text);
@@ -1195,10 +1217,26 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => { for (const l of spec.layers) if (l.type === 'shape' && ids.has(l.id) && !l.locked) { Object.assign(l, patch); l.image_url = null; l.image_size = null; } });
     },
     setDrawingShape: (drawingShape) => set({ drawingShape }),
-    focusLayer: (layer) => {
+    focusLayer: (layer, { reveal = true } = {}) => {
+      player.pause();
+      if (reveal) {
+        const state = get();
+        const spec = state.currentSpec();
+        const duration = selectPostDuration(state);
+        const target = layerFocusTime(layer, state.time < 0 ? -1 : selectPostTime(state), duration);
+        if (spec && target !== null) {
+          const postLen = postTrimDuration(selectSourceDuration(state), spec.trim.remove);
+          const { lap, rem } = splitPostTime(target, postLen, lapsFor(duration, postLen));
+          player.seek(postToSource(rem, spec.trim.remove), lap);
+        }
+      }
       const next = stepForLayer(layer);
       if (next !== get().step) get().setStep(next);
-      set((s) => ({ selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null, layerFocusVersion: s.layerFocusVersion + 1 }));
+      set((s) => ({
+        selectedLayerId: layer.id, selectedLayerIds: [layer.id], selectedTrackId: null, replacingLayerId: null,
+        layerFocusVersion: s.layerFocusVersion + 1, layerRevealVersion: s.layerRevealVersion + (reveal ? 1 : 0),
+        ...(reveal ? { timelineSelection: [`layer:${layer.id}`], selectedClipId: null, selectedRangeIndex: null, selectedMuteIndex: null } : {}),
+      }));
     },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
     selectTimelineItems: (keys, mode = 'replace') => {
@@ -1671,6 +1709,74 @@ export const useEditor = create<EditorState>((set, get) => {
         get().setToast(e instanceof ApiError ? e.message : '分离请求失败');
       }
     },
+    screenTextOptions: null,
+    loadScreenTextOptions: async () => {
+      if (get().screenTextOptions) return;
+      try {
+        set({ screenTextOptions: await api.getScreenTextOptions() });
+      } catch {
+        // 旧后端没有这个接口：当作没开，界面把入口禁掉
+        set({ screenTextOptions: { enabled: false, erase_enabled: false, erase_provider: '', max_seconds: 0, max_frames: 0, max_blocks: 0 } });
+      }
+    },
+    runScreenText: async (body) => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        const updated = await api.screenText(video.id, body);
+        mergeVideoField(set, updated, 'screen_text');
+        pollVideoField(video.id, 'screen_text', set, get);
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '画面文字请求失败');
+        return false;
+      }
+    },
+    updateScreenBlocks: async (edits) => {
+      const video = get().currentVideo();
+      if (!video || !edits.length) return false;
+      try {
+        mergeVideoField(set, await api.updateScreenBlocks(video.id, edits), 'screen_text');
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '保存修正失败');
+        return false;
+      }
+    },
+    deleteScreenErase: async () => {
+      const video = get().currentVideo();
+      if (!video) return false;
+      try {
+        await api.deleteScreenErase(video.id);
+        mergeVideoField(set, await api.getVideo(video.id), 'screen_text');
+        // spec 里还写着 clean 的话，渲染会自动回落原片；这里顺手切回来，免得预览和成片不一致。
+        if (get().currentSpec()?.source_variant === 'clean') get().updateSpec((sp) => void (sp.source_variant = 'original'));
+        return true;
+      } catch (e) {
+        get().setToast(e instanceof ApiError ? e.message : '删除无字版失败');
+        return false;
+      }
+    },
+    setSourceVariant: (variant) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return false;
+      if (variant === 'clean') {
+        if (spec.sequence) {
+          get().setToast('多片段拼接暂不支持无字版源片');
+          return false;
+        }
+        if (!cleanReady(video.screen_text)) {
+          get().setToast(video.screen_text?.erase?.stale ? '无字版对不上当前的识别结果，请重新擦除' : '这条视频还没有可用的无字版');
+          return false;
+        }
+      }
+      if (spec.source_variant === variant) return false;
+      get().updateSpec((sp) => void (sp.source_variant = variant));
+      get().setToast(variant === 'clean' ? '正片已切到无字版' : '正片已切回原片', { label: '撤销', run: () => get().undo() });
+      return true;
+    },
+
     useStem: (stem) => {
       if (get().currentSpec()?.audio?.source_locked) return null;
       const video = get().currentVideo();
@@ -1820,7 +1926,12 @@ export const useEditor = create<EditorState>((set, get) => {
       }
       let warnings: string[] = [];
       get().updateSpec((s) => {
-        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+        // 一次 updateSpec = 一步历史：配音 / 字幕和画面文字一起进去，⌘Z 一次全撤。
+        // 两个函数各清各的 origin，互不误伤（HIG-38）。
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, band: bandHint(video.screen_text, lang), langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+        if (video.screen_text?.detect?.status === 'done') {
+          warnings = [...warnings, ...applyScreenTextToSpec(s, lang, { screen: video.screen_text, remove: s.trim.remove, postDuration: postTrimDuration(video.duration, s.trim.remove), newLayerId })];
+        }
       });
       set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
       get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
@@ -2005,14 +2116,14 @@ export const useEditor = create<EditorState>((set, get) => {
         (spec) => {
           const l = spec.layers.find((x) => x.id === id);
           if (!l) return;
-          const sync = get().subtitleSyncEnabled && l.type === 'text' && (l.origin === 'subtitle' || l.origin === 'localize' || /^字幕\s*\d+/.test(l.name ?? ''));
+          const sync = get().subtitleSyncEnabled && isSubtitleTextLayer(l);
           const before = sync ? structuredClone(l) : null;
           if (typeof patch === 'function') patch(l);
           else Object.assign(l, patch);
           if (before?.type === 'text' && l.type === 'text') {
             const changedStyle = Object.keys(l.style) as (keyof typeof l.style)[];
             for (const other of spec.layers) {
-              if (other.id === id || other.type !== 'text' || other.locked || !(other.origin === 'subtitle' || other.origin === 'localize' || /^字幕\s*\d+/.test(other.name ?? ''))) continue;
+              if (other.id === id || other.locked || !isSubtitleTextLayer(other)) continue;
               for (const key of changedStyle) {
                 if (JSON.stringify(before.style[key]) !== JSON.stringify(l.style[key])) Object.assign(other.style, { [key]: l.style[key] === undefined ? undefined : structuredClone(l.style[key]) });
               }
@@ -2051,6 +2162,17 @@ export const useEditor = create<EditorState>((set, get) => {
       const cutText = parts[0].type === 'text' && parts[1].type === 'text' && parts[0].text !== parts[1].text;
       // 选中右半段：和剪映一样，拆完接着处理后面那截
       set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: cutText ? '已在播放头处拆分字幕' : '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    mergeSubtitleWithNext: (id) => {
+      const layers = get().currentSpec()?.layers ?? [];
+      const current = layers.find(l => l.id === id);
+      if (!isSubtitleTextLayer(current)) return;
+      const next = nextSubtitle(layers, current);
+      const merged = next && mergeSubtitles(current, next);
+      if (!next || !merged) return;
+      get().updateSpec(spec => { spec.layers = spec.layers.filter(l => l.id !== next.id).map(l => l.id === id ? merged : l); });
+      set({ timelineSelection: [`layer:${id}`], toast: '已合并下一条字幕，保留当前字幕样式和位置', toastAction: { label: '撤销', run: () => get().undo() } });
+      get().focusLayer(merged);
     },
     splitLayerAtCaret: (id, offset) => {
       const ctx = playheadPost();
@@ -2115,14 +2237,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const layers = get().currentSpec()?.layers ?? [];
       const layer = layers.find((l) => l.id === id);
       if (!layer) return;
-      get().moveLayerToIndex(id, where === 'top' ? layersOfType(layers, layer.type).length - 1 : 0);
+      get().moveLayerToIndex(id, where === 'top' ? layersInCategory(layers, layer).length - 1 : 0);
     },
     moveLayerToIndex: (id, index) => {
       const layers = get().currentSpec()?.layers ?? [];
       const layer = layers.find((l) => l.id === id);
       if (!layer) return;
       // 越界（到顶了再上移）直接忽略，免得记一条空历史
-      if (index < 0 || index >= layersOfType(layers, layer.type).length || moveWithinType(layers, id, index) === layers) return;
+      if (index < 0 || index >= layersInCategory(layers, layer).length || moveWithinType(layers, id, index) === layers) return;
       get().updateSpec((spec) => {
         spec.layers = moveWithinType(spec.layers, id, index);
       });
@@ -2411,16 +2533,23 @@ export const useEditor = create<EditorState>((set, get) => {
           for (const it of plan.items) {
             const video = targets.find((v) => v.id === it.video_id)!;
             const spec = cloneSpec(baked[it.video_id]);
-            if (it.lang === null) stripLocalization(spec, video.id);
-            else {
+            if (it.lang === null) {
+              stripLocalization(spec, video.id);
+              // HIG-38：原版必须同时去掉画面文字层并切回原片，否则导出的会是
+              // 「用了无字版、但画面上一个字都没有」的空画面。
+              stripScreenText(spec);
+            } else {
               const bgm = loadLocalizeBgm(video.id);
               const bgmAssetId = bgm.mode === 'replace' ? bgm.assetId : video.separation?.status === 'done' ? video.separation.instrumental_asset_id : null;
               if (!isAssetReady(assets.find((a) => a.id === bgmAssetId))) throw new Error(`${video.name} 的 BGM 尚未就绪，未提交多语言导出`);
               // 和预览用同一个开关：否则画面上拆了、导出的成片没拆（HIG-36）
-              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, band: bandHint(video.screen_text, it.lang), langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+              if (video.screen_text?.detect?.status === 'done') {
+                applyScreenTextToSpec(spec, it.lang, { screen: video.screen_text, remove: spec.trim.remove, postDuration: postTrimDuration(video.duration, spec.trim.remove), newLayerId });
+              }
               for (let i = 0; i < spec.layers.length; i++) {
                 const l = spec.layers[i];
-                if (l.type !== 'text' || l.origin !== LOCALIZE_ORIGIN) continue;
+                if (l.type !== 'text' || (l.origin !== LOCALIZE_ORIGIN && l.origin !== 'screen')) continue;
                 const one = await bakeTextLayer(l as TextLayer);
                 spec.layers[i] = await bakeTextLayerVariants(one, spec, variantKeys, video.width, video.height);
               }

@@ -49,6 +49,13 @@ LOC_DONE = "done"
 LOC_FAILED = "failed"
 LOC_ACTIVE = (LOC_QUEUED, LOC_RUNNING)
 
+# Video.screen_text.detect.status / erase.status / versions[lang].status (contract §1, HIG-38)
+ST_QUEUED = "queued"
+ST_RUNNING = "running"
+ST_DONE = "done"
+ST_FAILED = "failed"
+ST_ACTIVE = (ST_QUEUED, ST_RUNNING)
+
 # Asset.kind / status (contract §1). Video stickers are probed asynchronously.
 ASSET_IMAGE = "image"
 ASSET_VIDEO = "video"
@@ -105,6 +112,10 @@ class Video(Base):
     # Localization state: transcript template + per-language dubbed versions (contract §1);
     # None = never requested.
     localization: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # On-screen text state: detection template + erase job + per-language translations
+    # (contract §1, HIG-38); None = never requested. Independent of ``localization``:
+    # detecting and erasing does not need a target language.
+    screen_text: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
