@@ -17,6 +17,10 @@ function fakeVideo(src = '/media/a.mp4') {
 }
 
 describe('Player multi-source preview (HIG-39)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('maps composed seeks to raw source times and keeps the composed duration', () => {
     const p = new Player();
     const v = fakeVideo();
@@ -35,6 +39,32 @@ describe('Player multi-source preview (HIG-39)', () => {
     expect(v.src).toBe('/media/a.mp4');
     v.dispatchEvent(new Event('loadedmetadata'));
     expect(v.currentTime).toBe(3);
+  });
+
+  it('maps retimed clip seeks to source time and applies the clip playback rate', () => {
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    p.setSequence([{ id: 'slow', src: '/media/a.mp4', sourceIn: 2, sourceOut: 4, start: 0, end: 2.5, speed: 0.8 }]);
+    p.seek(1.25);
+    expect(v.currentTime).toBe(3);
+    expect(v.playbackRate).toBe(0.8);
+    expect(p.sourceMediaRate).toBe(0);
+    expect(p.duration).toBe(2.5);
+  });
+
+  it('retimes source-aligned media with the active clip while post media keeps the composed rate', () => {
+    vi.stubGlobal('requestAnimationFrame', () => 1);
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    p.setSequence([{ id: 'fast', src: '/media/a.mp4', sourceIn: 0, sourceOut: 5, start: 0, end: 4, speed: 1.25 }]);
+    p.play();
+    expect(p.mediaRate).toBe(1);
+    expect(p.sourceMediaRate).toBe(1.25);
+    p.pause();
+    expect(p.sourceMediaRate).toBe(0);
   });
 });
 

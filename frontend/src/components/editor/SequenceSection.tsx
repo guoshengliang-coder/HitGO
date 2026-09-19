@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useEditor, usePostDuration, selectSourceDuration } from '../../store/editor';
 import { player } from '../../lib/player';
-import { CLIP_DRAG, clipDisplayGroups, duplicateClip, insertClip, moveClipGroup, removeClip, splitClip, updateClip } from '../../lib/sequence';
+import { CLIP_DRAG, clipDisplayGroups, clipLength, duplicateClip, insertClip, moveClipGroup, removeClip, splitClip, updateClip } from '../../lib/sequence';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { VIDEO_ACCEPT, VIDEO_ACCEPT_LABEL, splitByAccept } from '../../lib/fileDrop';
 import type { ClipTransitionType, SequenceClip } from '../../types';
@@ -64,13 +64,13 @@ export function SequenceSection() {
     if (!selected || !selectedSource || !Number.isFinite(value)) return;
     const lo = edge === 'in' ? Math.max(0, Math.min(value, selected.out - 0.1)) : selected.in;
     const hi = edge === 'out' ? Math.min(selectedSource.duration, Math.max(value, selected.in + 0.1)) : selected.out;
-    if ((selected.transition?.duration ?? 0) >= hi - lo) { setError('片段时长必须大于转场时长'); return; }
+    if ((selected.transition?.duration ?? 0) >= (hi - lo) / (selected.speed ?? 1)) { setError('片段时长必须大于转场时长'); return; }
     patchClip({ in: lo, out: hi });
   };
   const changeEffect = (type: ClipTransitionType) => {
     if (!selected || selectedIndex <= 0) return;
     const previous = clips[selectedIndex - 1];
-    const duration = type === 'cut' ? 0 : Math.min(0.4, Math.max(0.1, Math.min(selected.out - selected.in, previous.out - previous.in) / 2));
+    const duration = type === 'cut' ? 0 : Math.min(0.4, Math.max(0.1, Math.min(clipLength(selected), clipLength(previous)) / 2));
     patchClip({ transition: { type, duration } });
   };
 
@@ -90,7 +90,7 @@ export function SequenceSection() {
                   <span>{index + 1}. {source?.name ?? '源视频已缺失'}{multi ? ` · 原有剪辑 ${group.clips.length} 段 ${expandedGroup === group.key ? '▴' : '▾'}` : ''}</span>
                   <small>{formatTime(group.start)} · {formatSeconds(group.end - group.start)}</small>
                 </button>
-                {multi && expandedGroup === group.key && group.clips.map(({ clip, start }, sub) => <button key={clip.id} className={`sequence-row sequence-subrow ${clip.id === selectedId ? 'selected' : ''}`} onClick={() => { setSelected(clip.id); player.seek(start); }}><span>区间 {sub + 1} · 源片 {formatTime(clip.in)}–{formatTime(clip.out)}</span><small>{formatSeconds(clip.out - clip.in)}</small></button>)}
+                {multi && expandedGroup === group.key && group.clips.map(({ clip, start }, sub) => <button key={clip.id} className={`sequence-row sequence-subrow ${clip.id === selectedId ? 'selected' : ''}`} onClick={() => { setSelected(clip.id); player.seek(start); }}><span>区间 {sub + 1} · 源片 {formatTime(clip.in)}–{formatTime(clip.out)}</span><small>{formatSeconds(clipLength(clip))}</small></button>)}
               </div>;
             })}
           </div>
@@ -101,7 +101,7 @@ export function SequenceSection() {
             <div className="inline"><label className="field">源片入点<input className="input sm" type="number" min="0" max={selected.out - 0.1} step="0.01" key={`${selected.id}:in:${selected.in}`} defaultValue={selected.in} onBlur={(e) => editEdge('in', Number(e.target.value))} /></label><label className="field">源片出点<input className="input sm" type="number" min={selected.in + 0.1} max={selectedSource.duration} step="0.01" key={`${selected.id}:out:${selected.out}`} defaultValue={selected.out} onBlur={(e) => editEdge('out', Number(e.target.value))} /></label></div>
             <div className="inline"><button className="btn sm" onClick={() => { const next = splitClip(spec!, selected.id, Math.max(0, player.currentTime)); if (next) save(next); else setError('播放头需位于选中片段内部'); }}>在播放头拆分</button><button className="btn sm" onClick={() => { const result = duplicateClip(spec!, selected.id); if (result) { save(result.spec); setSelected(result.clipId); } }}>复制</button><button className="btn sm danger" disabled={clips.length <= 1} onClick={() => { const next = removeClip(spec!, selected.id); if (next) { save(next); setSelected(next.sequence?.clips[Math.max(0, selectedIndex - 1)]?.id ?? null); } }}>删除</button></div>
             <div className="inline"><button className="btn sm" disabled={selectedGroupIndex <= 0} onClick={() => save(moveClipGroup(spec!, current!.id, groups[selectedGroupIndex].key, selectedGroupIndex - 1))}>前移</button><button className="btn sm" disabled={selectedGroupIndex >= groups.length - 1} onClick={() => save(moveClipGroup(spec!, current!.id, groups[selectedGroupIndex].key, selectedGroupIndex + 1))}>后移</button></div>
-            {selectedIndex > 0 && <div className="field">与上一段的转场<select className="input" value={selected.transition?.type ?? 'cut'} onChange={(e) => changeEffect(e.target.value as ClipTransitionType)}>{EFFECTS.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}</select>{selected.transition && selected.transition.type !== 'cut' && <label className="field">转场时长（秒）<input className="input sm" type="number" min="0.1" max={Math.min(1.5, selected.out - selected.in - 0.01, clips[selectedIndex - 1].out - clips[selectedIndex - 1].in - 0.01)} step="0.1" key={`${selected.id}:transition:${selected.transition.duration}`} defaultValue={selected.transition.duration} onBlur={(e) => { const n = Number(e.target.value); if (n >= 0.1 && n < Math.min(selected.out - selected.in, clips[selectedIndex - 1].out - clips[selectedIndex - 1].in)) patchClip({ transition: { type: selected.transition!.type, duration: n } }); }} /> </label>}</div>}
+            {selectedIndex > 0 && <div className="field">与上一段的转场<select className="input" value={selected.transition?.type ?? 'cut'} onChange={(e) => changeEffect(e.target.value as ClipTransitionType)}>{EFFECTS.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}</select>{selected.transition && selected.transition.type !== 'cut' && <label className="field">转场时长（秒）<input className="input sm" type="number" min="0.1" max={Math.min(1.5, clipLength(selected) - 0.01, clipLength(clips[selectedIndex - 1]) - 0.01)} step="0.1" key={`${selected.id}:transition:${selected.transition.duration}`} defaultValue={selected.transition.duration} onBlur={(e) => { const n = Number(e.target.value); if (n >= 0.1 && n < Math.min(clipLength(selected), clipLength(clips[selectedIndex - 1]))) patchClip({ transition: { type: selected.transition!.type, duration: n } }); }} /> </label>}</div>}
           </>
         )}
         {error && <div className="error-text" role="alert">{error}</div>}

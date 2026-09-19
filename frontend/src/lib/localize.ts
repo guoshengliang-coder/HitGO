@@ -3,14 +3,15 @@
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算基于 lib/time.sourceRangeToPost：
 // 模板句子在源时间轴上，字幕层的 t 在剪后时间轴上。
 
-import type { Asset, AudioTrack, CloneVoice, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
+import type { Asset, AudioTrack, CloneVoice, EditSpec, Localization, LocalizationTerm, LocalizationVersion, LocalizeOptions, SequenceClip, TextLayer, TextStyle, Transcript, Video, VoiceGender, VoiceOption } from '../types';
 import { defaultTextStyle, isAssetReady } from '../types';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
 import { MIN_CUE_SECONDS, sliceWindow, splitCueRanges, visibleLength } from './cueSplit';
 import { cuesToTextLayers, type SrtCue } from './srt';
 import { postTrimDuration, sourceRangeToPost, type Range } from './time';
-import { normalizeSequenceAudio, setOwnerSourceGain } from './sequence';
+import { normalizeSequenceAudio, retimeContent, sequenceDuration, setOwnerSourceGain } from './sequence';
+import { cloneSpec } from './spec';
 
 export const LOCALIZE_ORIGIN = 'localize' as const;
 
@@ -286,9 +287,11 @@ export interface MergedCue {
   text: string;
   /** 该语言的译文；版本里没有这句时为空串。 */
   translated: string;
-  /** 这句配音在源时间轴上实际占用的起点与时长（HIG-36）；配音对不上当前译文时不带。 */
+  /** 这句配音实际占用的起点与时长；adaptive 时是成片时间轴，否则是源时间轴。 */
   dubStart?: number;
   dubDuration?: number;
+  videoSpeed?: number;
+  adaptive?: boolean;
 }
 
 /**
@@ -310,6 +313,10 @@ export function mergedCues(transcript: Transcript | null | undefined, version: L
       if (dubTrusted && typeof start === 'number' && Number.isFinite(start) && start >= 0 && typeof duration === 'number' && duration > 0) {
         out.dubStart = start;
         out.dubDuration = duration;
+        if (version?.adaptive_timing && typeof v?.video_speed === 'number') {
+          out.videoSpeed = v.video_speed;
+          out.adaptive = true;
+        }
       }
       return out;
     });
@@ -402,12 +409,16 @@ export function setLayerWrapWidth(layer: TextLayer, wrap: number | null): void {
 }
 
 /**
- * 一条译文在源时间轴上的显示窗口（HIG-36）：有配音时段就用它——这才是和语音同步的那一段；
+ * 一条译文在当前版本时间轴上的显示窗口：有配音时段就用它——这才是和语音同步的那一段；
  * 没有就回落到模板句子的时段。配音比原句短时不提前收尾（听感上句子还没说完就没字了很怪），
  * 比原句长并压到下一句时用下一句的起点收住，两条字幕不重叠。
  */
 export function cueSourceWindow(cue: MergedCue, nextStart?: number): Range {
   const a = cue.dubStart ?? cue.start;
+  if (cue.adaptive && cue.dubDuration) {
+    const b = nextStart === undefined ? a + cue.dubDuration : Math.min(a + cue.dubDuration, Math.max(nextStart, a + MIN_CUE_SECONDS));
+    return [round3(a), round3(Math.max(b, a + MIN_CUE_SECONDS))];
+  }
   let b = cue.dubDuration ? a + cue.dubDuration : cue.end;
   b = Math.max(b, cue.end);
   if (nextStart !== undefined) b = Math.min(b, Math.max(nextStart, a + MIN_CUE_SECONDS));
@@ -435,8 +446,9 @@ export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOp
   const kept = pieces.length > MAX_SUBTITLE_LAYERS ? spoken.map(({ text }, k) => ({ text, window: windows[k] })) : pieces;
 
   const srtCues: SrtCue[] = [];
+  const adaptive = cues.some((cue) => cue.adaptive);
   for (const piece of kept) {
-    const r = sourceRangeToPost(piece.window, opts.remove);
+    const r = adaptive ? piece.window : sourceRangeToPost(piece.window, opts.remove);
     if (!r) continue;
     srtCues.push({ index: srtCues.length + 1, start: round3(r[0]), end: round3(r[1]), text: piece.text });
   }
@@ -478,6 +490,71 @@ export interface ApplyContext {
   split?: boolean;
   newLayerId: () => string;
   newTrackId: () => string;
+  newClipId?: () => string;
+}
+
+const retimeWindow = (window: [number, number], segments: { sourceStart: number; sourceEnd: number; outputStart: number; speed: number }[]): [number, number] => {
+  const map = (t: number) => {
+    const hit = segments.find((s, i) => t < s.sourceEnd - 1e-6 || i === segments.length - 1)!;
+    return hit.outputStart + (Math.max(hit.sourceStart, Math.min(hit.sourceEnd, t)) - hit.sourceStart) / hit.speed;
+  };
+  return [round3(map(window[0])), round3(map(window[1]))];
+};
+
+/** Apply HIG-73's cue timing to the owner picture. Returns a warning when an edited sequence cannot be replaced safely. */
+export function applyAdaptiveTiming(spec: EditSpec, video: Video, version: LocalizationVersion, newClipId?: () => string): string | null {
+  if (!version.adaptive_timing) {
+    if (spec.sequence?.origin === LOCALIZE_ORIGIN && spec.sequence.clips.some((clip) => Math.abs((clip.speed ?? 1) - 1) > 1e-6)) {
+      const before = cloneSpec(spec);
+      const after = cloneSpec(spec);
+      for (const clip of after.sequence!.clips) clip.speed = 1;
+      Object.assign(spec, retimeContent(before, after));
+    }
+    return null;
+  }
+  const speeds = new Map(version.cues.filter((c) => typeof c.video_speed === 'number').map((c) => [c.i, c.video_speed!]));
+  const transcript = video.localization?.transcript?.cues ?? [];
+  if (!speeds.size || !transcript.length) return '缺少画面适配数据，已保留当前画面时序';
+
+  if (spec.sequence) {
+    if (spec.sequence.origin !== LOCALIZE_ORIGIN) return '当前已有手工视频拼接，未自动改动画面速度';
+    const before = cloneSpec(spec);
+    const after = cloneSpec(spec);
+    for (const clip of after.sequence!.clips) clip.speed = clip.localize_cue === undefined ? 1 : speeds.get(clip.localize_cue) ?? 1;
+    Object.assign(spec, retimeContent(before, after));
+    return null;
+  }
+  if (spec.trim.remove.length || spec.trim.duration != null) return '当前已有剪辑或固定成片时长，未自动改动画面速度';
+
+  const makeId = newClipId ?? (() => `c_${crypto.randomUUID().slice(0, 12)}`);
+  const clips: SequenceClip[] = [];
+  const segments: { sourceStart: number; sourceEnd: number; outputStart: number; speed: number }[] = [];
+  let sourceCursor = 0;
+  let outputCursor = 0;
+  const add = (sourceStart: number, sourceEnd: number, speed: number, cue?: number) => {
+    if (sourceEnd - sourceStart < 0.01) return;
+    clips.push({ id: makeId(), video_id: video.id, in: round3(sourceStart), out: round3(sourceEnd), speed: round3(speed), source_volume: 1, ...(cue === undefined ? {} : { localize_cue: cue }) });
+    segments.push({ sourceStart, sourceEnd, outputStart: outputCursor, speed });
+    outputCursor += (sourceEnd - sourceStart) / speed;
+  };
+  for (const cue of [...transcript].sort((a, b) => a.i - b.i)) {
+    const start = Math.max(sourceCursor, cue.start);
+    if (start > sourceCursor) add(sourceCursor, start, 1);
+    const end = Math.max(start, Math.min(video.duration, cue.end));
+    add(start, end, speeds.get(cue.i) ?? 1, cue.i);
+    sourceCursor = end;
+  }
+  if (sourceCursor < video.duration) add(sourceCursor, video.duration, 1);
+  if (!clips.length) return '没有可用于画面适配的片段';
+
+  spec.layers = spec.layers.map((layer) => layer.t === 'all' ? layer : { ...layer, t: retimeWindow(layer.t, segments) });
+  if (spec.audio) {
+    spec.audio.tracks = spec.audio.tracks.map((track) => track.t === 'all' ? track : { ...track, t: retimeWindow(track.t, segments) });
+    spec.audio.source_mute = (spec.audio.source_mute ?? []).map((window) => retimeWindow(window, segments));
+  }
+  spec.sequence = { clips, origin: LOCALIZE_ORIGIN };
+  spec.trim = { remove: [] };
+  return null;
 }
 
 /**
@@ -526,6 +603,8 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
 
   // 上一次生成的译文字幕：样式与位置沿用
   const { style, placement } = localizeLayerTemplate(spec, lang);
+  const timingWarning = applyAdaptiveTiming(spec, video, version, ctx.newClipId);
+  if (timingWarning) warnings.push(timingWarning);
 
   // 1. 清掉旧的层 / 轨；明确替换配乐时也移除已有 BGM，避免叠音。
   spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
@@ -534,7 +613,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
 
   // 2. 源音轨静音 + 配音轨
   setOwnerSourceGain(spec, video.id, 0);
-  spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
+  spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: version.adaptive_timing ? 'post' : 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
 
   // 3. 原伴奏或指定的新 BGM
   const sep = video.separation;
@@ -560,7 +639,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
 
   // 4. 译文字幕层
   const cues = mergedCues(video.localization?.transcript, version);
-  const postDuration = postTrimDuration(video.duration, spec.trim.remove);
+  const postDuration = spec.sequence ? sequenceDuration(spec.sequence) : postTrimDuration(video.duration, spec.trim.remove);
   const layers = localizedCuesToLayers(cues, { lang, langLabel: ctx.langLabel, remove: spec.trim.remove, postDuration, style, placement, split: ctx.split, newId: ctx.newLayerId });
   spec.layers.push(...layers);
   if (!layers.length) warnings.push('这个版本没有可显示的译文字幕');

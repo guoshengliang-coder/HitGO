@@ -49,6 +49,14 @@ def test_sequence_schema_rejects_invalid_clips():
         EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 1]]}})
     with pytest.raises(ValueError, match="超出视频时长"):
         EditSpec.model_validate({**sequence_spec(clip("c1", "v1")), "trim": {"remove": [[0, 2]]}})
+    for speed in (0.49, 2.01):
+        with pytest.raises(ValueError):
+            EditSpec.model_validate(sequence_spec({**clip("c1", "v1"), "speed": speed}))
+    timed = EditSpec.model_validate(sequence_spec(
+        {**clip("slow", "v1", end=1), "speed": 0.8},
+        {**clip("fast", "v1", end=1), "speed": 1.25, "localize_cue": 0},
+    ))
+    assert timed.sequence.duration == pytest.approx(2.05)
 
 
 def test_composed_trim_persists_and_renders_beyond_owner_duration(client, ready_video):
@@ -178,3 +186,19 @@ def test_explicit_all_clip_mute_does_not_fall_back_to_first_input_audio():
     plan = build_render_command(spec, {'video_id': 'owner', 'duration': 1, 'has_audio': True}, {}, spec.outputs[0], source_path='/owner.mp4', output_path='/out.mp4', sequence_sources=sources)
     assert '-an' in plan.argv
     assert '0:a:0' not in plan.argv
+
+
+def test_sequence_speed_retimes_picture_source_audio_and_source_aligned_stems():
+    data = sequence_spec({**clip('a', 'owner', end=2), 'speed': 0.8, 'source_volume': 1})
+    data['audio'] = {'source_volume': 1, 'tracks': [{'id': 'stem', 'asset_id': 'stem', 'align': 'source', 't': 'all'}]}
+    spec = EditSpec.model_validate(data)
+    source = ClipSource(spec.sequence.clips[0], '/owner.mp4', 128, 128, 25, True)
+    plan = build_render_command(
+        spec,
+        {'video_id': 'owner', 'duration': 2, 'width': 128, 'height': 128, 'fps': 25, 'has_audio': True},
+        {}, spec.outputs[0], source_path='/owner.mp4', output_path='/out.mp4', sequence_sources=[source],
+        audio_assets={'stem': AudioSource('/stem.m4a', 2)},
+    )
+    assert plan.expected_duration == pytest.approx(2.5)
+    assert 'setpts=(PTS-STARTPTS)/0.8' in plan.filter_complex
+    assert plan.filter_complex.count('atempo=0.8') == 2  # raw source audio + source-aligned stem

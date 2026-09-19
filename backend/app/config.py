@@ -40,6 +40,8 @@ class Settings:
     localize_provider: str
     localize_asr_model: str
     localize_mt_model: str
+    # Chat model that turns literal MT into natural, duration-aware dubbing copy (HIG-73).
+    localize_script_model: str
     localize_tts_model: str
     localize_max_seconds: int
     localize_max_tempo: float
@@ -91,6 +93,7 @@ def load_settings() -> Settings:
         localize_provider=_env("LOCALIZE_PROVIDER", "dashscope").strip().lower(),
         localize_asr_model=_env("LOCALIZE_ASR_MODEL", "paraformer-realtime-v2"),
         localize_mt_model=_env("LOCALIZE_MT_MODEL", "qwen-mt-plus"),
+        localize_script_model=_env("LOCALIZE_SCRIPT_MODEL", "qwen-plus"),
         localize_tts_model=_env("LOCALIZE_TTS_MODEL", "cosyvoice-v3-flash"),
         localize_max_seconds=int(_env("LOCALIZE_MAX_SECONDS", "600")),
         localize_max_tempo=float(_env("LOCALIZE_MAX_TEMPO", "1.3")),
