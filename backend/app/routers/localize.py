@@ -193,6 +193,8 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
             raise HTTPException(400, str(exc)) from exc
     try:
         cues = localize.apply_cue_edits(version["cues"], [c.model_dump() for c in body.cues], "translated")
+        # About to re-synthesise: the old voice-over windows no longer describe this text (HIG-36).
+        cues = localize.with_placements(cues, [])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     _require_enabled()

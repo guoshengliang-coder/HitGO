@@ -18,6 +18,8 @@ import {
   isVersionActive,
   langLabel,
   localizationFinishText,
+  cueSourceWindow,
+  MAX_SUBTITLE_LAYERS,
   localizedCuesToLayers,
   localizeTextStyle,
   mergedCues,
@@ -207,6 +209,45 @@ describe('mergedCues', () => {
   });
 });
 
+describe('mergedCues 的配音时段（HIG-36）', () => {
+  const withDub = (over: Partial<LocalizationVersion> = {}) =>
+    version({ cues: [{ i: 0, translated: '환영합니다.', dub_start: 0.4, dub_duration: 1.2 }, { i: 1, translated: '두 번째.' }, { i: 2, translated: '세 번째.' }], ...over });
+
+  it('配音确实照当前译文合成时才带出来', () => {
+    const [first, second] = mergedCues(TRANSCRIPT, withDub());
+    expect([first.dubStart, first.dubDuration]).toEqual([0.4, 1.2]);
+    expect(second.dubStart).toBeUndefined(); // 这句没有落点（译文为空被跳过）
+  });
+
+  it('配音对不上当前译文时一律不信：只翻译 / 待重新合成 / 没做完', () => {
+    for (const over of [{ dub: false }, { voice_stale: true }, { status: 'queued' as const }]) {
+      expect(mergedCues(TRANSCRIPT, withDub(over))[0].dubStart).toBeUndefined();
+    }
+  });
+
+  it('坏值不信：负起点、零长、非数字', () => {
+    const bad = version({ cues: [{ i: 0, translated: 'x', dub_start: -1, dub_duration: 2 }, { i: 1, translated: 'y', dub_start: 1, dub_duration: 0 }, { i: 2, translated: 'z', dub_start: null, dub_duration: null }] });
+    expect(mergedCues(TRANSCRIPT, bad).every((c) => c.dubStart === undefined)).toBe(true);
+  });
+});
+
+describe('cueSourceWindow', () => {
+  const cue = { i: 0, start: 1, end: 3, text: 'x', translated: 'y' };
+  it('没有配音时段就用模板时段', () => {
+    expect(cueSourceWindow(cue)).toEqual([1, 3]);
+  });
+  it('配音比原句长时跟着配音走', () => {
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 3.5 })).toEqual([1, 4.5]);
+  });
+  it('配音比原句短时不提前收尾——句子还没说完就没字了很怪', () => {
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 0.5 })).toEqual([1, 3]);
+  });
+  it('配音溢出到下一句时用下一句的起点收住，但至少留最短显示时长', () => {
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 4)).toEqual([1, 4]);
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 1.1)).toEqual([1, 1.7]);
+  });
+});
+
 describe('localizedCuesToLayers', () => {
   const cues = mergedCues(TRANSCRIPT, version());
   it('每句一个文字图层：origin / lang / 名字 / 时段换算到剪后时间轴，空译文与删除区里的句子跳过', () => {
@@ -220,6 +261,45 @@ describe('localizedCuesToLayers', () => {
     expect(layers[0].anchor).toBe('bottom-center');
     expect(layers[0].style.wrap_width).toBe(LOCALIZE_WRAP_WIDTH);
   });
+  it('长句拆成多段（HIG-36）：时段首尾相接、合起来还是原来那一段、编号连号', () => {
+    const long = '힛고에 오신 것을 환영합니다. 오늘은 언어 바꾸기부터 시작하겠습니다. 자막이 길면 여러 조각으로 나뉩니다.';
+    const one = [{ i: 0, start: 0, end: 9, text: 'x', translated: long }];
+    const layers = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 9, newId: ids });
+    expect(layers.length).toBeGreaterThan(1);
+    expect(layers.map((l) => l.text).join(' ')).toBe(long);
+    expect(layers.map((l) => l.name)).toEqual(layers.map((_, k) => `韩语字幕 ${k + 1}`));
+    const ts = layers.map((l) => l.t as [number, number]);
+    expect(ts[0][0]).toBe(0);
+    expect(ts[ts.length - 1][1]).toBe(9);
+    ts.forEach(([, end], k) => k + 1 < ts.length && expect(ts[k + 1][0]).toBe(end));
+  });
+
+  it('关掉拆分就是 HIG-36 之前的行为：一条听写句一条字幕', () => {
+    const long = '힛고에 오신 것을 환영합니다. 오늘은 언어 바꾸기부터 시작하겠습니다. 자막이 길면 여러 조각으로 나뉩니다.';
+    const one = [{ i: 0, start: 0, end: 9, text: 'x', translated: long }];
+    const layers = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 9, split: false, newId: ids });
+    expect(layers).toHaveLength(1);
+    expect(layers[0].text).toBe(long);
+    expect(layers[0].t).toEqual([0, 9]);
+  });
+
+  it('有配音时段就按配音摊，没有才回落模板时段', () => {
+    const long = '힛고에 오신 것을 환영합니다. 오늘은 언어 바꾸기부터 시작하겠습니다.';
+    const base = { i: 0, start: 0, end: 4, text: 'x', translated: long };
+    const byTemplate = localizedCuesToLayers([base], { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 20, newId: ids });
+    const byDub = localizedCuesToLayers([{ ...base, dubStart: 0, dubDuration: 8 }], { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 20, newId: ids });
+    expect((byTemplate[byTemplate.length - 1].t as [number, number])[1]).toBe(4);
+    expect((byDub[byDub.length - 1].t as [number, number])[1]).toBe(8); // 配音实际说了 8 秒，字幕跟着走
+  });
+
+  it('拆出来的段数超过上限时整条不拆，保住预览和导出', () => {
+    const long = '힛고에 오신 것을 환영합니다. 오늘은 언어 바꾸기부터 시작하겠습니다. 자막이 길면 여러 조각으로 나뉩니다.';
+    const many = Array.from({ length: MAX_SUBTITLE_LAYERS }, (_, k) => ({ i: k, start: k * 10, end: k * 10 + 9, text: 'x', translated: long }));
+    const layers = localizedCuesToLayers(many, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: MAX_SUBTITLE_LAYERS * 10, newId: ids });
+    expect(layers).toHaveLength(MAX_SUBTITLE_LAYERS);
+    expect(layers[0].text).toBe(long);
+  });
+
   it('自动换行宽度：样式里调过的沿用，关掉（null）的保持关闭', () => {
     const one = cues.slice(0, 1);
     const tuned = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 0, style: { ...defaultTextStyle(), wrap_width: 0.6 }, newId: ids });

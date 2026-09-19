@@ -37,3 +37,15 @@ describe('featurePrefs', () => {
     expect(saveFeaturePrefs({ autoApplyDub: false }, broken).autoApplyDub).toBe(false);
   });
 });
+
+describe('localizeSplitCues（HIG-36）', () => {
+  it('默认开，坏值回落，改一项不动其它项', () => {
+    const store = memStorage();
+    expect(loadFeaturePrefs(store).localizeSplitCues).toBe(true);
+    store.setItem('hitgo.prefs', JSON.stringify({ localizeSplitCues: 'yes', autoApplyDub: false }));
+    const prefs = loadFeaturePrefs(store);
+    expect(prefs.localizeSplitCues).toBe(true);
+    expect(prefs.autoApplyDub).toBe(false);
+    expect(saveFeaturePrefs({ localizeSplitCues: false }, store)).toMatchObject({ localizeSplitCues: false, autoApplyDub: false });
+  });
+});

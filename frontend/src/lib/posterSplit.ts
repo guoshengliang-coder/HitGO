@@ -3,8 +3,12 @@
 
 import type { PunctMode } from './featurePrefs';
 
+/** 句末标点：一句话到此为止。 */
+const SENTENCE = new Set(Array.from('。！？…．!?.'));
+/** 从句标点：语义停顿，但话没说完。 */
+const CLAUSE = new Set(Array.from('；，、：;,:'));
 /** 断句标点：出现在这里之后换行。 */
-const BREAK = new Set(Array.from('。！？；，、：…．!?;,:.'));
+const BREAK = new Set([...SENTENCE, ...CLAUSE]);
 /** 半角标点：后面紧跟非空白的 ASCII 字符时不算断句（3.5、1,000、10:30、HitGO.com、e.g.x）。 */
 const ASCII_PUNCT = new Set(Array.from('!?;,:.'));
 /** 跟在标点后面的收尾符号：留在同一行。 */
@@ -14,12 +18,28 @@ const CLOSER_CLASS = '"\'”’」』）)\\]】》〉';
 const PAUSE_TAIL = new RegExp(`[，、；：,;:]+([${CLOSER_CLASS}]*)$`);
 const ALL_TAIL = new RegExp(`[。！？；，、：…．!?;,:.]+([${CLOSER_CLASS}]*)$`);
 
-function breaksAfter(line: string, i: number): boolean {
+/**
+ * 下标 i 的字符是不是断句标点，是哪一档。字幕断句（lib/cueSplit）和大字报分行共用这一套规则，
+ * 免得两处的标点判定各写一份、慢慢漂移。
+ */
+export function punctBreakAt(line: string, i: number): 'sentence' | 'clause' | null {
   const ch = line[i];
-  if (!BREAK.has(ch)) return false;
-  if (!ASCII_PUNCT.has(ch)) return true;
-  const next = line[i + 1];
-  return next === undefined || /\s/.test(next) || next.charCodeAt(0) > 0x7f;
+  if (!BREAK.has(ch)) return null;
+  if (ASCII_PUNCT.has(ch)) {
+    const next = line[i + 1];
+    const standalone = next === undefined || /\s/.test(next) || next.charCodeAt(0) > 0x7f;
+    if (!standalone) return null;
+  }
+  return SENTENCE.has(ch) ? 'sentence' : 'clause';
+}
+
+/** 跟在标点后面、要留在同一行的收尾符号（右引号 / 右括号）。 */
+export function isCloser(ch: string): boolean {
+  return CLOSERS.has(ch);
+}
+
+function breaksAfter(line: string, i: number): boolean {
+  return punctBreakAt(line, i) !== null;
 }
 
 function splitLine(line: string): string[] {

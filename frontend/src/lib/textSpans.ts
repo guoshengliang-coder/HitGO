@@ -33,6 +33,20 @@ export function normalizeSpans(spans: readonly TextSpan[] | null | undefined, te
   return out;
 }
 
+/**
+ * 取 [start, end) 这段的局部上色，下标平移到 0 起（HIG-36 拆分字幕用）。
+ * 跨界的区间被截断，落在外面的丢掉。
+ */
+export function sliceSpans(spans: readonly TextSpan[] | null | undefined, start: number, end: number): TextSpan[] {
+  const out: TextSpan[] = [];
+  for (const sp of normalizeSpans(spans, Number.MAX_SAFE_INTEGER)) {
+    const a = Math.max(sp.start, start);
+    const b = Math.min(sp.end, end);
+    if (b > a) out.push({ start: a - start, end: b - start, color: sp.color });
+  }
+  return out;
+}
+
 /** 给 [start, end) 上色（color 为 null 时清除该段颜色）；覆盖到的旧区间被切开。 */
 export function setSpanColor(spans: readonly TextSpan[] | null | undefined, start: number, end: number, color: string | null, textLength: number): TextSpan[] {
   const a = clamp(Math.min(start, end), 0, textLength);

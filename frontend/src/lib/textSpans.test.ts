@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, resolveTextBox, resolveTextBoxHeight, setSpanColor, splitRuns } from './textSpans';
+import { sliceSpans, adjustSpans, normalizeSpans, resolveBackgroundBox, resolveOverflowPad, resolveTextBox, resolveTextBoxHeight, setSpanColor, splitRuns } from './textSpans';
 
 const RED = '#E3312B';
 const BLUE = '#0000FF';
@@ -148,5 +148,20 @@ describe('resolveOverflowPad', () => {
   it('两者同时存在取较大值', () => {
     expect(resolveOverflowPad({ shadowBlurPx: 19.2, shadowDx: 3.84, shadowDy: 7.68, glowBlurPx: 26.88 })).toBe(41);
     expect(resolveOverflowPad({ shadowBlurPx: 40, shadowDx: 10, shadowDy: 0, glowBlurPx: 10 })).toBe(50);
+  });
+});
+
+describe('sliceSpans', () => {
+  const spans = [{ start: 2, end: 5, color: '#f00' }, { start: 8, end: 12, color: '#0f0' }];
+
+  it('取一段并把下标平移到 0 起，跨界的截断', () => {
+    expect(sliceSpans(spans, 0, 6)).toEqual([{ start: 2, end: 5, color: '#f00' }]);
+    expect(sliceSpans(spans, 4, 10)).toEqual([{ start: 0, end: 1, color: '#f00' }, { start: 4, end: 6, color: '#0f0' }]);
+  });
+
+  it('落在区间外的丢掉，空区间返回空数组', () => {
+    expect(sliceSpans(spans, 5, 8)).toEqual([]);
+    expect(sliceSpans(spans, 3, 3)).toEqual([]);
+    expect(sliceSpans(null, 0, 10)).toEqual([]);
   });
 });

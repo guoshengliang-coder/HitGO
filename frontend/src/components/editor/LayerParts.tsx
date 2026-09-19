@@ -18,6 +18,7 @@ import { hintFor } from '../../lib/shortcuts';
 import { drawTextImage, getCachedText, TEXT_CANVAS } from '../../lib/textImage';
 import { clampWrapWidth, TEXT_WIDTH_MAX, WRAP_WIDTH_MAX, WRAP_WIDTH_MIN } from '../../lib/textWrap';
 import { setLayerWrapWidth } from '../../lib/localize';
+import { isSubtitleTextLayer } from '../../lib/layerSplit';
 import { adjustSpans, normalizeSpans, setSpanColor } from '../../lib/textSpans';
 import { fontChoices, groupPresets, searchFontChoices } from '../../lib/textGallery';
 import { Section } from '../ui/Section';
@@ -646,8 +647,21 @@ export function LayerProps({ layer }: { layer: Layer }) {
   const updateLayer = useEditor((s) => s.updateLayer);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const assets = useEditor((s) => s.assets);
+  const splitLayerAtCaret = useEditor((s) => s.splitLayerAtCaret);
   // 文本框里的当前选区（[start, end)，UTF-16 索引），给「选中上色」用
   const [sel, setSel] = useState<[number, number] | null>(null);
+  // 光标位置（塌缩时也要记），给「在光标处拆分」用（HIG-36）
+  const [caret, setCaret] = useState(0);
+  const caretBlocked =
+    layer.type !== 'text'
+      ? '只有文字图层能拆'
+      : layer.locked
+        ? '图层已锁定'
+        : layer.scroll
+          ? '大字报的滚动文案不能拆分'
+          : caret <= 0 || caret >= layer.text.length
+            ? '把光标放到要切开的位置（不能在开头或结尾）'
+            : null;
   // 文字输入期间逐键写 store 但不记历史；聚焦时抓一份编辑前的 spec，失焦时若文字真的变了才压入历史
   const textEditStart = useRef<{ layerId: string; text: string; spec: EditSpec } | null>(null);
   return (
@@ -692,8 +706,23 @@ export function LayerProps({ layer }: { layer: Layer }) {
             onSelect={(e) => {
               const t = e.currentTarget;
               setSel(t.selectionStart !== t.selectionEnd ? [t.selectionStart, t.selectionEnd] : null);
+              setCaret(t.selectionStart);
             }}
+            onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
           />
+          {isSubtitleTextLayer(layer) && (
+            <div className="inline">
+              <button
+                className="btn ghost sm"
+                disabled={!!caretBlocked}
+                title={caretBlocked ?? '从光标处切成两条字幕：上半段留在原图层，下半段新建一条，时段按前后字数比例分'}
+                onClick={() => splitLayerAtCaret(layer.id, caret)}
+              >
+                在光标处拆分
+              </button>
+            </div>
+          )}
           <StylePresetSection layer={layer} />
           <TextSections layer={layer} sel={sel} />
         </>

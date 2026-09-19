@@ -1,5 +1,6 @@
 // 功能开关类的本机偏好（存 localStorage）：口播生成完自动套用（HIG-56）、用原声配音（HIG-58）、
-// 大字报粘贴按标点分行及标点处理（HIG-55）、时间线滚轮方向与大字报跟随朗读调速（HIG-79 / HIG-75）。
+// 大字报粘贴按标点分行及标点处理（HIG-55）、时间线滚轮方向与大字报跟随朗读调速（HIG-79 / HIG-75）、
+// 译文字幕长句拆成多段（HIG-36）。
 // 和 layoutPrefs / sectionPrefs 一样是纯函数 + 可注入 storage；读到坏值逐项回落默认，不把界面卡在错误状态。
 
 export type PunctMode = 'keep' | 'drop-pause' | 'drop-all';
@@ -17,9 +18,11 @@ export interface FeaturePrefs {
   timelineWheelVertical: boolean;
   /** 生成朗读后自动把大字报滚动速度调成「滚完全程 = 朗读时长」（HIG-75）。 */
   posterFitVoiceSpeed: boolean;
+  /** 译文字幕按标点和字数拆成多段依次显示（HIG-36）；关掉就是一条听写句一条字幕。 */
+  localizeSplitCues: boolean;
 }
 
-export const FEATURE_DEFAULTS: FeaturePrefs = { autoApplyDub: true, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'keep', timelineWheelVertical: true, posterFitVoiceSpeed: true };
+export const FEATURE_DEFAULTS: FeaturePrefs = { autoApplyDub: true, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'keep', timelineWheelVertical: true, posterFitVoiceSpeed: true, localizeSplitCues: true };
 
 const KEY = 'hitgo.prefs';
 
@@ -45,6 +48,7 @@ export function cleanFeaturePrefs(p: unknown): FeaturePrefs {
     posterPunct: PUNCT_MODES.includes(o.posterPunct as PunctMode) ? (o.posterPunct as PunctMode) : FEATURE_DEFAULTS.posterPunct,
     timelineWheelVertical: typeof o.timelineWheelVertical === 'boolean' ? o.timelineWheelVertical : FEATURE_DEFAULTS.timelineWheelVertical,
     posterFitVoiceSpeed: typeof o.posterFitVoiceSpeed === 'boolean' ? o.posterFitVoiceSpeed : FEATURE_DEFAULTS.posterFitVoiceSpeed,
+    localizeSplitCues: typeof o.localizeSplitCues === 'boolean' ? o.localizeSplitCues : FEATURE_DEFAULTS.localizeSplitCues,
   };
 }
 

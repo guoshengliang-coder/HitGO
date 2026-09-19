@@ -853,6 +853,28 @@ def plan_placements(cues: list[dict[str, Any]], clip_durations: list[float], tot
     return placements, warnings
 
 
+DUB_KEYS = ("dub_start", "dub_duration")
+
+
+def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Version cues + where each line's dubbed audio actually sits on the source timeline (HIG-36).
+
+    ``placements`` is what ``plan_placements`` returned. An empty list strips the fields, which is
+    how "the voice-over no longer matches this text" is recorded (translate-only, edited cues); a
+    cue with no placement (empty translation, so nothing was synthesised) loses them the same way.
+    """
+    placed = {int(p["i"]): p for p in placements if float(p.get("duration") or 0) > 0}
+    out: list[dict[str, Any]] = []
+    for cue in cues:
+        clean = {k: v for k, v in cue.items() if k not in DUB_KEYS}
+        hit = placed.get(int(cue["i"]))
+        if hit is not None:
+            clean["dub_start"] = round(float(hit["start"]), 3)
+            clean["dub_duration"] = round(float(hit["duration"]), 3)
+        out.append(clean)
+    return out
+
+
 def mix_args(clips: list[tuple[Path, float, float]], total: float, dst: Path, ffmpeg_bin: str | None = None) -> list[str]:
     """One ffmpeg command: silent stereo bed of ``total`` seconds + every clip delayed to its start.
 
@@ -1261,6 +1283,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         _stamp(version, status=LOC_RUNNING, stage=STAGE_TRANSLATE, error=None)
         _save(db, video, loc, langs=[lang])
         translated = translate_with_fallback(providers.mt, [c["text"] for c in cues], mt_name(source_lang), mt_name(lang), terms)
+        # Rebuilt from scratch, so any dub_start / dub_duration from the previous mix is gone with it (HIG-36).
         version["cues"] = [{"i": c["i"], "translated": t} for c, t in zip(cues, translated, strict=True)]
         if version.get("dub") is False:
             # Translate only (HIG-56): an older voice-over no longer matches the text, but stays until re-dubbed.
@@ -1339,6 +1362,8 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
             derived_from={"video_id": video.id, "video_name": video.name, "stem": STEM_DUBBED, "lang": lang},
         )
     )
+    # Where each line's voice-over actually landed, so the editor can time split subtitles by it (HIG-36).
+    version["cues"] = with_placements(version["cues"], placements)
     _stamp(
         version,
         status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False,
