@@ -218,6 +218,23 @@ def test_plan_placements_speeds_up_then_warns():
     assert len(warnings) == 1 and "第 3 句" in warnings[0] and "1.30×" in warnings[0]
 
 
+def test_with_placements_writes_and_strips_dub_windows():
+    cues = [{"i": 0, "translated": "a"}, {"i": 1, "translated": "b"}, {"i": 2, "translated": ""}]
+    placements = [{"i": 0, "start": 0.0, "tempo": 1.0, "duration": 1.5}, {"i": 1, "start": 2.0, "tempo": 1.2, "duration": 2.0}]
+    out = localize.with_placements(cues, placements)
+    assert out[0] == {"i": 0, "translated": "a", "dub_start": 0.0, "dub_duration": 1.5}
+    assert out[1] == {"i": 1, "translated": "b", "dub_start": 2.0, "dub_duration": 2.0}
+    assert out[2] == {"i": 2, "translated": ""}  # nothing was synthesised for it
+    assert localize.with_placements(out, []) == cues  # an empty plan strips the fields again
+
+
+def test_with_placements_replaces_stale_windows_and_skips_zero_length():
+    cues = [{"i": 0, "translated": "a", "dub_start": 9.0, "dub_duration": 9.0}, {"i": 1, "translated": "b", "dub_start": 1.0, "dub_duration": 1.0}]
+    out = localize.with_placements(cues, [{"i": 0, "start": 0.4242, "tempo": 1.0, "duration": 1.2345}, {"i": 1, "start": 3.0, "tempo": 1.0, "duration": 0.0}])
+    assert out[0]["dub_start"] == 0.424 and out[0]["dub_duration"] == 1.234
+    assert "dub_start" not in out[1] and "dub_duration" not in out[1]
+
+
 def test_mix_args_is_one_ffmpeg_command_over_a_silent_bed():
     argv = localize.mix_args(
         [(Path("/t/ko_0000.wav"), 0.0, 1.0), (Path("/t/ko_0001.wav"), 3.0, 1.2)],
@@ -385,7 +402,8 @@ def test_run_localization_transcribes_once_and_builds_one_asset_per_language(rea
         v = loc["versions"][lang]
         assert v["status"] == "done" and v["stage"] is None and v["error"] is None and v["stale"] is False
         assert v["voice"] == voice and v["warnings"] == [] and v["updated_at"]
-        assert v["cues"] == [{"i": 0, "translated": f"[{target}] Welcome to HitGO."}, {"i": 1, "translated": f"[{target}] Let's get started."}]
+        assert [(c["i"], c["translated"]) for c in v["cues"]] == [(0, f"[{target}] Welcome to HitGO."), (1, f"[{target}] Let's get started.")]
+        assert [c["dub_start"] for c in v["cues"]] == [0.42, 3.0]  # where each dub landed (HIG-36)
         asset = db.get(Asset, v["voice_asset_id"])
         assert asset.type == "audio" and asset.kind == "audio" and asset.status == "ready" and asset.source == "derived"
         assert asset.duration == 24.6 and asset.has_audio is True and asset.ext == "m4a"
@@ -458,7 +476,8 @@ def test_stage_tts_skips_translation_and_replaces_the_old_asset(ready_video, db,
     db.expire_all()
     v = db.get(Video, VIDEO).localization["versions"]["ko"]
     assert providers.mt.calls == [] and providers.tts.calls == [(edited[0]["translated"], "loongjihun_v3"), (edited[1]["translated"], "loongjihun_v3")]
-    assert v["status"] == "done" and v["cues"] == edited and v["voice"] == "loongjihun_v3"
+    assert v["status"] == "done" and v["voice"] == "loongjihun_v3"
+    assert [{"i": c["i"], "translated": c["translated"]} for c in v["cues"]] == edited  # plus dub_start / dub_duration (HIG-36)
     assert v["voice_asset_id"] != "a_oldko" and db.get(Asset, "a_oldko") is None and not old_path.exists()
     assert db.get(Asset, v["voice_asset_id"]) is not None
 
@@ -509,7 +528,8 @@ def test_retranscribe_replaces_the_template_and_marks_other_versions_stale(ready
     assert len(providers.asr.calls) == 1 and providers.asr.calls[0][1] == "en"  # explicit source → hint
     assert loc["transcript"]["cues"] == [{"i": 0, "start": 0.0, "end": 1.0, "text": "New take."}]
     assert loc["versions"]["ja"]["stale"] is True and loc["versions"]["ja"]["status"] == "done"
-    assert loc["versions"]["ko"]["stale"] is False and loc["versions"]["ko"]["cues"] == [{"i": 0, "translated": "[Korean] New take."}]
+    ko_cues = loc["versions"]["ko"]["cues"]
+    assert loc["versions"]["ko"]["stale"] is False and [(c["i"], c["translated"]) for c in ko_cues] == [(0, "[Korean] New take.")]
 
 
 def test_run_localization_fails_fast_on_silent_or_overlong_sources(ready_video, db, no_ffmpeg, monkeypatch):
@@ -766,7 +786,8 @@ def test_put_version_requeues_only_tts_and_mix(client, ready_video, enqueued, db
     assert r.status_code == 202, r.text
     ko = r.json()["localization"]["versions"]["ko"]
     assert ko["status"] == "queued" and ko["stage"] == "tts" and ko["voice"] == KO_VOICE and ko["error"] is None
-    assert ko["cues"] == [{"i": 0, "translated": "환영"}, {"i": 1, "translated": "시작합시다"}]
+    assert ko["cues"] == [{"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None},
+                          {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None}]  # fmt: skip
     assert ko["voice_asset_id"] == "a_ko"  # kept until the worker replaces it
     assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
     assert current_loc(db)["pending"] == {"target_langs": ["ko"], "retranscribe": False}
@@ -800,6 +821,45 @@ def test_localize_endpoint_translate_only_request(client, ready_video, enqueued,
     patch_loc(db, lambda loc: [v.update(status="done") for v in (loc["transcript"], loc["versions"]["ko"])])
     r = client.post(f"/api/videos/{VIDEO}/localize", json={"target_langs": ["ko"]})
     assert r.status_code == 202 and r.json()["localization"]["versions"]["ko"]["dub"] is True  # default keeps the old behaviour
+
+
+def test_build_version_records_where_each_dub_landed(ready_video, db, no_ffmpeg):
+    """HIG-36: the editor times split subtitles by the voice-over, so the mix plan is written back."""
+    queue(db, ["ko"], transcript=DONE_TRANSCRIPT, source_lang="en")
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=localize.FakeTts(seconds=2.0))
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    ko = db.get(Video, VIDEO).localization["versions"]["ko"]
+    assert ko["status"] == "done"
+    # cue 0 starts at 0.42 with a 2.58 s slot, so a 2.0 s clip fits unchanged; cue 1 starts at 3.0
+    assert ko["cues"][0]["dub_start"] == 0.42 and ko["cues"][0]["dub_duration"] == 2.0
+    assert ko["cues"][1]["dub_start"] == 3.0 and ko["cues"][1]["dub_duration"] == 2.0
+
+
+def test_translate_only_version_has_no_dub_windows(ready_video, db, no_ffmpeg):
+    """dub = false rebuilds the cues from the translation, so last mix's windows go with them (HIG-36)."""
+    dubbed = {"ko": {"stage": None, "cues": [{"i": 0, "translated": "old", "dub_start": 9.0, "dub_duration": 9.0}], "voice_asset_id": "a_old"}}
+    queue(db, ["ko"], transcript=DONE_TRANSCRIPT, source_lang="en", versions=dubbed)
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(dub=False))
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=localize.FakeTts())
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    ko = db.get(Video, VIDEO).localization["versions"]["ko"]
+    assert ko["status"] == "done" and ko["voice_stale"] is True
+    assert all("dub_start" not in c and "dub_duration" not in c for c in ko["cues"])
+
+
+def test_put_version_clears_the_dub_windows_and_ignores_them_in_the_body(client, ready_video, enqueued, db):
+    """The old windows describe the old voice-over; the client cannot set them either (HIG-36)."""
+    _done_state(db, cues=[{"i": 0, "translated": "환영", "dub_start": 0.42, "dub_duration": 2.0},
+                          {"i": 1, "translated": "시작", "dub_start": 3.0, "dub_duration": 2.0}])  # fmt: skip
+    r = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"cues": [{"i": 1, "translated": "시작합시다", "dub_start": 99.0, "dub_duration": 99.0}]})
+    assert r.status_code == 202, r.text
+    assert r.json()["localization"]["versions"]["ko"]["cues"] == [
+        {"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None},
+        {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None},
+    ]
+    assert all("dub_start" not in c for c in current_loc(db)["versions"]["ko"]["cues"])
 
 
 def test_put_version_reverts_when_the_queue_is_down(client, ready_video, monkeypatch, db):

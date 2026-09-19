@@ -1149,6 +1149,11 @@ class TranscriptOut(BaseModel):
 class VersionCueOut(BaseModel):
     i: int
     translated: str
+    # HIG-36: where this line's voice-over actually sits on the source timeline (seconds).
+    # Absent for translate-only versions and for cues waiting to be re-dubbed; the editor then
+    # falls back to the transcript cue's own start / end.
+    dub_start: float | None = None
+    dub_duration: float | None = None
 
 
 class TermOut(BaseModel):

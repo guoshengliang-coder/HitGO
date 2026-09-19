@@ -7,6 +7,7 @@ import type { Asset, AudioTrack, CloneVoice, EditSpec, Localization, Localizatio
 import { defaultTextStyle, isAssetReady } from '../types';
 import { BUILTIN_FONT_FAMILY } from './fonts';
 import { BUILTIN_TEXT_PRESETS } from './textPresets';
+import { MIN_CUE_SECONDS, sliceWindow, splitCueRanges, visibleLength } from './cueSplit';
 import { cuesToTextLayers, type SrtCue } from './srt';
 import { postTrimDuration, sourceRangeToPost, type Range } from './time';
 import { normalizeSequenceAudio, setOwnerSourceGain } from './sequence';
@@ -285,15 +286,33 @@ export interface MergedCue {
   text: string;
   /** 该语言的译文；版本里没有这句时为空串。 */
   translated: string;
+  /** 这句配音在源时间轴上实际占用的起点与时长（HIG-36）；配音对不上当前译文时不带。 */
+  dubStart?: number;
+  dubDuration?: number;
 }
 
-/** 按 i 把模板句子和版本译文对上；版本里多出来的 i（模板句子已被删）丢掉。 */
+/**
+ * 按 i 把模板句子和版本译文对上；版本里多出来的 i（模板句子已被删）丢掉。
+ * 配音时段（HIG-36）只在「这一版的配音确实是照当前译文合成的」时才带出来——这是唯一一处判断，
+ * 下游拿到 dubStart / dubDuration 就可以直接信。
+ */
 export function mergedCues(transcript: Transcript | null | undefined, version: LocalizationVersion | null | undefined): MergedCue[] {
   if (!transcript) return [];
-  const byI = new Map((version?.cues ?? []).map((c) => [c.i, c.translated]));
+  const dubTrusted = !!version && version.status === 'done' && version.dub !== false && !version.voice_stale;
+  const byI = new Map((version?.cues ?? []).map((c) => [c.i, c]));
   return [...transcript.cues]
     .sort((a, b) => a.i - b.i)
-    .map((c) => ({ i: c.i, start: c.start, end: c.end, text: c.text, translated: byI.get(c.i) ?? '' }));
+    .map((c) => {
+      const v = byI.get(c.i);
+      const out: MergedCue = { i: c.i, start: c.start, end: c.end, text: c.text, translated: v?.translated ?? '' };
+      const start = v?.dub_start;
+      const duration = v?.dub_duration;
+      if (dubTrusted && typeof start === 'number' && Number.isFinite(start) && start >= 0 && typeof duration === 'number' && duration > 0) {
+        out.dubStart = start;
+        out.dubDuration = duration;
+      }
+      return out;
+    });
 }
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -310,8 +329,16 @@ export interface LocalizedLayersOptions {
   style?: TextStyle;
   /** 缺省贴底居中（cuesToTextLayers 的位置）；重新套用时沿用上次的位置。 */
   placement?: Pick<TextLayer, 'anchor' | 'margin'>;
+  /** 长句拆成多段（HIG-36）；缺省拆。关掉就是一条听写句一条字幕（HIG-36 之前的行为）。 */
+  split?: boolean;
   newId: () => string;
 }
+
+/**
+ * 拆完的字幕层总数上限（HIG-36）：模板最多 400 句，一句拆成几段还能接受，再多就会把预览烤图
+ * 和导出拖垮。超过就整条视频都不拆，保底回到原来的一句一条。
+ */
+export const MAX_SUBTITLE_LAYERS = 1200;
 
 /** 译文字幕默认的自动换行框宽（相对画布宽，HIG-51）；折行交给 drawTextImage 按实际字宽算。 */
 export const LOCALIZE_WRAP_WIDTH = 0.9;
@@ -375,18 +402,43 @@ export function setLayerWrapWidth(layer: TextLayer, wrap: number | null): void {
 }
 
 /**
+ * 一条译文在源时间轴上的显示窗口（HIG-36）：有配音时段就用它——这才是和语音同步的那一段；
+ * 没有就回落到模板句子的时段。配音比原句短时不提前收尾（听感上句子还没说完就没字了很怪），
+ * 比原句长并压到下一句时用下一句的起点收住，两条字幕不重叠。
+ */
+export function cueSourceWindow(cue: MergedCue, nextStart?: number): Range {
+  const a = cue.dubStart ?? cue.start;
+  let b = cue.dubDuration ? a + cue.dubDuration : cue.end;
+  b = Math.max(b, cue.end);
+  if (nextStart !== undefined) b = Math.min(b, Math.max(nextStart, a + MIN_CUE_SECONDS));
+  return [round3(a), round3(Math.max(b, a))];
+}
+
+/**
  * 译文 → 文字图层：复用 SRT 导入的 cuesToTextLayers，再打上 origin / lang 标记。
  * 译文为空的句子和整句落在删除区里的句子不生成图层。
  * 样式没写过 wrap_width（新套用、或 HIG-51 之前套用的旧样式）时开自动换行；用户关掉过（null）就不再打开。
  */
 export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOptions): TextLayer[] {
+  const spoken = cues.map((c) => ({ cue: c, text: cleanCueText(c.translated) })).filter((x) => x.text);
+  // 两趟：先定每句的显示起点，再用下一句的起点收住这一句的终点（配音可能溢出到下一句，见契约 §6 的 warnings）。
+  const starts = spoken.map(({ cue }) => cue.dubStart ?? cue.start);
+  const windows = spoken.map(({ cue }, k) => cueSourceWindow(cue, starts[k + 1]));
+  const split = opts.split !== false;
+  const pieces: { text: string; window: Range }[] = [];
+  spoken.forEach(({ text }, k) => {
+    const ranges = split ? splitCueRanges(text, { lang: opts.lang }) : [[0, text.length] as Range];
+    const slices = sliceWindow(windows[k], ranges.map(([a, b]) => visibleLength(text, a, b) || 1));
+    ranges.forEach(([a, b], j) => pieces.push({ text: text.slice(a, b), window: slices[j] }));
+  });
+  // 拆得太碎会把预览烤图和导出拖垮：整条回到一句一条，宁可长也不要几千个图层。
+  const kept = pieces.length > MAX_SUBTITLE_LAYERS ? spoken.map(({ text }, k) => ({ text, window: windows[k] })) : pieces;
+
   const srtCues: SrtCue[] = [];
-  for (const c of cues) {
-    const text = cleanCueText(c.translated);
-    if (!text) continue;
-    const r = sourceRangeToPost([c.start, c.end], opts.remove);
+  for (const piece of kept) {
+    const r = sourceRangeToPost(piece.window, opts.remove);
     if (!r) continue;
-    srtCues.push({ index: srtCues.length + 1, start: round3(r[0]), end: round3(r[1]), text });
+    srtCues.push({ index: srtCues.length + 1, start: round3(r[0]), end: round3(r[1]), text: piece.text });
   }
   const base = opts.style ?? localizeTextStyle(opts.lang);
   const style = base.wrap_width === undefined ? { ...base, wrap_width: LOCALIZE_WRAP_WIDTH } : base;
@@ -422,8 +474,26 @@ export interface ApplyContext {
   bgm?: LocalizeBgmChoice;
   /** 语言的中文名（图层名用）。 */
   langLabel: string;
+  /** 长句拆成多段（HIG-36）；缺省拆。调用方从 featurePrefs 取，纯函数不读 localStorage。 */
+  split?: boolean;
   newLayerId: () => string;
   newTrackId: () => string;
+}
+
+/**
+ * 上一次生成的译文字幕层带着的样式与位置：重新套用 / 重新拆分时沿用，用户调过的不丢。
+ * 换语言时只把「自动」选出来的字体换成新语言的，手选过的字体保留。
+ */
+export function localizeLayerTemplate(spec: EditSpec, lang: string): { style?: TextStyle; placement?: Pick<TextLayer, 'anchor' | 'margin'> } {
+  const prev = localizeLayers(spec)[0];
+  if (!prev) return {};
+  const style: TextStyle = {
+    ...prev.style,
+    shadow: prev.style.shadow ? { ...prev.style.shadow, offset: [prev.style.shadow.offset[0], prev.style.shadow.offset[1]] } : prev.style.shadow,
+    glow: prev.style.glow ? { ...prev.style.glow } : prev.style.glow,
+  };
+  if (prev.lang !== lang && isAutoFont(style.font_family)) style.font_family = fontForLang(lang);
+  return { style, placement: { anchor: prev.anchor, margin: [prev.margin[0], prev.margin[1]] } };
 }
 
 /** 该语言版本现在能不能套用；不能时给出中文原因（面板按钮的 title / toast）。 */
@@ -455,14 +525,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   const warnings: string[] = [];
 
   // 上一次生成的译文字幕：样式与位置沿用
-  const prev = localizeLayers(spec)[0];
-  let style: TextStyle | undefined;
-  let placement: Pick<TextLayer, 'anchor' | 'margin'> | undefined;
-  if (prev) {
-    style = { ...prev.style, shadow: prev.style.shadow ? { ...prev.style.shadow, offset: [prev.style.shadow.offset[0], prev.style.shadow.offset[1]] } : prev.style.shadow, glow: prev.style.glow ? { ...prev.style.glow } : prev.style.glow };
-    if (prev.lang !== lang && isAutoFont(style.font_family)) style.font_family = fontForLang(lang);
-    placement = { anchor: prev.anchor, margin: [prev.margin[0], prev.margin[1]] };
-  }
+  const { style, placement } = localizeLayerTemplate(spec, lang);
 
   // 1. 清掉旧的层 / 轨；明确替换配乐时也移除已有 BGM，避免叠音。
   spec.layers = spec.layers.filter((l) => l.origin !== LOCALIZE_ORIGIN);
@@ -498,7 +561,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   // 4. 译文字幕层
   const cues = mergedCues(video.localization?.transcript, version);
   const postDuration = postTrimDuration(video.duration, spec.trim.remove);
-  const layers = localizedCuesToLayers(cues, { lang, langLabel: ctx.langLabel, remove: spec.trim.remove, postDuration, style, placement, newId: ctx.newLayerId });
+  const layers = localizedCuesToLayers(cues, { lang, langLabel: ctx.langLabel, remove: spec.trim.remove, postDuration, style, placement, split: ctx.split, newId: ctx.newLayerId });
   spec.layers.push(...layers);
   if (!layers.length) warnings.push('这个版本没有可显示的译文字幕');
   return warnings;

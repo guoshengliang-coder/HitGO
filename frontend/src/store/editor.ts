@@ -25,8 +25,10 @@ import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, o
 import { retrimForAsset } from '../lib/sourceTrim';
 import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
-import { normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
-import { splitLayerAt, splitLayerBlockedReason } from '../lib/layerSplit';
+import { clamp, normalizeRanges, outputDuration, postTimeOf, postTrimDuration, sourceToPost, wouldRemoveAll } from '../lib/time';
+import { isSubtitleTextLayer, MIN_SPLIT, splitLayerAt, splitLayerBlockedReason, splitTextLayerByText, textCutForSplit } from '../lib/layerSplit';
+import { charRatio } from '../lib/cueSplit';
+import { windowRange } from '../lib/stickerMedia';
 import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
@@ -331,6 +333,10 @@ export interface EditorState {
   updateLayer: (id: string, patch: Partial<Layer> | ((l: Layer) => void), history?: boolean) => void;
   /** 在播放头处把图层拆成两条（HIG-79，契约 §2「拆分图层」）；拆不了时弹提示。 */
   splitLayer: (id: string) => void;
+  /** 在文本下标 offset 处把字幕图层拆成两条（HIG-36）：时段按光标前后的字数比例分。 */
+  splitLayerAtCaret: (id: string, offset: number) => void;
+  /** 把已套用的长字幕按当前设置补拆成多条（HIG-36）；只动字幕层，配音轨和 BGM 不变。 */
+  resplitSubtitleLayers: () => void;
   removeLayer: (id: string) => void;
   // 层级操作都只在图层自己这一类（文字 / 贴纸）里换序，另一类的位置不动，见 lib/layerKind
   moveLayer: (id: string, dir: -1 | 1) => void;
@@ -1814,7 +1820,7 @@ export const useEditor = create<EditorState>((set, get) => {
       }
       let warnings: string[] = [];
       get().updateSpec((s) => {
-        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, newLayerId, newTrackId });
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
       });
       set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
       get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
@@ -2034,14 +2040,62 @@ export const useEditor = create<EditorState>((set, get) => {
         set({ toast: blocked, toastAction: null });
         return;
       }
-      const parts = splitLayerAt(layer, ctx.p, ctx.postDuration, newLayerId());
+      // 字幕类图层连文字一起切（HIG-36）：切点吸附到最近的标点 / 词边界，不是播放头的精确位置
+      const textAt = loadFeaturePrefs().localizeSplitCues ? textCutForSplit(layer, ctx.p, ctx.postDuration) : undefined;
+      const parts = splitLayerAt(layer, ctx.p, ctx.postDuration, newLayerId(), { textAt });
       if (!parts) return;
       get().updateSpec((spec) => {
         const i = spec.layers.findIndex((l) => l.id === id);
         if (i >= 0) spec.layers.splice(i, 1, parts[0], parts[1]);
       });
+      const cutText = parts[0].type === 'text' && parts[1].type === 'text' && parts[0].text !== parts[1].text;
       // 选中右半段：和剪映一样，拆完接着处理后面那截
-      set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
+      set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: cutText ? '已在播放头处拆分字幕' : '已在播放头处拆分图层', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    splitLayerAtCaret: (id, offset) => {
+      const ctx = playheadPost();
+      const layer = ctx?.spec.layers.find((l) => l.id === id);
+      if (!ctx || !layer || layer.type !== 'text') return;
+      if (offset <= 0 || offset >= layer.text.length) {
+        set({ toast: '把光标放到要切开的位置（不能在开头或结尾）', toastAction: null });
+        return;
+      }
+      const [a, b] = windowRange(layer.t, ctx.postDuration);
+      if (b - a < 2 * MIN_SPLIT) {
+        set({ toast: '这条字幕的时段太短（不足 0.2 秒），不能拆分', toastAction: null });
+        return;
+      }
+      // 时间按光标前后的字数比例分，切点就是用户放光标的地方
+      const p = clamp(a + (b - a) * charRatio(layer.text, offset), a + MIN_SPLIT, b - MIN_SPLIT);
+      const parts = splitLayerAt(layer, p, ctx.postDuration, newLayerId(), { textAt: offset });
+      if (!parts) return;
+      get().updateSpec((spec) => {
+        const i = spec.layers.findIndex((l) => l.id === id);
+        if (i >= 0) spec.layers.splice(i, 1, parts[0], parts[1]);
+      });
+      set({ selectedLayerId: parts[1].id, selectedLayerIds: [parts[1].id], toast: '已在光标处拆分字幕', toastAction: { label: '撤销', run: () => get().undo() } });
+    },
+    resplitSubtitleLayers: () => {
+      const ctx = playheadPost();
+      if (!ctx) return;
+      let added = 0;
+      let touched = 0;
+      get().updateSpec((spec) => {
+        spec.layers = spec.layers.flatMap((l) => {
+          if (!isSubtitleTextLayer(l) || l.locked) return [l];
+          const parts = splitTextLayerByText(l, ctx.postDuration, newLayerId);
+          if (parts.length > 1) {
+            touched += 1;
+            added += parts.length - 1;
+          }
+          return parts;
+        });
+      });
+      if (!added) {
+        set({ toast: '没有超长的字幕，不用拆', toastAction: null });
+        return;
+      }
+      set({ selectedLayerId: null, selectedLayerIds: [], toast: `已把 ${touched} 条长字幕拆成 ${touched + added} 条`, toastAction: { label: '撤销', run: () => get().undo() } });
     },
     removeLayer: (id) => {
       if (get().currentSpec()?.layers.find((l) => l.id === id)?.locked) return;
@@ -2362,7 +2416,8 @@ export const useEditor = create<EditorState>((set, get) => {
               const bgm = loadLocalizeBgm(video.id);
               const bgmAssetId = bgm.mode === 'replace' ? bgm.assetId : video.separation?.status === 'done' ? video.separation.instrumental_asset_id : null;
               if (!isAssetReady(assets.find((a) => a.id === bgmAssetId))) throw new Error(`${video.name} 的 BGM 尚未就绪，未提交多语言导出`);
-              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, langLabel: langLabel(get().localizeOptions, it.lang), newLayerId, newTrackId });
+              // 和预览用同一个开关：否则画面上拆了、导出的成片没拆（HIG-36）
+              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
               for (let i = 0; i < spec.layers.length; i++) {
                 const l = spec.layers[i];
                 if (l.type !== 'text' || l.origin !== LOCALIZE_ORIGIN) continue;

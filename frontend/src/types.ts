@@ -96,6 +96,12 @@ export interface LocalizationTerm {
 export interface VersionCue {
   i: number;
   translated: string;
+  /**
+   * 可选（HIG-36）：这句配音在源时间轴上实际占用的起点与时长（秒，含变速）。
+   * 只翻译、等待重新合成时没有；字幕拆分按它定时，缺席就回落到模板 cue 的 start / end。
+   */
+  dub_start?: number | null;
+  dub_duration?: number | null;
 }
 
 export interface LocalizationVersion {

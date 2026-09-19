@@ -438,7 +438,9 @@ function ApplySection({ video, loc, options }: SectionProps) {
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const assets = useEditor((s) => s.assets);
   const applyVersion = useEditor((s) => s.applyVersion);
+  const resplitSubtitleLayers = useEditor((s) => s.resplitSubtitleLayers);
   const openExport = useEditor((s) => s.openExport);
+  const [splitCues, setSplitCues] = useState(() => loadFeaturePrefs().localizeSplitCues);
   const applied = appliedVersion(spec, loc);
   const versions = Object.entries(loc?.versions ?? {}).filter(([, v]) => v.status === 'done');
   const sepDone = video.separation?.status === 'done' && !!video.separation.instrumental_asset_id;
@@ -477,6 +479,29 @@ function ApplySection({ video, loc, options }: SectionProps) {
               重新套用
             </button>
           )}
+        </div>
+      )}
+      <label className="inline small">
+        <input
+          type="checkbox"
+          checked={splitCues}
+          onChange={(e) => {
+            setSplitCues(e.target.checked);
+            saveFeaturePrefs({ localizeSplitCues: e.target.checked });
+          }}
+        />
+        长句拆成多段依次显示
+      </label>
+      {applied && (
+        <div className="inline">
+          <button
+            className="btn ghost sm"
+            title="把已套用的长字幕按标点和字数拆成多条，时间按配音摊分；只动字幕层，配音轨、BGM 和逐条改过的译文都不变"
+            onClick={resplitSubtitleLayers}
+          >
+            重新拆分字幕
+          </button>
+          <span className="muted small">改了上面的开关后，点这里对已套用的字幕生效。</span>
         </div>
       )}
       {versions.some(([lang]) => canApplyVersion(video, lang, assets).ok) && (

@@ -102,7 +102,11 @@
       "stage": null,                // running 时 translate | tts | mix；queued 且 = "tts" 表示只重新合成（不重译）
       "voice": "loongkyong_v3",     // 合成用的音色 id（见 GET /api/localize/options）
       "terms": [ { "source": "HitGO", "target": "힛고" } ],   // 翻译术语表
-      "cues": [ { "i": 0, "translated": "힛고에 오신 것을 환영합니다." } ],   // 与 transcript.cues 按 i 对齐
+      "cues": [                     // 与 transcript.cues 按 i 对齐
+        { "i": 0, "translated": "힛고에 오신 것을 환영합니다.",
+          "dub_start": 0.42,        // 可选（HIG-36）：这句配音在源时间轴上的起点，秒
+          "dub_duration": 2.13 }    // 可选（HIG-36）：变速后实际占用的秒数
+      ],
       "stale": false,               // 模板改过之后为 true：译文不是最新模板译出来的，需重译
       "error": null, "warnings": [],   // warnings：配音塞不进原句时段等提示
       "voice_asset_id": "a_d0bb3d", // 合成过才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
@@ -122,6 +126,14 @@
 没有可用的分离结果时自动调用 `POST /api/videos/{id}/separate`，伴奏与口播都就绪后才自动套用。选择「替换 BGM」
 时改用所选音频素材作为唯一 BGM，不要求源视频分离。分离或新 BGM 不可用时不得自动套用成缺少背景音乐的版本。
 听写修正、只翻译和逐版本重新配音仍由高级操作提供。
+
+**译文字幕的配音时段 `dub_start` / `dub_duration`**（可选，缺省缺席，HIG-36）：这句译文合成出来的配音在
+**源时间轴**上实际占用的起点与时长（秒，已含为塞进原句时段而做的变速），因此常常和模板 cue 的
+`[start, end]` 不等长。只有本版配音与当前译文一致时才下发——只翻译（`dub = false`）、`voice_stale = true`、
+改过译文 / 换过音色还没重新合成、以及该句译文为空时都没有这两个字段。服务端在混音成功后自己写，
+`PUT /api/videos/{id}/localize/versions/{lang}` 不接收它们（传了忽略）。前端用它给译文字幕定时：
+**字段在就按它，缺席就回落到 `transcript.cues[].start / end`**；一条原句被拆成多条字幕时，各段在这个
+时段里按字数摊分。
 
 **原声配音 `clone_voice`**（可选，缺省 null，HIG-58）：从这条视频自己的人声里截一段样本，用百炼 CosyVoice 的声音
 复刻得到一个音色，之后各语言版本都用它合成，听感仍是原说话人。整条视频只复刻一次：`status = done` 且 `model` 与
@@ -447,6 +459,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   0.1 秒，否则不拆。文字图层的 `animation`：`in` 归左段、`out` 归右段、`loop` 两段都留；`reveal` 与 `glyph_layout` 只留
   左段（逐字显现的字位置是整张 PNG 的，右段拿着它没有意义）。**设了 `scroll` 的图层（大字报）不拆**——滚动是整张长 PNG
   在裁切框里走，切成两段没有语义。worker 照常逐条渲染。
+  **字幕类文字图层**（`origin = "localize" | "subtitle"`，或名字形如「字幕 N」/「韩语字幕 N」）拆分时**文字也一起切开**
+  （HIG-36）：切点吸附到拆分比例附近最近的句末标点 > 从句标点 > 词边界，左右两段各拿一半文本，`spans` 按同一位置
+  切开并平移，两段的 `image_url` / `image_size` / `glyph_layout` 清掉（文字变了，烤好的 PNG 作废，重烤即可）。
+  其它文字图层仍是两段留同样的全文。
+- **译文字幕自动断句**（HIG-36）：一条译文太长时，前端在套用时把它拆成多条时段首尾相接的文字图层——**纯前端，
+  不引入任何新的 `edit_spec` 字段**，落到 spec 里就是普通的多条文字图层。切点按标点和语义停顿选（见上一条的优先级），
+  每段时长按字数在该句的配音时段（`dub_start` / `dub_duration`，缺席时用模板 `start` / `end`）里摊分，因此与语音同步。
 - **图层时段展开**（HIG-79）：编辑器里把 `t = "all"` 的图层条在时间线上拖动时，先就地展开成 `[0, 成片时长]` 再按拖动
   结果写回，也就是拖过之后它不再是全程。这只是前端交互，`"all"` 的语义本身不变。
 - **输出画幅**：`9:16 → 1080×1920`，`1:1 → 1080×1080`，`4:5 → 1080×1350`，`16:9 → 1920×1080`。`custom` 输出用可选的 `width`、`height` 指定像素宽高，两个字段必须同时存在，且为不小于 2 的偶整数（H.264 `yuv420p` 编码限制）；其它画幅不使用这两个字段。旧 spec 不含自定义输出时语义不变。`fill`：`blur`（源画面放大模糊铺底 + 原画面居中 contain）| `color`（配 `"color": "#000000"`）| `crop`（cover 居中裁切）。
@@ -693,7 +712,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   版本还没有配音（`voice_asset_id = null`）或 `voice_stale = true` 时
   允许空 body `{}`，表示按现有译文和音色直接合成（「生成口播」）。`use_source_voice`（可选，缺省 null = 沿用这个版本上次的
   选择，HIG-58）：true 用复刻的原声合成，该语言必须 `clone = true` 否则 400；false 改回系统音色，此时没带 `voice` 就取
-  该语言缺省音色。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。
+  该语言缺省音色。该版本没有译文 400；进行中 409；503 同上。合成完 `dub = true`、`voice_stale = false`。请求体只认
+  `cues[].i / translated`；`dub_start` / `dub_duration` 传了忽略，本次请求会先把它们清掉（旧配音时段已经对不上新译文），
+  合成完再按新配音写回（HIG-36）。
 - `DELETE /api/videos/{id}/localize/versions/{lang}` → 204，删掉该语言版本及其配音素材；没有这个版本 404；进行中 409。
 - `GET /api/localize/options` → `{ enabled, source_langs: [{ code, label }], target_langs: [{ code, label, rtl, clone, voices: [{ id, label, gender?, style?, speech_rate, provider }] }] }`。
   `rtl`（可选，缺省 false）= 该语言从右到左书写（阿拉伯语等）。`clone`（可选，缺省 false，HIG-58）= 该语言能不能用复刻的
