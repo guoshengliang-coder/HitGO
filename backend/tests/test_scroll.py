@@ -54,6 +54,19 @@ def test_y_expression_in_pixels_with_the_layer_start_and_hold():
     assert y_expression(p, 1920) == "clip(0+t*192,0,3456)"
 
 
+def test_clause_cues_drive_piecewise_scroll_in_preview_and_ffmpeg():
+    scroll = TextScroll.model_validate({
+        "speed": 0.1, "box": BOX,
+        "cues": [{"at": 0, "progress": 0}, {"at": 1, "progress": 0.25}, {"at": 3, "progress": 1}],
+    })
+    path = scroll_path(scroll, 1.2)
+    assert path.duration == 3
+    assert sample_y(path, 0.5) == pytest.approx(path.y0 + (path.y1 - path.y0) * 0.125)
+    expression = y_expression(path, 1920)
+    assert "if(lte(t,1)" in expression
+    assert "864+(t-1)*1296" in expression
+
+
 # --- filtergraph -----------------------------------------------------------------
 
 

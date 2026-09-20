@@ -21,7 +21,7 @@ from app.routers._common import enqueue_or_503
 from app.schemas import EditSpec, JobOut, RenderIn, RenderItemIn
 from app.serializers import job_out
 from app.services import localize
-from app.services.sequence import resolve_sequence
+from app.services.sequence import resolve_sequence, resolve_video_tracks
 
 router = APIRouter(prefix="/api", tags=["render"])
 
@@ -71,6 +71,7 @@ def create_render_jobs(body: RenderIn, db: Session = Depends(get_db)):
             ) from None
         try:
             resolve_sequence(db, video, spec)
+            resolve_video_tracks(db, video, spec)
         except ValueError as exc:
             raise HTTPException(400, f"视频 {video.name} 的拼接片段无效：{exc}") from None
         keys = [o.variant_key for o in spec.outputs]

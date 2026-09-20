@@ -30,6 +30,7 @@ import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -45,6 +46,65 @@ log = logging.getLogger(__name__)
 
 class ScreenTextError(RuntimeError):
     """Anything the user should see as a Chinese reason on the item."""
+
+
+def _parse_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def expire_stale_state(
+    state: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+    task_timeout_seconds: int,
+    erase_timeout_seconds: int,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Project abandoned queued/running screen-text work into a retryable failure.
+
+    Celery's task limits only start once a worker has received the task.  A broker delivery
+    lost before that point used to leave the JSON state active forever, which also disabled the
+    retry button.  The projection is pure so serializers can show the repaired state without
+    writing during a GET; the POST endpoint persists the same projection before retrying.
+    """
+    if not state:
+        return state, False
+    current = now or utcnow()
+    out = copy.deepcopy(state)
+    changed = False
+
+    def expire(part: dict[str, Any] | None, seconds: int, label: str) -> None:
+        nonlocal changed
+        if not part or part.get("status") not in (ST_QUEUED, ST_RUNNING):
+            return
+        updated = _parse_time(part.get("updated_at"))
+        deadline = _parse_time(part.get("deadline"))
+        stale = (deadline is not None and current >= deadline) or (
+            updated is not None and current >= updated + timedelta(seconds=max(1, seconds))
+        )
+        if not stale:
+            return
+        part.update(
+            status=ST_FAILED,
+            error=f"{label}超过 {seconds} 秒仍未完成，已中止；请手动重试",
+            updated_at=iso(current),
+        )
+        changed = True
+
+    expire(out.get("detect"), task_timeout_seconds, "画面文字识别")
+    for lang, version in (out.get("versions") or {}).items():
+        expire(version, task_timeout_seconds, f"{lang}画面文字翻译")
+    expire(out.get("erase"), erase_timeout_seconds, "画面文字擦除")
+    if changed:
+        out.pop("pending", None)
+    return out, changed
 
 
 # --- geometry ---------------------------------------------------------------

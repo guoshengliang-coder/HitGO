@@ -244,7 +244,7 @@
   "preview_url": "/media/assets/a_s1t2u3.preview.webm?v=1757923200", // 可选；kind = video 且 ready 才有：浏览器可播的预览代理
   "family": "Alibaba PuHuiTi",    // font 才有：CSS font-family 名，由文件名去扩展名得到
   "source": "upload",             // upload（我手动上传）| builtin（仓库 samples/ 里的内置示例）| library（正式物料库，原型阶段不产生）| derived（系统从某条视频分离出来的）
-  "derived_from": null,           // 可选；source = derived 才有：{ "video_id"?, "video_name"?, "stem": "vocals" | "instrumental" | "dubbed" | "tts", "lang"?, "voice"?, "text"? }（lang 在 dubbed / tts 时有；video_id / video_name 只在从某条视频分离 / 配音时有；tts 另带 voice 与文案前 40 字 text）
+  "derived_from": null,           // 可选；source = derived 才有：{ "video_id"?, "video_name"?, "stem": "vocals" | "instrumental" | "dubbed" | "tts", "lang"?, "voice"?, "text"?, "segments"? }（tts 的 segments = [{text,start,end}]，记录短句在生成音频中的真实秒数）
   "created_at": "..."
 }
 ```
@@ -389,6 +389,23 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   被其它视频的序列引用的源视频不可删除，需先从这些序列移除。批次删除仍整体级联。
   渲染任务保存该次 `edit_spec` 快照，之后编辑时间轴不会改变已入队任务的配置。
 
+**上层视频轨（HIG-81）**：`video_tracks` 为可选数组，缺省 `[]`。每次把左侧已就绪视频拖到“新上层视频轨”会新增 V2/V3…；
+数组靠后的轨道绘制在靠前轨道之上，所有片段按当前输出的 fill 规则铺满整张画布，再叠普通文字/贴纸/遮盖图层。上层视频暂不混入自身音频。
+
+```jsonc
+"video_tracks": [
+  { "id": "vt_2", "name": "V2", "hidden": false, "locked": false,
+    "clips": [
+      { "id": "vc_1", "video_id": "v_d4e5f6", "start": 1.2, "in": 0.5, "out": 4.5, "speed": 1 }
+    ] }
+]
+```
+
+- `start` 是剪后正片时间；显示时长为 `(out - in) / speed`，`speed` 范围 0.5–2。同轨片段不重叠，轨道和片段 id 各自唯一。
+- `video_id` 只可引用同批次已就绪的视频/图片源片，保存与渲染时校验；引用中的源视频不可单独删除。
+- `hidden` 同时影响预览和导出；`locked` 只限制编辑器的移动、裁边、拆分、删除操作，worker 忽略。
+- 片段支持移动、左右裁边、在播放头拆分、复制/粘贴和删除；不提供画中画的位置、缩放或透明度控制。
+
 ```jsonc
 {
   "spec_version": 1,
@@ -459,7 +476,12 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "box": { "x": 0.06, "y": 0.14, "w": 0.88, "h": 0.60 },   // 裁切框，相对画布宽 / 高；缺省 = 通用竖版安全区
         "start": "enter",                    // enter（缺省）：从框底边滚入 | visible：开头就有字，首行贴框顶边
         "end": "exit",                       // exit（缺省）：滚到全部离开框顶边 | stay：末行贴框底边就停
-        "hold_start": 0, "hold_end": 0       // 秒，≥ 0，缺省 0：开头停留（只在 start = visible 时生效）/ 结尾停留（只在 end = stay 时生效）
+        "hold_start": 0, "hold_end": 0,      // 秒，≥ 0，缺省 0：开头停留（只在 start = visible 时生效）/ 结尾停留（只在 end = stay 时生效）
+        "cues": [                             // 可选（HIG-75）：朗读短句真实时间轴；有值时覆盖匀速 speed
+          { "at": 0, "progress": 0 },
+          { "at": 2.4, "progress": 0.38 },
+          { "at": 6.8, "progress": 1 }
+        ]
       },
       "glyph_layout": {                      // 可选（HIG-45）：有 reveal 时前端烤图写入的字位置，见下方规则
         "lines": [ { "top": 0.08, "bottom": 0.92, "units": [[0.06, 0.2], [0.2, 0.34]] } ]
@@ -735,6 +757,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     把 PNG 放进一张上下各留 `bh` 透明边的高图（总高 `h + 2·bh`），裁切窗口高 `bh`，窗口顶边 `y` 从 `y0` 走到 `y1`：
     `y0 = start == "enter" ? 0 : bh`，`y1 = end == "exit" ? h + bh : max(y0, h)`；
     `y(t) = clip(y0 + (t − a − hold_start) × V, y0, y1)`（`a` = 图层出现时段起点）。滚动全程时长 = `hold_start + (y1 − y0) / V + hold_end`。
+    可选 `cues[]` 按 `{at, progress}` 给出短句真实音频秒数到全文进度（0–1）的严格递增关键点，必须从 `(0,0)` 开始并以 `progress=1` 结束；段间线性插值。存在 cues 时预览和导出均按 cues 滚动，`speed` 仅作旧客户端/手动模式回退。
   - 前端 `lib/poster.ts` 与后端 `services/scroll.py` 同一套公式，两端共用 `frontend/src/lib/fixtures/scrollCases.json` 做 golden 测试；
     编辑器画布按同一曲线裁切预览。批量套用 `style_only` 时随文字一起复制。
 - **文字 `style` 全部由前端渲染**进 `image_url` 的 PNG；后端只做 schema 校验并原样保存。`shadow`（`{ color, blur, offset: [x, y] }`，可为 null）、`glow`（`{ color, blur }`，无偏移的光晕，可为 null）、`letter_spacing`（em，可为负）、`background_width`、`background_radius`、`wrap_width`（HIG-51，自动换行框宽；断行按 1080×1920 基准字号算，各画幅的 `variant_images` 断在同样位置）、`box_height`（HIG-51，文字框最小高度，烤进 PNG 的高度里，叠加位置仍按 PNG 宽高比推出）以及图层级的 `spans` 都是可选字段，worker 不读取。`spans` 跟随 `text`（批量套用 `style_only` 时一起复制）。

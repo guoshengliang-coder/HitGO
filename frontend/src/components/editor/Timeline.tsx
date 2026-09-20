@@ -42,6 +42,8 @@ import { addStickerLayers, dropOverlays } from './stickerDrop';
 import { AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { enterDelay, hasAnimation, phaseLengths } from '../../lib/textAnimation';
 import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type Layer } from '../../types';
+import { timelineAutoScrollDelta } from '../../lib/timelineAutoScroll';
+import { updateVideoTrackClip, videoTrackClipDuration } from '../../lib/videoTracks';
 
 /**
  * 轨道分组：视频 / 音频 / 字幕 / 文本 / 贴纸各自可折叠，开合记在本机。
@@ -162,17 +164,24 @@ function useWidth(ref: React.RefObject<HTMLDivElement>) {
 type Drag = { kind: 'cut-l' | 'cut-r' | 'cut-move' | 'bar-l' | 'bar-r' | 'bar-move' | 'track-l' | 'track-r' | 'track-move' | 'mute-l' | 'mute-r' | 'mute-move'; index: number; startX: number; orig: [number, number] };
 
 /** 标尺 / 轨道上的 scrub：按下暂停并定位，拖动时用 rAF 节流连续定位。seekAt 负责把横坐标换算成播放头位置。 */
-function useScrub(seekAt: (clientX: number) => void) {
+function useScrub(seekAt: (clientX: number) => void, autoScroll?: (clientX: number, elapsedMs: number) => boolean) {
   const [scrubbing, setScrubbing] = useState(false);
   const active = useRef(false);
   const raf = useRef(0);
   const pending = useRef<number | null>(null);
+  const pointerX = useRef<number | null>(null);
+  const lastFrame = useRef(0);
   useEffect(() => () => { active.current = false; cancelAnimationFrame(raf.current); }, []);
 
-  const flush = () => {
-    raf.current = 0;
-    if (pending.current !== null && active.current) seekAt(pending.current);
+  const flush = (now: number) => {
+    if (!active.current) { raf.current = 0; return; }
+    const x = pointerX.current;
+    const elapsed = lastFrame.current ? now - lastFrame.current : 16;
+    lastFrame.current = now;
+    const scrolled = x !== null && !!autoScroll?.(x, elapsed);
+    if (x !== null && (pending.current !== null || scrolled)) seekAt(x);
     pending.current = null;
+    raf.current = requestAnimationFrame(flush);
   };
   const onPointerDown = (e: RPointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
@@ -183,14 +192,17 @@ function useScrub(seekAt: (clientX: number) => void) {
       /* ignore */
     }
     active.current = true;
+    pointerX.current = e.clientX;
+    lastFrame.current = 0;
     player.pause();
     seekAt(e.clientX);
+    raf.current = requestAnimationFrame(flush);
     setScrubbing(true);
   };
   const onPointerMove = (e: RPointerEvent<HTMLElement>) => {
     if (!active.current) return;
     pending.current = e.clientX;
-    if (!raf.current) raf.current = requestAnimationFrame(flush);
+    pointerX.current = e.clientX;
   };
   const onPointerUp = (e: RPointerEvent<HTMLElement>) => {
     if (!active.current) return;
@@ -200,6 +212,8 @@ function useScrub(seekAt: (clientX: number) => void) {
       raf.current = 0;
     }
     seekAt(e.clientX);
+    pointerX.current = null;
+    pending.current = null;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -219,6 +233,7 @@ function useScrub(seekAt: (clientX: number) => void) {
       raf.current = 0;
     }
     pending.current = null;
+    pointerX.current = null;
     try {
       el?.releasePointerCapture(pointerId);
     } catch {
@@ -304,11 +319,14 @@ export function Timeline() {
   const videos = useEditor((s) => s.videos);
   const setSelectedClip = useEditor((s) => s.setSelectedClip);
   const replaceSpec = useEditor((s) => s.replaceSpec);
+  const addUpperVideo = useEditor((s) => s.addUpperVideo);
+  const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
   const [sequenceDropAt, setSequenceDropAt] = useState<number | null>(null);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
 
   const sequence = spec?.sequence;
+  const upperTracks = spec?.video_tracks ?? [];
   const sequenceGroups = sequence && video ? clipDisplayGroups(sequence, video.id) : [];
   const duration = Math.max(0.1, sequence ? sequenceDuration(sequence) : video?.duration ?? 0);
   const remove = spec?.trim.remove ?? [];
@@ -468,7 +486,16 @@ export function Timeline() {
     const { lap: n, rem } = splitPostTime(axisToPost(t), postLen, lapsFor(postDuration, postLen));
     player.seek(postToSource(rem, remove), n);
   };
-  const scrub = useScrub(seekAt);
+  const autoScrollScrub = (clientX: number, elapsedMs: number) => {
+    const el = scrollRef.current;
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const left = rect.left + labelWRef.current;
+    const before = el.scrollLeft;
+    el.scrollLeft = Math.max(0, Math.min(el.scrollWidth - el.clientWidth, before + timelineAutoScrollDelta(clientX, left, rect.right, elapsedMs)));
+    return Math.abs(el.scrollLeft - before) > 0.01;
+  };
+  const scrub = useScrub(seekAt, autoScrollScrub);
 
   // 只响应主动点选；属性更新和播放过程不会重新滚动或展开分组。
   useEffect(() => {
@@ -511,6 +538,11 @@ export function Timeline() {
     return true;
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => {
+    if ((e.target as HTMLElement).closest('.tl-upper-drop') && e.dataTransfer.types.includes(VIDEO_DRAG)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      return;
+    }
     const videoTrack = !!(e.target as HTMLElement).closest('.tl-video .body');
     if (video && spec && !spec.video_locked && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
       e.preventDefault();
@@ -532,6 +564,17 @@ export function Timeline() {
     setDropHint(null);
     setSequenceDropAt(null);
     if (!video || !spec) return;
+    if ((e.target as HTMLElement).closest('.tl-upper-drop')) {
+      const sourceId = e.dataTransfer.getData(VIDEO_DRAG);
+      const source = videos.find((v) => v.id === sourceId && v.status === 'ready');
+      if (source) {
+        e.preventDefault();
+        const at = Math.max(0, Math.min(outputLen, axisToPost(xToTime(e.clientX))));
+        addUpperVideo(source.id, at);
+        player.seek(postToSource(at, remove));
+      }
+      return;
+    }
     if ((e.target as HTMLElement).closest('.tl-video .body')) {
       if (spec.video_locked && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) { e.preventDefault(); setToast('Video 轨道已锁定'); return; }
       const at = Math.max(0, Math.min(duration, xToTime(e.clientX)));
@@ -601,6 +644,37 @@ export function Timeline() {
         setToast(`上传失败：${err instanceof Error ? err.message : String(err)}`);
       }
     })();
+  };
+
+  const beginUpperDrag = (e: React.PointerEvent<HTMLElement>, clip: import('../../types').VideoTrackClip, kind: 'move' | 'left' | 'right', locked: boolean) => {
+    if (locked || e.button !== 0 || !spec) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectTimelineItems([`vclip:${clip.id}`]);
+    const x0 = e.clientX;
+    const original = structuredClone(clip);
+    const sourceDuration = videos.find((item) => item.id === clip.video_id)?.duration ?? original.out;
+    pushHistorySnapshot(structuredClone(spec));
+    const onMove = (event: PointerEvent) => {
+      const delta = (event.clientX - x0) / ppsRef.current;
+      useEditor.getState().updateSpec((draft) => {
+        if (kind === 'move') updateVideoTrackClip(draft, clip.id, { start: Math.max(0, original.start + delta) });
+        else if (kind === 'left') {
+          const shown = Math.max(0.1, videoTrackClipDuration(original) - delta);
+          const actualDelta = videoTrackClipDuration(original) - shown;
+          updateVideoTrackClip(draft, clip.id, { start: original.start + actualDelta, in: original.in + actualDelta * (original.speed ?? 1) });
+        } else {
+          const shown = Math.max(0.1, videoTrackClipDuration(original) + delta);
+          updateVideoTrackClip(draft, clip.id, { out: Math.min(sourceDuration, original.in + shown * (original.speed ?? 1)) });
+        }
+      }, { history: false });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
   };
   // 上传的素材探测就绪后加轨；处理失败的提示一下；期间换了视频就不加到别的视频上
   useEffect(() => {
@@ -871,7 +945,25 @@ export function Timeline() {
             </div>
           </div>
 
-          <TrackGroup id="tl.video" label="视频" count={video ? (sequence ? sequence.clips.length : 1) : 0} onAdd={video && !spec?.video_locked ? () => { setStep('trim'); setToast('从左侧视频列表拖入素材，添加到视频轨道'); } : undefined}>
+          <TrackGroup id="tl.video" label="视频" count={video ? (sequence ? sequence.clips.length : 1) + upperTracks.reduce((n, track) => n + track.clips.length, 0) : 0} onAdd={video ? () => { setStep('trim'); setToast('拖到「新上层视频轨」会创建 V2 / V3；拖到主轨会顺序拼接'); } : undefined}>
+          {[...upperTracks].reverse().map((track, reverseIndex) => {
+            const displayIndex = upperTracks.length - reverseIndex + 1;
+            return <div className={`tl-row tl-upper ${track.hidden ? 'hidden' : ''} ${track.locked ? 'locked' : ''}`} key={track.id}>
+              <div className="lbl"><span className="lname">{track.name || `V${displayIndex}`}</span><span className="tl-acts"><button className="btn ghost icon" title={track.hidden ? '显示轨道' : '隐藏轨道'} onClick={() => useEditor.getState().updateSpec((draft) => { const found = draft.video_tracks?.find((item) => item.id === track.id); if (found) found.hidden = !found.hidden; })}><IconEye off={!!track.hidden} /></button><button className="btn ghost icon" title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => useEditor.getState().updateSpec((draft) => { const found = draft.video_tracks?.find((item) => item.id === track.id); if (found) found.locked = !found.locked; })}><IconLock open={!track.locked} /></button></span></div>
+              <div className="body" {...scrub.handlers}>
+                {track.clips.map((clip) => {
+                  const source = videos.find((item) => item.id === clip.video_id);
+                  const length = videoTrackClipDuration(clip);
+                  const selected = timelineSelection.includes(`vclip:${clip.id}`);
+                  return <div key={clip.id} data-timeline-key={`vclip:${clip.id}`} className={`tl-upper-clip ${selected ? 'selected' : ''}`} style={{ left: off + clip.start * pps, width: Math.max(12, length * pps) }} onPointerDown={(e) => beginUpperDrag(e, clip, 'move', !!track.locked)} title={`${source?.name ?? '视频'} · ${clip.start.toFixed(1)}–${(clip.start + length).toFixed(1)}s`}><div className="edge l" onPointerDown={(e) => beginUpperDrag(e, clip, 'left', !!track.locked)} /><span>{source?.name ?? '视频'}</span><div className="edge r" onPointerDown={(e) => beginUpperDrag(e, clip, 'right', !!track.locked)} /></div>;
+                })}
+              </div>
+            </div>;
+          })}
+          <div className="tl-row tl-upper-drop">
+            <div className="lbl"><span className="lname">＋ 上层轨</span></div>
+            <div className="body" title="把左侧视频拖到这里，新建一条铺满画布的上层视频轨"><span className="tl-upper-hint">拖入左侧视频，创建新轨</span></div>
+          </div>
           <div className={`tl-row tl-video ${spec?.video_hidden ? 'hidden' : ''} ${spec?.video_locked ? 'locked' : ''}`}>
             <div className="lbl" title="视频轨：双击改视频名（与左栏同一个名字）">
               {video ? <TrackName value={video.name} label="视频名" disabled={!!spec?.video_locked} onSave={(name) => (cleanTrackName(name) ? renameVideo(video.id, name) : false)} /> : <span className="lname">视频</span>}

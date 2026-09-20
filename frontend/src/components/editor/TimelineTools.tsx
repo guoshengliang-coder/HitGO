@@ -48,6 +48,7 @@ export function TimelineTools() {
   const cutTrackAfter = useEditor((s) => s.cutTrackAfter);
   const selectedMute = useEditor((s) => s.selectedMuteIndex);
   const splitLayer = useEditor((s) => s.splitLayer);
+  const splitUpperVideo = useEditor((s) => s.splitUpperVideo);
   const layers = useEditor((s) => s.currentSpec()?.layers);
   const postTime = useEditor(selectPostTime);
   const postDuration = useEditor(selectPostDuration);
@@ -55,7 +56,9 @@ export function TimelineTools() {
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
   const videoLocked = !!spec?.video_locked;
   const audioLocked = onSource ? !!spec?.audio?.source_locked : !!spec?.audio?.tracks.find((t) => t.id === selectedTrackId)?.locked;
-  const selectedDeletable = timelineSelection.some((key) => key.startsWith('clip:') ? !videoLocked : key.startsWith('layer:') ? !spec?.layers.find((l) => l.id === key.slice(6))?.locked : key.startsWith('track:') ? !spec?.audio?.tracks.find((t) => t.id === key.slice(6))?.locked : false);
+  const selectedUpperId = timelineSelection.find((key) => key.startsWith('vclip:'))?.slice(6) ?? null;
+  const selectedUpperLocked = selectedUpperId ? !!spec?.video_tracks?.find((track) => track.clips.some((clip) => clip.id === selectedUpperId))?.locked : false;
+  const selectedDeletable = timelineSelection.some((key) => key.startsWith('clip:') ? !videoLocked : key.startsWith('vclip:') ? !spec?.video_tracks?.find((track) => track.clips.some((clip) => clip.id === key.slice(6)))?.locked : key.startsWith('layer:') ? !spec?.layers.find((l) => l.id === key.slice(6))?.locked : key.startsWith('track:') ? !spec?.audio?.tracks.find((t) => t.id === key.slice(6))?.locked : false);
   const selectedLayerDeletable = selectedLayerIds.some((id) => !spec?.layers.find((l) => l.id === id)?.locked);
 
   const canDelete = selectedDeletable || (selectedLayerIds.length > 1 && selectedLayerDeletable) || (step === 'trim' ? selectedRange !== null && !videoLocked : step === 'audio' ? (onSource ? selectedMute !== null && !audioLocked : !!selectedTrackId && !audioLocked) : !!selectedLayerId && !spec?.layers.find((l) => l.id === selectedLayerId)?.locked);
@@ -88,6 +91,7 @@ export function TimelineTools() {
       </>}
       {step === 'trim' && (
         <>
+          {selectedUpperId && <button className="btn" onClick={() => splitUpperVideo(selectedUpperId)} disabled={selectedUpperLocked} title="在播放头拆分所选上层视频"><IconSplit /> 拆分上层视频</button>}
           <button className={`btn ${inPoint !== null ? 'on' : ''}`} onClick={() => setInPoint(time)} disabled={videoLocked} title={hintFor('in')}>
             入点
           </button>

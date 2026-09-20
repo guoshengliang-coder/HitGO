@@ -39,6 +39,8 @@ from app.schemas import (
     VideoOut,
 )
 from app.services import storage
+from app.services import screentext
+from app.config import settings
 
 RENDER_IDLE = "idle"
 
@@ -72,6 +74,11 @@ def render_status(jobs: Iterable[Job]) -> str:
 def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
     batch_id, vid = video.batch_id, video.id
     ready = video.status == VIDEO_READY
+    screen_text, _ = screentext.expire_stale_state(
+        video.screen_text,
+        task_timeout_seconds=settings.screentext_timeout_seconds,
+        erase_timeout_seconds=settings.erase_max_wait_seconds,
+    )
     return VideoOut(
         id=vid,
         batch_id=batch_id,
@@ -95,7 +102,7 @@ def video_out(video: Video, jobs: Iterable[Job] = ()) -> VideoOut:
         render_status=render_status(jobs),
         separation=SeparationOut(**video.separation) if video.separation else None,
         localization=LocalizationOut.model_validate(video.localization) if video.localization else None,
-        screen_text=ScreenTextStateOut.model_validate(video.screen_text) if video.screen_text else None,
+        screen_text=ScreenTextStateOut.model_validate(screen_text) if screen_text else None,
         updated_at=iso(video.updated_at) or "",
     )
 

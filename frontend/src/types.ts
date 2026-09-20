@@ -368,6 +368,14 @@ export interface DerivedFrom {
   lang?: string | null;
   voice?: string | null;
   text?: string | null;
+  /** HIG-75：短句独立合成后的真实音频时间轴。 */
+  segments?: TtsSegment[] | null;
+}
+
+export interface TtsSegment {
+  text: string;
+  start: number;
+  end: number;
 }
 
 // ---- 大字报（契约 §3，HIG-50）----
@@ -751,6 +759,13 @@ export interface TextScroll {
   hold_start?: number;
   /** 秒，≥ 0，缺省 0：结尾停留，只在 end = stay 时生效。 */
   hold_end?: number;
+  /** HIG-75：朗读秒数 → 全文滚动进度；缺省时仍按 speed 匀速。 */
+  cues?: ScrollCue[];
+}
+
+export interface ScrollCue {
+  at: number;
+  progress: number;
 }
 
 export interface TextLayer extends LayerBase {
@@ -928,6 +943,23 @@ export interface SequenceSpec {
   origin?: 'localize';
 }
 
+/** HIG-81：V2/V3… 上层全画布视频轨；同轨片段不得重叠。 */
+export interface VideoTrackClip {
+  id: string;
+  video_id: string;
+  start: number;
+  in: number;
+  out: number;
+  speed?: number;
+}
+export interface VideoTrack {
+  id: string;
+  name?: string;
+  hidden?: boolean;
+  locked?: boolean;
+  clips: VideoTrackClip[];
+}
+
 export interface EditSpec {
   spec_version: 1;
   /**
@@ -939,6 +971,8 @@ export interface EditSpec {
   video_hidden?: boolean;
   /** 可选（HIG-62）：编辑器禁止修改主视频片段；worker 忽略。 */
   video_locked?: boolean;
+  /** 可选（HIG-81）：后列轨道覆盖前列轨道；视频均按当前画幅铺满。 */
+  video_tracks?: VideoTrack[];
   trim: Trim;
   layers: Layer[];
   outputs: OutputVariant[];

@@ -13,6 +13,7 @@ import {
   posterDuration,
   resolveScroll,
   sampleScrollY,
+  scrollCuesForSegments,
   scrollDuration,
   scrollLayerDuration,
   scrollPath,
@@ -33,6 +34,23 @@ describe('scrollPath / sampleScrollY 对照后端 golden（HIG-50）', () => {
       expect(sampleScrollY(p, c.u)).toBeCloseTo(c.expect.y, 5);
     });
   }
+});
+
+describe('朗读短句滚动时间轴（HIG-75）', () => {
+  it('按每段实际结束时间和文字占比生成关键点，倍速同步缩短时间', () => {
+    const segments = [
+      { text: '把这99元的现金红包，', start: 0, end: 2 },
+      { text: '放进账户。', start: 2, end: 3 },
+    ];
+    const cues = scrollCuesForSegments(segments)!;
+    expect(cues[0]).toEqual({ at: 0, progress: 0 });
+    expect(cues[cues.length - 1]).toEqual({ at: 3, progress: 1 });
+    const faster = scrollCuesForSegments(segments, 2)!;
+    expect(faster[faster.length - 1].at).toBe(1.5);
+    const p = scrollPath({ ...DEFAULT_SCROLL, cues }, 1.4);
+    expect(scrollDuration(p)).toBe(3);
+    expect(sampleScrollY(p, 2)).toBeCloseTo(p.y0 + (p.y1 - p.y0) * cues[1].progress);
+  });
 });
 
 const style = defaultTextStyle();

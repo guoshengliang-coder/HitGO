@@ -460,7 +460,8 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .stage-wrap:fullscreen { background: #000; padding: 0; }
 .stage-box { position: relative; background: #0b0d10; border-radius: 4px; overflow: hidden; box-shadow: var(--shadow); }
 .stage-box video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #0b0d10; }
-.stage-box .konva-layer { position: absolute; inset: 0; }
+.stage-box .konva-layer { position: absolute; inset: 0; z-index: 2; }
+.stage-box video.upper-video-preview { z-index: 1; pointer-events: none; background: #000; }
 /* 画布拖入图片（HIG-46）：遮罩半透明，松手前还看得见落点下的画面 */
 .stage-box .dropzone-mask { background: color-mix(in srgb, var(--accent-soft) 30%, transparent); border-radius: 4px; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); }
 .stage-hint { position: absolute; left: 8px; bottom: 8px; color: rgba(255,255,255,0.6); font-size: 11px; pointer-events: none; }
@@ -548,6 +549,18 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-video.hidden .tl-sprite { opacity: 0.35; }
 .tl-row .body { position: relative; height: 100%; overflow: hidden; }
 .tl-video { height: 64px; }
+.tl-upper { height: 42px; }
+.tl-upper-drop { height: 32px; opacity: .78; }
+.tl-upper-drop .body { border: 1px dashed color-mix(in srgb, var(--accent) 48%, transparent); background: color-mix(in srgb, var(--accent-soft) 24%, transparent); }
+.tl-upper-hint { position: absolute; left: 12px; top: 7px; font-size: 11px; color: var(--muted); pointer-events: none; }
+.tl-upper-clip { position: absolute; top: 5px; bottom: 5px; min-width: 12px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 68%, #213247); border: 1px solid color-mix(in srgb, var(--accent) 75%, white); color: #fff; overflow: hidden; cursor: grab; user-select: none; }
+.tl-upper-clip.selected { outline: 2px solid #fff; outline-offset: 1px; }
+.tl-upper-clip > span { display: block; padding: 5px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.tl-upper-clip .edge { position: absolute; z-index: 2; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
+.tl-upper-clip .edge.l { left: 0; }
+.tl-upper-clip .edge.r { right: 0; }
+.tl-upper.hidden .tl-upper-clip { opacity: .35; }
+.tl-upper.locked .tl-upper-clip { cursor: default; }
 .tl-layer { height: 30px; }
 .tl-layer.selected .lbl { color: var(--accent-ink); font-weight: 500; }
 .tl-sprite { position: absolute; top: 0; bottom: 0; background-repeat: no-repeat; }

@@ -197,6 +197,7 @@ function ScrollSection({ layer }: { layer: TextLayer }) {
         <Num value={s.speed} min={SCROLL_SPEED_MIN} max={SCROLL_SPEED_MAX} step={0.01} scale={1} suffix="高/s" onChange={(v) => setScroll(layer.id, { speed: v })} className="compact" />
       </span>
       <div className="hint">{seconds === null ? '文案还没渲染成图，滚完的时长稍后显示。' : `按这个速度滚完全程约 ${fmt1(seconds)}。`}</div>
+      {s.cues?.length ? <div className="hint">已按朗读短句时间轴同步；手动调整速度会切回匀速。</div> : null}
       <div className="g2">
         <Num label="框 X" value={s.box.x} min={0} max={1} step={0.01} onChange={(v) => setBox({ x: v })} />
         <Num label="框 Y" value={s.box.y} min={0} max={1} step={0.01} onChange={(v) => setBox({ y: v })} />

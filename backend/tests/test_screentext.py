@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
+from app.db import iso, utcnow
 from app.models import ST_DONE, ST_FAILED, ST_QUEUED, Video
 from app.services import screentext
 from app.services.screentext import DetectedText, FakeScreenText
@@ -294,11 +297,40 @@ def test_post_rejects_a_video_that_is_too_long(client, ready_video, db):
 
 
 def test_post_conflicts_while_detection_is_running(client, ready_video, db):
-    ready_video.screen_text = {"detect": {"status": "running"}, "versions": {}}
+    ready_video.screen_text = {"detect": {"status": "running", "updated_at": iso(utcnow())}, "versions": {}}
     db.commit()
     r = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"detect": True})
 
     assert r.status_code == 409
+
+
+def test_stale_detection_is_reported_failed_and_can_be_retried(client, ready_video, db, enqueued):
+    ready_video.screen_text = {
+        "detect": {"status": "running", "updated_at": iso(utcnow() - timedelta(days=1))},
+        "versions": {},
+        "pending": {"target_langs": [], "source_lang": "auto", "terms": [], "erase": False},
+    }
+    db.commit()
+
+    shown = client.get(f"/api/videos/{ready_video.id}").json()["screen_text"]["detect"]
+    assert shown["status"] == ST_FAILED
+    assert "手动重试" in shown["error"]
+
+    retried = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"detect": True})
+    assert retried.status_code == 202
+    assert retried.json()["screen_text"]["detect"]["status"] == ST_QUEUED
+    assert "hitgo.screen_text_video" in enqueued.names()
+
+
+def test_recent_active_screen_text_is_not_expired():
+    state = {"detect": {"status": "running", "updated_at": iso(utcnow())}, "versions": {}}
+    out, changed = screentext.expire_stale_state(
+        state,
+        task_timeout_seconds=1200,
+        erase_timeout_seconds=1800,
+    )
+    assert changed is False
+    assert out == state
 
 
 def test_post_without_detect_and_without_work_is_rejected(client, ready_video, db):

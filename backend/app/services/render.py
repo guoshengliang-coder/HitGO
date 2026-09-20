@@ -34,7 +34,7 @@ from app.models import (
 )
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
-from app.services.sequence import resolve_sequence
+from app.services.sequence import resolve_sequence, resolve_video_tracks
 from app.services.filtergraph import (
     AudioSource,
     CoverSource,
@@ -241,6 +241,7 @@ def source_for(video: Video, spec: EditSpec) -> tuple[str, str | None]:
 def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
     spec = EditSpec.model_validate(job_spec(job, video))
     sequence_sources = resolve_sequence(db, video, spec)
+    video_track_sources = resolve_video_tracks(db, video, spec)
     variant = next((o for o in spec.outputs if o.variant_key == job.variant_key), None)
     if variant is None:
         raise RenderError(f"编辑参数中没有输出变体 {job.variant_key}")
@@ -264,6 +265,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         audio_assets=collect_audio(db, spec),
         cover=collect_cover(db, spec),
         sequence_sources=sequence_sources,
+        video_track_sources=video_track_sources,
     )
     if source_warning:
         plan.warnings.append(source_warning)

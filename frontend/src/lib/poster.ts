@@ -7,19 +7,20 @@
 
 import { TRACK_DEFAULTS } from './audioTracks';
 import { normalizeSpans } from './textSpans';
-import type { Asset, AudioTrack, EditSpec, HighlightPhrase, ScrollBox, TextLayer, TextScroll, TextSpan, TextStyle } from '../types';
+import type { Asset, AudioTrack, EditSpec, HighlightPhrase, ScrollBox, ScrollCue, TextLayer, TextScroll, TextSpan, TextStyle, TtsSegment } from '../types';
 
 /** 通用竖版安全区：避开顶部状态栏和底部的文案 / 操作条（契约 §2 scroll.box 缺省）。 */
 export const DEFAULT_SCROLL_BOX: ScrollBox = { x: 0.06, y: 0.14, w: 0.88, h: 0.6 };
 
-export const DEFAULT_SCROLL: Required<TextScroll> = { speed: 0.08, box: DEFAULT_SCROLL_BOX, start: 'enter', end: 'exit', hold_start: 0, hold_end: 0 };
+export type ResolvedTextScroll = Required<Omit<TextScroll, 'cues'>> & { cues?: ScrollCue[] };
+export const DEFAULT_SCROLL: ResolvedTextScroll = { speed: 0.08, box: DEFAULT_SCROLL_BOX, start: 'enter', end: 'exit', hold_start: 0, hold_end: 0 };
 
 /** 滚动速度（画布高 / 秒）的可调范围：契约 (0, 2]，下限留个能看见在动的值。 */
 export const SCROLL_SPEED_MIN = 0.01;
 export const SCROLL_SPEED_MAX = 2;
 
 /** 把契约里的可选字段补齐成缺省值。 */
-export function resolveScroll(s?: TextScroll | null): Required<TextScroll> {
+export function resolveScroll(s?: TextScroll | null): ResolvedTextScroll {
   return {
     speed: s?.speed && s.speed > 0 ? s.speed : DEFAULT_SCROLL.speed,
     box: s?.box ?? DEFAULT_SCROLL_BOX,
@@ -27,13 +28,14 @@ export function resolveScroll(s?: TextScroll | null): Required<TextScroll> {
     end: s?.end ?? DEFAULT_SCROLL.end,
     hold_start: Math.max(0, s?.hold_start ?? 0),
     hold_end: Math.max(0, s?.hold_end ?? 0),
+    ...(s?.cues?.length ? { cues: s.cues } : {}),
   };
 }
 
 // ---- 滚动曲线（与后端 scroll.py 逐行对应）----
 
 /** 裁切窗口的起止位置（相对画布高）与速度、首尾停留（秒）。 */
-export type ScrollPath = { y0: number; y1: number; speed: number; holdStart: number; holdEnd: number };
+export type ScrollPath = { y0: number; y1: number; speed: number; holdStart: number; holdEnd: number; cues?: ScrollCue[] };
 
 /** pngH = PNG 按 width 缩放后的高，相对画布高。 */
 export function scrollPath(scroll: TextScroll, pngH: number): ScrollPath {
@@ -42,7 +44,7 @@ export function scrollPath(scroll: TextScroll, pngH: number): ScrollPath {
   const y0 = s.start === 'enter' ? 0 : bh;
   const y1 = s.end === 'exit' ? pngH + bh : Math.max(y0, pngH);
   // 停留只在那一端文案确实在框里时才有意义
-  return { y0, y1, speed: s.speed, holdStart: s.start === 'visible' ? s.hold_start : 0, holdEnd: s.end === 'stay' ? s.hold_end : 0 };
+  return { y0, y1, speed: s.speed, holdStart: s.start === 'visible' ? s.hold_start : 0, holdEnd: s.end === 'stay' ? s.hold_end : 0, cues: s.cues };
 }
 
 /** 窗口要走的距离（相对画布高）。 */
@@ -52,13 +54,41 @@ export function scrollTravel(p: ScrollPath): number {
 
 /** 全程时长（秒）：开头停留 + 滚动 + 结尾停留。 */
 export function scrollDuration(p: ScrollPath): number {
+  if (p.cues?.length) return p.cues[p.cues.length - 1].at;
   return p.holdStart + scrollTravel(p) / p.speed + p.holdEnd;
 }
 
 /** 图层时段内本地时刻 u（秒）的窗口顶边位置（相对画布高）。 */
 export function sampleScrollY(p: ScrollPath, u: number): number {
+  if (p.cues?.length) {
+    const cues = p.cues;
+    let progress = u <= cues[0].at ? cues[0].progress : cues[cues.length - 1].progress;
+    for (let i = 1; i < cues.length && u > cues[0].at; i++) {
+      if (u <= cues[i].at) {
+        const before = cues[i - 1];
+        progress = before.progress + (cues[i].progress - before.progress) * (u - before.at) / (cues[i].at - before.at);
+        break;
+      }
+    }
+    return p.y0 + scrollTravel(p) * Math.max(0, Math.min(1, progress));
+  }
   const y = p.y0 + (u - p.holdStart) * p.speed;
   return Math.min(Math.max(y, p.y0), p.y1);
+}
+
+/** TTS clause clock → monotonic poster progress clock; speed scales measured audio time. */
+export function scrollCuesForSegments(segments: TtsSegment[] | null | undefined, speed = 1): ScrollCue[] | undefined {
+  const valid = (segments ?? []).filter((s) => s.text.length > 0 && s.end > s.start);
+  const chars = valid.reduce((sum, s) => sum + [...s.text].length, 0);
+  if (!valid.length || chars <= 0) return undefined;
+  let seen = 0;
+  const cues: ScrollCue[] = [{ at: 0, progress: 0 }];
+  for (const segment of valid) {
+    seen += [...segment.text].length;
+    cues.push({ at: Math.round((segment.end / Math.max(0.01, speed)) * 1000) / 1000, progress: seen / chars });
+  }
+  cues[cues.length - 1].progress = 1;
+  return cues;
 }
 
 // ---- 图层 → 几何 ----

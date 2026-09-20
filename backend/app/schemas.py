@@ -365,6 +365,11 @@ class ScrollBox(BaseModel):
         return self
 
 
+class ScrollCue(BaseModel):
+    at: float = Field(ge=0)
+    progress: float = Field(ge=0, le=1)
+
+
 class TextScroll(BaseModel):
     """Scrolling copy inside a clip box (HIG-50 大字报); curve in services/scroll.py."""
 
@@ -376,6 +381,22 @@ class TextScroll(BaseModel):
     end: ScrollEnd = "exit"
     hold_start: float = Field(default=0, ge=0, le=SCROLL_MAX_HOLD)
     hold_end: float = Field(default=0, ge=0, le=SCROLL_MAX_HOLD)
+    # Optional measured TTS clock (HIG-75): seconds → normalized copy progress.
+    cues: list[ScrollCue] | None = None
+
+    @field_validator("cues")
+    @classmethod
+    def _validate_cues(cls, cues: list[ScrollCue] | None) -> list[ScrollCue] | None:
+        if cues is None:
+            return None
+        if len(cues) < 2 or abs(cues[0].at) > 1e-6 or abs(cues[0].progress) > 1e-6:
+            raise ValueError("scroll.cues 必须从 {at: 0, progress: 0} 开始")
+        if abs(cues[-1].progress - 1) > 1e-6:
+            raise ValueError("scroll.cues 最后一个 progress 必须为 1")
+        for before, after in zip(cues, cues[1:]):
+            if after.at <= before.at or after.progress <= before.progress:
+                raise ValueError("scroll.cues 的 at 与 progress 必须严格递增")
+        return cues
 
 
 class TextLayer(LayerBase):
@@ -796,6 +817,50 @@ class SequenceSpec(BaseModel):
         return sum((c.source_out - c.source_in) / c.speed - (c.transition.duration if c.transition else 0) for c in self.clips)
 
 
+class VideoTrackClip(BaseModel):
+    """A full-canvas clip on an upper video track (HIG-81)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(min_length=1, max_length=64)
+    video_id: str = Field(min_length=1)
+    start: float = Field(ge=0)
+    source_in: float = Field(alias="in", ge=0)
+    source_out: float = Field(alias="out", gt=0)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+    @model_validator(mode="after")
+    def _check_range(self) -> VideoTrackClip:
+        if self.source_out - self.source_in < 0.1 - 1e-6:
+            raise ValueError("视频轨片段时长至少为 0.1 秒")
+        return self
+
+    @property
+    def end(self) -> float:
+        return self.start + (self.source_out - self.source_in) / self.speed
+
+
+class VideoTrack(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, max_length=80)
+    hidden: bool = False
+    locked: bool = False
+    clips: list[VideoTrackClip] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_clips(self) -> VideoTrack:
+        ids = [clip.id for clip in self.clips]
+        if len(ids) != len(set(ids)):
+            raise ValueError("视频轨片段 id 不能重复")
+        ordered = sorted(self.clips, key=lambda clip: clip.start)
+        for previous, clip in zip(ordered, ordered[1:]):
+            if clip.start < previous.end - 1e-6:
+                raise ValueError("同一视频轨的片段不能重叠")
+        return self
+
+
 class EditSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -811,9 +876,16 @@ class EditSpec(BaseModel):
     audio: AudioSpec | None = None  # None = keep the source track as-is (pre-audio behaviour)
     cover: CoverSpec | None = None  # None = no cover (pre-cover behaviour)
     sequence: SequenceSpec | None = None  # HIG-39: ordered raw source clips on this video's timeline
+    video_tracks: list[VideoTrack] = Field(default_factory=list)  # HIG-81: full-canvas upper tracks
 
     @model_validator(mode="after")
     def _cross_checks(self) -> EditSpec:
+        track_ids = [track.id for track in self.video_tracks]
+        if len(track_ids) != len(set(track_ids)):
+            raise ValueError("视频轨 id 不能重复")
+        video_clip_ids = [clip.id for track in self.video_tracks for clip in track.clips]
+        if len(video_clip_ids) != len(set(video_clip_ids)):
+            raise ValueError("视频轨片段 id 不能重复")
         if self.sequence is not None:
             if self.trim.duration is not None:
                 raise ValueError("多片段序列的成片时长必须先转换为片段")
