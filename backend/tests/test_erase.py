@@ -367,3 +367,101 @@ def test_a_provider_that_raises_on_submit_is_reported(db, ready_video, enqueued,
     db.refresh(ready_video)
     assert ready_video.screen_text["erase"]["status"] == ST_FAILED
     assert "厂商 SDK 炸了" in ready_video.screen_text["erase"]["error"]
+
+
+# --- provider selection (HIG-38) --------------------------------------------
+
+
+def test_ghostcut_needs_credentials_before_it_counts_as_available():
+    """The editor greys out the erase button from this, so it must not promise what it cannot do."""
+    from dataclasses import replace
+
+    from app.config import settings as base
+
+    bare = replace(base, erase_provider="ghostcut", ghostcut_app_key="", ghostcut_app_secret="")
+    configured = replace(base, erase_provider="ghostcut", ghostcut_app_key="k", ghostcut_app_secret="s")
+
+    assert erase.erase_enabled(bare) is False
+    assert erase.erase_enabled(configured) is True
+    # local needs nothing at all — it is the floor of the feature.
+    assert erase.erase_enabled(replace(base, erase_provider="local")) is True
+
+
+def test_an_unknown_provider_is_not_reported_as_available():
+    from dataclasses import replace
+
+    from app.config import settings as base
+
+    assert erase.erase_enabled(replace(base, erase_provider="nope")) is False
+
+
+def test_make_provider_refuses_ghostcut_without_credentials(ready_video):
+    from dataclasses import replace
+
+    from app.config import settings as base
+
+    cfg = replace(base, erase_provider="ghostcut", ghostcut_app_key="", ghostcut_app_secret="")
+    with pytest.raises(erase.EraseError, match="GHOSTCUT_APP_KEY"):
+        erase.make_provider(ready_video, cfg)
+
+
+def test_public_source_url_carries_a_read_ticket(ready_video):
+    """A cloud vendor fetches the file itself, so /media is opened for this one path only."""
+    from dataclasses import replace
+
+    from app.config import settings as base
+    from app.services import media_ticket
+
+    cfg = replace(base, access_code="s3cret", public_base_url="https://hitgo.example")
+    url = erase.public_source_url(ready_video, cfg)
+
+    assert url.startswith("https://hitgo.example/media/batches/")
+    head, _, query = url.partition("?t=")
+    rel = head[len("https://hitgo.example/media/") :]
+    assert media_ticket.verify(rel, query, "s3cret")
+    # And the ticket is bound to that path: it cannot be moved to another file.
+    assert not media_ticket.verify("batches/other/file.mp4", query, "s3cret")
+
+
+def test_no_access_code_means_no_ticket_noise(ready_video):
+    from dataclasses import replace
+
+    from app.config import settings as base
+
+    url = erase.public_source_url(ready_video, replace(base, access_code="", public_base_url="https://hitgo.example"))
+
+    assert "?t=" not in url
+
+
+def test_the_local_provider_is_not_handed_a_public_url(db, ready_video, enqueued, monkeypatch):
+    """It reads the file off disk; minting a ticket for it would open /media for nothing."""
+    seen = {}
+
+    class Recording(FakeErase):
+        def submit(self, source, public_url, regions, duration):
+            seen["public_url"] = public_url
+            return "t1"
+
+    recording = Recording()
+    recording.name = "local"
+    monkeypatch.setattr(erase, "make_provider", lambda *a, **k: recording)
+    erase.start(db, ready_video, {"detect": _detect(), "versions": {}}, None)
+
+    assert seen["public_url"] is None
+
+
+def test_a_cloud_provider_is_handed_a_public_url(db, ready_video, enqueued, monkeypatch):
+    seen = {}
+
+    class Recording(FakeErase):
+        def submit(self, source, public_url, regions, duration):
+            seen["public_url"] = public_url
+            return "t1"
+
+    recording = Recording()
+    recording.name = "ghostcut"
+    monkeypatch.setattr(erase, "make_provider", lambda *a, **k: recording)
+    erase.start(db, ready_video, {"detect": _detect(), "versions": {}}, None)
+
+    assert seen["public_url"].startswith("https://")
+    assert "/media/batches/" in seen["public_url"]
