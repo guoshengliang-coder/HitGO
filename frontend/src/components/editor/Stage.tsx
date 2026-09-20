@@ -49,7 +49,7 @@ import { sourceGainAt, sourceVolume } from '../../lib/audioTracks';
 import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
-import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer } from '../../types';
+import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer, type Video, type VideoTrackClip } from '../../types';
 
 // Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、四条边改换行宽度 / 框高（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 /** 指针移开这么多舞台像素才算框选，而不是一次点击（HIG-77，与时间轴同一个阈值）。 */
@@ -638,6 +638,28 @@ function LayerNode({
   );
 }
 
+function UpperVideoPreview({ clip, source, active, fill }: { clip: VideoTrackClip; source: Video; active: boolean; fill: 'blur' | 'color' | 'crop' }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const sync = (playing: boolean) => {
+      const element = ref.current;
+      if (!element) return;
+      const post = player.postTime;
+      const visible = post >= clip.start && post < clip.start + (clip.out - clip.in) / (clip.speed ?? 1);
+      if (!visible) { element.pause(); return; }
+      const at = clip.in + (post - clip.start) * (clip.speed ?? 1);
+      element.muted = true;
+      element.playbackRate = Math.max(0.25, Math.min(4, player.mediaRate * (clip.speed ?? 1)));
+      if (Math.abs(element.currentTime - at) > (playing ? 0.2 : 0.01)) element.currentTime = at;
+      if (playing && element.paused) void element.play().catch(() => undefined);
+      if (!playing && !element.paused) element.pause();
+    };
+    sync(player.mediaRate > 0);
+    return player.subscribe((_time, playing) => sync(playing));
+  }, [clip]);
+  return <video ref={ref} className="upper-video-preview" src={source.proxy_url} playsInline preload="auto" muted style={{ display: active ? 'block' : 'none', objectFit: fill === 'crop' ? 'cover' : 'contain' }} />;
+}
+
 export function Stage({ hidden }: { hidden?: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -939,6 +961,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
             e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
           }}
         />
+        {!coverActive && spec?.video_tracks?.filter((track) => !track.hidden).flatMap((track) => track.clips).map((clip) => {
+          const source = useEditor.getState().videos.find((item) => item.id === clip.video_id);
+          const active = postTime >= clip.start && postTime < clip.start + (clip.out - clip.in) / (clip.speed ?? 1);
+          return source ? <UpperVideoPreview key={clip.id} clip={clip} source={source} active={active} fill={fill} /> : null;
+        })}
         {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
         <AudioTracks />
         {!coverActive &&

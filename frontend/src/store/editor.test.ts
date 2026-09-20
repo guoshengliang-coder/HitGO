@@ -99,22 +99,25 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
     expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.background).toBe('#00000066');
   });
 
-  it('同一次复制、粘贴和删除覆盖视频、字幕、音频且可撤销', () => {
-    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] }, layers: [{ ...textLayer('字幕'), t: [1, 2] }], audio: { source_volume: 1, tracks: [{ id: 't1', asset_id: 'a1', role: 'bgm', align: 'post', t: [1, 3], volume: 1, loop: false }] } };
+  it('同一次复制、粘贴和删除覆盖主视频、上层视频、字幕、音频且可撤销', () => {
+    const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] }, video_tracks: [{ id: 'vt1', clips: [{ id: 'vc1', video_id: 'v1', start: 1, in: 0, out: 2 }] }], layers: [{ ...textLayer('字幕'), t: [1, 2] }], audio: { source_volume: 1, tracks: [{ id: 't1', asset_id: 'a1', role: 'bgm', align: 'post', t: [1, 3], volume: 1, loop: false }] } };
     useEditor.getState().replaceSpec('v1', spec);
-    useEditor.getState().selectTimelineItems(['clip:c2', 'layer:L1', 'track:t1']);
+    useEditor.getState().selectTimelineItems(['clip:c2', 'vclip:vc1', 'layer:L1', 'track:t1']);
     useEditor.getState().copyTimelineItems();
     useEditor.getState().setTime(4);
     useEditor.getState().pasteTimelineItems();
     expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(3);
+    expect(useEditor.getState().currentSpec()!.video_tracks).toHaveLength(2);
     expect(useEditor.getState().currentSpec()!.layers).toHaveLength(2);
     expect(useEditor.getState().currentSpec()!.audio!.tracks).toHaveLength(2);
     useEditor.getState().deleteTimelineItems();
     expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(2);
+    expect(useEditor.getState().currentSpec()!.video_tracks).toHaveLength(1);
     expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
     expect(useEditor.getState().currentSpec()!.audio!.tracks).toHaveLength(1);
     useEditor.getState().undo();
     expect(useEditor.getState().currentSpec()!.sequence!.clips).toHaveLength(3);
+    expect(useEditor.getState().currentSpec()!.video_tracks).toHaveLength(2);
   });
 
   it('多选字幕和音频后整体平移，并保留锁定图层', () => {
@@ -887,6 +890,21 @@ describe('大字报（HIG-50）', () => {
     vi.spyOn(api, 'synthesizeTts').mockRejectedValue(new ApiError(503, '朗读服务未配置'));
     expect(await useEditor.getState().generateVoice('文案', 'zh', 'v1')).toBeNull();
     expect(useEditor.getState().toast).toBe('朗读服务未配置');
+  });
+
+  it('generateVoice：按短句真实时长写入滚动 cues，音轨变速时同步重算', async () => {
+    useEditor.getState().addPosterLayer('甲。乙。');
+    await vi.advanceTimersByTimeAsync(0);
+    const pending = { id: 'a_cues', type: 'audio', kind: 'audio', status: 'preparing', name: '朗读', url: '/media/cues.m4a', source: 'derived', derived_from: { stem: 'tts' }, created_at: '' } as Asset;
+    const ready = { ...pending, status: 'ready', duration: 3, derived_from: { stem: 'tts', segments: [{ text: '甲。', start: 0, end: 1 }, { text: '乙。', start: 1, end: 3 }] } } as Asset;
+    vi.spyOn(api, 'synthesizeTts').mockResolvedValue(pending);
+    vi.spyOn(api, 'getAsset').mockResolvedValue(ready);
+    await useEditor.getState().generateVoice('甲。乙。', 'zh', 'v1');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(poster()!.scroll?.cues).toEqual([{ at: 0, progress: 0 }, { at: 1, progress: 0.5 }, { at: 3, progress: 1 }]);
+    const track = spec().audio!.tracks.find((item) => item.asset_id === 'a_cues')!;
+    useEditor.getState().setTrackSpeed(track.id, 2);
+    expect(poster()!.scroll?.cues).toEqual([{ at: 0, progress: 0 }, { at: 0.5, progress: 0.5 }, { at: 1.5, progress: 1 }]);
   });
 
   it('generateVoice：素材处理失败时清掉 pending 并提示', async () => {

@@ -54,7 +54,7 @@ from app.services.layout import (
     mask_box,
     rotated_overlay_position,
 )
-from app.services.sequence import ClipSource
+from app.services.sequence import ClipSource, VideoTrackSource
 
 _AUDIO_ARGS: list[str] = ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"]
 
@@ -499,6 +499,7 @@ def build_render_command(
     audio_assets: Mapping[str, AudioSource] | None = None,
     cover: CoverSource | None = None,
     sequence_sources: list[ClipSource] | None = None,
+    video_track_sources: list[VideoTrackSource] | None = None,
 ) -> RenderPlan:
     """Return the ffmpeg argv, expected output duration and any layer warnings.
 
@@ -510,6 +511,7 @@ def build_render_command(
     resolve, the render goes on without it and says so in the warnings.
     """
     sequence_sources = sequence_sources or []
+    video_track_sources = video_track_sources or []
     duration = spec.sequence.duration if spec.sequence else float(video_meta["duration"])
     has_audio = any(c.has_audio for c in sequence_sources) if sequence_sources else bool(video_meta.get("has_audio", False))
     canvas_w, canvas_h = variant.canvas
@@ -665,6 +667,34 @@ def build_render_command(
         # only the main picture. Layers and cover are composed after this point.
         chains.append("[c0]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[c0hidden]")
         current = "[c0hidden]"
+
+    # HIG-81 upper video tracks. Each source is trimmed independently, fitted to the
+    # full output canvas, shifted onto the composed timeline, then painted in track
+    # order. Audio intentionally remains owned by the main/audio tracks.
+    for upper_index, source in enumerate(video_track_sources):
+        clip = source.clip
+        start = float(clip.start)
+        end = min(expected_duration, float(clip.end))
+        if start >= expected_duration or end <= start:
+            continue
+        input_index = len(inputs)
+        inputs.append(["-i", source.path])
+        speed = float(clip.speed)
+        raw = f"[upperraw{upper_index}]"
+        chains.append(
+            f"[{input_index}:v]trim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
+            f"setpts=(PTS-STARTPTS)/{_fmt(speed)}+{_fmt(start)}/TB,setsar=1{raw}"
+        )
+        filled = f"[upperfill{upper_index}]"
+        chains += fill_chains(
+            raw, variant.fill, variant.color, None, W, H, filled,
+            tag=f"_upper{upper_index}", blur=variant.blur, brightness=variant.bg_brightness,
+        )
+        out = f"[upperout{upper_index}]"
+        chains.append(
+            f"{current}{filled}overlay=0:0:eof_action=pass:enable='between(t,{_fmt(start)},{_fmt(end)})'{out}"
+        )
+        current = out
 
     # ---- 3. layers ----------------------------------------------------------
     fmap = variant_fit_map(

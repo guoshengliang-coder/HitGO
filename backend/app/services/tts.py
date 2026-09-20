@@ -31,9 +31,11 @@ MAX_CHUNK_CHARS = 500
 # Everything outside this set becomes "_" in a cache file name; uniqueness rests on the hash. The
 # dot is deliberately not allowed, so a sanitized name can never contain "..".
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_-]")
-# Sentence ends (kept on the sentence); commas / spaces are only used to soften a hard split.
-_SENTENCE_BREAK = re.compile(r"(?<=[。！？!?；;\n])")
+# Sentence/clause ends (kept on the chunk). Clause-sized requests avoid a vendor returning a
+# successful but audibly truncated long utterance, and give the poster an actual progress clock.
+_SENTENCE_BREAK = re.compile(r"(?<=[。！？!?；;，,、：:\n])")
 _SOFT_BREAK = re.compile(r"[，,、\s]")
+MAX_SYNC_CHARS = 120
 
 
 def tts_tmp_dir(asset_id: str) -> Path:
@@ -145,8 +147,19 @@ def split_tts_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
     return chunks
 
 
-def _synthesize(asset: Asset, providers: localize.Providers, tmp: Path, dst: Path) -> float:
-    """Chunks → wav clips → one m4a; returns the probed duration. Raises on any failure."""
+def split_tts_clauses(text: str, max_chars: int = MAX_SYNC_CHARS) -> list[str]:
+    """Short, independently synthesized clauses; unlike split_tts_text, never merges them."""
+    out: list[str] = []
+    for clause in _SENTENCE_BREAK.split(text or ""):
+        clause = clause.strip()
+        if not clause:
+            continue
+        out.extend(_hard_split(clause, max_chars))
+    return out
+
+
+def _synthesize(asset: Asset, providers: localize.Providers, tmp: Path, dst: Path) -> tuple[float, list[dict[str, object]]]:
+    """Clause clips → one m4a; returns duration + the measured clause clock."""
     info = dict(asset.derived_from or {})
     text = str(info.get("tts_text") or info.get("text") or "").strip()
     if not text:
@@ -160,8 +173,9 @@ def _synthesize(asset: Asset, providers: localize.Providers, tmp: Path, dst: Pat
 
     tmp.mkdir(parents=True, exist_ok=True)
     clips: list[tuple[Path, float, float]] = []
+    segments: list[dict[str, object]] = []
     cursor = 0.0
-    for i, chunk in enumerate(split_tts_text(text, localize.max_tts_chars(model))):
+    for i, chunk in enumerate(split_tts_clauses(text, min(localize.max_tts_chars(model), MAX_SYNC_CHARS))):
         clip = tmp / f"{i:04d}.wav"
         clip.write_bytes(
             providers.tts.synthesize(chunk, str(spec["voice"]), rate, model=model, lang=lang, emotion=spec["emotion"])
@@ -170,10 +184,14 @@ def _synthesize(asset: Asset, providers: localize.Providers, tmp: Path, dst: Pat
         if seconds <= 0:
             raise localize.LocalizeError(f"第 {i + 1} 段合成结果为空")
         clips.append((clip, cursor, 1.0))
+        segments.append({"text": chunk, "start": round(cursor, 3), "end": round(cursor + seconds, 3)})
         cursor += seconds
     dst.parent.mkdir(parents=True, exist_ok=True)
     localize._run(localize.mix_args(clips, cursor, dst), "拼接")  # noqa: SLF001 - same ffmpeg wrapper as the dub mix
-    return float(ffprobe.probe_audio(dst)["duration"])
+    duration = float(ffprobe.probe_audio(dst)["duration"])
+    if duration <= 0 or len(segments) != len(clips):
+        raise localize.LocalizeError("朗读拼接结果不完整")
+    return duration, segments
 
 
 def _fail(db: Session, asset_id: str, message: str) -> None:
@@ -194,8 +212,9 @@ def run_tts(db: Session, asset_id: str, providers: localize.Providers | None = N
     tmp = tts_tmp_dir(asset_id)
     dst = storage.asset_path(asset_id, localize.VOICE_EXT)
     try:
-        duration = _synthesize(asset, providers or localize.make_providers(settings), tmp, dst)
+        duration, segments = _synthesize(asset, providers or localize.make_providers(settings), tmp, dst)
         asset.duration = duration
+        asset.derived_from = {**dict(asset.derived_from or {}), "segments": segments}
         asset.has_audio = True
         asset.status = ASSET_READY
         asset.error = None

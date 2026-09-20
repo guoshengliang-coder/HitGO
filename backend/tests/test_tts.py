@@ -72,19 +72,19 @@ def test_run_tts_synthesizes_each_chunk_and_marks_the_asset_ready(db, stub_ffmpe
     db.expire_all()
     asset = db.get(Asset, ASSET)
     assert asset.status == "ready" and asset.error is None
-    assert asset.duration == pytest.approx(1.25)  # FakeTts: 1.5 s spoken at 1.2×
-    assert fake.calls == [("第一句。第二句！第三句？", "longxiaochun_v3", 1.2)]  # one chunk, rate honoured (cosyvoice)
-    assert fake.models == ["cosyvoice-v3-flash"]
+    assert asset.duration == pytest.approx(3.75)  # three clauses × (1.5 s / 1.2×)
+    assert [c[0] for c in fake.calls] == ["第一句。", "第二句！", "第三句？"]
+    assert all(c[2] == 1.2 for c in fake.calls)  # rate honoured (cosyvoice)
+    assert fake.models == ["cosyvoice-v3-flash"] * 3
     argv = stub_ffmpeg[-1]
     assert argv[-1] == str(storage.asset_path(ASSET, "m4a")) and "aac" in argv and "192k" in argv
     assert not tts.tts_tmp_dir(ASSET).exists()
 
 
-def test_run_tts_places_chunks_end_to_end(db, stub_ffmpeg, monkeypatch):
+def test_run_tts_places_chunks_end_to_end(db, stub_ffmpeg):
     _add_asset(db, "第一句。第二句！", derived_from={"lang": "es", "voice": "Cherry", "speech_rate": 1.5})
     fake = localize.FakeTts(seconds=2.0)
     providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake)
-    monkeypatch.setattr(tts, "split_tts_text", lambda text, max_chars=500: ["第一句。", "第二句！"])
     tts.run_tts(db, ASSET, providers)
     db.expire_all()
     asset = db.get(Asset, ASSET)
@@ -149,12 +149,24 @@ def test_run_tts_really_produces_an_m4a_of_the_summed_length(db, monkeypatch):
     asset = db.get(Asset, ASSET)
     assert asset.status == "ready", asset.error
     assert asset.duration == pytest.approx(2.0, abs=0.2)
+    assert [s["text"] for s in asset.derived_from["segments"]] == ["第一句。", "第二句！"]
+    assert asset.derived_from["segments"][-1]["end"] == pytest.approx(2.0, abs=0.2)
     dst = storage.asset_path(ASSET, "m4a")
     assert dst.is_file() and ffprobe.probe_audio(dst)["codec"] == "aac"
     assert not tts.tts_tmp_dir(ASSET).exists()
 
 
 # --- voice preview (HIG-42) ---------------------------------------------------------
+
+
+def test_split_tts_text_uses_clause_boundaries_and_caps_unpunctuated_runs():
+    assert tts.split_tts_clauses("把这99元的现金红包，放进账户，然后继续使用。") == [
+        "把这99元的现金红包，",
+        "放进账户，",
+        "然后继续使用。",
+    ]
+    chunks = tts.split_tts_clauses("没标点" * 100, tts.MAX_SYNC_CHARS)
+    assert len(chunks) > 1 and all(len(chunk) <= tts.MAX_SYNC_CHARS for chunk in chunks)
 
 
 def test_preview_wav_synthesizes_once_and_caches_per_voice_and_model():
@@ -190,22 +202,22 @@ def test_preview_wav_fails_loudly_and_leaves_no_file():
 # --- MiniMax 音色的朗读与试听（HIG-59）---------------------------------------------
 
 
-def test_chunk_limit_follows_the_voices_model(db, stub_ffmpeg):
-    """一段 1500 字的文案：MiniMax 音色一次调用就够，cosyvoice 音色要切成 3 段。"""
+def test_read_aloud_uses_clause_sized_calls_for_every_voice_model(db, stub_ffmpeg):
+    """模型上限再大也按短句调用，避免一个成功响应里只有半句有效音频。"""
     text = "。".join(["满二十减五" * 20] * 15)
     assert 1000 < len(text) < 2000
 
     _add_asset(db, text=text, derived_from={"lang": "th", "voice": "Thai_female_1_sample1"})
     fake = localize.FakeTts(seconds=1.0)
     tts.run_tts(db, ASSET, localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=fake))
-    assert len(fake.calls) == 1 and fake.models == [settings.minimax_tts_model]
+    assert len(fake.calls) == 15 and fake.models == [settings.minimax_tts_model] * 15
 
     db.query(Asset).delete()
     db.commit()
     _add_asset(db, text=text)
     slow = localize.FakeTts(seconds=1.0)
     tts.run_tts(db, ASSET, localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=slow))
-    assert len(slow.calls) == 4 and all(len(c[0]) <= 500 for c in slow.calls)
+    assert len(slow.calls) == 15 and all(len(c[0]) <= tts.MAX_SYNC_CHARS for c in slow.calls)
 
 
 def test_reading_an_emotion_variant_sends_the_vendor_id_and_the_emotion(db, stub_ffmpeg):

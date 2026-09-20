@@ -78,8 +78,17 @@ def start_screen_text(video_id: str, body: ScreenTextIn, db: Session = Depends(g
     if body.erase and not erase_service.erase_enabled(settings):
         raise HTTPException(503, "当前部署没有可用的擦除供应商")
 
-    previous = copy.deepcopy(video.screen_text) if video.screen_text else None
-    st = copy.deepcopy(previous) if previous else {}
+    st, expired = screentext.expire_stale_state(
+        video.screen_text,
+        task_timeout_seconds=settings.screentext_timeout_seconds,
+        erase_timeout_seconds=settings.erase_max_wait_seconds,
+    )
+    st = copy.deepcopy(st) if st else {}
+    if expired:
+        video.screen_text = copy.deepcopy(st)
+        video.updated_at = utcnow()
+        db.commit()
+    previous = copy.deepcopy(st) if st else None
     detect = st.get("detect") or {}
     versions = dict(st.get("versions") or {})
     if _active(detect):

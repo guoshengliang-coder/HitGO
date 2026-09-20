@@ -15,7 +15,7 @@ from app.routers._common import enqueue_or_503, get_video_or_404, jobs_for_video
 from app.schemas import EditSpec, RenameIn, SeparateIn, SpecIn, VideoOut
 from app.serializers import video_out
 from app.services import storage
-from app.services.sequence import active_jobs_referencing, referencing_videos, resolve_sequence
+from app.services.sequence import active_jobs_referencing, referencing_videos, resolve_sequence, resolve_video_tracks
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
@@ -58,6 +58,7 @@ def put_spec(video_id: str, body: SpecIn, db: Session = Depends(get_db)):
         try:
             spec = EditSpec.model_validate(body.edit_spec, context={} if body.edit_spec.get("sequence") else {"duration": video.duration})
             resolve_sequence(db, video, spec)
+            resolve_video_tracks(db, video, spec)
         except ValidationError as exc:
             errors = format_validation_errors(exc)
             summary = "；".join(f"{e['field']}: {e['message']}" for e in errors[:5])

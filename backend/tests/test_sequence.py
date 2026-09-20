@@ -14,7 +14,7 @@ from app.models import Video
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
 from app.services.filtergraph import AudioSource, build_render_command
-from app.services.sequence import ClipSource
+from app.services.sequence import ClipSource, VideoTrackSource
 
 
 def sequence_spec(*clips):
@@ -57,6 +57,51 @@ def test_sequence_schema_rejects_invalid_clips():
         {**clip("fast", "v1", end=1), "speed": 1.25, "localize_cue": 0},
     ))
     assert timed.sequence.duration == pytest.approx(2.05)
+
+
+def test_upper_video_track_schema_and_filtergraph():
+    data = sequence_spec(clip("main", "owner", end=4))
+    data["video_tracks"] = [{
+        "id": "vt2", "clips": [
+            {"id": "upper", "video_id": "other", "start": 1, "in": 0.5, "out": 2.5, "speed": 2},
+        ],
+    }]
+    spec = EditSpec.model_validate(data)
+    source = VideoTrackSource("vt2", spec.video_tracks[0].clips[0], "/other.mp4", 1920, 1080, 25)
+    main = ClipSource(spec.sequence.clips[0], "/owner.mp4", 128, 128, 25, False)
+    plan = build_render_command(
+        spec, {"video_id": "owner", "duration": 4, "width": 128, "height": 128, "fps": 25, "has_audio": False},
+        {}, spec.outputs[0], source_path="/owner.mp4", output_path="/out.mp4",
+        sequence_sources=[main], video_track_sources=[source],
+    )
+    assert plan.argv.count("/other.mp4") == 1
+    assert "trim=start=0.5:end=2.5,setpts=(PTS-STARTPTS)/2+1/TB" in plan.filter_complex
+    assert "overlay=0:0:eof_action=pass:enable='between(t,1,2)'" in plan.filter_complex
+
+    data["video_tracks"][0]["clips"].append({"id": "overlap", "video_id": "other", "start": 1.5, "in": 0, "out": 1})
+    with pytest.raises(ValueError, match="不能重叠"):
+        EditSpec.model_validate(data)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+def test_real_upper_video_track_render(tmp_path):
+    owner, upper, output = (tmp_path / name for name in ("owner.mp4", "upper.mp4", "upper-result.mp4"))
+    for path, color, seconds in ((owner, "red", 3), (upper, "blue", 1)):
+        subprocess.run([
+            "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c={color}:s=128x96:r=25:d={seconds}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+        ], check=True, capture_output=True)
+    data = sequence_spec(clip("main", "owner", end=3))
+    data["video_tracks"] = [{"id": "vt2", "clips": [{"id": "upper", "video_id": "other", "start": 1, "in": 0, "out": 1}]}]
+    spec = EditSpec.model_validate(data)
+    plan = build_render_command(
+        spec, {"video_id": "owner", "duration": 3, "width": 128, "height": 96, "fps": 25, "has_audio": False},
+        {}, spec.outputs[0], source_path=str(owner), output_path=str(output),
+        sequence_sources=[ClipSource(spec.sequence.clips[0], str(owner), 128, 96, 25, False)],
+        video_track_sources=[VideoTrackSource("vt2", spec.video_tracks[0].clips[0], str(upper), 128, 96, 25)],
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=30)
+    assert ffprobe.probe(output)["duration"] == pytest.approx(3, abs=0.12)
 
 
 def test_composed_trim_persists_and_renders_beyond_owner_duration(client, ready_video):

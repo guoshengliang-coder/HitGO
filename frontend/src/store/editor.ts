@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, VideoTrackClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
@@ -32,7 +32,7 @@ import { mergeSubtitles, nextSubtitle } from '../lib/subtitleMerge';
 import { isSubtitleTextLayer, MIN_SPLIT, splitLayerAt, splitLayerBlockedReason, splitTextLayerByText, textCutForSplit } from '../lib/layerSplit';
 import { charRatio } from '../lib/cueSplit';
 import { windowRange } from '../lib/stickerMedia';
-import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, posterDuration, resolveScroll, voiceTrack } from '../lib/poster';
+import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, posterDuration, resolveScroll, scrollCuesForSegments, voiceTrack } from '../lib/poster';
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
@@ -45,6 +45,7 @@ import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
 import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 import { hasPreparingVideos, nextCurrentAfterDelete } from '../lib/videos';
+import { addVideoTrack, removeVideoTrackClips, splitVideoTrackClip, updateVideoTrackClip } from '../lib/videoTracks';
 
 export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -63,7 +64,7 @@ export interface LastApply {
 }
 
 export type EditorTheme = 'light' | 'dark';
-type TimelineClipboard = { clips: SequenceClip[]; layers: Layer[]; tracks: AudioTrack[]; origin: number };
+type TimelineClipboard = { clips: SequenceClip[]; videoClips: VideoTrackClip[]; layers: Layer[]; tracks: AudioTrack[]; origin: number };
 let timelineClipboard: TimelineClipboard | null = null;
 const THEME_KEY = 'hitgo.editorTheme';
 /** 整站默认深色（与剪映一致）；只有用户明确切到浅色才记住浅色。 */
@@ -217,6 +218,9 @@ export interface EditorState {
   pasteTimelineItems: () => void;
   deleteTimelineItems: () => void;
   shiftTimelineItems: (seconds: number) => void;
+  addUpperVideo: (videoId: string, start: number) => string | null;
+  updateUpperVideo: (clipId: string, patch: Partial<VideoTrackClip>) => void;
+  splitUpperVideo: (clipId: string) => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
@@ -843,11 +847,12 @@ export const useEditor = create<EditorState>((set, get) => {
       const layer = (get().specs[videoId]?.layers ?? []).find((l): l is TextLayer => l.type === 'text' && !!l.scroll && !l.hidden);
       if (layer) {
         const speed = fitScrollSpeed(layer, asset.duration!);
-        if (Math.abs(speed - resolveScroll(layer.scroll).speed) > 1e-6) {
+        const cues = scrollCuesForSegments(asset.derived_from?.segments);
+        if (cues || Math.abs(speed - resolveScroll(layer.scroll).speed) > 1e-6) {
           get().updateSpec(
             (spec) => {
               const l = spec.layers.find((x) => x.id === layer.id);
-              if (l?.type === 'text' && l.scroll) l.scroll = { ...l.scroll, speed };
+              if (l?.type === 'text' && l.scroll) l.scroll = { ...l.scroll, speed, ...(cues ? { cues } : {}) };
             },
             { videoId },
           );
@@ -1253,13 +1258,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const keys = new Set(get().timelineSelection);
       const windows = spec.sequence ? clipWindows(spec.sequence).filter((w) => keys.has(`clip:${w.clip.id}`)) : [];
       const clips = windows.map((w) => structuredClone(w.clip));
+      const videoClips = (spec.video_tracks ?? []).flatMap((track) => track.clips).filter((clip) => keys.has(`vclip:${clip.id}`)).map((clip) => structuredClone(clip));
       const layers = spec.layers.filter((layer) => keys.has(`layer:${layer.id}`)).map((layer) => structuredClone(layer));
       const tracks = (spec.audio?.tracks ?? []).filter((track) => keys.has(`track:${track.id}`)).map((track) => structuredClone(track));
-      if (!clips.length && !layers.length && !tracks.length) return;
-      const starts = [...windows.map((w) => w.start), ...layers.map((l) => l.t === 'all' ? 0 : l.t[0]), ...tracks.map((t) => t.t === 'all' ? 0 : t.t[0])];
-      timelineClipboard = { clips, layers, tracks, origin: Math.min(...starts) };
+      if (!clips.length && !videoClips.length && !layers.length && !tracks.length) return;
+      const starts = [...windows.map((w) => w.start), ...videoClips.map((clip) => clip.start), ...layers.map((l) => l.t === 'all' ? 0 : l.t[0]), ...tracks.map((t) => t.t === 'all' ? 0 : t.t[0])];
+      timelineClipboard = { clips, videoClips, layers, tracks, origin: Math.min(...starts) };
       set({ hasTimelineClipboard: true });
-      get().setToast(`已复制 ${clips.length + layers.length + tracks.length} 个片段`);
+      get().setToast(`已复制 ${clips.length + videoClips.length + layers.length + tracks.length} 个片段`);
     },
     pasteTimelineItems: () => {
       const source = timelineClipboard;
@@ -1276,6 +1282,10 @@ export const useEditor = create<EditorState>((set, get) => {
         const inserted = pasteClipSet(next, source.clips, index < 0 ? windows.length : index);
         next = inserted.spec;
         ids.push(...inserted.ids.map((id) => `clip:${id}`));
+      }
+      for (const clip of source.videoClips) {
+        (next.video_tracks ??= []).push({ id: `vt_${crypto.randomUUID()}`, clips: [{ ...structuredClone(clip), id: `vc_${crypto.randomUUID()}`, start: Math.max(0, at + clip.start - source.origin) }] });
+        ids.push(`vclip:${next.video_tracks[next.video_tracks.length - 1].clips[0].id}`);
       }
       const timed = [...source.layers, ...source.tracks].map((item) => item.t).filter((window): window is [number, number] => window !== 'all');
       const timelineEnd = next.sequence ? postTrimDuration(sequenceDuration(next.sequence), next.trim.remove) : selectPostDuration(get());
@@ -1305,8 +1315,25 @@ export const useEditor = create<EditorState>((set, get) => {
       if (!clipResult) { get().setToast('主轨必须保留至少一个片段'); return; }
       clipResult.layers = clipResult.layers.filter((layer) => !keys.has(`layer:${layer.id}`) || layer.locked);
       if (clipResult.audio) clipResult.audio.tracks = clipResult.audio.tracks.filter((track) => !keys.has(`track:${track.id}`) || track.locked);
+      removeVideoTrackClips(clipResult, new Set([...keys].filter((key) => key.startsWith('vclip:')).map((key) => key.slice(6))));
       get().replaceSpec(video.id, clipResult, { history: true });
       get().selectTimelineItems([]);
+    },
+    addUpperVideo: (videoId, start) => {
+      const source = get().videos.find((item) => item.id === videoId && item.status === 'ready');
+      const owner = get().currentVideo();
+      if (!source || !owner) return null;
+      let id: string | null = null;
+      get().updateSpec((spec) => { id = addVideoTrack(spec, videoId, source.duration, start).id; });
+      if (id) get().selectTimelineItems([`vclip:${id}`]);
+      return id;
+    },
+    updateUpperVideo: (clipId, patch) => get().updateSpec((spec) => { updateVideoTrackClip(spec, clipId, patch); }),
+    splitUpperVideo: (clipId) => {
+      let id: string | null = null;
+      get().updateSpec((spec) => { id = splitVideoTrackClip(spec, clipId, Math.max(0, selectPostTime(get()))); });
+      if (id) get().selectTimelineItems([`vclip:${id}`]);
+      else get().setToast('播放头需位于所选上层视频片段内部');
     },
     shiftTimelineItems: (seconds) => {
       const video = get().currentVideo();
@@ -1578,9 +1605,19 @@ export const useEditor = create<EditorState>((set, get) => {
       const track = spec?.audio?.tracks.find((t) => t.id === id);
       if (!spec || !track) return;
       const next = clampSpeed(speed);
-      const media = get().assets.find((a) => a.id === track.asset_id)?.duration ?? 0;
+      if (track.locked) return;
+      const asset = get().assets.find((a) => a.id === track.asset_id);
+      const media = asset?.duration ?? 0;
       const postDuration = outputDuration(selectSourceDuration(get()), spec.trim);
-      get().updateAudioTrack(id, { speed: next, t: windowForSpeed(track, postDuration, media, next) });
+      get().updateSpec((draft) => {
+        const target = draft.audio?.tracks.find((t) => t.id === id);
+        if (!target) return;
+        Object.assign(target, { speed: next, t: windowForSpeed(track, postDuration, media, next) });
+        if (asset?.derived_from?.stem !== 'tts') return;
+        const layer = draft.layers.find((l): l is TextLayer => l.type === 'text' && !!l.scroll && !l.hidden);
+        const cues = scrollCuesForSegments(asset.derived_from.segments, next);
+        if (layer?.scroll && cues) layer.scroll = { ...layer.scroll, cues };
+      });
     },
     updateAudioTrack: (id, patch, history = true) => {
       const current = get().currentSpec()?.audio?.tracks.find((t) => t.id === id);
@@ -1962,6 +1999,7 @@ export const useEditor = create<EditorState>((set, get) => {
         (l) => {
           if (l.type !== 'text') return;
           l.scroll = { ...resolveScroll(l.scroll), ...patch };
+          if ('speed' in patch && !('cues' in patch)) delete l.scroll.cues;
           if (patch.box) {
             // 折行宽和图层宽都跟框宽走：PNG 正好填满框，后端也按 min(width, box.w) 缩放
             l.style = { ...l.style, wrap_width: patch.box.w };
