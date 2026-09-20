@@ -190,12 +190,48 @@ def make_provider(video: Video | None = None, cfg: Settings | None = None) -> Er
         return FakeErase()
     if cfg.erase_provider == "local":
         return LocalErase(width=int(video.width or 0) if video else 0, height=int(video.height or 0) if video else 0, ffmpeg_bin=cfg.ffmpeg_bin)
+    if cfg.erase_provider == "ghostcut":
+        from app.services.erase_ghostcut import GhostCutErase  # noqa: PLC0415  (keep the import local, as with every vendor)
+
+        if not cfg.ghostcut_app_key or not cfg.ghostcut_app_secret:
+            raise EraseError("擦除供应商设为 ghostcut，但没有配置 GHOSTCUT_APP_KEY / GHOSTCUT_APP_SECRET")
+        return GhostCutErase(
+            base_url=cfg.ghostcut_base_url,
+            app_key=cfg.ghostcut_app_key,
+            app_secret=cfg.ghostcut_app_secret,
+            resolution=cfg.ghostcut_resolution,
+            video_id=video.id if video else "",
+            video_height=int(video.height or 0) if video else 0,
+        )
     raise EraseError(f"不认识的擦除供应商：{cfg.erase_provider}")
 
 
 def erase_enabled(cfg: Settings | None = None) -> bool:
+    """Whether this deployment can erase at all (the editor greys the button out otherwise)."""
     cfg = cfg or settings
-    return cfg.erase_provider in ("fake", "local") or bool(cfg.dashscope_api_key)
+    if cfg.erase_provider in ("fake", "local"):
+        return True  # neither needs credentials or the network
+    if cfg.erase_provider == "ghostcut":
+        return bool(cfg.ghostcut_app_key and cfg.ghostcut_app_secret)
+    return False
+
+
+def public_source_url(video: Video, cfg: Settings | None = None) -> str:
+    """Absolute /media URL of the source plus a read ticket, for a vendor to fetch itself.
+
+    Same mechanism the voice cloning uses (HIG-58): ``/media`` stays behind the access-code
+    gate and only this one path is opened, only for as long as the ticket lasts.
+    """
+    from app.services import media_ticket  # noqa: PLC0415
+
+    cfg = cfg or settings
+    path = storage.source_path(video.batch_id, video.id, video.source_ext)
+    rel = storage.media_url(path)[len(storage.MEDIA_PREFIX) + 1 :]
+    url = cfg.public_base_url + storage.media_url(path)
+    if not cfg.access_code:
+        return url  # nothing gating /media; a ticket would be noise
+    ticket = media_ticket.issue(rel, cfg.access_code, cfg.media_ticket_ttl_seconds)
+    return f"{url}?{media_ticket.PARAM}={ticket}"
 
 
 def regions_for(detect: dict[str, Any] | None, scope: dict[str, Any] | None) -> list[EraseRegion]:
@@ -244,8 +280,10 @@ def start(db: Session, video: Video, st: dict[str, Any], scope: dict[str, Any] |
         screentext.save(db, video, st, erase=True)
         return
     source = storage.source_path(video.batch_id, video.id, video.source_ext)
+    # Cloud providers pull the file themselves; the local one reads it off disk and ignores this.
+    public_url = None if provider.name in ("fake", "local") else public_source_url(video, cfg)
     try:
-        task_id = provider.submit(source, None, regions, float(video.duration or 0.0))
+        task_id = provider.submit(source, public_url, regions, float(video.duration or 0.0))
     except Exception as exc:  # noqa: BLE001  a vendor SDK may raise anything at all
         st["erase"] = screentext.stamp(dict(st.get("erase") or {}), status=ST_FAILED, error=f"提交擦除失败：{exc}", provider=provider.name)
         screentext.save(db, video, st, erase=True)

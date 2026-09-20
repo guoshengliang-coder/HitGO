@@ -1050,6 +1050,11 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    `clean.mp4` 并生成 `clean_proxy.mp4` / `clean_poster.jpg`；还没完成且未到 `deadline` 就带 `countdown`
    （`ERASE_POLL_INTERVAL_SECONDS`，缺省 10 秒）再入队一次；到期或云端报错写 `failed` + 中文原因。
    `ERASE_PROVIDER = local` 时不出网，直接用 ffmpeg `delogo` 按区域出片——本地开发、smoke 和云厂商不可用时的降级都靠它。
+   `ERASE_PROVIDER = ghostcut`（鬼手剪辑）时走云端无痕修复：源片用 `/media` 的只读票据签成公网地址交给对方自己拉取
+   （与 HIG-58 声音复刻同一套机制，不为它在访问码网关上开洞），对方在我们标出的矩形里做自己的 OCR 并把文字修掉。
+   标记用的是该家的 `remove_only_ocr` 模式——**只擦这个框里被识别到的文字**，所以每个框都按全片长度标记：
+   文字不在的时段框里没有文字可擦，画面不动，因此也不必依赖该家未公开的时间单位。
+   成片分辨率跟随源片高度选档（480p / 720p / 1080p），避免把 1080p 素材压成 720p。
 5. 任何一步失败只影响自己那一段：识别失败不影响已有的译文和无字版，擦除失败不影响识别结果，改语言那条链路完全不受牵连。
    临时目录 `tmp/{video_id}.st/` 结束即删；`SCREENTEXT_PROVIDER = fake` / `ERASE_PROVIDER = fake` 时用假实现，只给测试。
 

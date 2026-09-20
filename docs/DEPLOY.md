@@ -164,7 +164,10 @@ Cloudflare 免费版单次上传上限 100 MB（超过直接回 413，到不了�
 | `SCREENTEXT_MAX_BLOCKS` | `40` | 一条视频最多保留多少个画面文字块，超出按面积取前 N |
 | `SCREENTEXT_MAX_SECONDS` | `180` | 画面文字处理接受的最长源视频（秒），更长直接 400 |
 | `SCREENTEXT_TIMEOUT_SECONDS` | `1200` | 一次画面文字任务的软超时（秒）；超时后进行中的部分记 failed |
-| `ERASE_PROVIDER` | `local` | 擦除供应商。`local` = ffmpeg `delogo`，**不出网、不需要任何凭据**，从区域边缘插值补画面：比遮盖层好，比真正的无痕修复差，是这个功能的保底档，也是云厂商不可用时的降级。`fake` 只用于测试。接入云厂商后填它的标识并配上它的 key |
+| `ERASE_PROVIDER` | `local` | 擦除供应商：`local` \| `ghostcut` \| `fake`。`local` = ffmpeg `delogo`，**不出网、不需要任何凭据**，从区域边缘插值补画面：比遮盖层好，比真正的无痕修复差，是这个功能的保底档，也是云厂商不可用时的降级。`fake` 只用于测试 |
+| `GHOSTCUT_APP_KEY` / `GHOSTCUT_APP_SECRET` | 空 | 鬼手剪辑（GhostCut）凭据，`ERASE_PROVIDER=ghostcut` 时必填；两者缺一，`GET /api/screen-text/options` 的 `erase_enabled` 为 false，前端禁用擦除入口。**不要提交到 git**。对方会用签了只读票据的 `/media` 地址自己拉源片，所以 `PUBLIC_BASE_URL` 必须是它能访问到的公网地址，票据有效期由 `MEDIA_TICKET_TTL_SECONDS`（缺省 1800 秒）决定 |
+| `GHOSTCUT_BASE_URL` | `https://api.zhaoli.com` | 鬼手剪辑网关地址 |
+| `GHOSTCUT_RESOLUTION` | 空 | 成片分辨率档位；留空 = 跟随源片高度自动选（480p / 720p / 1080p）。**不要随手写死**：该家按这个档位重新编码，写死会把 1080p 素材压成 720p |
 | `ERASE_POLL_INTERVAL_SECONDS` / `ERASE_MAX_WAIT_SECONDS` | `10` / `1800` | 云端擦除是异步任务：每隔多少秒轮询一次、总共等多久。超过就判 failed，防止云端任务丢了把条目永远卡在「处理中」 |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |

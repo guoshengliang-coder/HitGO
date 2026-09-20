@@ -66,6 +66,11 @@ class Settings:
     erase_provider: str
     erase_poll_interval_seconds: int
     erase_max_wait_seconds: int
+    # GhostCut (鬼手剪辑) credentials; only read when erase_provider is "ghostcut".
+    ghostcut_base_url: str
+    ghostcut_app_key: str
+    ghostcut_app_secret: str
+    ghostcut_resolution: str
 
     @property
     def is_dev(self) -> bool:
@@ -133,6 +138,11 @@ def load_settings() -> Settings:
         erase_provider=_env("ERASE_PROVIDER", "local").strip().lower(),
         erase_poll_interval_seconds=int(_env("ERASE_POLL_INTERVAL_SECONDS", "10")),
         erase_max_wait_seconds=int(_env("ERASE_MAX_WAIT_SECONDS", "1800")),
+        ghostcut_base_url=_env("GHOSTCUT_BASE_URL", "https://api.zhaoli.com").strip().rstrip("/"),
+        ghostcut_app_key=_env("GHOSTCUT_APP_KEY", "").strip(),
+        ghostcut_app_secret=_env("GHOSTCUT_APP_SECRET", "").strip(),
+        # Empty = follow the source video's height; set it only to force a tier.
+        ghostcut_resolution=_env("GHOSTCUT_RESOLUTION", "").strip(),
     )
 
 
