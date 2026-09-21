@@ -453,6 +453,15 @@ def test_put_spec_keeps_localize_markers_on_layers_and_tracks(client, ready_vide
     assert got["audio"]["tracks"][0]["origin"] == "localize" and got["audio"]["tracks"][0]["lang"] == "ko"
 
 
+def test_put_spec_keeps_the_auto_subtitle_marker(client, ready_video):
+    """HIG-84: ``auto`` on an origin=subtitle layer is a frontend marker, stored and returned raw."""
+    spec = valid_spec()
+    spec["layers"][1].update(origin="subtitle", auto=True)
+    assert put_spec(client, VIDEO, spec).status_code == 200
+    got = client.get(f"/api/videos/{VIDEO}").json()["edit_spec"]["layers"][1]
+    assert got["origin"] == "subtitle" and got["auto"] is True
+
+
 def test_put_spec_keeps_hidden_flags_and_export_ticks(client, ready_video):
     """HIG-33 hidden / source_hidden and HIG-35 outputs[].export survive the round trip."""
     spec = valid_spec()

@@ -323,6 +323,8 @@ export const api = {
 
   // 改语言（契约 §3）：一个任务 = 听写（模板未就绪时）+ 逐语言 翻译 → 合成 → 混音；都是 202 + Video，之后轮询 GET /api/videos/{id}
   localizeVideo: (id: string, body: LocalizeIn) => request<Video>('POST', `/api/videos/${id}/localize`, body),
+  /** 只听写（HIG-84 自动识别字幕）：模板已 done 且不 retranscribe 时直接返回、不排队。 */
+  transcribeVideo: (id: string, body: { source_lang?: string; retranscribe?: boolean }) => request<Video>('POST', `/api/videos/${id}/localize/transcribe`, body),
   /** 修正模板文本，不触发任务；所有版本会被标为 stale。 */
   updateTranscript: (id: string, body: { cues: { i: number; text: string }[]; source_lang?: string }) => request<Video>('PUT', `/api/videos/${id}/localize/transcript`, body),
   /** 改译文 / 换音色后只重跑 TTS + 混音。use_source_voice 缺省沿用该版本上次的选择（HIG-58）。 */

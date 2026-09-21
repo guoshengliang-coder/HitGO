@@ -571,6 +571,8 @@ export interface LayerBase {
   name?: string;
   /** 可选（HIG-62）：编辑器禁止修改该图层；worker 忽略。 */
   locked?: boolean;
+  /** 可选（HIG-84）：origin='subtitle' 且是「自动识别字幕」生成的；再识别时按它整批替换，手动 / .srt 字幕不带。 */
+  auto?: boolean;
 }
 
 /** 视频贴纸短于显示时段时的行为；静态图忽略。 */

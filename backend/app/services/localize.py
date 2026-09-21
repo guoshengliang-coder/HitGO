@@ -1509,6 +1509,7 @@ def run_localization(db: Session, video_id: str, providers: Providers | None = N
     """Full lifecycle for what ``localization.pending`` asks: transcript if needed, then each language.
 
     Every version ends done or failed on its own; the transcript failing fails all of them.
+    ``pending.transcribe_only`` (HIG-84 自动识别字幕) stops after the transcript.
     A Celery soft time limit fails whatever is still running / queued with a readable reason.
     """
     video = db.get(Video, video_id)
@@ -1520,6 +1521,8 @@ def run_localization(db: Session, video_id: str, providers: Providers | None = N
     pending = dict(loc.get("pending") or {})
     # Every queued version is ours: a task queued behind this one finds nothing left to do.
     langs = [lang for lang, v in loc["versions"].items() if lang in LANGS and (v or {}).get("status") == LOC_QUEUED]
+    if pending.get("transcribe_only"):
+        langs = []  # HIG-84: ASR only; versions keep whatever state they are in (just marked stale)
     retranscribe = bool(pending.get("retranscribe"))
     needs_transcript = retranscribe or transcript_status(loc) != LOC_DONE
     tmp = storage.localize_tmp_dir(video_id)

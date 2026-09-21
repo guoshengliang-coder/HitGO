@@ -1200,6 +1200,13 @@ class LocalizeIn(BaseModel):
         return out
 
 
+class TranscribeIn(BaseModel):
+    """Transcribe only, no target language (HIG-84 自动识别字幕)."""
+
+    source_lang: str = Field(default="auto", min_length=2, max_length=8)
+    retranscribe: bool = False
+
+
 class TranscriptCueIn(BaseModel):
     i: int = Field(ge=0)
     text: str = Field(min_length=1, max_length=2000)

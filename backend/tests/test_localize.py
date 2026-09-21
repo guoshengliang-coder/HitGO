@@ -1295,3 +1295,86 @@ def test_minimax_is_off_unless_the_env_asks_for_it(monkeypatch):
     assert load_settings().minimax_tts_model == ""
     monkeypatch.setenv("MINIMAX_TTS_MODEL", "MiniMax/speech-02-turbo")
     assert load_settings().minimax_tts_model == "MiniMax/speech-02-turbo"
+
+
+# --- transcribe only (HIG-84 自动识别字幕) --------------------------------------------
+
+
+def test_transcribe_endpoint_queues_asr_only(client, ready_video, enqueued, db):
+    r = client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={})
+    assert r.status_code == 202, r.text
+    loc = r.json()["localization"]
+    assert "pending" not in loc and loc["source_lang"] == "auto" and loc["versions"] == {}
+    assert loc["transcript"]["status"] == "queued" and loc["transcript"]["cues"] == []
+    assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
+    assert current_loc(db)["pending"] == {"target_langs": [], "retranscribe": True, "transcribe_only": True}
+    # a transcription already running → 409, and nothing more is queued
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"retranscribe": True}).status_code == 409
+    assert client.post("/api/videos/v_missing/localize/transcribe", json={}).status_code == 404
+    assert len(enqueued.calls) == 1
+
+
+def test_transcribe_endpoint_returns_a_done_transcript_without_queueing(client, ready_video, enqueued, db):
+    _done_state(db)
+    r = client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"source_lang": "zh"})
+    assert r.status_code == 202
+    assert r.json()["localization"]["transcript"]["cues"] == DONE_TRANSCRIPT["cues"]
+    assert enqueued.calls == [] and "pending" not in current_loc(db) and current_loc(db)["source_lang"] == "en"
+    # retranscribe asks ASR again; the old cues stay until the worker replaces them
+    r = client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"source_lang": "zh", "retranscribe": True})
+    assert r.status_code == 202
+    loc = r.json()["localization"]
+    assert loc["transcript"]["status"] == "queued" and len(loc["transcript"]["cues"]) == 2 and loc["source_lang"] == "zh"
+    assert loc["versions"]["ko"]["status"] == "done"
+    assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
+
+
+def test_transcribe_endpoint_is_409_while_a_version_runs_and_validates(client, ready_video, enqueued, db, monkeypatch):
+    _done_state(db)
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="running"))
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"retranscribe": True}).status_code == 409
+    patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="done"))
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"source_lang": "th"}).status_code == 400
+    monkeypatch.setattr(settings, "localize_provider", "dashscope")
+    monkeypatch.setattr(settings, "dashscope_api_key", "")
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={}).status_code == 503
+    monkeypatch.setattr(settings, "localize_provider", "fake")
+
+    def down(task, *args):
+        raise worker.QueueUnavailable("redis down")
+
+    monkeypatch.setattr(worker, "enqueue", down)
+    before = current_loc(db)
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"retranscribe": True}).status_code == 503
+    assert current_loc(db) == before  # put back
+    video = db.get(Video, VIDEO)
+    video.has_audio = False
+    db.commit()
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={}).status_code == 400
+    assert enqueued.calls == []
+
+
+def test_transcribe_only_run_writes_the_transcript_and_builds_no_version(client, ready_video, enqueued, db, no_ffmpeg):
+    _done_state(db)
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={"source_lang": "en", "retranscribe": True}).status_code == 202
+    providers = localize.fake_providers()
+    providers.asr.sentences = [{"begin_time": 0, "end_time": 1000, "text": "New take."}]
+    db.expire_all()  # the endpoint wrote through another session
+    localize.run_localization(db, VIDEO, providers)
+    loc = current_loc(db)
+    assert "pending" not in loc
+    assert loc["transcript"]["status"] == "done" and loc["transcript"]["cues"] == [{"i": 0, "start": 0.0, "end": 1.0, "text": "New take."}]
+    assert len(providers.asr.calls) == 1 and providers.mt.calls == [] and providers.tts.calls == []
+    assert set(loc["versions"]) == {"ko", "ja"}  # untouched apart from being stale now
+    assert loc["versions"]["ko"]["status"] == "done" and loc["versions"]["ko"]["stale"] is True
+    assert loc["versions"]["ko"]["voice_asset_id"] == "a_ko" and loc["versions"]["ja"]["status"] == "failed"
+    assert db.query(Asset).count() == 1 and len(no_ffmpeg) == 1  # extract only, no mix
+
+
+def test_transcribe_only_run_on_a_fresh_video(client, ready_video, enqueued, db, no_ffmpeg):
+    assert client.post(f"/api/videos/{VIDEO}/localize/transcribe", json={}).status_code == 202
+    db.expire_all()
+    localize.run_localization(db, VIDEO, localize.fake_providers())
+    loc = current_loc(db)
+    assert loc["transcript"]["status"] == "done" and loc["transcript"]["cues"] == DONE_TRANSCRIPT["cues"]
+    assert loc["versions"] == {} and loc["source_lang"] == "en" and "pending" not in loc
