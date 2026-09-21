@@ -844,8 +844,11 @@ def run_screen_text(db: Session, video_id: str, providers: Providers | None = No
         raise
     except Exception as exc:
         # Last line of defence (a database hiccup, a bug): never leave a part queued/running,
-        # which would disable the retry button until the stale check fires.
+        # which would disable the retry button until the stale check fires. Roll back first: after
+        # a database error the session is stuck in the failed transaction and every save() below
+        # (and the one in ``finally``) would raise PendingRollbackError instead of writing.
         log.exception("screen text %s failed", video_id)
+        db.rollback()
         note = f"画面文字处理出错：{exc}"
         if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
             st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=note)

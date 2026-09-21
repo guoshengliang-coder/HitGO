@@ -1492,7 +1492,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const spec = get().currentSpec();
       if (!video || !spec) return;
       const { spec: next, groups } = buildCompoundGroups(spec, { duration: video.duration });
-      if (!groups) { get().setToast('没有可以按画面组合的片段（每组至少要有画面片段和一段对应的文字 / 贴纸 / 音频）'); return; }
+      if (!groups) {
+        // buildCompoundGroups 已经清掉上一次的自动组（cg_）：即使这次一组都编不出来也要写回，
+        // 否则旧组还留在 spec 上，点一个成员仍会连带选中早已不对应的组员。
+        const cleared = JSON.stringify(next) !== JSON.stringify(spec);
+        if (cleared) get().replaceSpec(video.id, next, { history: true });
+        get().setToast(`没有可以按画面组合的片段（每组至少要有画面片段和一段对应的文字 / 贴纸 / 音频）${cleared ? '；已清除上一次的自动组合' : ''}`);
+        return;
+      }
       get().replaceSpec(video.id, next, { history: true });
       get().setToast(`已按画面组合成 ${groups} 组；点任一成员即选中整组，⌥ 点单选，⇧⌘G 解组`);
     },
@@ -1549,6 +1556,12 @@ export const useEditor = create<EditorState>((set, get) => {
           if (!keys.has(`track:${track.id}`) || track.locked) continue;
           const old = spec.audio?.tracks.find((item) => item.id === track.id);
           if (old) track.t = movedWindow(old.t, track.t);
+        }
+        // 选中的上层视频片段跟主轨片段走同样的位移，否则复合组 / ⌘A 一拖就散开
+        const upperKeys = new Set([...keys].filter((key) => key.startsWith('vclip:')));
+        if (upperKeys.size && Math.abs(delta) >= 0.001) {
+          const shifted = shiftTimedItems(next, upperKeys, delta, selectPostDuration(get()));
+          if (shifted) next = shifted;
         }
       } else {
         // 图层、音轨与上层视频片段一起平移（HIG-85：复合组里常有上层片段）
