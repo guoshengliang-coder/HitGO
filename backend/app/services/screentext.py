@@ -24,6 +24,7 @@ ffmpeg, Pillow-heavy fixtures or a network.
 from __future__ import annotations
 
 import copy
+import difflib
 import hashlib
 import logging
 import re
@@ -32,6 +33,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
@@ -71,7 +73,8 @@ def expire_stale_state(
 
     Celery's task limits only start once a worker has received the task.  A broker delivery
     lost before that point used to leave the JSON state active forever, which also disabled the
-    retry button.  The projection is pure so serializers can show the repaired state without
+    retry button.  A running detection refreshes ``updated_at`` after every frame, so for it
+    the limit measures "no progress for that long", not total run time.  The projection is pure so serializers can show the repaired state without
     writing during a GET; the POST endpoint persists the same projection before retrying.
     """
     if not state:
@@ -91,11 +94,13 @@ def expire_stale_state(
         )
         if not stale:
             return
-        part.update(
-            status=ST_FAILED,
-            error=f"{label}超过 {seconds} 秒仍未完成，已中止；请手动重试",
-            updated_at=iso(current),
-        )
+        if part.get("status") == ST_QUEUED:
+            # Never picked up: the single worker slot was busy (render, preprocessing, dubbing)
+            # or the worker is down. Saying "识别超时" here sent people hunting in the wrong place.
+            error = f"{label}排队超过 {seconds} 秒仍未开始，已中止；后台可能正忙于其它任务，请稍后手动重试"
+        else:
+            error = f"{label}超过 {seconds} 秒没有进展，已中止；请手动重试"
+        part.update(status=ST_FAILED, error=error, updated_at=iso(current))
         changed = True
 
     expire(out.get("detect"), task_timeout_seconds, "画面文字识别")
@@ -200,7 +205,9 @@ def make_providers(cfg: Settings | None = None) -> Providers:
     from app.services import dashscope_providers  # noqa: PLC0415  (keep the vendor SDK lazy)
 
     return Providers(
-        detect=dashscope_providers.DashScopeScreenText(api_key=cfg.dashscope_api_key, model=cfg.screentext_model),
+        detect=dashscope_providers.DashScopeScreenText(
+            api_key=cfg.dashscope_api_key, model=cfg.screentext_model, timeout_seconds=cfg.screentext_call_timeout_seconds
+        ),
         mt=loc.mt,
     )
 
@@ -221,6 +228,20 @@ def sample_args(src: Path, out_dir: Path, fps: float, max_frames: int, ffmpeg_bi
         "-q:v", "3",
         str(out_dir / f"{FRAME_PREFIX}%04d.jpg"),
     ]  # fmt: skip
+
+
+def effective_fps(fps: float, max_frames: int, duration: float | None) -> float:
+    """Sampling rate that spreads ``max_frames`` over the whole video.
+
+    At the configured 0.5 fps and 20 frames only the first 40 s were ever looked at, so text in
+    the second half of a longer creative was silently never detected. Longer videos now get a
+    sparser grid instead of a truncated one.
+    """
+    if fps <= 0:
+        return fps
+    if duration and max_frames > 0 and duration * fps > max_frames:
+        return max(int(max_frames / duration * 10000) / 10000, 0.0001)
+    return fps
 
 
 def frame_time(index: int, fps: float) -> float:
@@ -268,11 +289,28 @@ def dedupe_frames(paths: list[Path], threshold: float = 4.0) -> list[Path]:
 _WS = re.compile(r"\s+")
 
 MIN_IOU = 0.5  # same text at the same place across frames = one block
-MOVE_TOLERANCE = 0.02  # centre drift (relative) above which we call a block "moving"
+# Centre drift (relative) above which we call a block "moving". Was 0.02, but on real frames the
+# vision model's box for a static line wobbles by a few percent from frame to frame (its width
+# estimate especially), which flagged persistent captions as moving and dropped them.
+MOVE_TOLERANCE = 0.05
+# Two readings of the same line count as one text above this similarity: the model misreads a
+# character or two differently on each frame ("具体奖励" / "员受助"), and exact matching split one
+# persistent disclaimer into a dozen blocks.
+SIMILAR_TEXT = 0.8
 
 
 def normalize_text(text: str) -> str:
     return _WS.sub(" ", (text or "").strip())
+
+
+def similar_text(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 8:
+        # Short lines differ in exactly the character that matters: "1元" / "2元", or two
+        # consecutive subtitles "第一句" / "第二句". OCR noise only needs absorbing on long lines.
+        return False
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= SIMILAR_TEXT
 
 
 def block_id(text: str) -> str:
@@ -286,6 +324,22 @@ def block_id(text: str) -> str:
     return "s" + hashlib.sha1(normalize_text(text).encode("utf-8")).hexdigest()[:8]
 
 
+def same_place(a: Box, b: Box, min_iou: float = MIN_IOU) -> bool:
+    """Is ``b`` the same on-screen line as ``a``, one frame later?
+
+    IoU alone is too strict for thin lines: a disclaimer 3 % of the frame tall whose box the model
+    places 2 % higher on the next frame drops below 0.5 IoU and splits into a new block every few
+    seconds. So a line also matches when it mostly overlaps horizontally and its vertical centre
+    moved by less than a line height.
+    """
+    if iou(a, b) >= min_iou:
+        return True
+    overlap = min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"])
+    if overlap <= 0 or overlap < 0.6 * min(a["w"], b["w"]):
+        return False
+    return abs(center(a)[1] - center(b)[1]) <= max(a["h"], b["h"])
+
+
 @dataclass
 class _Track:
     text: str
@@ -294,6 +348,12 @@ class _Track:
     # How far each sighting's evidence reaches (see ``cluster_blocks``).
     ends: list[float]
     confidences: list[float]
+    readings: list[str] = field(default_factory=list)
+
+    def best_text(self) -> str:
+        """The most frequent reading (the longest on a tie): OCR noise is rarely repeated."""
+        counts = Counter(self.readings or [self.text])
+        return max(counts, key=lambda t: (counts[t], len(t)))
 
     def moved(self) -> float:
         if len(self.boxes) < 2:
@@ -332,18 +392,19 @@ def cluster_blocks(
             b = clamp_box(item.box)
             match: int | None = None
             for i, track in enumerate(tracks):
-                if i in seen or track.text != text:
+                if i in seen or not similar_text(track.text, text):
                     continue
                 # Only continue a track whose coverage runs up to this frame.
                 if open_tracks.get(i) is None or time - open_tracks[i] > step * 1.5 + 1e-6:
                     continue
-                if iou(track.boxes[-1], b) >= min_iou:
+                if same_place(track.boxes[-1], b, min_iou):
                     match = i
                     break
             if match is None:
-                tracks.append(_Track(text=text, boxes=[b], times=[time], ends=[until], confidences=[item.confidence or 0.0]))
+                tracks.append(_Track(text=text, boxes=[b], times=[time], ends=[until], confidences=[item.confidence or 0.0], readings=[text]))
                 match = len(tracks) - 1
             else:
+                tracks[match].readings.append(text)
                 tracks[match].boxes.append(b)
                 tracks[match].times.append(time)
                 tracks[match].ends.append(until)
@@ -361,13 +422,14 @@ def cluster_blocks(
         # Ids come from the text, not from position. Re-detecting shifts what is found and in
         # which order, and positional ids would silently re-attach an old translation — and the
         # geometry someone adjusted by hand — to a different piece of text.
-        base = block_id(track.text)
+        text = track.best_text()
+        base = block_id(text)
         used[base] += 1
         block_key = base if used[base] == 1 else f"{base}-{used[base]}"
         out.append(
             {
                 "id": block_key,
-                "text": track.text,
+                "text": text,
                 "box": union_box(track.boxes),
                 "t": [round(start, 3), round(end, 3)],
                 "lines": 1,
@@ -393,22 +455,54 @@ def is_subtitle_like(b: dict[str, Any]) -> bool:
     return cy >= BAND_MIN_Y and abs(cx - 0.5) <= BAND_CENTER_TOLERANCE
 
 
+# Lines whose centres sit this close vertically are one row; a subtitle band is at most this tall.
+BAND_ROW_TOLERANCE = 0.035
+BAND_MAX_HEIGHT = 0.16
+
+
 def split_band(blocks: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Pull the burnt-in subtitle blocks out into a single band.
 
-    It takes at least two of them before we call it a subtitle band: one line low in the frame
-    is just as likely to be a slogan, and blurring a slogan for the whole clip is worse than
-    leaving it to the user.
+    Hard subtitles are many *different* lines shown one after another on the *same row*. So the
+    subtitle-like blocks are grouped into rows by vertical centre and the row carrying the most
+    distinct lines wins; an adjacent row joins it only when it too carries several lines (a
+    two-line subtitle). Taking the union of everything low and centred instead — what this did
+    before — swallowed pop-ups and buttons and produced a band covering a third of the frame,
+    which erasure then blurred for the whole clip.
+
+    It takes at least two lines on the row before we call it a subtitle band: one line low in
+    the frame is just as likely to be a slogan, and blurring a slogan for the whole clip is worse
+    than leaving it to the user.
     """
-    subtitle_like = [b for b in blocks if is_subtitle_like(b) and not b["moving"]]
-    if len(subtitle_like) < 2:
+    candidates = sorted((b for b in blocks if is_subtitle_like(b) and not b["moving"]), key=lambda b: center(b["box"])[1])
+    rows: list[list[dict[str, Any]]] = []
+    for b in candidates:
+        cy = center(b["box"])[1]
+        if rows and abs(cy - sum(center(x["box"])[1] for x in rows[-1]) / len(rows[-1])) <= BAND_ROW_TOLERANCE:
+            rows[-1].append(b)
+        else:
+            rows.append([b])
+    rows = [r for r in rows if len({x["text"] for x in r}) >= 2]
+    if not rows:
+        return None, blocks
+    best = max(rows, key=lambda r: (len({x["text"] for x in r}), center(r[0]["box"])[1]))
+    members = list(best)
+    for row in rows:
+        if row is best:
+            continue
+        trial = union_box([x["box"] for x in members + row])
+        if trial["h"] <= BAND_MAX_HEIGHT:
+            members += row
+    band_box = union_box([x["box"] for x in members])
+    if band_box["h"] > BAND_MAX_HEIGHT:
         return None, blocks
     band = {
-        "box": union_box([b["box"] for b in subtitle_like]),
+        "box": band_box,
         "style": {},
-        "confidence": round(min(1.0, len(subtitle_like) / 4), 2),
+        "confidence": round(min(1.0, len(members) / 4), 2),
     }
-    return band, [b for b in blocks if b not in subtitle_like]
+    ids = {id(x) for x in members}
+    return band, [b for b in blocks if id(b) not in ids]
 
 
 def limit_blocks(blocks: list[dict[str, Any]], max_blocks: int) -> list[dict[str, Any]]:
@@ -530,21 +624,26 @@ def detect_blocks(
     tmp: Path,
     hint_lang: str | None,
     cfg: Settings | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Sample, de-duplicate, recognise, cluster and style — the whole ``detect`` part."""
+    """Sample, de-duplicate, recognise, cluster and style — the whole ``detect`` part.
+
+    ``on_progress(done, total)`` is called before the first vision call and after each one, so
+    the caller can show "识别中 N/M 帧" and keep the state's heartbeat fresh.
+    """
     cfg = cfg or settings
     src = storage.source_path(video.batch_id, video.id, video.source_ext)
     if not src.exists():
         raise ScreenTextError("找不到源视频文件")
     tmp.mkdir(parents=True, exist_ok=True)
-    _run(sample_args(src, tmp, cfg.screentext_sample_fps, cfg.screentext_max_frames), "抽帧")
+    fps = effective_fps(cfg.screentext_sample_fps, cfg.screentext_max_frames, video.duration)
+    _run(sample_args(src, tmp, fps, cfg.screentext_max_frames), "抽帧")
     frames = frame_paths(tmp)
     if not frames:
         raise ScreenTextError("没有抽到任何画面帧")
     index_of = {path: i for i, path in enumerate(frames)}
     kept = dedupe_frames(frames)
-    step = 1.0 / cfg.screentext_sample_fps if cfg.screentext_sample_fps > 0 else 1.0
-    fps = cfg.screentext_sample_fps
+    step = 1.0 / fps if fps > 0 else 1.0
 
     # Each kept frame stands in for the identical frames that followed it, so it carries their
     # time as well — otherwise a title held on a static shot would come back one interval long.
@@ -555,9 +654,13 @@ def detect_blocks(
     ]
 
     per_frame: list[tuple[float, float, list[DetectedText]]] = []
+    if on_progress:
+        on_progress(0, len(kept))
     for k, path in enumerate(kept):
         seen_at = frame_time(kept_indices[k], fps)
         per_frame.append((seen_at, max(seen_at, covers_until[k]), provider.detect(path, hint_lang)))
+        if on_progress:
+            on_progress(k + 1, len(kept))
 
     blocks = cluster_blocks(per_frame, step)
     band, blocks = split_band(blocks)
@@ -647,6 +750,16 @@ def translate_blocks(
     return [{"id": b["id"], "translated": t.strip()} for b, t in zip(blocks, translated, strict=False)]
 
 
+def detection_failure_reason(exc: BaseException) -> str:
+    """The Chinese reason shown on ``detect.error``, with a hint for the causes we have seen."""
+    reason = str(exc) or exc.__class__.__name__
+    if not isinstance(exc, ScreenTextError) and "画面文字识别" not in reason:
+        reason = f"画面文字识别失败：{reason}"
+    if "403" in reason or "Access denied" in reason or "not activated" in reason.lower():
+        reason += "（当前百炼账号没有这个视觉模型的权限：请检查 SCREENTEXT_MODEL，或在百炼控制台开通该模型）"
+    return reason
+
+
 def run_screen_text(db: Session, video_id: str, providers: Providers | None = None, cfg: Settings | None = None) -> None:
     """The ``hitgo.screen_text_video`` task body: detect, translate, and hand erasure off."""
     from celery.exceptions import SoftTimeLimitExceeded  # noqa: PLC0415
@@ -670,15 +783,31 @@ def run_screen_text(db: Session, video_id: str, providers: Providers | None = No
 
     try:
         if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
-            st["detect"] = stamp(dict(st.get("detect") or {}), status=ST_RUNNING, error=None)
+            st["detect"] = stamp(dict(st.get("detect") or {}), status=ST_RUNNING, error=None, progress=None)
             save(db, video, st, detect=True)
+
+            def progress(done: int, total: int) -> None:
+                # Also the heartbeat: expire_stale_state measures time since the last update.
+                st["detect"] = stamp(dict(st["detect"]), progress={"done": done, "total": total})
+                save(db, video, st, detect=True)
+
             try:
-                st["detect"] = detect_blocks(video, providers.detect, tmp, source_lang if source_lang != "auto" else None, cfg)
-            except ScreenTextError as exc:
-                st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=str(exc))
+                st["detect"] = detect_blocks(
+                    video, providers.detect, tmp, source_lang if source_lang != "auto" else None, cfg, on_progress=progress
+                )
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001  every failure must end in a visible reason
+                # The vision call raises LocalizeError (e.g. 403 for a model the account may not
+                # use). Only ScreenTextError used to be caught here, so anything else escaped,
+                # left detect "running" and surfaced 20 minutes later as a bare timeout.
+                reason = detection_failure_reason(exc)
+                if not isinstance(exc, ScreenTextError):
+                    log.warning("screen text detection failed for %s", video_id, exc_info=True)
+                st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=reason)
                 save(db, video, st, detect=True)
                 _fail_versions(db, video, st, langs, "画面文字识别失败，无法翻译")
-                _fail_erase(db, video, st, str(exc))
+                _fail_erase(db, video, st, reason)
                 return
             save(db, video, st, detect=True, stale_all=True)
 
@@ -707,6 +836,20 @@ def run_screen_text(db: Session, video_id: str, providers: Providers | None = No
     except SoftTimeLimitExceeded:
         log.error("screen text %s exceeded %ss", video_id, cfg.screentext_timeout_seconds)
         note = f"画面文字处理超过 {cfg.screentext_timeout_seconds} 秒仍未完成，已中止"
+        if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
+            st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=note)
+            save(db, video, st, detect=True)
+        _fail_versions(db, video, st, [l for l in langs if st["versions"].get(l, {}).get("status") in (ST_QUEUED, ST_RUNNING)], note)
+        _fail_erase(db, video, st, note)
+        raise
+    except Exception as exc:
+        # Last line of defence (a database hiccup, a bug): never leave a part queued/running,
+        # which would disable the retry button until the stale check fires. Roll back first: after
+        # a database error the session is stuck in the failed transaction and every save() below
+        # (and the one in ``finally``) would raise PendingRollbackError instead of writing.
+        log.exception("screen text %s failed", video_id)
+        db.rollback()
+        note = f"画面文字处理出错：{exc}"
         if (st.get("detect") or {}).get("status") in (ST_QUEUED, ST_RUNNING):
             st["detect"] = stamp(dict(st["detect"]), status=ST_FAILED, error=note)
             save(db, video, st, detect=True)

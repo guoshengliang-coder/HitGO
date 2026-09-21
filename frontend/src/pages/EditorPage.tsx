@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useParams } from 'react-router-dom';
-import { useEditor } from '../store/editor';
+import { selectPostDuration, useEditor } from '../store/editor';
 import { player } from '../lib/player';
 import { layerTypeForStep } from '../lib/steps';
-import { frameDuration, postToSource, sourceToPost } from '../lib/time';
+import { frameDuration, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../lib/time';
 import { SOURCE_TRACK_ID } from '../lib/audioTracks';
-import { clipWindows } from '../lib/sequence';
-import { adjacentCutPoint, cutPoints, nextShuttleRate, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
+import { clipWindows, sequenceDuration } from '../lib/sequence';
+import { adjacentCutPoint, cutPoints, nextShuttleRate, splitTarget, TIMELINE_ZOOM_EVENT } from '../lib/transportKeys';
+import { normalizeSplits } from '../lib/segments';
 import { TopBar } from '../components/editor/TopBar';
 import { VideoList } from '../components/editor/VideoList';
 import { Stage } from '../components/editor/Stage';
@@ -50,14 +51,29 @@ function cutPointTarget(dir: 1 | -1): number | null {
     const edges = clipWindows(spec.sequence).flatMap((w) => [w.start, w.end]);
     return adjacentCutPoint(cutPoints(duration, remove, [...edges, ...layerEdges]), now, dir);
   }
+  // 主轨分割点（HIG-85）也是剪辑点
+  const splits = normalizeSplits(spec?.trim.splits, duration, remove);
   if (s.step === 'trim') {
-    const pts = cutPoints(duration, remove, [...(s.inPoint !== null ? [s.inPoint] : []), ...layerEdges.map((x) => postToSource(x, remove))]);
+    const pts = cutPoints(duration, remove, [...(s.inPoint !== null ? [s.inPoint] : []), ...splits, ...layerEdges.map((x) => postToSource(x, remove))]);
     return adjacentCutPoint(pts, now, dir);
   }
   const postDuration = sourceToPost(duration, remove);
-  const pts = cutPoints(postDuration, [], [...remove.flat().map((x) => sourceToPost(x, remove)), ...layerEdges]);
+  const pts = cutPoints(postDuration, [], [...[...remove.flat(), ...splits].map((x) => sourceToPost(x, remove)), ...layerEdges]);
   const t = adjacentCutPoint(pts, sourceToPost(now, remove), dir);
   return t === null ? null : postToSource(t, remove);
+}
+
+/** End 键：跳到成片最后（循环补足时落在最后一遍的末尾，HIG-50）。 */
+function seekToEnd() {
+  const s = useEditor.getState();
+  const spec = s.currentSpec();
+  const duration = spec?.sequence ? sequenceDuration(spec.sequence) : s.videos.find((v) => v.id === s.currentVideoId)?.duration ?? player.duration ?? 0;
+  if (spec?.sequence) { player.seek(duration); return; }
+  const remove = spec?.trim.remove ?? [];
+  const postLen = postTrimDuration(duration, remove);
+  const total = selectPostDuration(s);
+  const { lap, rem } = splitPostTime(total, postLen, lapsFor(total, postLen));
+  player.seek(postToSource(rem, remove), lap);
 }
 
 function toggleFullscreen() {
@@ -152,15 +168,27 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
         }
         return;
       }
-      case 'KeyB':
-        // 剪映的分割 ⌘B：音频模块拆音轨（HIG-25），图层模块拆图层（HIG-79）
-        if (s.step === 'audio' && s.selectedTrackId && s.selectedTrackId !== SOURCE_TRACK_ID) {
-          e.preventDefault();
-          s.splitAudioTrack(s.selectedTrackId);
-        } else if (layerStep && s.selectedLayerId) {
-          e.preventDefault();
-          s.splitLayer(s.selectedLayerId);
-        }
+      case 'KeyB': {
+        // 剪映的分割 ⌘B：选中的视频片段 / 主轨（HIG-85），音频模块拆音轨（HIG-25），图层模块拆图层（HIG-79）
+        const target = splitTarget({ selection: s.timelineSelection, step: s.step, selectedTrackId: s.selectedTrackId, sourceTrackId: SOURCE_TRACK_ID, selectedLayerId: s.selectedLayerId, layerStep });
+        if (target) e.preventDefault();
+        if (target === 'videos') s.splitSelectedVideos();
+        else if (target === 'main') s.splitMainAtPlayhead();
+        else if (target === 'track' && s.selectedTrackId) s.splitAudioTrack(s.selectedTrackId);
+        else if (target === 'layer' && s.selectedLayerId) s.splitLayer(s.selectedLayerId);
+        return;
+      }
+      case 'KeyG':
+        // 复合片段（HIG-85）：⌘G 组合所选（没选东西时一键复合），⇧⌘G 解除组合
+        e.preventDefault();
+        if (e.shiftKey) s.ungroupSelection();
+        else if (s.timelineSelection.length) s.groupSelection();
+        else s.compoundAll();
+        return;
+      case 'KeyA':
+        // ⌘A 全选时间线片段（HIG-85）；输入框里的 ⌘A 在最前面的 isTyping 就放行给浏览器了
+        e.preventDefault();
+        s.selectAllTimeline();
         return;
       case 'KeyD':
         if (layerStep && s.selectedLayerId) {
@@ -325,6 +353,14 @@ function handleKey(e: KeyboardEvent, actions: KeyActions) {
     case 'KeyN':
       e.preventDefault();
       s.toggleSnap();
+      return;
+    case 'Home':
+      e.preventDefault();
+      player.seek(0, 0);
+      return;
+    case 'End':
+      e.preventDefault();
+      seekToEnd();
       return;
     case 'Slash':
       if (e.shiftKey) {

@@ -10,7 +10,7 @@ import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
 import { langLabel } from '../../lib/localize';
-import { cleanReady, mergedBlocks, screenTextActive, STYLE_CONFIDENCE_HINT } from '../../lib/screentext';
+import { cleanReady, detectStatusText, mergedBlocks, screenTextActive, STYLE_CONFIDENCE_HINT } from '../../lib/screentext';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
 import type { LocalizeOptions, ScreenBlock, ScreenText, Video } from '../../types';
@@ -82,7 +82,7 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
   const blocks = mergedBlocks(detect, lang ? screen?.versions?.[lang] : null);
   const usable = blocks.filter((b) => !b.moving && b.enabled !== false);
 
-  const summary = !detect ? '未识别' : detect.status !== 'done' ? statusText(detect.status, detect.error) : `${blocks.length} 处画面文字${detect.subtitle_band ? ' · 含硬字幕带' : ''}`;
+  const summary = !detect ? '未识别' : detect.status !== 'done' ? detectStatusText(detect) : `${blocks.length} 处画面文字${detect.subtitle_band ? ' · 含硬字幕带' : ''}`;
 
   return (
     <Section id="localize.screenText" title="画面文字" bodyClass="stack" summary={<span>{summary}</span>} help={DETECT_HELP} defaultOpen={false}>
@@ -90,7 +90,7 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
       {tooLong && <div className="error-text">源视频超过 {stOptions?.max_seconds} 秒，暂不支持画面文字处理。</div>}
 
       <Field label="识别">
-        <span className="small">{statusText(detect?.status, detect?.error)}</span>
+        <span className="small">{detectStatusText(detect)}</span>
         {detected && !!detect?.frames && <span className="small muted">送去识别 {detect.frames} 帧</span>}
         <button className="btn" disabled={blocked || tooLong} onClick={() => runScreenText({ detect: true, target_langs: langs })} title={detected ? '重新识别一遍；已有的译文会被标为需要重译' : '识别画面上烧死的文字'}>
           {detected ? '重新识别' : '识别画面文字'}

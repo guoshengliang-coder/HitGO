@@ -496,24 +496,63 @@ def make_providers(cfg: Settings) -> Providers:
 # --- on-screen text detection (HIG-38) --------------------------------------
 
 SCREEN_TEXT_PROMPT = (
-    "识别这张视频截图里所有烧录在画面上的文字（硬字幕、标题、角标、价格牌、提示语）。"
+    "识别这张视频截图里后期叠加在画面上的文字（硬字幕、标题、角标、价格牌、提示语、免责声明）。"
+    "画面里本来就存在的实物文字（招牌、路牌、商品包装、衣服印字、手机界面里的内容）不要输出。"
     "只输出一个 JSON 数组，不要任何解释或 Markdown 代码块。"
-    "数组每一项形如 {\"text\": \"文字内容\", \"box\": [x, y, w, h], \"confidence\": 0.9}，"
-    "其中 x, y 是文字外接矩形左上角相对整幅图宽高的比例，w, h 是宽高的比例，四个数都在 0 到 1 之间。"
-    "同一行文字合并成一项，不同行分开。"
-    "画面里本来就存在的实物文字（招牌、商品包装、衣服印字）不要输出，只输出后期叠加上去的文字。"
-    "没有任何叠加文字时输出 []。"
+    "每一项形如 {\"text\": \"文字内容\", \"bbox_2d\": [x1, y1, x2, y2]}，"
+    "bbox_2d 是这行文字外接矩形的左上角和右下角坐标。"
+    "同一行文字合并成一项，不同行分开。没有叠加文字时输出 []。"
 )
 
 _JSON_ARRAY = re.compile(r"\[.*\]", re.S)
 
+# How a model family writes ``bbox_2d`` (verified on real ad frames, 2026-09-21):
+#   qwen3-vl-*          corners on a 0–1000 grid, independent of the image size
+#   qwen-vl-* (2.5)     corners in pixels of the image as the model saw it
+# The original prompt asked for unit [x, y, w, h]; no model honoured that consistently (qwen-vl-max
+# returned unit corners, qwen-vl-plus mixed pixel corners with pixel sizes), so every box that came
+# back was misread. Asking for the grounding format the models were trained on fixes the source.
+SCALE_GRID = "grid1000"
+SCALE_PIXELS = "pixels"
+SCALE_UNIT = "unit"
 
-def parse_detection_json(raw: str) -> list[DetectedText]:
+
+def bbox_scale_for(model: str) -> str:
+    return SCALE_GRID if model.lower().startswith("qwen3") else SCALE_PIXELS
+
+
+def _unit_box(values: list[float], scale: str, size: tuple[int, int] | None) -> dict[str, float] | None:
+    """``bbox_2d`` corners → a unit ``{x, y, w, h}``; ``None`` when it cannot be placed."""
+    x1, y1, x2, y2 = values
+    if scale == SCALE_PIXELS and max(values) <= 1.0:
+        scale = SCALE_UNIT  # a 2.5 model that followed an older prompt and answered in ratios
+    if scale == SCALE_GRID:
+        sx = sy = 1000.0
+    elif scale == SCALE_PIXELS:
+        if not size or size[0] <= 0 or size[1] <= 0:
+            return None
+        sx, sy = float(size[0]), float(size[1])
+    else:
+        sx = sy = 1.0
+    x1, x2 = sorted((x1 / sx, x2 / sx))
+    y1, y2 = sorted((y1 / sy, y2 / sy))
+    x1, y1 = max(x1, 0.0), max(y1, 0.0)
+    x2, y2 = min(x2, 1.0), min(y2, 1.0)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
+
+
+def parse_detection_json(raw: str, *, scale: str = SCALE_GRID, size: tuple[int, int] | None = None) -> list[DetectedText]:
     """Model output → detections; anything malformed is skipped rather than failing the frame.
 
     The model occasionally wraps the array in prose or a code fence even when told not to, so
     the first bracketed span is extracted before parsing. A frame that yields nothing usable is
     simply a frame without text — one bad frame must not sink a whole detection run.
+
+    ``bbox_2d`` corners are converted with ``scale`` (see ``bbox_scale_for``); ``size`` is the
+    frame's pixel size, needed only for pixel coordinates. The legacy ``box`` key keeps its unit
+    ``[x, y, w, h]`` meaning.
     """
     text = (raw or "").strip()
     if not text:
@@ -533,22 +572,41 @@ def parse_detection_json(raw: str) -> list[DetectedText]:
         if not isinstance(item, dict):
             continue
         content = str(item.get("text") or "").strip()
-        raw_box = item.get("box")
+        corners = item.get("bbox_2d")
+        legacy = item.get("box")
+        raw_box = corners if corners is not None else legacy
         if not content or not isinstance(raw_box, (list, tuple)) or len(raw_box) != 4:
             continue
         try:
-            x, y, w, h = (float(v) for v in raw_box)
+            values = [float(v) for v in raw_box]
         except (TypeError, ValueError):
             continue
-        if w <= 0 or h <= 0:
-            continue
+        if corners is not None:
+            unit = _unit_box(values, scale, size)
+            if unit is None:
+                continue
+        else:
+            x, y, w, h = values
+            if w <= 0 or h <= 0:
+                continue
+            unit = {"x": x, "y": y, "w": w, "h": h}
         confidence = item.get("confidence")
         try:
             score = float(confidence) if confidence is not None else None
         except (TypeError, ValueError):
             score = None
-        out.append(DetectedText(text=content, box={"x": x, "y": y, "w": w, "h": h}, confidence=score))
+        out.append(DetectedText(text=content, box=unit, confidence=score))
     return out
+
+
+def _image_size(path: Path) -> tuple[int, int] | None:
+    try:
+        from PIL import Image  # noqa: PLC0415
+
+        with Image.open(path) as im:
+            return im.size
+    except Exception:  # noqa: BLE001  only pixel-coordinate models need it; they skip the frame
+        return None
 
 
 def _message_text(result: Any) -> str:
@@ -578,6 +636,7 @@ class DashScopeScreenText:
 
     api_key: str
     model: str
+    timeout_seconds: int = 60
 
     def detect(self, frame: Path, hint_lang: str | None) -> list[DetectedText]:
         dashscope = _import_dashscope()
@@ -590,7 +649,11 @@ class DashScopeScreenText:
         messages = [{"role": "user", "content": [{"image": frame.resolve().as_uri()}, {"text": prompt}]}]
 
         def call() -> Any:
-            return MultiModalConversation.call(api_key=self.api_key, model=self.model, messages=messages)
+            # Without a request timeout the SDK waits 300 s per attempt, so one stalled frame
+            # (× three retries) could eat the whole task budget.
+            return MultiModalConversation.call(
+                api_key=self.api_key, model=self.model, messages=messages, request_timeout=self.timeout_seconds
+            )
 
         result = _with_retry("画面文字识别", call)
-        return parse_detection_json(_message_text(result))
+        return parse_detection_json(_message_text(result), scale=bbox_scale_for(self.model), size=_image_size(frame))

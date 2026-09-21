@@ -531,6 +531,11 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-ghost-clip { position: absolute; top: 3px; bottom: 3px; z-index: 6; pointer-events: none; border: 1px dashed var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--ink); padding: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
 .tl-clip-hit { position: absolute; top: 1px; height: 14px; z-index: 3; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); cursor: grab; }
 .tl-clip-hit.selected { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 35%, transparent); }
+/* HIG-85：主轨片段（非拼接视频）沿用拼接片段的外观，只是不能拖；分割点是一条细实线 */
+.tl-seg-hit { cursor: pointer; }
+.tl-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
+/* HIG-85：复合组标记——片段左缘一道同组同色的细条 */
+.tl-group-mark { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 1; pointer-events: none; background: var(--group-color); }
 .timeline { position: relative; }
 .timeline.marquee-mode .tl-row .body { cursor: crosshair; }
 .tl-label-resizer { position: absolute; top: 0; bottom: 0; left: calc(var(--tl-label-w) - 4px); width: 8px; z-index: 25; cursor: col-resize; touch-action: none; }

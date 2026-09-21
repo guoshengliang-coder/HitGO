@@ -134,6 +134,28 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
   });
 });
 
+describe('复合片段（HIG-85 审查修正）', () => {
+  it('一键复合编不出新组时也清掉上一次留下的自动组', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字幕'), t: [1, 2], group: 'cg_seg0' }] });
+    useEditor.getState().compoundAll();
+    expect(useEditor.getState().currentSpec()!.layers[0].group).toBeUndefined();
+  });
+
+  it('拼接视频里拖动含主轨片段的选择时，上层视频片段一起挪', () => {
+    const spec: EditSpec = {
+      ...emptySpec(),
+      sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] },
+      video_tracks: [{ id: 'vt1', clips: [{ id: 'vc1', video_id: 'v1', start: 1, in: 0, out: 2 }] }],
+    };
+    useEditor.getState().replaceSpec('v1', spec);
+    useEditor.getState().selectTimelineItems(['clip:c1', 'vclip:vc1'], 'replace', { expand: false });
+    useEditor.getState().shiftTimelineItems(8);
+    const moved = useEditor.getState().currentSpec()!;
+    expect(moved.sequence!.clips.map((clip) => clip.id)).toEqual(['c2', 'c1']);
+    expect(moved.video_tracks![0].clips[0].start).toBeCloseTo(6);
+  });
+});
+
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();

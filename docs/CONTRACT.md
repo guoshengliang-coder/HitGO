@@ -130,6 +130,13 @@
 时改用所选音频素材作为唯一 BGM，不要求源视频分离。分离或新 BGM 不可用时不得自动套用成缺少背景音乐的版本。
 听写修正、只翻译和逐版本重新配音仍由高级操作提供。
 
+**自动识别字幕**（HIG-84）复用同一份模板：`POST /api/videos/{id}/localize/transcribe` 只听写、不选目标语言，排队时在
+服务端内部的待办 `localization.pending`（不下发，`VideoOut` 里没有）上记 `transcribe_only: true`，worker 看到它就只跑听写，
+不翻译 / 合成 / 混音，也不动各版本的状态（重新听写照旧把已有版本标 `stale = true`）。编辑器拿到 `transcript.cues`
+后在前端拆句、换算到成片时间轴，生成 `origin = "subtitle"`、`auto = true` 的字幕文字图层（见 §2）。已知限制：
+上层视频轨（`video_tracks`，V2/V3）的声音不听写；可识别的语言即 options 的 `source_langs`
+（zh / en / ja / ko / yue / de / fr / ru）。
+
 **译文字幕的配音时段 `dub_start` / `dub_duration`**（可选，缺省缺席，HIG-36 / HIG-73）：这句译文合成出来的配音
 实际占用的起点与时长。旧版或 `adaptive_timing = false` 时位于**源时间轴**（含为塞进原句时段而做的变速）；
 `adaptive_timing = true` 时位于**适配后的成片时间轴**，同一句另带 `video_speed`，编辑器按模板 cue 的源区间切片并以该速度
@@ -162,8 +169,10 @@
   "detect": {                        // 识别：整条视频做一次
     "status": "done",                // queued | running | done | failed
     "error": null,                   // failed 时的中文原因
-    "model": "qwen-vl-max-latest",   // 实际用的视觉模型，排查用
+    "model": "qwen3-vl-plus",        // 实际用的视觉模型，排查用
     "frames": 12,                    // 这次真正送去识别的帧数（对账费用用）
+    "progress": null,                // 可选（HIG-86）：running 时为 {"done": 3, "total": 12}，每送完一帧刷新一次（也是心跳）；
+                                     // 抽帧阶段与其它状态为 null / 缺席
     "subtitle_band": {               // 可选，缺省 null：硬字幕带，整条视频共用一个矩形
       "box": { "x": 0.06, "y": 0.80, "w": 0.88, "h": 0.075 },   // 相对源画面宽 / 高，0–1
       "style": { "font_size": 0.048, "color": "#FFFFFF", "stroke_color": "#000000",
@@ -409,6 +418,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `video_id` 只可引用同批次已就绪的视频/图片源片，保存与渲染时校验；引用中的源视频不可单独删除。
 - `hidden` 同时影响预览和导出；`locked` 只限制编辑器的移动、裁边、拆分、删除操作，worker 忽略。
 - 片段支持移动、左右裁边、在播放头拆分、复制/粘贴和删除；`transform` 让 V1/V2/V3 使用同一套画面移动、缩放、适配与裁切能力。
+- 主轨与上层轨的 clip 都可选 `group`（HIG-85，复合组 id，仅编辑器用、worker 忽略），规则见下方「复合片段」。
 - 带原声的视频拖入上层轨时，编辑器在 `audio.tracks[]` 中创建 `source_kind = "video"`、`asset_id = video_id`、
   `linked_clip_id = clip.id` 的关联原声音轨（HIG-87）。移动、裁边、变速、拆分和删除同步更新仍绑定的音轨；拆分产生两组关联。
   解除绑定会移除 `linked_clip_id`，音轨仍引用视频原声并作为普通独立音轨存在，后续视频操作不再影响它。
@@ -421,7 +431,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "video_locked": false,                   // 可选，缺省 false（HIG-62）：编辑器时间线禁止修改主视频片段，worker 忽略
   "trim": {
     "remove": [[3.2, 5.8], [17.0, 18.4]],    // 秒，基于源视频时间轴，互不重叠、升序
-    "duration": null                         // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
+    "duration": null,                        // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
+    "splits": [8.5]                          // 可选，缺省 []（HIG-85）：主轨分割点，源时间秒，仅编辑器用、worker 忽略。见下方「复合片段」
   },
   "layers": [
     {
@@ -436,6 +447,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
       "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
       "locked": false,                       // 可选，缺省 false（HIG-62）：禁止编辑该轨道，worker 忽略
+      "group": "cg_c_1",                     // 可选（HIG-85）：复合组 id，仅编辑器用、worker 忽略。见下方「复合片段」
       "name": "品牌角标",                     // 可选（HIG-48）：轨道 / 图层显示名，所有图层类型通用；缺省 = 编辑器自动命名，worker 忽略
       "source_in": 1.5,                      // 可选，缺省 0（HIG-67）：素材内入点，秒；只对视频素材生效
       "source_out": 7.5,                     // 可选，缺省素材时长（HIG-67）：素材内出点，秒
@@ -553,6 +565,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
         "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
         "locked": false,                     // 可选，缺省 false（HIG-62）：禁止编辑该音轨，worker 忽略
+        "group": "cg_c_1",                   // 可选（HIG-85）：复合组 id，仅编辑器用、worker 忽略
         "name": "开场 BGM",                  // 可选（HIG-48）：音轨显示名；缺省 = 素材文件名，worker 忽略
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
@@ -626,6 +639,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   不变。编辑器预览按同样的规则隐藏 / 静音。前端只在为 `true` 时发送这些字段。批量套用时随所在的图层 / `audio`
   块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
 - **视频主轨隐藏与锁定（HIG-62）**：`video_hidden` / `video_locked` 均可选，缺省 `false`。隐藏时只把正片的主视频画面替换为黑底，封面、可见图层、源音轨及独立音轨保留；编辑器预览和 worker 一致。锁定只限制编辑器对主视频片段及剪辑区间的修改，worker 忽略。主轨仍至少保留一个片段，不能整轨删除。
+- **复合片段（HIG-85，编辑器专用，worker 全部忽略）**：`layers[].group`、`audio.tracks[].group`、
+  `sequence.clips[].group`、`video_tracks[].clips[].group` 均为可选字符串（≤ 64 字符），缺省不发。同一 id 的片段
+  在时间线上组成一组：点任一成员即选中整组（⌥ 点只选单个），随后的移动、删除、复制按多选处理。「一键复合」按画面
+  自动编组（id 前缀 `cg_`，每次重算）：拼接主轨片段 / 非拼接视频的保留段 / 上层视频片段各为一个画面片段，有具体时段的
+  图层与独立音轨归到与其重叠最长、且重叠不少于自身时长一半的画面片段，关联原声随其上层片段；一组至少两个成员。
+  ⌘G 手动组合（id 前缀 `grp_`，一键复合不改动），⇧⌘G 解除。粘贴出的副本另起新组，删到只剩一个成员的组自动解散。
+  `trim.splits`（可选，缺省 `[]`，每个值 ≥ 0，源时间秒）是非拼接视频主轨上的分割点：只把保留段切成可单独选中的
+  片段，选中片段按 Delete 即并入 `trim.remove`（删掉的区间照旧画斜纹、横轴不收拢，不能删光整条视频）；
+  落在删除区间里或贴着保留段两端的分割点由编辑器忽略。拼接视频（`sequence`）直接拆分片段，不用 `splits`，编辑器也不发。
 - **单轨锁定（HIG-62）**：`layers[].locked`、`audio.tracks[].locked`、`audio.source_locked` 可选，缺省 `false`；编辑器禁止移动、裁剪、删除或修改被锁定的轨道，隐藏开关和解锁仍可用。worker 忽略锁定字段。源音轨不能整轨删除。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
@@ -711,6 +733,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   的顶替。它和 `"localize"` 各清各的——切换语言时两边分别替换自己的层，互不误伤。画面文字层另带可选
   `screen_block`（字符串，`screen_text.detect.blocks[].id`），重新套用时靠它把人调过的位置和字号接回去。
   `layers[].origin` 目前的取值：`localize | subtitle | screen`。
+- **自动字幕标记 `auto`**（文字图层可选，缺省 false / 缺席，HIG-84）：`origin = "subtitle"` 且 `auto = true` 表示这一层是
+  字幕模块「自动识别字幕」生成的。再识别时编辑器只整批替换这些层（锁定的保留），手动添加和 .srt 导入的字幕不带它、不受影响；
+  用户手改过文字 / 时段也仍算自动字幕。worker 忽略（`extra = "ignore"` 校验但原样存取），批量套用原样复制。
+  生成规则：每个被引用的源视频的 `transcript.cues`（源视频自己的时间轴）按改语言字幕的同一套规则拆成短句；无 `sequence` 时
+  经 `trim.remove` 换算；有 `sequence` 时落到每个引用该视频的片段（按片段 `in/out`、`speed` 与在拼接时钟上的位置，
+  转场重叠处归后一个片段），再经作用在拼接时钟上的 `trim.remove` 换算。整句被删掉的丢弃、跨删除区的缩短，短于 0.1 秒的碎片丢弃，
+  超出成片正片时长的截掉；只铺第一遍（`trim.duration` 循环补足的后几遍不重复铺字幕）；最多 1200 条。
 - **文字动画 `animation`**（文字图层可选，HIG-40）：`{ in?, out?, loop? }`，缺省 / 空对象 = 不动（命令与此前完全一致）。
   - `in` / `out`：`{ preset, duration }`，`preset` ∈ `fade | slide_up | slide_down | slide_left | slide_right | pop`，`duration` 秒，(0, 10]，缺省 0.5。
     `loop`：`{ preset, period }`，`preset` ∈ `breathe | float | blink`，`period` 秒，[0.2, 10]，缺省 1.2。
@@ -838,6 +867,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `voices` 被忽略，每个目标语言都必须是 options 里 `clone = true` 的语言，否则 400。视频未 `ready` / 没有音轨 / 不支持的
   语言或音色 400；`transcript` 或任一请求的版本正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503
   （状态回滚）。前端轮询 `GET /api/videos/{id}`。
+- `POST /api/videos/{id}/localize/transcribe` `{ source_lang?: "auto", retranscribe?: false }` → 202 `Video`（HIG-84「自动识别字幕」）。
+  只听写、不需要目标语言：`transcript` 已是 `done` 且不 `retranscribe` 时**不排队**，原样返回（不再花识别费用）；否则
+  `transcript` 置 queued（旧 `cues` 保留到 worker 替换），入队同一个 `hitgo.localize_video` 任务，只跑听写（见 §1）。
+  视频未 `ready` / 没有音轨 / 不支持的源语言 400；`transcript` 或任一版本正在 queued / running 409；没配
+  `DASHSCOPE_API_KEY` 或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}` 到 `transcript` done / failed。
 - `PUT /api/videos/{id}/localize/transcript` `{ cues: [{ i, text }], source_lang? }` → 200 `Video`。修正模板文本（只传改动的句子），
   不触发任务；所有已有译文的版本 `stale = true`，之后对该语言再 `POST` 即重译。还没有听写结果 400；有版本正在生成 409。
 - `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice?, use_source_voice? }` → 202 `Video`。改译文 /
@@ -1024,7 +1058,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    `/data/tmp/{video_id}.loc/asr.wav`（没有音轨、或超过 `LOCALIZE_MAX_SECONDS`（缺省 600 秒）直接 failed），
    `paraformer-realtime-v2` 逐句给出毫秒起止；`source_lang = auto` 时不传语言提示、取识别到的语言。去掉空句、裁到
    源时长、最多 400 句，写成 `transcript.cues`（源时间轴）；一句都没有则 failed。听写失败时本次请求的所有版本一并 failed；
-   重新听写后所有已有版本 `stale = true`。
+   重新听写后所有已有版本 `stale = true`。`pending.transcribe_only`（HIG-84）的任务到这里就结束，不做下面的步骤。
 2. **复刻原声**（本次有任何 `source_voice = true` 的版本，且 `clone_voice` 还不是 done / 绑的模型不是当前模型，HIG-58）：
    从 `transcript.cues` 里挑一段连续说话、累计 ≥ 10 秒且窗口 ≤ 20 秒的时段（凑不够就 failed，写「可用于复刻的人声不足
    10 秒」），按这个时段截出样本存到 `/data/voice-samples/{video_id}.{m4a|wav}`——有人声分离出来的 vocals 素材就从它截
@@ -1060,14 +1094,23 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    合成 / 复刻都用假实现（静音配音、固定 voice_id），只给测试 / 演示。
 
 ### 画面文字（`POST /api/videos/{id}/screen-text` 之后，普通 worker，HIG-38）
-识别走阿里云百炼的视觉模型（`DASHSCOPE_API_KEY`，`SCREENTEXT_MODEL` 缺省 `qwen-vl-max-latest`），翻译复用改语言那一套
+识别走阿里云百炼的视觉模型（`DASHSCOPE_API_KEY`，`SCREENTEXT_MODEL` 缺省 `qwen3-vl-plus`），翻译复用改语言那一套
 `qwen-mt-plus`，两者都是纯网络调用。任务 `hitgo.screen_text_video` 在默认队列，软超时 `SCREENTEXT_TIMEOUT_SECONDS`
 （缺省 1200 秒）。
 
-1. **识别一次**（`detect` 不是 done 或请求带 `detect`）：`ffmpeg -vf "fps=SCREENTEXT_SAMPLE_FPS,scale=-2:720"` 抽帧到
-   `tmp/{video_id}.st/`，最多 `SCREENTEXT_MAX_FRAMES` 帧（缺省 20）。抽完先做一次**感知去重**（缩到 32×32 灰度，
+**失败必须当场可见（HIG-86）。** 识别阶段的任何异常（视觉模型 4xx / 5xx 用尽重试、抽帧失败、代码错误）都立即把
+`detect` 写成 `failed` 并带上真实原因，同批的语言版本与擦除一并 failed；403 / 未开通这类权限错误在原因后面附一句
+「请检查 `SCREENTEXT_MODEL` 或在百炼控制台开通该模型」。单次视觉调用有请求超时 `SCREENTEXT_CALL_TIMEOUT_SECONDS`
+（缺省 60 秒，SDK 自带的是 300 秒）。读取时的过期投射（`GET` 不写库、`POST` 重试前落库）按「多久没有更新」判断：
+`queued` 超过 `SCREENTEXT_TIMEOUT_SECONDS` 仍未开始 →「排队超过 N 秒仍未开始」（worker 被其它任务占着或没在跑）；
+`running` 期间每送完一帧就刷新 `updated_at` 与 `progress`，超过同样时长没有进展 →「超过 N 秒没有进展」。
+
+1. **识别一次**（`detect` 不是 done 或请求带 `detect`）：`ffmpeg -vf "fps=<采样率>,scale=-2:720"` 抽帧到
+   `tmp/{video_id}.st/`，最多 `SCREENTEXT_MAX_FRAMES` 帧（缺省 20）。采样率取 `SCREENTEXT_SAMPLE_FPS`（缺省 0.5），
+   视频长于 `MAX_FRAMES / SAMPLE_FPS` 秒时降为 `MAX_FRAMES / 时长`，保证抽帧摊满整条视频而不是只看开头。抽完先做一次**感知去重**（缩到 32×32 灰度，
    逐像素平均绝对差低于阈值的帧丢掉）——投放素材里大段画面是静止的，去重通常能把送去识别的帧数再砍掉一半，
-   而费用是按帧算的。逐帧调视觉模型拿到文字和框，跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
+   而费用是按帧算的。逐帧调视觉模型拿到文字和框（提示词要求 Qwen 原生的 `bbox_2d` 左上 / 右下角坐标：`qwen3-*` 按 0–1000 网格换算，
+   其它 `qwen-vl-*` 按帧像素换算，见 `dashscope_providers.bbox_scale_for`），跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
    抽帧间隔。落在画面底部且横向居中的那一类合并成 `subtitle_band`（整条视频一个矩形），其余是 `blocks`，最多
    `SCREENTEXT_MAX_BLOCKS` 个（缺省 40，超出按面积取前 N，其余丢弃）。同一文本在相邻帧之间位移超过
    阈值的判为「会动」，标出来但不参与擦除和写回。一帧都识别不出内容时 `detect` 仍是 `done`，`blocks` 为空。

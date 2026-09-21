@@ -14,6 +14,7 @@ import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
 import { applyScreenTextToSpec, bandHint, cleanReady, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
+import { replaceAutoSubtitles, transcriptToSubtitleLayers, type VideoTranscript } from '../lib/autoSubtitle';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
 
@@ -46,6 +47,8 @@ import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
 import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 import { hasPreparingVideos, nextCurrentAfterDelete } from '../lib/videos';
 import { addLinkedVideoAudio, addVideoTrack, removeVideoTrackClips, splitVideoTrackClip, updateVideoTrackClip, videoTrackClipEnd } from '../lib/videoTracks';
+import { allTimelineKeys, buildCompoundGroups, expandGroupSelection, groupItems, pruneSingletonGroups, shiftTimedItems, ungroupItems } from '../lib/groups';
+import { addSplit, mainSegments, removeSegments, segKey, segmentForKey } from '../lib/segments';
 
 export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -214,7 +217,8 @@ export interface EditorState {
   setDrawingShape: (shape: import('../types').ShapeLayer['shape'] | null) => void;
   focusLayer: (layer: Layer, options?: { reveal?: boolean }) => void;
   setSelectedClip: (id: string | null) => void;
-  selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract') => void;
+  /** 复合片段（HIG-85）：默认把同组成员一起选上；expand: false 只选这一个（⌥ 点选）。 */
+  selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract', opts?: { expand?: boolean }) => void;
   setTimelineMarqueeEnabled: (enabled: boolean) => void;
   copyTimelineItems: () => void;
   pasteTimelineItems: () => void;
@@ -225,6 +229,13 @@ export interface EditorState {
   updateSelectedVideoTransform: (patch: Partial<VideoTransform> | null) => void;
   splitUpperVideo: (clipId: string) => void;
   splitSelectedVideos: () => void;
+  /** HIG-85：在播放头分割主轨（拼接视频拆片段，否则加 trim.splits 分割点）。 */
+  splitMainAtPlayhead: () => void;
+  /** HIG-85：一键复合 / ⌘G 编组 / ⇧⌘G 解组 / ⌘A 全选时间线，各记一步历史。 */
+  compoundAll: () => void;
+  groupSelection: () => void;
+  ungroupSelection: () => void;
+  selectAllTimeline: () => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
@@ -321,6 +332,13 @@ export interface EditorState {
   loadLocalizeOptions: () => Promise<void>;
   /** POST localize：听写（模板未就绪时）+ 逐语言生成；发起后轮询到全部结束。成功返回 true。 */
   localizeVideo: (body: LocalizeIn, opts?: { bgm: LocalizeBgmChoice }) => Promise<boolean>;
+  /** 「自动识别字幕」（HIG-84）正在为哪个视频跑；null = 空闲。 */
+  autoSubtitleVideoId: string | null;
+  /**
+   * 「自动识别字幕」（HIG-84）：当前视频（拼接序列里每个源视频各一次）只听写（POST localize/transcribe），
+   * 轮询到全部结束后拆成短句、换算到成片时间轴，一步替换上一批自动字幕；手动 / .srt 字幕不动。
+   */
+  autoSubtitles: (opts?: { sourceLang?: string; retranscribe?: boolean }) => Promise<void>;
   /** 修正模板文本（PUT transcript）；不触发任务，已有版本会被标为 stale。 */
   updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
   /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
@@ -549,6 +567,8 @@ const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
 const quickRequests: Record<string, { langs: string[]; readyLang?: string }> = {};
+/** 「自动识别字幕」（HIG-84）最多等多久；超过当作这个视频识别失败（服务器上的任务照跑，下次再点直接用结果）。 */
+const AUTO_SUBTITLE_TIMEOUT_MS = 15 * 60 * 1000;
 const BGM_CHOICE_KEY = 'hitgo.localizeBgm';
 const bgmChoiceMemory: Record<string, LocalizeBgmChoice> = {};
 
@@ -886,6 +906,7 @@ export const useEditor = create<EditorState>((set, get) => {
     theme: loadTheme(),
     textPresets: BUILTIN_TEXT_PRESETS,
     localizeOptions: null,
+    autoSubtitleVideoId: null,
 
     load: async (batchId) => {
       // 切批次时 /batches/:id 的 element 不变，EditorPage 不卸载，它的 cleanup 不跑：
@@ -931,10 +952,11 @@ export const useEditor = create<EditorState>((set, get) => {
         pollPreparingVideos();
         void get().loadAssets();
         void get().loadTextPresets();
-        // 刷新页面时分离 / 改语言可能还在跑：恢复轮询，结束时照常提示
+        // 刷新页面时分离 / 改语言 / 画面文字可能还在跑：恢复轮询，结束时照常提示
         for (const v of batch.videos) {
           if (fieldActive(v, 'separation')) pollVideoField(v.id, 'separation', set, get);
           if (fieldActive(v, 'localization')) pollVideoField(v.id, 'localization', set, get);
+          if (fieldActive(v, 'screen_text')) pollVideoField(v.id, 'screen_text', set, get);
         }
         // 恢复未完成的渲染任务
         try {
@@ -1253,7 +1275,9 @@ export const useEditor = create<EditorState>((set, get) => {
       }));
     },
     setSelectedClip: (selectedClipId) => set({ selectedClipId }),
-    selectTimelineItems: (keys, mode = 'replace') => {
+    selectTimelineItems: (keys0, mode = 'replace', opts) => {
+      const spec = get().currentSpec();
+      const keys = spec && opts?.expand !== false ? expandGroupSelection(spec, keys0) : keys0;
       const old = get().timelineSelection;
       const next = mode === 'add' ? [...new Set([...old, ...keys])] : mode === 'subtract' ? old.filter((key) => !keys.includes(key)) : [...new Set(keys)];
       const layers = next.filter((key) => key.startsWith('layer:')).map((key) => key.slice(6));
@@ -1285,16 +1309,26 @@ export const useEditor = create<EditorState>((set, get) => {
       let next = cloneSpec(spec);
       const ids: string[] = [];
       const at = Math.max(0, get().time);
+      // 粘贴出来的副本自成新组（HIG-85），不并进原片段所在的组
+      const groupMap = new Map<string, string>();
+      const regroup = <T extends { group?: string }>(item: T): T => {
+        if (item.group) {
+          if (!groupMap.has(item.group)) groupMap.set(item.group, `grp_${crypto.randomUUID().slice(0, 12)}`);
+          item.group = groupMap.get(item.group);
+        }
+        return item;
+      };
       if (source.clips.length && !spec.video_locked) {
         next = materializeSequence(next, video.id, video.duration);
         const windows = clipWindows(next.sequence!);
         const index = windows.findIndex((w) => at < (w.start + w.end) / 2);
         const inserted = pasteClipSet(next, source.clips, index < 0 ? windows.length : index);
         next = inserted.spec;
+        for (const clip of next.sequence?.clips ?? []) if (inserted.ids.includes(clip.id)) regroup(clip);
         ids.push(...inserted.ids.map((id) => `clip:${id}`));
       }
       for (const clip of source.videoClips) {
-        (next.video_tracks ??= []).push({ id: `vt_${crypto.randomUUID()}`, clips: [{ ...structuredClone(clip), id: `vc_${crypto.randomUUID()}`, start: Math.max(0, at + clip.start - source.origin) }] });
+        (next.video_tracks ??= []).push({ id: `vt_${crypto.randomUUID()}`, clips: [regroup({ ...structuredClone(clip), id: `vc_${crypto.randomUUID()}`, start: Math.max(0, at + clip.start - source.origin) })] });
         ids.push(`vclip:${next.video_tracks[next.video_tracks.length - 1].clips[0].id}`);
       }
       const timed = [...source.layers, ...source.tracks].map((item) => item.t).filter((window): window is [number, number] => window !== 'all');
@@ -1302,16 +1336,17 @@ export const useEditor = create<EditorState>((set, get) => {
       const delta = timed.length ? Math.max(-Math.min(...timed.map((window) => window[0])), Math.min(timelineEnd - Math.max(...timed.map((window) => window[1])), at - source.origin)) : at - source.origin;
       const moveWindow = (window: [number, number] | 'all'): [number, number] | 'all' => window === 'all' ? 'all' : [Math.max(0, window[0] + delta), Math.max(0.1, window[1] + delta)];
       for (const layer of source.layers) {
-        const copy = { ...structuredClone(layer), id: newLayerId(), t: moveWindow(layer.t) };
+        const copy = regroup({ ...structuredClone(layer), id: newLayerId(), t: moveWindow(layer.t) });
         next.layers.push(copy);
         ids.push(`layer:${copy.id}`);
       }
       if (source.tracks.length) next.audio ??= { source_volume: 1, tracks: [] };
       for (const track of source.tracks) {
-        const copy = { ...structuredClone(track), id: newTrackId(), t: moveWindow(track.t) };
+        const copy = regroup({ ...structuredClone(track), id: newTrackId(), t: moveWindow(track.t) });
         next.audio!.tracks.push(copy);
         ids.push(`track:${copy.id}`);
       }
+      pruneSingletonGroups(next);
       get().replaceSpec(video.id, next, { history: true });
       get().selectTimelineItems(ids);
     },
@@ -1323,9 +1358,21 @@ export const useEditor = create<EditorState>((set, get) => {
       const clipIds = spec.video_locked ? [] : (spec.sequence?.clips ?? []).filter((clip) => keys.has(`clip:${clip.id}`)).map((clip) => clip.id);
       const clipResult = clipIds.length ? removeClipSet(spec, clipIds) : cloneSpec(spec);
       if (!clipResult) { get().setToast('主轨必须保留至少一个片段'); return; }
+      // 非拼接视频的主轨片段（HIG-85）：删掉 = 并进 trim.remove，删除区间照旧画成斜纹
+      if (!spec.sequence && !spec.video_locked) {
+        const segments = mainSegments(video.duration, spec.trim);
+        const ranges = [...keys].map((key) => segmentForKey(key, segments)).filter((r): r is [number, number] => !!r);
+        if (ranges.length) {
+          const trimmed = removeSegments(video.duration, spec.trim, ranges);
+          if (!trimmed) { get().setToast('不能删除整条视频'); return; }
+          clipResult.trim = { ...clipResult.trim, remove: trimmed.remove, splits: trimmed.splits };
+          if (!trimmed.splits.length) delete clipResult.trim.splits;
+        }
+      }
       clipResult.layers = clipResult.layers.filter((layer) => !keys.has(`layer:${layer.id}`) || layer.locked);
       if (clipResult.audio) clipResult.audio.tracks = clipResult.audio.tracks.filter((track) => !keys.has(`track:${track.id}`) || track.locked);
       removeVideoTrackClips(clipResult, new Set([...keys].filter((key) => key.startsWith('vclip:')).map((key) => key.slice(6))));
+      pruneSingletonGroups(clipResult);
       get().replaceSpec(video.id, clipResult, { history: true });
       get().selectTimelineItems([]);
     },
@@ -1418,6 +1465,70 @@ export const useEditor = create<EditorState>((set, get) => {
       get().selectTimelineItems(rightKeys);
       get().setToast(`已拆分 ${rightKeys.length} 个视频片段${skipped ? `，跳过 ${skipped} 个` : ''}`);
     },
+    splitMainAtPlayhead: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      if (spec.video_locked) { get().setToast('主视频已锁定'); return; }
+      const at = get().time;
+      if (spec.sequence) {
+        const hit = clipAt(spec.sequence, at);
+        const next = hit ? splitClip(spec, hit.clip.id, at) : null;
+        if (!next) { get().setToast('播放头需位于主轨片段内部（离两端至少 0.1 秒）'); return; }
+        get().replaceSpec(video.id, next, { history: true });
+        const index = next.sequence!.clips.findIndex((clip) => clip.id === hit!.clip.id);
+        const right = next.sequence!.clips[index + 1];
+        get().selectTimelineItems(right ? [`clip:${right.id}`] : [], 'replace', { expand: false });
+        return;
+      }
+      const splits = addSplit(video.duration, spec.trim, at);
+      if (!splits) { get().setToast('播放头需位于保留的画面内部（离片段两端至少 0.1 秒）'); return; }
+      get().updateSpec((draft) => { draft.trim.splits = splits; });
+      const right = mainSegments(video.duration, { remove: spec.trim.remove, splits }).find(([a]) => Math.abs(a - at) < 2e-3);
+      get().selectTimelineItems(right ? [segKey(right)] : []);
+    },
+    compoundAll: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const { spec: next, groups } = buildCompoundGroups(spec, { duration: video.duration });
+      if (!groups) {
+        // buildCompoundGroups 已经清掉上一次的自动组（cg_）：即使这次一组都编不出来也要写回，
+        // 否则旧组还留在 spec 上，点一个成员仍会连带选中早已不对应的组员。
+        const cleared = JSON.stringify(next) !== JSON.stringify(spec);
+        if (cleared) get().replaceSpec(video.id, next, { history: true });
+        get().setToast(`没有可以按画面组合的片段（每组至少要有画面片段和一段对应的文字 / 贴纸 / 音频）${cleared ? '；已清除上一次的自动组合' : ''}`);
+        return;
+      }
+      get().replaceSpec(video.id, next, { history: true });
+      get().setToast(`已按画面组合成 ${groups} 组；点任一成员即选中整组，⌥ 点单选，⇧⌘G 解组`);
+    },
+    groupSelection: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const next = groupItems(spec, get().timelineSelection);
+      if (!next) { get().setToast('至少选中两个视频 / 音频 / 文字 / 贴纸片段才能组合'); return; }
+      const keys = get().timelineSelection;
+      get().replaceSpec(video.id, next, { history: true });
+      get().selectTimelineItems(keys);
+      get().setToast('已组合');
+    },
+    ungroupSelection: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const next = ungroupItems(spec, get().timelineSelection);
+      if (!next) { get().setToast('选中的片段不在任何组合里'); return; }
+      const keys = get().timelineSelection;
+      get().replaceSpec(video.id, next, { history: true });
+      get().selectTimelineItems(keys, 'replace', { expand: false });
+      get().setToast('已解除组合');
+    },
+    selectAllTimeline: () => {
+      const spec = get().currentSpec();
+      if (spec) get().selectTimelineItems(allTimelineKeys(spec), 'replace', { expand: false });
+    },
     shiftTimelineItems: (seconds) => {
       const video = get().currentVideo();
       const spec = get().currentSpec();
@@ -1446,13 +1557,17 @@ export const useEditor = create<EditorState>((set, get) => {
           const old = spec.audio?.tracks.find((item) => item.id === track.id);
           if (old) track.t = movedWindow(old.t, track.t);
         }
+        // 选中的上层视频片段跟主轨片段走同样的位移，否则复合组 / ⌘A 一拖就散开
+        const upperKeys = new Set([...keys].filter((key) => key.startsWith('vclip:')));
+        if (upperKeys.size && Math.abs(delta) >= 0.001) {
+          const shifted = shiftTimedItems(next, upperKeys, delta, selectPostDuration(get()));
+          if (shifted) next = shifted;
+        }
       } else {
-        const timed = [...next.layers.filter((l) => keys.has(`layer:${l.id}`) && !l.locked && l.t !== 'all'), ...(next.audio?.tracks ?? []).filter((t) => keys.has(`track:${t.id}`) && !t.locked && t.t !== 'all')];
-        if (!timed.length) return;
-        const min = Math.min(...timed.map((item) => item.t === 'all' ? Infinity : item.t[0]));
-        const max = Math.max(...timed.map((item) => item.t === 'all' ? 0 : item.t[1]));
-        const delta = Math.max(-min, Math.min(selectPostDuration(get()) - max, seconds));
-        for (const item of timed) if (item.t !== 'all') item.t = [round4(item.t[0] + delta), round4(item.t[1] + delta)];
+        // 图层、音轨与上层视频片段一起平移（HIG-85：复合组里常有上层片段）
+        const shifted = shiftTimedItems(next, keys, seconds, selectPostDuration(get()));
+        if (!shifted) return;
+        next = shifted;
       }
       get().replaceSpec(video.id, next, { history: true });
     },
@@ -1948,6 +2063,81 @@ export const useEditor = create<EditorState>((set, get) => {
       } catch (e) {
         get().setToast(e instanceof ApiError ? e.message : '改语言请求失败');
         return false;
+      }
+    },
+    autoSubtitles: async (opts) => {
+      const ownerId = get().currentVideoId;
+      const spec0 = get().currentSpec();
+      if (!ownerId || !spec0 || get().autoSubtitleVideoId) return;
+      // Q3=B: every source video in a sequence is transcribed on its own; upper video tracks are not.
+      const ids = spec0.sequence ? Array.from(new Set(spec0.sequence.clips.map((c) => c.video_id))) : [ownerId];
+      const nameOf = (id: string) => get().videos.find((v) => v.id === id)?.name ?? id;
+      const transcribing = (v: Video) => v.localization?.transcript?.status === 'queued' || v.localization?.transcript?.status === 'running';
+      set({ autoSubtitleVideoId: ownerId });
+      const failures: string[] = [];
+      const requested: string[] = [];
+      const waiting = new Set<string>();
+      const sourceLang = opts?.sourceLang ?? 'auto';
+      for (const id of ids) {
+        // A finished transcript is reused (no ASR cost) unless it was heard as another language than the one picked now.
+        const loc = get().videos.find((v) => v.id === id)?.localization;
+        const retranscribe = !!opts?.retranscribe || (sourceLang !== 'auto' && loc?.transcript?.status === 'done' && loc.source_lang !== sourceLang);
+        try {
+          const updated = await api.transcribeVideo(id, { source_lang: sourceLang, retranscribe });
+          mergeVideoField(set, updated, 'localization');
+          requested.push(id);
+          if (transcribing(updated)) waiting.add(id);
+        } catch (e) {
+          failures.push(`「${nameOf(id)}」${e instanceof ApiError ? e.message : '网络错误'}`);
+        }
+      }
+      // Same 2 s cadence as pollVideoField, but across several videos and without its localize toasts / auto-apply.
+      const deadline = Date.now() + AUTO_SUBTITLE_TIMEOUT_MS;
+      while (waiting.size) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        for (const id of [...waiting]) {
+          if (!get().videos.some((v) => v.id === id)) { waiting.delete(id); continue; } // deleted meanwhile
+          try {
+            const fresh = await api.getVideo(id);
+            mergeVideoField(set, fresh, 'localization');
+            if (!transcribing(fresh)) waiting.delete(id);
+          } catch { /* 断网：下一轮再试 */ }
+        }
+        if (waiting.size && Date.now() > deadline) {
+          failures.push(...[...waiting].map((id) => `「${nameOf(id)}」识别超时`));
+          waiting.clear();
+        }
+      }
+      set({ autoSubtitleVideoId: null });
+      const owner = get().videos.find((v) => v.id === ownerId);
+      const spec = get().specs[ownerId];
+      if (!owner || !spec) return;
+      const transcripts: VideoTranscript[] = [];
+      for (const id of requested) {
+        const v = get().videos.find((x) => x.id === id);
+        const t = v?.localization?.transcript;
+        if (t?.status === 'done') transcripts.push({ videoId: id, cues: t.cues, lang: v!.localization!.source_lang });
+        else if (t?.status === 'failed') failures.push(`「${nameOf(id)}」${t.error ?? '听写失败'}`);
+      }
+      const failed = failures.length ? `；${failures.join('、')}` : '';
+      if (!transcripts.length) {
+        get().setToast(`自动识别字幕失败${failed}`);
+        return;
+      }
+      const sourceDuration = spec.sequence ? sequenceDuration(spec.sequence) : owner.duration ?? 0;
+      const layers = transcriptToSubtitleLayers(transcripts, spec, {
+        ownerId, postDuration: outputDuration(sourceDuration, spec.trim), newId: newLayerId, split: loadFeaturePrefs().localizeSplitCues,
+      });
+      if (!layers.length) {
+        get().setToast(`没有识别到人声${failed}`);
+        return;
+      }
+      // One history step on the owner video, even if the user switched away while waiting.
+      get().updateSpec((draft) => { draft.layers = replaceAutoSubtitles(draft.layers, layers); }, { videoId: ownerId });
+      if (get().currentVideoId === ownerId) {
+        set({ selectedLayerId: layers[0].id, selectedLayerIds: layers.map((l) => l.id), toast: `已识别 ${layers.length} 条字幕${failed}`, toastAction: { label: '撤销', run: () => get().undo() } });
+      } else {
+        get().setToast(`「${owner.name}」已识别 ${layers.length} 条字幕${failed}`);
       }
     },
     updateTranscript: async (edits, sourceLang) => {

@@ -62,6 +62,7 @@ class Settings:
     screentext_max_blocks: int
     screentext_max_seconds: int
     screentext_timeout_seconds: int
+    screentext_call_timeout_seconds: int
     # Erase provider: fake (tests) | local (ffmpeg delogo, no network) | a cloud vendor.
     erase_provider: str
     erase_poll_interval_seconds: int
@@ -126,12 +127,13 @@ def load_settings() -> Settings:
         # Defaults to whatever localization uses, so a deployment that already has a key gets
         # on-screen text detection without a second variable to set.
         screentext_provider=_env("SCREENTEXT_PROVIDER", _env("LOCALIZE_PROVIDER", "dashscope")).strip().lower(),
-        screentext_model=_env("SCREENTEXT_MODEL", "qwen-vl-max-latest").strip(),
+        screentext_model=_env("SCREENTEXT_MODEL", "qwen3-vl-plus").strip(),
         screentext_sample_fps=float(_env("SCREENTEXT_SAMPLE_FPS", "0.5")),
         screentext_max_frames=int(_env("SCREENTEXT_MAX_FRAMES", "20")),
         screentext_max_blocks=int(_env("SCREENTEXT_MAX_BLOCKS", "40")),
         screentext_max_seconds=int(_env("SCREENTEXT_MAX_SECONDS", "180")),
         screentext_timeout_seconds=int(_env("SCREENTEXT_TIMEOUT_SECONDS", "1200")),
+        screentext_call_timeout_seconds=int(_env("SCREENTEXT_CALL_TIMEOUT_SECONDS", "60")),
         # "local" needs no credentials and no network: ffmpeg delogo over the detected boxes.
         # It is the default so the whole chain works out of the box, blur-quality rather than
         # inpainting-quality, until a cloud vendor is picked (HIG-38).
