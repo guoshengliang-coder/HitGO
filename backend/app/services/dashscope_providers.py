@@ -35,7 +35,7 @@ from typing import Any
 
 from app.config import Settings
 from app.services.highlight import parse_phrase_json
-from app.services.screentext import DetectedText
+from app.services.screentext import DetectedText, ScreenTextFrameParseError
 from app.services.localize import CLONE_VOICE_PREFIX, MT_DOMAINS, AsrResult, LocalizeError, Providers, language_boost_for, language_type_for, tts_api_for
 
 log = logging.getLogger(__name__)
@@ -504,8 +504,6 @@ SCREEN_TEXT_PROMPT = (
     "同一行文字合并成一项，不同行分开。没有叠加文字时输出 []。"
 )
 
-_JSON_ARRAY = re.compile(r"\[.*\]", re.S)
-
 # How a model family writes ``bbox_2d`` (verified on real ad frames, 2026-09-21):
 #   qwen3-vl-*          corners on a 0–1000 grid, independent of the image size
 #   qwen-vl-* (2.5)     corners in pixels of the image as the model saw it
@@ -543,7 +541,37 @@ def _unit_box(values: list[float], scale: str, size: tuple[int, int] | None) -> 
     return {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
 
 
-def parse_detection_json(raw: str, *, scale: str = SCALE_GRID, size: tuple[int, int] | None = None) -> list[DetectedText]:
+def _detection_items(raw: str) -> list[Any] | None:
+    """Return the first complete JSON array that could be a detection list.
+
+    The old greedy bracket regex consumed too much: prose containing another bracketed example, or a nested array
+    after the answer, made ``json.loads`` consume too much and fail. ``raw_decode`` stops at the
+    matching closing bracket and lets us skip unrelated bracketed prose without repairing or
+    guessing at invalid model output.
+    """
+    decoder = json.JSONDecoder()
+    saw_empty = False
+    for start, char in enumerate(raw):
+        if char != "[":
+            continue
+        try:
+            value, _ = decoder.raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            continue
+        if value == []:
+            saw_empty = True
+        elif isinstance(value, list) and any(isinstance(item, dict) for item in value):
+            return value
+    return [] if saw_empty else None
+
+
+def parse_detection_json(
+    raw: str,
+    *,
+    scale: str = SCALE_GRID,
+    size: tuple[int, int] | None = None,
+    reject_invalid: bool = False,
+) -> list[DetectedText]:
     """Model output → detections; anything malformed is skipped rather than failing the frame.
 
     The model occasionally wraps the array in prose or a code fence even when told not to, so
@@ -556,16 +584,13 @@ def parse_detection_json(raw: str, *, scale: str = SCALE_GRID, size: tuple[int, 
     """
     text = (raw or "").strip()
     if not text:
+        if reject_invalid:
+            raise ScreenTextFrameParseError("视觉模型没有返回内容")
         return []
-    match = _JSON_ARRAY.search(text)
-    if not match:
-        return []
-    try:
-        items = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        log.warning("screen text detection did not parse as JSON")
-        return []
-    if not isinstance(items, list):
+    items = _detection_items(text)
+    if items is None:
+        if reject_invalid:
+            raise ScreenTextFrameParseError("视觉模型没有返回有效的 JSON 数组")
         return []
     out: list[DetectedText] = []
     for item in items:
@@ -596,6 +621,8 @@ def parse_detection_json(raw: str, *, scale: str = SCALE_GRID, size: tuple[int, 
         except (TypeError, ValueError):
             score = None
         out.append(DetectedText(text=content, box=unit, confidence=score))
+    if reject_invalid and items and not out:
+        raise ScreenTextFrameParseError("视觉模型返回的 JSON 没有可用的文字和坐标")
     return out
 
 
@@ -656,4 +683,6 @@ class DashScopeScreenText:
             )
 
         result = _with_retry("画面文字识别", call)
-        return parse_detection_json(_message_text(result), scale=bbox_scale_for(self.model), size=_image_size(frame))
+        return parse_detection_json(
+            _message_text(result), scale=bbox_scale_for(self.model), size=_image_size(frame), reject_invalid=True
+        )

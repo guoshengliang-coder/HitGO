@@ -496,6 +496,53 @@ def test_options_reports_what_this_deployment_can_do(client):
     assert body["max_blocks"] > 0
 
 
+def test_detect_blocks_reports_all_malformed_model_responses(tmp_path, ready_video, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    frames = [tmp_path / "f0001.jpg", tmp_path / "f0002.jpg"]
+    for frame in frames:
+        frame.write_bytes(b"frame")
+
+    class MalformedProvider:
+        def detect(self, frame, hint_lang):
+            raise screentext.ScreenTextFrameParseError("bad JSON")
+
+    monkeypatch.setattr(screentext.storage, "source_path", lambda *args: source)
+    monkeypatch.setattr(screentext, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(screentext, "frame_paths", lambda *args: frames)
+    monkeypatch.setattr(screentext, "dedupe_frames", lambda paths: paths)
+
+    with pytest.raises(screentext.ScreenTextError, match="2 帧结果都无法解析"):
+        screentext.detect_blocks(ready_video, MalformedProvider(), tmp_path / "out", None)
+
+
+def test_detect_blocks_keeps_valid_frames_when_only_one_response_is_malformed(tmp_path, ready_video, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    frames = [tmp_path / "f0001.jpg", tmp_path / "f0002.jpg"]
+    for frame in frames:
+        frame.write_bytes(b"frame")
+
+    class MixedProvider:
+        calls = 0
+
+        def detect(self, frame, hint_lang):
+            self.calls += 1
+            if self.calls == 1:
+                raise screentext.ScreenTextFrameParseError("bad JSON")
+            return [DetectedText("SALE", box(0.2, 0.2, 0.3, 0.06))]
+
+    monkeypatch.setattr(screentext.storage, "source_path", lambda *args: source)
+    monkeypatch.setattr(screentext, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(screentext, "frame_paths", lambda *args: frames)
+    monkeypatch.setattr(screentext, "dedupe_frames", lambda paths: paths)
+
+    result = screentext.detect_blocks(ready_video, MixedProvider(), tmp_path / "out", None)
+
+    assert result["status"] == ST_DONE
+    assert [block["text"] for block in result["blocks"]] == ["SALE"]
+
+
 # --- the task end to end (fake providers, no ffmpeg) ------------------------
 
 

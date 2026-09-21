@@ -99,6 +99,55 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
     expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.background).toBe('#00000066');
   });
 
+  it('字幕面板真实使用的 updateSelectedTextStyle 会同步所有未锁定字幕', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };
+    const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const, t: [2, 3] as [number, number] };
+    const locked = { ...textLayer('锁定'), id: 'L3', origin: 'subtitle' as const, locked: true, t: [4, 5] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b, locked] });
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().setSubtitleSyncEnabled(true);
+
+    useEditor.getState().updateSelectedTextStyle({ font_size: 0.12, color: '#FF0000' });
+
+    const layers = useEditor.getState().currentSpec()!.layers as TextLayer[];
+    expect(layers.slice(0, 2).map((layer) => [layer.style.font_size, layer.style.color])).toEqual([[0.12, '#FF0000'], [0.12, '#FF0000']]);
+    expect(layers[2].style.font_size).not.toBe(0.12);
+    expect(layers.map((layer) => [layer.text, layer.t])).toEqual([['甲', [0, 1]], ['乙', [2, 3]], ['锁定', [4, 5]]]);
+  });
+
+  it('粘贴整份样式也遵守字幕同步开关', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const };
+    const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().setSubtitleSyncEnabled(true);
+    useEditor.setState({ styleClipboard: { ...defaultTextStyle(), color: '#00FF00', font_size: 0.09 } });
+
+    useEditor.getState().pasteStyle();
+
+    const layers = useEditor.getState().currentSpec()!.layers as TextLayer[];
+    expect(layers.map((layer) => [layer.style.color, layer.style.font_size])).toEqual([['#00FF00', 0.09], ['#00FF00', 0.09]]);
+  });
+
+  it('画布移动与透明度入口同步几何，非 9:16 覆盖也同步', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const, margin: [0, 0] as [number, number] };
+    const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const, margin: [0.2, 0.3] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().setSubtitleSyncEnabled(true);
+
+    useEditor.getState().moveSelectedLayersOnCanvas(0.1, 0.05);
+    useEditor.getState().updateSelectedOpacity(0.4);
+    useEditor.getState().setLayerOverride('1x1', 'L1', { anchor: 'top-center', margin: [0.03, 0.07], width: 0.8 });
+
+    const spec = useEditor.getState().currentSpec()!;
+    const layers = spec.layers as TextLayer[];
+    expect(layers[1].margin).toEqual(layers[0].margin);
+    expect(layers.map((layer) => layer.opacity)).toEqual([0.4, 0.4]);
+    const overrides = spec.outputs.find((output) => output.variant_key === '1x1')?.layer_overrides;
+    expect(overrides?.L2).toEqual(overrides?.L1);
+  });
+
   it('同一次复制、粘贴和删除覆盖主视频、上层视频、字幕、音频且可撤销', () => {
     const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }, { id: 'c2', video_id: 'v1', in: 5, out: 10 }] }, video_tracks: [{ id: 'vt1', clips: [{ id: 'vc1', video_id: 'v1', start: 1, in: 0, out: 2 }] }], layers: [{ ...textLayer('字幕'), t: [1, 2] }], audio: { source_volume: 1, tracks: [{ id: 't1', asset_id: 'a1', role: 'bgm', align: 'post', t: [1, 3], volume: 1, loop: false }] } };
     useEditor.getState().replaceSpec('v1', spec);
@@ -131,6 +180,25 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
     useEditor.getState().deleteTimelineItems();
     expect(useEditor.getState().currentSpec()!.layers).toHaveLength(1);
     expect(useEditor.getState().currentSpec()!.layers[0].id).toBe('L2');
+  });
+});
+
+describe('画面文字配置状态（HIG-86）', () => {
+  it('读取失败不会伪装成缺 key，并可手动重试', async () => {
+    const getOptions = vi.spyOn(api, 'getScreenTextOptions')
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ enabled: true, erase_enabled: true, erase_provider: 'local', max_seconds: 180, max_frames: 20, max_blocks: 40 });
+    useEditor.setState({ screenTextOptions: null, screenTextOptionsLoading: false, screenTextOptionsError: null });
+    try {
+      await useEditor.getState().loadScreenTextOptions();
+      expect(useEditor.getState()).toMatchObject({ screenTextOptions: null, screenTextOptionsLoading: false, screenTextOptionsError: '读取画面文字配置失败，请重试' });
+
+      await useEditor.getState().loadScreenTextOptions(true);
+      expect(useEditor.getState()).toMatchObject({ screenTextOptions: { enabled: true }, screenTextOptionsLoading: false, screenTextOptionsError: null });
+      expect(getOptions).toHaveBeenCalledTimes(2);
+    } finally {
+      getOptions.mockRestore();
+    }
   });
 });
 

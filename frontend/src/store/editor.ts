@@ -357,9 +357,11 @@ export interface EditorState {
   applyVersion: (lang: string, opts?: { force?: boolean }) => boolean;
 
   // 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）
-  /** GET /api/screen-text/options 的结果；null = 还没拉。拉失败按 enabled=false 处理。 */
+  /** GET /api/screen-text/options 的结果；null = 尚未成功读取，不能等同于服务器没配 key。 */
   screenTextOptions: ScreenTextOptions | null;
-  loadScreenTextOptions: () => Promise<void>;
+  screenTextOptionsLoading: boolean;
+  screenTextOptionsError: string | null;
+  loadScreenTextOptions: (force?: boolean) => Promise<void>;
   /** POST screen-text：识别（未识别过时）+ 逐语言翻译 + 可选擦除；发起后轮询到结束。 */
   runScreenText: (body: ScreenTextIn) => Promise<boolean>;
   /** 修正识别结果（PUT blocks）；不触发任务，译文与无字版会被标为 stale。 */
@@ -709,6 +711,33 @@ const LAYER_HOME: Record<Layer['type'], { kind: string; step: string }> = {
   mask: { kind: '遮盖', step: '字幕' },
   shape: { kind: '图形', step: '贴纸' },
 };
+
+const SUBTITLE_SYNC_GEOMETRY_KEYS = ['anchor', 'margin', 'width', 'rotate', 'opacity'] as const;
+
+/** Copy only style and base-canvas geometry; text, spans, timing and language stay per cue. */
+function syncSubtitleLayerChange(layers: Layer[], source: TextLayer, before: TextLayer): void {
+  const styleKeys = new Set<keyof TextStyle>([
+    ...(Object.keys(before.style) as (keyof TextStyle)[]),
+    ...(Object.keys(source.style) as (keyof TextStyle)[]),
+  ]);
+  for (const other of layers) {
+    if (other.id === source.id || other.locked || !isSubtitleTextLayer(other)) continue;
+    for (const key of styleKeys) {
+      if (JSON.stringify(before.style[key]) !== JSON.stringify(source.style[key])) {
+        Object.assign(other.style, { [key]: source.style[key] === undefined ? undefined : structuredClone(source.style[key]) });
+      }
+    }
+    for (const key of SUBTITLE_SYNC_GEOMETRY_KEYS) {
+      if (JSON.stringify(before[key]) !== JSON.stringify(source[key])) {
+        Object.assign(other, { [key]: structuredClone(source[key]) });
+      }
+    }
+  }
+}
+
+function primarySelectedLayer(layers: Layer[], ids: Set<string>, primaryId: string | null): Layer | undefined {
+  return layers.find((layer) => layer.id === primaryId && ids.has(layer.id)) ?? layers.find((layer) => ids.has(layer.id));
+}
 
 export const useEditor = create<EditorState>((set, get) => {
   const trackMediaDuration = (track: AudioTrack) => track.source_kind === 'video'
@@ -1230,6 +1259,8 @@ export const useEditor = create<EditorState>((set, get) => {
       const ids = new Set(get().selectedLayerIds);
       if (!ids.size) return;
       get().updateSpec((spec) => {
+        const before = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        const beforeSubtitle = get().subtitleSyncEnabled && isSubtitleTextLayer(before) ? structuredClone(before) : null;
         for (const l of spec.layers) {
           if (!ids.has(l.id) || l.locked) continue;
           const aspect = layerAspect(l, get().assets);
@@ -1237,16 +1268,31 @@ export const useEditor = create<EditorState>((set, get) => {
           const margin = marginFromBox({ ...box, x: box.x + dx * 1080, y: box.y + dy * 1920 }, l.anchor, { W: 1080, H: 1920 });
           l.margin = [round4(margin[0]), round4(margin[1])];
         }
+        const primary = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        if (beforeSubtitle && isSubtitleTextLayer(primary)) syncSubtitleLayerChange(spec.layers, primary, beforeSubtitle);
       });
     },
     updateSelectedOpacity: (opacity) => {
       const ids = new Set(get().selectedLayerIds);
       if (!ids.size) return;
-      get().updateSpec((spec) => { for (const l of spec.layers) if (ids.has(l.id) && !l.locked) l.opacity = Math.max(0, Math.min(1, opacity)); });
+      get().updateSpec((spec) => {
+        const before = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        const beforeSubtitle = get().subtitleSyncEnabled && isSubtitleTextLayer(before) ? structuredClone(before) : null;
+        for (const l of spec.layers) if (ids.has(l.id) && !l.locked) l.opacity = Math.max(0, Math.min(1, opacity));
+        const primary = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        if (beforeSubtitle && isSubtitleTextLayer(primary)) syncSubtitleLayerChange(spec.layers, primary, beforeSubtitle);
+      });
     },
     updateSelectedTextStyle: (patch) => {
       const ids = new Set(get().selectedLayerIds);
-      get().updateSpec((spec) => { for (const l of spec.layers) if (l.type === 'text' && ids.has(l.id) && !l.locked) Object.assign(l.style, patch); });
+      get().updateSpec((spec) => {
+        const primary = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        const syncAll = get().subtitleSyncEnabled && isSubtitleTextLayer(primary);
+        for (const l of spec.layers) {
+          if (l.type !== 'text' || l.locked || !(syncAll ? isSubtitleTextLayer(l) : ids.has(l.id))) continue;
+          Object.assign(l.style, structuredClone(patch));
+        }
+      });
     },
     updateSelectedShapeStyle: (patch) => {
       const ids = new Set(get().selectedLayerIds);
@@ -1949,13 +1995,18 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
     screenTextOptions: null,
-    loadScreenTextOptions: async () => {
-      if (get().screenTextOptions) return;
+    screenTextOptionsLoading: false,
+    screenTextOptionsError: null,
+    loadScreenTextOptions: async (force = false) => {
+      if (get().screenTextOptionsLoading || (!force && get().screenTextOptions)) return;
+      set({ screenTextOptionsLoading: true, screenTextOptionsError: null });
       try {
-        set({ screenTextOptions: await api.getScreenTextOptions() });
+        set({ screenTextOptions: await api.getScreenTextOptions(), screenTextOptionsError: null });
       } catch {
-        // 旧后端没有这个接口：当作没开，界面把入口禁掉
-        set({ screenTextOptions: { enabled: false, erase_enabled: false, erase_provider: '', max_seconds: 0, max_frames: 0, max_blocks: 0 } });
+        // 网络 / 鉴权 / 旧后端都不是“服务器没配 key”。保留 null，让界面说清楚并允许重试。
+        set({ screenTextOptions: null, screenTextOptionsError: '读取画面文字配置失败，请重试' });
+      } finally {
+        set({ screenTextOptionsLoading: false });
       }
     },
     runScreenText: async (body) => {
@@ -2436,16 +2487,7 @@ export const useEditor = create<EditorState>((set, get) => {
           if (typeof patch === 'function') patch(l);
           else Object.assign(l, patch);
           if (before?.type === 'text' && l.type === 'text') {
-            const changedStyle = Object.keys(l.style) as (keyof typeof l.style)[];
-            for (const other of spec.layers) {
-              if (other.id === id || other.locked || !isSubtitleTextLayer(other)) continue;
-              for (const key of changedStyle) {
-                if (JSON.stringify(before.style[key]) !== JSON.stringify(l.style[key])) Object.assign(other.style, { [key]: l.style[key] === undefined ? undefined : structuredClone(l.style[key]) });
-              }
-              for (const key of ['anchor', 'margin', 'width', 'rotate', 'opacity'] as const) {
-                if (JSON.stringify(before[key]) !== JSON.stringify(l[key])) Object.assign(other, { [key]: structuredClone(l[key]) });
-              }
-            }
+            syncSubtitleLayerChange(spec.layers, l, before);
           }
           if (l.type === 'shape' && !(typeof patch === 'object' && 'image_url' in patch)) {
             l.image_url = null;
@@ -2660,7 +2702,13 @@ export const useEditor = create<EditorState>((set, get) => {
       // （与 HIG-63 的 updateSelectedTextStyle 同一个路子，只是贴的是整份样式而不是某几个字段）
       const ids = new Set(get().selectedLayerIds.length > 1 ? get().selectedLayerIds : [target.id]);
       get().updateSpec((spec) => {
-        for (const l of spec.layers) if (l.type === 'text' && ids.has(l.id) && !l.locked) l.style = { ...style };
+        const primary = primarySelectedLayer(spec.layers, ids, get().selectedLayerId);
+        const syncAll = get().subtitleSyncEnabled && isSubtitleTextLayer(primary);
+        for (const l of spec.layers) {
+          if (l.type === 'text' && !l.locked && (syncAll ? isSubtitleTextLayer(l) : ids.has(l.id))) {
+            l.style = structuredClone(style);
+          }
+        }
       });
     },
     nudgeLayer: (id, dx, dy, history = true) => {
@@ -2674,11 +2722,17 @@ export const useEditor = create<EditorState>((set, get) => {
     setLayerOverride: (key, id, override, history = true) => {
       get().updateSpec(
         (spec) => {
+          const source = spec.layers.find((layer) => layer.id === id);
+          const syncIds = get().subtitleSyncEnabled && isSubtitleTextLayer(source)
+            ? spec.layers.filter((layer) => !layer.locked && isSubtitleTextLayer(layer)).map((layer) => layer.id)
+            : [id];
           spec.outputs = ensureVariants(spec, [key]).outputs.map((cur) => {
             if (cur.variant_key !== key) return cur;
             const overrides = { ...(cur.layer_overrides ?? {}) };
-            if (override) overrides[id] = override;
-            else delete overrides[id];
+            for (const targetId of syncIds) {
+              if (override) overrides[targetId] = structuredClone(override);
+              else delete overrides[targetId];
+            }
             const o: OutputVariant = { ...cur, layer_overrides: overrides };
             if (!Object.keys(overrides).length) delete o.layer_overrides;
             return o;
