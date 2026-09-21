@@ -203,6 +203,67 @@ describe('多图层框选操作（HIG-63）', () => {
   });
 });
 
+describe('视频框选、拆分、变换与绑定原声（HIG-63 / HIG-88 / HIG-89 / HIG-87）', () => {
+  it('显式框选模式可独立开关', () => {
+    expect(useEditor.getState().timelineMarqueeEnabled).toBe(false);
+    useEditor.getState().setTimelineMarqueeEnabled(true);
+    expect(useEditor.getState().timelineMarqueeEnabled).toBe(true);
+  });
+
+  it('一次拆分播放头命中的主轨和上层轨所选视频', () => {
+    useEditor.getState().replaceSpec('v1', {
+      ...emptySpec(),
+      sequence: { clips: [{ id: 'c1', video_id: 'v1', in: 0, out: 5 }] },
+      video_tracks: [{ id: 'vt1', clips: [{ id: 'vc1', video_id: 'v1', start: 0, in: 0, out: 5 }] }],
+    });
+    useEditor.getState().setTime(2);
+    useEditor.getState().selectTimelineItems(['clip:c1', 'vclip:vc1']);
+    useEditor.getState().splitSelectedVideos();
+    expect(useEditor.getState().currentSpec()?.sequence?.clips).toHaveLength(2);
+    expect(useEditor.getState().currentSpec()?.video_tracks?.[0].clips).toHaveLength(2);
+    expect(useEditor.getState().timelineSelection).toHaveLength(2);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.sequence?.clips).toHaveLength(1);
+    expect(useEditor.getState().currentSpec()?.video_tracks?.[0].clips).toHaveLength(1);
+  });
+
+  it('首次修改主视频画面时物化片段，拆分继承变换', () => {
+    useEditor.getState().replaceSpec('v1', emptySpec());
+    useEditor.getState().setTime(2);
+    useEditor.getState().updateSelectedVideoTransform({ fit: 'contain', scale: 1.25, x: 0.4, y: 0.6 });
+    const first = useEditor.getState().currentSpec()?.sequence?.clips[0];
+    expect(first?.transform).toMatchObject({ fit: 'contain', scale: 1.25, x: 0.4, y: 0.6 });
+    useEditor.getState().splitSelectedVideos();
+    expect(useEditor.getState().currentSpec()?.sequence?.clips.map((clip) => clip.transform?.scale)).toEqual([1.25, 1.25]);
+  });
+
+  it('上层有声视频自动建绑定音轨，同步移动裁剪拆分；解绑后删除视频仍保留音频', () => {
+    const source = { ...VIDEO, id: 'v2', name: 'b.mp4', duration: 6, status: 'ready', has_audio: true, proxy_url: '/v2.mp4', source_url: '/v2-source.mp4' } as Video;
+    useEditor.setState({ videos: [VIDEO, source] });
+    useEditor.getState().replaceSpec('v1', emptySpec());
+    const clipId = useEditor.getState().addUpperVideo('v2', 1)!;
+    let spec = useEditor.getState().currentSpec()!;
+    expect(spec.audio?.tracks[0]).toMatchObject({ source_kind: 'video', asset_id: 'v2', linked_clip_id: clipId, t: [1, 7], offset: 0 });
+    useEditor.getState().updateUpperVideo(clipId, { start: 2, in: 1, out: 5 });
+    spec = useEditor.getState().currentSpec()!;
+    expect(spec.audio?.tracks[0]).toMatchObject({ t: [2, 6], offset: 1 });
+    useEditor.getState().setTime(4);
+    useEditor.getState().selectTimelineItems([`vclip:${clipId}`]);
+    useEditor.getState().splitSelectedVideos();
+    spec = useEditor.getState().currentSpec()!;
+    expect(spec.video_tracks?.[0].clips).toHaveLength(2);
+    expect(spec.audio?.tracks).toHaveLength(2);
+    const rightKey = useEditor.getState().timelineSelection[0];
+    const rightId = rightKey.slice(6);
+    const rightAudio = spec.audio!.tracks.find((track) => track.linked_clip_id === rightId)!;
+    useEditor.getState().unlinkAudioTrack(rightAudio.id);
+    useEditor.getState().deleteTimelineItems();
+    spec = useEditor.getState().currentSpec()!;
+    expect(spec.video_tracks?.[0].clips).toHaveLength(1);
+    expect(spec.audio?.tracks.find((track) => track.id === rightAudio.id)?.linked_clip_id).toBeUndefined();
+  });
+});
+
 describe('pushHistorySnapshot', () => {
   it('HIG-39 合成后 I/O、删左/右、拖动删除区间与撤销都使用完整合成时长', () => {
     const spec: EditSpec = { ...emptySpec(), sequence: { clips: [{ id: '1', video_id: 'v1', in: 0, out: 10 }, { id: '2', video_id: 'v2', in: 0, out: 20 }] } };

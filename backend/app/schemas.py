@@ -668,7 +668,9 @@ class AudioTrack(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str = Field(min_length=1, max_length=64)
+    source_kind: Literal["asset", "video"] = "asset"
     asset_id: str = Field(min_length=1)
+    linked_clip_id: str | None = Field(default=None, min_length=1, max_length=64)
     role: AudioRole = "bgm"  # UI grouping only; the worker treats every track alike
     align: AudioAlign = "post"
     t: Literal["all"] | TimeWindow = "all"
@@ -769,6 +771,18 @@ class ClipTransition(BaseModel):
         return self
 
 
+class VideoTransform(BaseModel):
+    """Per-clip framing on the output canvas (HIG-89)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fit: Literal["auto", "contain", "cover", "original"] = "auto"
+    scale: float = Field(default=1.0, ge=0.05, le=20.0)
+    x: float = Field(default=0.5, ge=-2.0, le=3.0)
+    y: float = Field(default=0.5, ge=-2.0, le=3.0)
+    crop: CropRect | None = None
+
+
 class SequenceClip(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -782,6 +796,7 @@ class SequenceClip(BaseModel):
     # None distinguishes legacy sequences whose owner gain was stored as master gain.
     source_volume: float | None = Field(default=None, ge=0, le=1)
     transition: ClipTransition | None = None
+    transform: VideoTransform | None = None
 
     @model_validator(mode="after")
     def _check_range(self) -> SequenceClip:
@@ -828,6 +843,7 @@ class VideoTrackClip(BaseModel):
     source_in: float = Field(alias="in", ge=0)
     source_out: float = Field(alias="out", gt=0)
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    transform: VideoTransform | None = None
 
     @model_validator(mode="after")
     def _check_range(self) -> VideoTrackClip:
@@ -886,6 +902,14 @@ class EditSpec(BaseModel):
         video_clip_ids = [clip.id for track in self.video_tracks for clip in track.clips]
         if len(video_clip_ids) != len(set(video_clip_ids)):
             raise ValueError("视频轨片段 id 不能重复")
+        video_clips = {clip.id: clip for track in self.video_tracks for clip in track.clips}
+        linked_audio = [track for track in (self.audio.tracks if self.audio else []) if track.linked_clip_id]
+        if len({track.linked_clip_id for track in linked_audio}) != len(linked_audio):
+            raise ValueError("一个视频轨片段只能绑定一条原声音轨")
+        for track in linked_audio:
+            clip = video_clips.get(track.linked_clip_id or "")
+            if track.source_kind != "video" or clip is None or track.asset_id != clip.video_id:
+                raise ValueError(f"音轨 {track.id} 的 linked_clip_id 必须指向同一视频来源的上层视频片段")
         if self.sequence is not None:
             if self.trim.duration is not None:
                 raise ValueError("多片段序列的成片时长必须先转换为片段")

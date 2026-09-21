@@ -3,7 +3,7 @@ import type { AudioTrack, EditSpec, Layer, SequenceClip, SequenceSpec } from '..
 import { keepSegments, normalizeRanges, postToSource, postTrimDuration, sourceToPost } from './time';
 import { cloneSpec } from './spec';
 
-const MIN_CLIP = 0.1;
+export const MIN_CLIP = 0.1;
 export const VIDEO_DRAG = 'application/x-hitgo-source-video';
 export const CLIP_DRAG = 'application/x-hitgo-sequence-clip';
 let activeSourceId: string | null = null;

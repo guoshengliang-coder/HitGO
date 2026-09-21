@@ -27,6 +27,7 @@ from app.models import (
     JOB_DONE,
     JOB_FAILED,
     JOB_RUNNING,
+    VIDEO_READY,
     Asset,
     Batch,
     Job,
@@ -196,11 +197,12 @@ def collect_cover(db: Session, spec: EditSpec) -> CoverSource | None:
     return CoverSource(media, image_duration=spec.cover.duration)
 
 
-def collect_audio(db: Session, spec: EditSpec) -> dict[str, AudioSource]:
-    """Ready audio assets referenced by ``audio.tracks``; missing ones are warned about by the builder."""
+def collect_audio(db: Session, spec: EditSpec, owner: Video | None = None) -> dict[str, AudioSource]:
+    """Ready audio assets and HIG-87 video-source audio referenced by ``audio.tracks``."""
     if spec.audio is None or not spec.audio.tracks:
         return {}
-    ids = {track.asset_id for track in spec.audio.tracks}
+    ids = {track.asset_id for track in spec.audio.tracks if track.source_kind == "asset"}
+    video_ids = {track.asset_id for track in spec.audio.tracks if track.source_kind == "video"}
     result: dict[str, AudioSource] = {}
     for asset in db.query(Asset).filter(Asset.id.in_(ids), Asset.type == ASSET_AUDIO).all():
         if asset.status != ASSET_READY or not asset.duration:
@@ -209,6 +211,13 @@ def collect_audio(db: Session, spec: EditSpec) -> dict[str, AudioSource]:
         if not path.is_file():
             continue
         result[asset.id] = AudioSource(str(path), float(asset.duration), name=asset.name)
+    if owner is not None and video_ids:
+        for video in db.query(Video).filter(Video.id.in_(video_ids), Video.batch_id == owner.batch_id).all():
+            if video.status != VIDEO_READY or not video.duration or not video.has_audio:
+                continue
+            path = storage.source_path(video.batch_id, video.id, video.source_ext)
+            if path.is_file():
+                result[video.id] = AudioSource(str(path), float(video.duration), name=f"{video.name} · 原声")
     return result
 
 
@@ -262,7 +271,7 @@ def build_plan(db: Session, job: Job, video: Video) -> RenderPlan:
         output_path=str(storage.tmp_output_path(job.id, "mp4" if job.output_format in {"png", "jpg"} else job.output_format)),
         resolve_image_url=resolve_image_url,
         ffmpeg_bin=settings.ffmpeg_bin,
-        audio_assets=collect_audio(db, spec),
+        audio_assets=collect_audio(db, spec, video),
         cover=collect_cover(db, spec),
         sequence_sources=sequence_sources,
         video_track_sources=video_track_sources,

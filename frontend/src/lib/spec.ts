@@ -25,6 +25,7 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
     ...(audio ? { audio } : {}),
     ...(cover ? { cover } : {}),
     ...(spec.sequence ? { sequence: spec.sequence } : {}),
+    ...(spec.video_tracks?.length ? { video_tracks: spec.video_tracks } : {}),
     spec_version: 1,
     trim: {
       remove: normalizeRanges(spec.trim.remove, spec.sequence ? spec.sequence.clips.reduce((n, c) => n + (c.out - c.in) / (c.speed ?? 1) - (c.transition?.duration ?? 0), 0) : duration).map(([a, b]) => [round3(a), round3(b)]),

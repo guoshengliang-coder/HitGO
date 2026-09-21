@@ -861,7 +861,11 @@ export type AudioAlign = 'post' | 'source';
 
 export interface AudioTrack {
   id: string;
+  /** 缺省 asset；video 表示 asset_id 实际引用批次里的 Video.id（HIG-87）。 */
+  source_kind?: 'asset' | 'video';
   asset_id: string;
+  /** 仍与上层视频片段同步时保存其 clip id；解除绑定后移除（HIG-87）。 */
+  linked_clip_id?: string;
   role?: AudioRole;
   /** 可选，缺省 'post'。 */
   align?: AudioAlign;
@@ -885,6 +889,19 @@ export interface AudioTrack {
   locked?: boolean;
   /** 可选（HIG-48）：时间线上改的轨道名；缺省显示素材文件名，只在非空时发。 */
   name?: string;
+}
+
+/** 视频片段相对输出画布的变换。缺省整个对象时保持旧版自动铺画布行为（HIG-89）。 */
+export interface VideoTransform {
+  /** auto 沿用输出 fill；contain=适应；cover=填满；original=源像素尺寸。 */
+  fit?: 'auto' | 'contain' | 'cover' | 'original';
+  /** 相对基础适配尺寸的等比缩放。 */
+  scale?: number;
+  /** 画面中心相对画布宽/高的位置；0.5,0.5 为居中，可超出画布。 */
+  x?: number;
+  y?: number;
+  /** 源画面裁切窗口，均为相对源宽/高的比例。 */
+  crop?: CropRect | null;
 }
 
 /** 契约 §2 audio：源音轨音量 + 叠加音轨。缺省（无此块）= 源音轨原样保留。 */
@@ -936,6 +953,8 @@ export interface SequenceClip {
   source_volume?: number | null;
   /** 当前片段与前一段之间的转场；首段不设。 */
   transition?: ClipTransition | null;
+  /** 可选（HIG-89）：该片段自己的画面位置、缩放和裁切。 */
+  transform?: VideoTransform | null;
 }
 export interface SequenceSpec {
   clips: SequenceClip[];
@@ -951,6 +970,8 @@ export interface VideoTrackClip {
   in: number;
   out: number;
   speed?: number;
+  /** 可选（HIG-89）：该片段自己的画面位置、缩放和裁切。 */
+  transform?: VideoTransform | null;
 }
 export interface VideoTrack {
   id: string;

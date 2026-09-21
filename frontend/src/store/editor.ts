@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { api, ApiError, uploadErrorText, type ApplyLayerMode, type RenderItem } from '../api';
-import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, VideoTrackClip, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
+import type { Asset, AudioRole, AudioSpec, AudioTrack, SequenceClip, VideoTrackClip, VideoTransform, SeparationModel, BatchDetail, CropRect, EditSpec, Job, Layer, LocalizeIn, LocalizeOptions, OutputVariant, SafeZone, ScrollBox, TextLayer, TextScroll, TextStyle, TextStylePreset, VariantKey, Video, Anchor, LayerOverride, StickerLayer, ShapeLayer, ScreenTextIn, ScreenTextOptions, SourceVariant } from '../types';
 import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../types';
 import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
@@ -24,7 +24,7 @@ export interface ExportDialogRequest {
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { retrimForAsset } from '../lib/sourceTrim';
-import { clipWindows, materializeSequence, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain } from '../lib/sequence';
+import { clipAt, clipWindows, materializeSequence, MIN_CLIP, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain, splitClip } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { clamp, lapsFor, normalizeRanges, outputDuration, postTimeOf, postToSource, postTrimDuration, sourceToPost, splitPostTime, wouldRemoveAll } from '../lib/time';
 import { layerFocusTime } from '../lib/layerFocus';
@@ -45,7 +45,7 @@ import { ensureFontsLoaded } from '../lib/fonts';
 import { BUILTIN_TEXT_PRESETS } from '../lib/textPresets';
 import { calibrationFromJobs, type Calibration } from '../lib/estimate';
 import { hasPreparingVideos, nextCurrentAfterDelete } from '../lib/videos';
-import { addVideoTrack, removeVideoTrackClips, splitVideoTrackClip, updateVideoTrackClip } from '../lib/videoTracks';
+import { addLinkedVideoAudio, addVideoTrack, removeVideoTrackClips, splitVideoTrackClip, updateVideoTrackClip, videoTrackClipEnd } from '../lib/videoTracks';
 
 export type { Step } from '../lib/steps';
 export type SaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
@@ -134,6 +134,7 @@ export interface EditorState {
   replacingLayerId: string | null;
   selectedClipId: string | null;
   timelineSelection: string[];
+  timelineMarqueeEnabled: boolean;
   hasTimelineClipboard: boolean;
   time: number; // 源时间；有封面时封面段为负（[-封面时长, 0)，见 lib/cover）
   playing: boolean;
@@ -214,13 +215,16 @@ export interface EditorState {
   focusLayer: (layer: Layer, options?: { reveal?: boolean }) => void;
   setSelectedClip: (id: string | null) => void;
   selectTimelineItems: (keys: string[], mode?: 'replace' | 'add' | 'subtract') => void;
+  setTimelineMarqueeEnabled: (enabled: boolean) => void;
   copyTimelineItems: () => void;
   pasteTimelineItems: () => void;
   deleteTimelineItems: () => void;
   shiftTimelineItems: (seconds: number) => void;
   addUpperVideo: (videoId: string, start: number) => string | null;
   updateUpperVideo: (clipId: string, patch: Partial<VideoTrackClip>) => void;
+  updateSelectedVideoTransform: (patch: Partial<VideoTransform> | null) => void;
   splitUpperVideo: (clipId: string) => void;
+  splitSelectedVideos: () => void;
   setTime: (t: number) => void;
   setPlaying: (p: boolean) => void;
   /** 播放器每帧回调：一次写入 time / playing / lap，少触发几次重渲染。 */
@@ -279,6 +283,7 @@ export interface EditorState {
   /** init：拖进时间线时带上落点算出的时段等（HIG-33），覆盖按角色的默认值。 */
   addAudioTrack: (assetId: string, role: AudioRole, init?: Partial<Omit<AudioTrack, 'id' | 'asset_id' | 'role'>>) => string | null;
   updateAudioTrack: (id: string, patch: Partial<AudioTrack>, history?: boolean) => void;
+  unlinkAudioTrack: (id: string) => void;
   /** 改音轨速度（HIG-75）：同时按新速度调时段，让这条轨播的素材内容不变。 */
   setTrackSpeed: (id: string, speed: number) => void;
   removeAudioTrack: (id: string) => void;
@@ -464,6 +469,7 @@ const PER_BATCH_INITIAL = {
   history: {},
   selectedLayerId: null,
   selectedLayerIds: [],
+  timelineMarqueeEnabled: false,
   subtitleSyncEnabled: false,
   drawingShape: null,
   layerFocusVersion: 0,
@@ -685,6 +691,9 @@ const LAYER_HOME: Record<Layer['type'], { kind: string; step: string }> = {
 };
 
 export const useEditor = create<EditorState>((set, get) => {
+  const trackMediaDuration = (track: AudioTrack) => track.source_kind === 'video'
+    ? get().videos.find((video) => video.id === track.asset_id)?.duration ?? 0
+    : get().assets.find((asset) => asset.id === track.asset_id)?.duration ?? 0;
   /** 播放头的剪后时刻、剪后时长，以及把音轨 id 在这里拆开的两条（拆不了时提示并返回 null）。HIG-25。 */
   const playheadPost = () => {
     const v = get().currentVideo();
@@ -699,7 +708,7 @@ export const useEditor = create<EditorState>((set, get) => {
     const ctx = playheadPost();
     const track = ctx?.spec.audio?.tracks.find((t) => t.id === id);
     if (!ctx || !track || track.locked) return null;
-    const media = get().assets.find((a) => a.id === track.asset_id)?.duration ?? 0;
+    const media = trackMediaDuration(track);
     const parts = splitTrackAt(track, ctx.p, ctx.postDuration, media, newTrackId());
     if (!parts) set({ toast: '播放头不在这条音轨的时段内（离两端至少 0.1 秒），移到要剪的位置再拆分', toastAction: null });
     return parts;
@@ -1252,6 +1261,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const tracks = next.filter((key) => key.startsWith('track:')).map((key) => key.slice(6));
       set({ timelineSelection: next, selectedLayerIds: layers, selectedLayerId: layers[layers.length - 1] ?? null, selectedClipId: clips[clips.length - 1] ?? null, selectedTrackId: tracks[tracks.length - 1] ?? null });
     },
+    setTimelineMarqueeEnabled: (timelineMarqueeEnabled) => set({ timelineMarqueeEnabled }),
     copyTimelineItems: () => {
       const spec = get().currentSpec();
       if (!spec) return;
@@ -1324,16 +1334,89 @@ export const useEditor = create<EditorState>((set, get) => {
       const owner = get().currentVideo();
       if (!source || !owner) return null;
       let id: string | null = null;
-      get().updateSpec((spec) => { id = addVideoTrack(spec, videoId, source.duration, start).id; });
+      get().updateSpec((spec) => {
+        const clip = addVideoTrack(spec, videoId, source.duration, start);
+        id = clip.id;
+        addLinkedVideoAudio(spec, clip, source);
+      });
       if (id) get().selectTimelineItems([`vclip:${id}`]);
       return id;
     },
     updateUpperVideo: (clipId, patch) => get().updateSpec((spec) => { updateVideoTrackClip(spec, clipId, patch); }),
+    updateSelectedVideoTransform: (patch) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const selected = [...get().timelineSelection].reverse().find((key) => key.startsWith('vclip:') || key.startsWith('clip:'));
+      let next = cloneSpec(spec);
+      let key: string;
+      if (selected?.startsWith('vclip:')) {
+        const id = selected.slice(6);
+        const clip = next.video_tracks?.flatMap((track) => track.clips).find((item) => item.id === id);
+        if (!clip) return;
+        if (patch === null) delete clip.transform;
+        else clip.transform = { ...(clip.transform ?? {}), ...patch };
+        key = selected;
+      } else {
+        next = materializeSequence(next, video.id, video.duration);
+        const selectedId = selected?.startsWith('clip:') ? selected.slice(5) : null;
+        const clip = next.sequence?.clips.find((item) => item.id === selectedId) ?? (next.sequence ? clipAt(next.sequence, Math.max(0, selectPostTime(get())))?.clip : undefined);
+        if (!clip) return;
+        if (patch === null) delete clip.transform;
+        else clip.transform = { ...(clip.transform ?? {}), ...patch };
+        key = `clip:${clip.id}`;
+      }
+      get().replaceSpec(video.id, next, { history: true });
+      get().selectTimelineItems([key]);
+    },
     splitUpperVideo: (clipId) => {
       let id: string | null = null;
       get().updateSpec((spec) => { id = splitVideoTrackClip(spec, clipId, Math.max(0, selectPostTime(get()))); });
       if (id) get().selectTimelineItems([`vclip:${id}`]);
       else get().setToast('播放头需位于所选上层视频片段内部');
+    },
+    splitSelectedVideos: () => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec) return;
+      const selected = new Set(get().timelineSelection);
+      const at = Math.max(0, selectPostTime(get()));
+      let next = cloneSpec(spec);
+      const rightKeys: string[] = [];
+      let skipped = 0;
+
+      if (!spec.video_locked && next.sequence) {
+        const selectedMain = clipWindows(next.sequence).filter(({ clip }) => selected.has(`clip:${clip.id}`));
+        for (const { clip, start, end } of selectedMain) {
+          if (at <= start + MIN_CLIP || at >= end - MIN_CLIP) { skipped += 1; continue; }
+          const split = splitClip(next, clip.id, at);
+          if (!split) { skipped += 1; continue; }
+          next = split;
+          const index = next.sequence!.clips.findIndex((item) => item.id === clip.id);
+          const right = next.sequence!.clips[index + 1];
+          if (right) rightKeys.push(`clip:${right.id}`);
+        }
+      } else {
+        skipped += [...selected].filter((key) => key.startsWith('clip:')).length;
+      }
+
+      for (const track of next.video_tracks ?? []) {
+        for (const clip of [...track.clips]) {
+          if (!selected.has(`vclip:${clip.id}`)) continue;
+          if (track.locked || at <= clip.start + MIN_CLIP || at >= videoTrackClipEnd(clip) - MIN_CLIP) { skipped += 1; continue; }
+          const rightId = splitVideoTrackClip(next, clip.id, at);
+          if (rightId) rightKeys.push(`vclip:${rightId}`);
+          else skipped += 1;
+        }
+      }
+
+      if (!rightKeys.length) {
+        get().setToast('播放头未穿过可拆分的所选视频片段（需离两端至少 0.1 秒）');
+        return;
+      }
+      get().replaceSpec(video.id, next, { history: true });
+      get().selectTimelineItems(rightKeys);
+      get().setToast(`已拆分 ${rightKeys.length} 个视频片段${skipped ? `，跳过 ${skipped} 个` : ''}`);
     },
     shiftTimelineItems: (seconds) => {
       const video = get().currentVideo();
@@ -1600,14 +1683,18 @@ export const useEditor = create<EditorState>((set, get) => {
       set({ selectedTrackId: id });
       return id;
     },
+    unlinkAudioTrack: (id) => get().updateSpec((spec) => {
+      const track = spec.audio?.tracks.find((item) => item.id === id);
+      if (track) delete track.linked_clip_id;
+    }),
     setTrackSpeed: (id, speed) => {
       const spec = get().currentSpec();
       const track = spec?.audio?.tracks.find((t) => t.id === id);
       if (!spec || !track) return;
       const next = clampSpeed(speed);
       if (track.locked) return;
-      const asset = get().assets.find((a) => a.id === track.asset_id);
-      const media = asset?.duration ?? 0;
+      const asset = track.source_kind === 'video' ? undefined : get().assets.find((a) => a.id === track.asset_id);
+      const media = trackMediaDuration(track);
       const postDuration = outputDuration(selectSourceDuration(get()), spec.trim);
       get().updateSpec((draft) => {
         const target = draft.audio?.tracks.find((t) => t.id === id);

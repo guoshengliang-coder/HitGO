@@ -15,7 +15,7 @@
 // 滚动文字（HIG-50 大字报）：PNG 在裁切框（scroll.box）里按 lib/poster 的曲线向上滚，框外裁掉；不能拖动 / 缩放，
 // 选中且暂停时画出框线。成片时长（trim.duration）交给 player 循环补足，播放头的成片时刻从 usePostTime 取（跨遍累加）。
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import Konva from 'konva';
 import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect, Text as KText, Transformer, Group } from 'react-konva';
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
@@ -50,6 +50,8 @@ import { AudioTracks } from './AudioTracks';
 import { MaskNode, MaskPreview, maskStageBox, supportsBackdropBlur } from './MaskNode';
 import { GUIDE_COLOR, NO_GUIDES, SNAP_PX, snapDraggedNode, type Guides } from './stageSnap';
 import { isVideoAsset, outputSize, variantDef, type CropRect, type EditSpec, type Layer, type Rect as ZRect, type SafeZone, type TextLayer, type Video, type VideoTrackClip } from '../../types';
+import { resolveVideoTransform, transformFromBox, videoBox, type VideoBox } from '../../lib/videoTransform';
+import { videoTrackClipEnd } from '../../lib/videoTracks';
 
 // Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、四条边改换行宽度 / 框高（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 /** 指针移开这么多舞台像素才算框选，而不是一次点击（HIG-77，与时间轴同一个阈值）。 */
@@ -638,7 +640,23 @@ function LayerNode({
   );
 }
 
-function UpperVideoPreview({ clip, source, active, fill }: { clip: VideoTrackClip; source: Video; active: boolean; fill: 'blur' | 'color' | 'crop' }) {
+function mediaFrameStyle(box: VideoBox, clip: VideoTrackClip | { transform?: import('../../types').VideoTransform | null }) {
+  const crop = resolveVideoTransform(clip.transform).crop;
+  const frame = { left: box.x, top: box.y, width: box.w, height: box.h };
+  if (!crop) return { frame, media: { inset: 0, width: '100%', height: '100%' } as CSSProperties };
+  return {
+    frame,
+    media: {
+      inset: 'auto',
+      left: -crop.x * box.w / crop.w,
+      top: -crop.y * box.h / crop.h,
+      width: box.w / crop.w,
+      height: box.h / crop.h,
+    } as CSSProperties,
+  };
+}
+
+function UpperVideoPreview({ clip, source, active, fill, W, H, outputW }: { clip: VideoTrackClip; source: Video; active: boolean; fill: 'blur' | 'color' | 'crop'; W: number; H: number; outputW: number }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const sync = (playing: boolean) => {
@@ -657,7 +675,10 @@ function UpperVideoPreview({ clip, source, active, fill }: { clip: VideoTrackCli
     sync(player.mediaRate > 0);
     return player.subscribe((_time, playing) => sync(playing));
   }, [clip]);
-  return <video ref={ref} className="upper-video-preview" src={source.proxy_url} playsInline preload="auto" muted style={{ display: active ? 'block' : 'none', objectFit: fill === 'crop' ? 'cover' : 'contain' }} />;
+  const transformed = !!clip.transform;
+  const box = transformed ? videoBox(clip.transform, source.width * (W / outputW), source.height * (W / outputW), W, H, fill) : { x: 0, y: 0, w: W, h: H };
+  const styles = mediaFrameStyle(box, clip);
+  return <div className="upper-video-frame" style={{ ...styles.frame, display: active ? 'block' : 'none', background: transformed ? 'transparent' : undefined }}><video ref={ref} className="upper-video-preview" src={source.proxy_url} playsInline preload="auto" muted style={{ ...styles.media, objectFit: transformed ? 'fill' : fill === 'crop' ? 'cover' : 'contain', background: transformed ? 'transparent' : undefined }} /></div>;
 }
 
 export function Stage({ hidden }: { hidden?: boolean }) {
@@ -665,6 +686,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
+  const videoTrRef = useRef<Konva.Transformer>(null);
+  const videoNodeRef = useRef<Konva.Rect>(null);
   const nodes = useRef<Record<string, Konva.Node | null>>({});
   const previewKey = useEditor((s) => s.previewVariantKey);
   const isRef = previewKey === '9x16';
@@ -708,6 +731,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const addLayer = useEditor((s) => s.addLayer);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
+  const timelineSelection = useEditor((s) => s.timelineSelection);
+  const updateSelectedVideoTransform = useEditor((s) => s.updateSelectedVideoTransform);
   const focusLayer = useEditor((s) => s.focusLayer);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const postTime = usePostTime();
@@ -725,6 +750,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const marqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number; mode: 'replace' | 'add' | 'subtract'; active: boolean } | null>(null);
   const backdrop = useMemo(supportsBackdropBlur, []);
+  const selectedVideoKey = [...timelineSelection].reverse().find((key) => key.startsWith('clip:') || key.startsWith('vclip:')) ?? null;
+  const activeMainClip = spec?.sequence ? clipAt(spec.sequence, postTime)?.clip : undefined;
+  const activeUpper = spec?.video_tracks?.flatMap((track) => track.hidden ? [] : track.clips.map((clip) => ({ clip, locked: !!track.locked }))).filter(({ clip }) => postTime >= clip.start && postTime < videoTrackClipEnd(clip)) ?? [];
 
   // 换选中 / 换视频 / 换步骤时退出内联编辑
   useEffect(() => {
@@ -825,6 +853,13 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     tr.nodes(node ? [node] : []);
     tr.getLayer()?.batchDraw();
   }, [selectedLayerId, editingLayerId, step, spec, W, H, coverActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const tr = videoTrRef.current;
+    if (!tr) return;
+    tr.nodes(step === 'trim' && selectedVideoKey && videoNodeRef.current ? [videoNodeRef.current] : []);
+    tr.getLayer()?.batchDraw();
+  }, [selectedVideoKey, step, spec, W, H, coverActive]);
 
   const imageDrop = useCanvasImageDrop(boxRef, { enabled: !!video && !!spec, isRef });
 
@@ -942,6 +977,28 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const selectedIsScrollBox = selectedType === 'text' && !!(selectedLayer as TextLayer | undefined)?.scroll;
   const activeAnchor = useCallback(() => trRef.current?.getActiveAnchor() ?? null, []);
   const hasSrc = !!previewUrl;
+  const mainTransformed = !!activeMainClip?.transform;
+  const mainBox = mainTransformed && frameVideo
+    ? videoBox(activeMainClip?.transform, frameVideo.width * stageScale, frameVideo.height * stageScale, W, H, fill)
+    : { x: 0, y: 0, w: W, h: H };
+  const mainFrameStyles = mediaFrameStyle(mainBox, activeMainClip ?? {});
+  const videoControls = [
+    ...(!coverActive && frameVideo ? [{
+      key: activeMainClip ? `clip:${activeMainClip.id}` : 'main',
+      clip: activeMainClip,
+      source: frameVideo,
+      locked: !!spec?.video_locked,
+      box: videoBox(activeMainClip?.transform, frameVideo.width * stageScale, frameVideo.height * stageScale, W, H, fill),
+    }] : []),
+    ...activeUpper.flatMap(({ clip, locked }) => {
+      const source = useEditor.getState().videos.find((item) => item.id === clip.video_id);
+      return source ? [{ key: `vclip:${clip.id}`, clip, source, locked, box: videoBox(clip.transform, source.width * stageScale, source.height * stageScale, W, H, fill) }] : [];
+    }),
+  ];
+  const selectVideoControl = (key: string) => {
+    if (key === 'main') updateSelectedVideoTransform({});
+    else selectTimelineItems([key]);
+  };
   const overlayUrl = isRef && safeZoneView === 'overlay' ? zone?.overlay_url ?? null : null;
   const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
 
@@ -949,22 +1006,24 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
       <div className="stage-box" ref={boxRef} style={{ width: W, height: H, background: mainVideoHidden ? '#000' : undefined }}>
         {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
-        <video
-          ref={videoRef}
-          src={previewUrl || undefined}
-          poster={video?.poster_url}
-          playsInline
-          preload="auto"
-          key={`${video?.id}:${spec?.source_variant ?? 'original'}`}
-          style={{ objectFit: 'contain', background: needsFill ? 'transparent' : undefined, visibility: mainVideoHidden || (needsFill && fill === 'crop') ? 'hidden' : undefined }}
-          onLoadedMetadata={(e) => {
-            e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
-          }}
-        />
+        <div className="main-video-frame" style={mainFrameStyles.frame}>
+          <video
+            ref={videoRef}
+            src={previewUrl || undefined}
+            poster={video?.poster_url}
+            playsInline
+            preload="auto"
+            key={`${video?.id}:${spec?.source_variant ?? 'original'}`}
+            style={{ ...mainFrameStyles.media, objectFit: mainTransformed ? 'fill' : 'contain', background: needsFill ? 'transparent' : undefined, visibility: mainVideoHidden || (!mainTransformed && needsFill && fill === 'crop') ? 'hidden' : undefined }}
+            onLoadedMetadata={(e) => {
+              e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
+            }}
+          />
+        </div>
         {!coverActive && spec?.video_tracks?.filter((track) => !track.hidden).flatMap((track) => track.clips).map((clip) => {
           const source = useEditor.getState().videos.find((item) => item.id === clip.video_id);
           const active = postTime >= clip.start && postTime < clip.start + (clip.out - clip.in) / (clip.speed ?? 1);
-          return source ? <UpperVideoPreview key={clip.id} clip={clip} source={source} active={active} fill={fill} /> : null;
+          return source ? <UpperVideoPreview key={clip.id} clip={clip} source={source} active={active} fill={fill} W={W} H={H} outputW={outputW} /> : null;
         })}
         {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
         <AudioTracks />
@@ -979,6 +1038,33 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown} onMouseMove={onStageMouseMove} onTouchMove={onStageMouseMove} onMouseUp={onStageMouseUp} onTouchEnd={onStageMouseUp}>
             <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
             <KLayer>
+              {step === 'trim' && videoControls.map((control) => {
+                const selected = selectedVideoKey === control.key;
+                return <Rect
+                  key={`video-control:${control.key}`}
+                  ref={selected ? videoNodeRef : undefined}
+                  x={control.box.x}
+                  y={control.box.y}
+                  width={control.box.w}
+                  height={control.box.h}
+                  fill="rgba(0,0,0,0.001)"
+                  stroke={selected ? GUIDE_COLOR : undefined}
+                  strokeWidth={selected ? 1 : 0}
+                  draggable={!control.locked}
+                  onPointerDown={() => selectVideoControl(control.key)}
+                  onDragEnd={(e) => {
+                    const node = e.target;
+                    updateSelectedVideoTransform({ x: (node.x() + node.width() / 2) / W, y: (node.y() + node.height() / 2) / H });
+                  }}
+                  onTransformEnd={(e) => {
+                    const node = e.target;
+                    const box = { x: node.x(), y: node.y(), w: node.width() * node.scaleX(), h: node.height() * node.scaleY() };
+                    node.scaleX(1);
+                    node.scaleY(1);
+                    updateSelectedVideoTransform(transformFromBox(box, control.clip?.transform, control.source.width * stageScale, control.source.height * stageScale, W, H, fill));
+                  }}
+                />;
+              })}
               {layers.map((l) => {
                 if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
@@ -1043,6 +1129,19 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   rotationSnaps={[0, 90, 180, 270]}
                   boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
                   anchorDragBoundFunc={anchorDragBoundFunc}
+                />
+              )}
+              {step === 'trim' && selectedVideoKey && (
+                <Transformer
+                  ref={videoTrRef}
+                  keepRatio
+                  enabledAnchors={CORNER_ANCHORS}
+                  rotateEnabled={false}
+                  anchorSize={8}
+                  anchorStroke={GUIDE_COLOR}
+                  anchorFill="#fff"
+                  borderStroke={GUIDE_COLOR}
+                  boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
                 />
               )}
             </KLayer>

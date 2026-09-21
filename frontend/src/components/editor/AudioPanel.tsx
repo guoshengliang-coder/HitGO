@@ -9,6 +9,7 @@ import { BUCKET_LABEL, filterAssets, type AssetBucket } from '../../lib/assets';
 import { audibleSpan, continuationOffset, resolveTrack, sourceVolume, SPEED_MAX, SPEED_MIN, stickerAudioLayers } from '../../lib/audioTracks';
 import { windowRange } from '../../lib/stickerMedia';
 import { layerName } from '../../lib/spec';
+import { resolveAudioTrackSource } from '../../lib/audioTrackSource';
 import { AssetCard, AUDIO_ACCEPT } from '../../pages/AssetsPage';
 import { IconEye, IconLock, IconTrash } from '../ui/Icons';
 import { Modal } from '../ui/Modal';
@@ -111,31 +112,34 @@ const nearestSpeed = (v: number) => SPEED_PRESETS.find((o) => Math.abs(o.v - v) 
 
 function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }) {
   const assets = useEditor((s) => s.assets);
+  const videos = useEditor((s) => s.videos);
   const update = useEditor((s) => s.updateAudioTrack);
   const remove = useEditor((s) => s.removeAudioTrack);
   const toggleHidden = useEditor((s) => s.toggleTrackHidden);
   const toggleLocked = useEditor((s) => s.toggleTrackLocked);
   const select = useEditor((s) => s.setSelectedTrack);
   const setSpeed = useEditor((s) => s.setTrackSpeed);
+  const unlink = useEditor((s) => s.unlinkAudioTrack);
   const postDuration = usePostDuration();
   const r = resolveTrack(track);
-  const asset = assets.find((a) => a.id === track.asset_id);
-  const name = asset?.name.replace(/\.[a-z0-9]+$/i, '') ?? '（素材已删除）';
-  const mediaDuration = asset?.duration ?? 0;
+  const source = resolveAudioTrackSource(track, assets, videos);
+  const name = source?.name ?? '（素材已删除）';
+  const mediaDuration = source?.duration ?? 0;
   const span = audibleSpan(track, postDuration, mediaDuration);
   const allTracks = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId]?.audio?.tracks : undefined));
   const cont = r.loop && allTracks ? continuationOffset(track, allTracks, postDuration, mediaDuration) : null;
   const [ws, we] = r.t === 'all' ? [0, postDuration] : r.t;
   const windowLen = Math.max(0, Math.min(we, postDuration) - ws);
-  const notReady = !asset || (asset.status ?? 'ready') !== 'ready';
+  const notReady = !source?.ready;
   return (
     <div className={`track-item ${selected ? 'selected' : ''} ${track.hidden ? 'hidden' : ''}`} onClick={() => select(track.id)}>
       <div className="track-head">
         <span className={`role ${r.role}`}>{r.role === 'voice' ? '口播' : 'BGM'}</span>
         {r.align === 'source' && <span className="role source" title="对齐源时间轴：随剪辑一起裁，不循环、无偏移">源</span>}
-        <span className="tname" title={asset?.name}>{name}</span>
+        <span className="tname" title={source?.name}>{name}</span>
+        {track.linked_clip_id && <span className="role source" title="移动、裁剪、拆分和删除会跟随对应视频">已绑定</span>}
         {mediaDuration > 0 && <span className="mono muted">{formatSeconds(mediaDuration, 1)}</span>}
-        {!asset && <span className="error-text small" title="素材已被删除或被重新分离 / 重新配音替换掉，导出时会跳过这条音轨">素材已失效，导出会跳过</span>}
+        {!source && <span className="error-text small" title="素材已被删除或被重新分离 / 重新配音替换掉，导出时会跳过这条音轨">素材已失效，导出会跳过</span>}
         <button className="btn ghost icon sm" title={track.hidden ? '显示（导出时恢复）' : '隐藏（导出时也不混入，不删除）'} aria-label={track.hidden ? '显示音轨' : '隐藏音轨'} aria-pressed={!!track.hidden} onClick={(e) => { e.stopPropagation(); toggleHidden(track.id); }}>
           <IconEye off={!!track.hidden} />
         </button>
@@ -146,15 +150,16 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
       </div>
       {selected && (
         <fieldset className="track-body" disabled={!!track.locked} onClick={(e) => e.stopPropagation()}>
-          <Seg label="时段" options={TIME_MODES} value={r.t === 'all' ? 'all' : 'range'} onChange={(m) => update(track.id, { t: m === 'all' ? 'all' : [0, Math.min(3, postDuration)] })} />
-          {r.t !== 'all' && (
+          {track.linked_clip_id && <div className="hint">此原声随对应视频同步。<button className="btn sm" onClick={() => unlink(track.id)}>解除绑定</button></div>}
+          {!track.linked_clip_id && <Seg label="时段" options={TIME_MODES} value={r.t === 'all' ? 'all' : 'range'} onChange={(m) => update(track.id, { t: m === 'all' ? 'all' : [0, Math.min(3, postDuration)] })} />}
+          {!track.linked_clip_id && r.t !== 'all' && (
             <div className="g2">
               <Num label="开始" value={r.t[0]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [v, Math.max(v + 0.1, (r.t as [number, number])[1])] })} />
               <Num label="结束" value={r.t[1]} scale={1} step={0.1} min={0} suffix="s" onChange={(v) => update(track.id, { t: [Math.min((r.t as [number, number])[0], v - 0.1), v] })} />
             </div>
           )}
           <Slider label="音量" value={r.volume} onChange={(v) => update(track.id, { volume: Math.round(v * 100) / 100 })} />
-          {r.align === 'source' ? (
+          {!track.linked_clip_id && (r.align === 'source' ? (
             <div className="hint">按源视频时间轴播放，删除的区间会一起跳过；不能循环、偏移或变速。</div>
           ) : (
             <>
@@ -182,12 +187,12 @@ function TrackItem({ track, selected }: { track: AudioTrack; selected: boolean }
                 </Field>
               )}
             </>
-          )}
+          ))}
           <div className="g2">
             <Num label="淡入" value={r.fade_in} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_out)} suffix="s" onChange={(v) => update(track.id, { fade_in: Math.round(v * 100) / 100 })} />
             <Num label="淡出" value={r.fade_out} scale={1} step={0.5} min={0} max={Math.max(0, windowLen - r.fade_in)} suffix="s" onChange={(v) => update(track.id, { fade_out: Math.round(v * 100) / 100 })} />
           </div>
-          {notReady && <div className="error-text">{asset ? '素材还在处理中，就绪前预览和成片都不会出声。' : '素材不存在，成片里会跳过这条音轨。'}</div>}
+          {notReady && <div className="error-text">{source ? '素材还在处理中或不含音轨，就绪前预览和成片都不会出声。' : '素材不存在，成片里会跳过这条音轨。'}</div>}
           {!notReady && !r.loop && r.align !== 'source' && span < windowLen - 0.05 && (
             <div className="hint">素材只够放 {formatSeconds(span, 1)}，之后到时段结束静音；淡出落在素材播完处。要铺满可改为循环。</div>
           )}
