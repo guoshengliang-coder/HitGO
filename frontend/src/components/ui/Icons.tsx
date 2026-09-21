@@ -82,6 +82,14 @@ export const IconCutRight = () => (
 export const IconSplit = () => (
   <svg {...base}><path d="M8 1.5v13" /><rect x="1.5" y="5.5" width="4.5" height="5" rx="1" /><rect x="10" y="5.5" width="4.5" height="5" rx="1" /></svg>
 );
+/** 吸附开关（HIG-85）：U 形磁铁。 */
+export const IconMagnet = () => (
+  <svg {...base}><path d="M3.5 2.5v5a4.5 4.5 0 0 0 9 0v-5" /><path d="M6.5 2.5v5a1.5 1.5 0 0 0 3 0v-5" /><path d="M3.5 5h3M9.5 5h3" /></svg>
+);
+/** 组合（HIG-85）：两个叠在一起的方块。 */
+export const IconGroup = () => (
+  <svg {...base}><rect x="1.5" y="1.5" width="8" height="8" rx="1" /><rect x="6.5" y="6.5" width="8" height="8" rx="1" /></svg>
+);
 export const IconCenterH = () => (
   <svg {...base}><path d="M8 1.5v13" strokeDasharray="2 1.5" /><rect x="3" y="5" width="10" height="6" rx="1" /></svg>
 );

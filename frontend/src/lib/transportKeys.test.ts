@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adjacentCutPoint, cutPoints, MAX_PPS, MIN_PPS, nextShuttleRate, stepZoom } from './transportKeys';
+import { adjacentCutPoint, cutPoints, MAX_PPS, MIN_PPS, nextShuttleRate, splitTarget, stepZoom } from './transportKeys';
 
 describe('cutPoints / adjacentCutPoint', () => {
   it('包含 0、片尾、删除区间两端与额外点，排序去重并丢掉越界值', () => {
@@ -38,5 +38,22 @@ describe('stepZoom', () => {
     expect(stepZoom(150, -1)).toBeCloseTo(100);
     expect(stepZoom(MAX_PPS - 1, 1)).toBe(MAX_PPS);
     expect(stepZoom(MIN_PPS + 1, -1)).toBe(MIN_PPS);
+  });
+});
+
+describe('splitTarget (⌘B, HIG-85)', () => {
+  const base = { selection: [] as string[], step: 'trim', selectedTrackId: null as string | null, sourceTrackId: '__source__', selectedLayerId: null as string | null, layerStep: false };
+  it('选了视频片段拆所选视频，选了主轨片段或剪辑模块空选分割主轨', () => {
+    expect(splitTarget({ ...base, selection: ['vclip:a', 'layer:b'] })).toBe('videos');
+    expect(splitTarget({ ...base, selection: ['clip:a'], step: 'text', layerStep: true, selectedLayerId: 'x' })).toBe('videos');
+    expect(splitTarget({ ...base, selection: ['seg:0.000~2.000'], step: 'text' })).toBe('main');
+    expect(splitTarget(base)).toBe('main');
+    expect(splitTarget({ ...base, selection: ['layer:x'] })).toBeNull();
+  });
+  it('其余沿用音频 / 图层模块原来的拆分', () => {
+    expect(splitTarget({ ...base, step: 'audio', selectedTrackId: 't1', selection: ['track:t1'] })).toBe('track');
+    expect(splitTarget({ ...base, step: 'audio', selectedTrackId: '__source__' })).toBeNull();
+    expect(splitTarget({ ...base, step: 'text', layerStep: true, selectedLayerId: 'l1', selection: ['layer:l1'] })).toBe('layer');
+    expect(splitTarget({ ...base, step: 'text', layerStep: true })).toBeNull();
   });
 });

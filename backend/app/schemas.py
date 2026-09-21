@@ -90,6 +90,10 @@ TRACK_SPEED_MAX = 2.0
 TEXT_WIDTH_MAX = 3.0
 
 
+# Compound group ids (HIG-85) on layers, audio tracks and video clips: editor-only metadata.
+GROUP_ID_MAX = 64
+
+
 class LayerBase(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -105,6 +109,8 @@ class LayerBase(BaseModel):
     locked: bool = False  # HIG-62: timeline editing only; worker ignores it
     # Track label the user typed on the timeline (HIG-48); the worker ignores it.
     name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)
+    # Compound group (HIG-85): timeline items sharing it select / move / delete together; worker ignores it.
+    group: str | None = Field(default=None, max_length=GROUP_ID_MAX)
 
     @field_validator("t")
     @classmethod
@@ -632,6 +638,9 @@ class Trim(BaseModel):
     # Output length (HIG-50): None = the post-trim length; longer loops the kept segments,
     # shorter cuts the output (contract §2).
     duration: float | None = Field(default=None, gt=0, le=TRIM_DURATION_MAX)
+    # Split markers on the main track (HIG-85), source seconds: they only cut the kept footage into
+    # separately selectable segments in the editor. The worker ignores them.
+    splits: list[Annotated[float, Field(ge=0)]] = Field(default_factory=list)
 
     @field_validator("remove")
     @classmethod
@@ -685,6 +694,7 @@ class AudioTrack(BaseModel):
     hidden: bool = False  # eye off (HIG-33): not mixed in, not reported as skipped
     locked: bool = False  # HIG-62: timeline editing only
     name: str | None = Field(default=None, max_length=TRACK_NAME_MAX)  # timeline label (HIG-48)
+    group: str | None = Field(default=None, max_length=GROUP_ID_MAX)  # compound group (HIG-85), editor only
 
     @field_validator("t")
     @classmethod
@@ -797,6 +807,7 @@ class SequenceClip(BaseModel):
     source_volume: float | None = Field(default=None, ge=0, le=1)
     transition: ClipTransition | None = None
     transform: VideoTransform | None = None
+    group: str | None = Field(default=None, max_length=GROUP_ID_MAX)  # compound group (HIG-85), editor only
 
     @model_validator(mode="after")
     def _check_range(self) -> SequenceClip:
@@ -844,6 +855,7 @@ class VideoTrackClip(BaseModel):
     source_out: float = Field(alias="out", gt=0)
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     transform: VideoTransform | None = None
+    group: str | None = Field(default=None, max_length=GROUP_ID_MAX)  # compound group (HIG-85), editor only
 
     @model_validator(mode="after")
     def _check_range(self) -> VideoTrackClip:
