@@ -982,6 +982,24 @@ async function handler(method: string, url: string, body?: unknown): Promise<unk
     runScreenText(v, langs, !!needDetect, !!body.erase);
     return clone(v);
   }
+  // 只听写（HIG-84 自动识别字幕）：模板已 done 且不 retranscribe 时原样返回
+  if ((mm = m(/^\/api\/videos\/([^/]+)\/localize\/transcribe$/))) {
+    const v = videos.find((x) => x.id === mm![1]);
+    if (!v) throw new ApiError(404, '视频不存在');
+    if (v.status !== 'ready') throw new ApiError(400, '视频尚未预处理完成，暂时不能识别字幕');
+    if (!v.has_audio) throw new ApiError(400, '源视频没有音轨，没有可识别的人声');
+    const body = (body_ as { source_lang?: string; retranscribe?: boolean } | undefined) ?? {};
+    const sourceLang = body.source_lang ?? 'auto';
+    if (!LOCALIZE_OPTIONS.source_langs.some((s) => s.code === sourceLang)) throw new ApiError(400, `不支持的源语言：${sourceLang}`);
+    const loc = v.localization ?? { source_lang: sourceLang, transcript: null, versions: {} };
+    if (loc.transcript?.status === 'queued' || loc.transcript?.status === 'running') throw new ApiError(409, '这条视频正在听写中，请等它完成');
+    if (Object.values(loc.versions).some((x) => x.status === 'queued' || x.status === 'running')) throw new ApiError(409, '有语言版本正在生成中，请等它完成再识别字幕');
+    if (loc.transcript?.status === 'done' && !body.retranscribe) return clone(v);
+    loc.source_lang = sourceLang;
+    v.localization = loc;
+    runLocalize(v, [], true);
+    return clone(v);
+  }
   if ((mm = m(/^\/api\/videos\/([^/]+)\/localize$/))) {
     const v = videos.find((x) => x.id === mm![1]);
     if (!v) throw new ApiError(404, '视频不存在');

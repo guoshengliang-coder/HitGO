@@ -130,6 +130,13 @@
 时改用所选音频素材作为唯一 BGM，不要求源视频分离。分离或新 BGM 不可用时不得自动套用成缺少背景音乐的版本。
 听写修正、只翻译和逐版本重新配音仍由高级操作提供。
 
+**自动识别字幕**（HIG-84）复用同一份模板：`POST /api/videos/{id}/localize/transcribe` 只听写、不选目标语言，排队时在
+服务端内部的待办 `localization.pending`（不下发，`VideoOut` 里没有）上记 `transcribe_only: true`，worker 看到它就只跑听写，
+不翻译 / 合成 / 混音，也不动各版本的状态（重新听写照旧把已有版本标 `stale = true`）。编辑器拿到 `transcript.cues`
+后在前端拆句、换算到成片时间轴，生成 `origin = "subtitle"`、`auto = true` 的字幕文字图层（见 §2）。已知限制：
+上层视频轨（`video_tracks`，V2/V3）的声音不听写；可识别的语言即 options 的 `source_langs`
+（zh / en / ja / ko / yue / de / fr / ru）。
+
 **译文字幕的配音时段 `dub_start` / `dub_duration`**（可选，缺省缺席，HIG-36 / HIG-73）：这句译文合成出来的配音
 实际占用的起点与时长。旧版或 `adaptive_timing = false` 时位于**源时间轴**（含为塞进原句时段而做的变速）；
 `adaptive_timing = true` 时位于**适配后的成片时间轴**，同一句另带 `video_speed`，编辑器按模板 cue 的源区间切片并以该速度
@@ -711,6 +718,13 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   的顶替。它和 `"localize"` 各清各的——切换语言时两边分别替换自己的层，互不误伤。画面文字层另带可选
   `screen_block`（字符串，`screen_text.detect.blocks[].id`），重新套用时靠它把人调过的位置和字号接回去。
   `layers[].origin` 目前的取值：`localize | subtitle | screen`。
+- **自动字幕标记 `auto`**（文字图层可选，缺省 false / 缺席，HIG-84）：`origin = "subtitle"` 且 `auto = true` 表示这一层是
+  字幕模块「自动识别字幕」生成的。再识别时编辑器只整批替换这些层（锁定的保留），手动添加和 .srt 导入的字幕不带它、不受影响；
+  用户手改过文字 / 时段也仍算自动字幕。worker 忽略（`extra = "ignore"` 校验但原样存取），批量套用原样复制。
+  生成规则：每个被引用的源视频的 `transcript.cues`（源视频自己的时间轴）按改语言字幕的同一套规则拆成短句；无 `sequence` 时
+  经 `trim.remove` 换算；有 `sequence` 时落到每个引用该视频的片段（按片段 `in/out`、`speed` 与在拼接时钟上的位置，
+  转场重叠处归后一个片段），再经作用在拼接时钟上的 `trim.remove` 换算。整句被删掉的丢弃、跨删除区的缩短，短于 0.1 秒的碎片丢弃，
+  超出成片正片时长的截掉；只铺第一遍（`trim.duration` 循环补足的后几遍不重复铺字幕）；最多 1200 条。
 - **文字动画 `animation`**（文字图层可选，HIG-40）：`{ in?, out?, loop? }`，缺省 / 空对象 = 不动（命令与此前完全一致）。
   - `in` / `out`：`{ preset, duration }`，`preset` ∈ `fade | slide_up | slide_down | slide_left | slide_right | pop`，`duration` 秒，(0, 10]，缺省 0.5。
     `loop`：`{ preset, period }`，`preset` ∈ `breathe | float | blink`，`period` 秒，[0.2, 10]，缺省 1.2。
@@ -838,6 +852,11 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `voices` 被忽略，每个目标语言都必须是 options 里 `clone = true` 的语言，否则 400。视频未 `ready` / 没有音轨 / 不支持的
   语言或音色 400；`transcript` 或任一请求的版本正在 queued / running 409；没配 `DASHSCOPE_API_KEY` 或队列不可用 503
   （状态回滚）。前端轮询 `GET /api/videos/{id}`。
+- `POST /api/videos/{id}/localize/transcribe` `{ source_lang?: "auto", retranscribe?: false }` → 202 `Video`（HIG-84「自动识别字幕」）。
+  只听写、不需要目标语言：`transcript` 已是 `done` 且不 `retranscribe` 时**不排队**，原样返回（不再花识别费用）；否则
+  `transcript` 置 queued（旧 `cues` 保留到 worker 替换），入队同一个 `hitgo.localize_video` 任务，只跑听写（见 §1）。
+  视频未 `ready` / 没有音轨 / 不支持的源语言 400；`transcript` 或任一版本正在 queued / running 409；没配
+  `DASHSCOPE_API_KEY` 或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}` 到 `transcript` done / failed。
 - `PUT /api/videos/{id}/localize/transcript` `{ cues: [{ i, text }], source_lang? }` → 200 `Video`。修正模板文本（只传改动的句子），
   不触发任务；所有已有译文的版本 `stale = true`，之后对该语言再 `POST` 即重译。还没有听写结果 400；有版本正在生成 409。
 - `PUT /api/videos/{id}/localize/versions/{lang}` `{ cues: [{ i, translated }], voice?, use_source_voice? }` → 202 `Video`。改译文 /
@@ -1024,7 +1043,7 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    `/data/tmp/{video_id}.loc/asr.wav`（没有音轨、或超过 `LOCALIZE_MAX_SECONDS`（缺省 600 秒）直接 failed），
    `paraformer-realtime-v2` 逐句给出毫秒起止；`source_lang = auto` 时不传语言提示、取识别到的语言。去掉空句、裁到
    源时长、最多 400 句，写成 `transcript.cues`（源时间轴）；一句都没有则 failed。听写失败时本次请求的所有版本一并 failed；
-   重新听写后所有已有版本 `stale = true`。
+   重新听写后所有已有版本 `stale = true`。`pending.transcribe_only`（HIG-84）的任务到这里就结束，不做下面的步骤。
 2. **复刻原声**（本次有任何 `source_voice = true` 的版本，且 `clone_voice` 还不是 done / 绑的模型不是当前模型，HIG-58）：
    从 `transcript.cues` 里挑一段连续说话、累计 ≥ 10 秒且窗口 ≤ 20 秒的时段（凑不够就 failed，写「可用于复刻的人声不足
    10 秒」），按这个时段截出样本存到 `/data/voice-samples/{video_id}.{m4a|wav}`——有人声分离出来的 vocals 素材就从它截

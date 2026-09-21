@@ -14,6 +14,7 @@ import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
 import { applyScreenTextToSpec, bandHint, cleanReady, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
+import { replaceAutoSubtitles, transcriptToSubtitleLayers, type VideoTranscript } from '../lib/autoSubtitle';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
 
@@ -321,6 +322,13 @@ export interface EditorState {
   loadLocalizeOptions: () => Promise<void>;
   /** POST localize：听写（模板未就绪时）+ 逐语言生成；发起后轮询到全部结束。成功返回 true。 */
   localizeVideo: (body: LocalizeIn, opts?: { bgm: LocalizeBgmChoice }) => Promise<boolean>;
+  /** 「自动识别字幕」（HIG-84）正在为哪个视频跑；null = 空闲。 */
+  autoSubtitleVideoId: string | null;
+  /**
+   * 「自动识别字幕」（HIG-84）：当前视频（拼接序列里每个源视频各一次）只听写（POST localize/transcribe），
+   * 轮询到全部结束后拆成短句、换算到成片时间轴，一步替换上一批自动字幕；手动 / .srt 字幕不动。
+   */
+  autoSubtitles: (opts?: { sourceLang?: string; retranscribe?: boolean }) => Promise<void>;
   /** 修正模板文本（PUT transcript）；不触发任务，已有版本会被标为 stale。 */
   updateTranscript: (edits: { i: number; text: string }[], sourceLang?: string) => Promise<boolean>;
   /** 改译文 / 换音色后只重跑 TTS + 混音（PUT versions/{lang}）。 */
@@ -549,6 +557,8 @@ const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
 const quickRequests: Record<string, { langs: string[]; readyLang?: string }> = {};
+/** 「自动识别字幕」（HIG-84）最多等多久；超过当作这个视频识别失败（服务器上的任务照跑，下次再点直接用结果）。 */
+const AUTO_SUBTITLE_TIMEOUT_MS = 15 * 60 * 1000;
 const BGM_CHOICE_KEY = 'hitgo.localizeBgm';
 const bgmChoiceMemory: Record<string, LocalizeBgmChoice> = {};
 
@@ -886,6 +896,7 @@ export const useEditor = create<EditorState>((set, get) => {
     theme: loadTheme(),
     textPresets: BUILTIN_TEXT_PRESETS,
     localizeOptions: null,
+    autoSubtitleVideoId: null,
 
     load: async (batchId) => {
       // 切批次时 /batches/:id 的 element 不变，EditorPage 不卸载，它的 cleanup 不跑：
@@ -1948,6 +1959,81 @@ export const useEditor = create<EditorState>((set, get) => {
       } catch (e) {
         get().setToast(e instanceof ApiError ? e.message : '改语言请求失败');
         return false;
+      }
+    },
+    autoSubtitles: async (opts) => {
+      const ownerId = get().currentVideoId;
+      const spec0 = get().currentSpec();
+      if (!ownerId || !spec0 || get().autoSubtitleVideoId) return;
+      // Q3=B: every source video in a sequence is transcribed on its own; upper video tracks are not.
+      const ids = spec0.sequence ? Array.from(new Set(spec0.sequence.clips.map((c) => c.video_id))) : [ownerId];
+      const nameOf = (id: string) => get().videos.find((v) => v.id === id)?.name ?? id;
+      const transcribing = (v: Video) => v.localization?.transcript?.status === 'queued' || v.localization?.transcript?.status === 'running';
+      set({ autoSubtitleVideoId: ownerId });
+      const failures: string[] = [];
+      const requested: string[] = [];
+      const waiting = new Set<string>();
+      const sourceLang = opts?.sourceLang ?? 'auto';
+      for (const id of ids) {
+        // A finished transcript is reused (no ASR cost) unless it was heard as another language than the one picked now.
+        const loc = get().videos.find((v) => v.id === id)?.localization;
+        const retranscribe = !!opts?.retranscribe || (sourceLang !== 'auto' && loc?.transcript?.status === 'done' && loc.source_lang !== sourceLang);
+        try {
+          const updated = await api.transcribeVideo(id, { source_lang: sourceLang, retranscribe });
+          mergeVideoField(set, updated, 'localization');
+          requested.push(id);
+          if (transcribing(updated)) waiting.add(id);
+        } catch (e) {
+          failures.push(`「${nameOf(id)}」${e instanceof ApiError ? e.message : '网络错误'}`);
+        }
+      }
+      // Same 2 s cadence as pollVideoField, but across several videos and without its localize toasts / auto-apply.
+      const deadline = Date.now() + AUTO_SUBTITLE_TIMEOUT_MS;
+      while (waiting.size) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        for (const id of [...waiting]) {
+          if (!get().videos.some((v) => v.id === id)) { waiting.delete(id); continue; } // deleted meanwhile
+          try {
+            const fresh = await api.getVideo(id);
+            mergeVideoField(set, fresh, 'localization');
+            if (!transcribing(fresh)) waiting.delete(id);
+          } catch { /* 断网：下一轮再试 */ }
+        }
+        if (waiting.size && Date.now() > deadline) {
+          failures.push(...[...waiting].map((id) => `「${nameOf(id)}」识别超时`));
+          waiting.clear();
+        }
+      }
+      set({ autoSubtitleVideoId: null });
+      const owner = get().videos.find((v) => v.id === ownerId);
+      const spec = get().specs[ownerId];
+      if (!owner || !spec) return;
+      const transcripts: VideoTranscript[] = [];
+      for (const id of requested) {
+        const v = get().videos.find((x) => x.id === id);
+        const t = v?.localization?.transcript;
+        if (t?.status === 'done') transcripts.push({ videoId: id, cues: t.cues, lang: v!.localization!.source_lang });
+        else if (t?.status === 'failed') failures.push(`「${nameOf(id)}」${t.error ?? '听写失败'}`);
+      }
+      const failed = failures.length ? `；${failures.join('、')}` : '';
+      if (!transcripts.length) {
+        get().setToast(`自动识别字幕失败${failed}`);
+        return;
+      }
+      const sourceDuration = spec.sequence ? sequenceDuration(spec.sequence) : owner.duration ?? 0;
+      const layers = transcriptToSubtitleLayers(transcripts, spec, {
+        ownerId, postDuration: outputDuration(sourceDuration, spec.trim), newId: newLayerId, split: loadFeaturePrefs().localizeSplitCues,
+      });
+      if (!layers.length) {
+        get().setToast(`没有识别到人声${failed}`);
+        return;
+      }
+      // One history step on the owner video, even if the user switched away while waiting.
+      get().updateSpec((draft) => { draft.layers = replaceAutoSubtitles(draft.layers, layers); }, { videoId: ownerId });
+      if (get().currentVideoId === ownerId) {
+        set({ selectedLayerId: layers[0].id, selectedLayerIds: layers.map((l) => l.id), toast: `已识别 ${layers.length} 条字幕${failed}`, toastAction: { label: '撤销', run: () => get().undo() } });
+      } else {
+        get().setToast(`「${owner.name}」已识别 ${layers.length} 条字幕${failed}`);
       }
     },
     updateTranscript: async (edits, sourceLang) => {

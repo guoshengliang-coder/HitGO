@@ -1,4 +1,4 @@
-"""Localization: POST /api/videos/{id}/localize, PUT …/localize/transcript, PUT / DELETE …/localize/versions/{lang},
+"""Localization: POST /api/videos/{id}/localize, POST …/localize/transcribe, PUT …/localize/transcript, PUT / DELETE …/localize/versions/{lang},
 GET /api/localize/options (contract §3)."""
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from app.config import settings
 from app.db import get_db, iso, utcnow
 from app.models import LOC_ACTIVE, LOC_DONE, LOC_QUEUED, VIDEO_READY, Asset, Video
 from app.routers._common import enqueue_or_503, get_video_or_404, jobs_for_videos
-from app.schemas import LocalizeIn, LocalizeOptionsOut, TranscriptCuesIn, VersionCuesIn, VideoOut
+from app.schemas import LocalizeIn, LocalizeOptionsOut, TranscribeIn, TranscriptCuesIn, VersionCuesIn, VideoOut
 from app.serializers import video_out
 from app.services import localize, storage
 
@@ -127,6 +127,36 @@ def localize_video(video_id: str, body: LocalizeIn, db: Session = Depends(get_db
         "target_langs": [*carried, *body.target_langs],
         "retranscribe": bool(body.retranscribe or (pending.get("retranscribe") and carried)),
     }
+    return _queue(db, video, previous, loc)
+
+
+@router.post("/videos/{video_id}/localize/transcribe", response_model=VideoOut, status_code=202)
+def transcribe_video(video_id: str, body: TranscribeIn, db: Session = Depends(get_db)):
+    """Queue ASR only (HIG-84 自动识别字幕); a finished transcript is returned as is unless ``retranscribe``."""
+    video = get_video_or_404(db, video_id)
+    if video.status != VIDEO_READY:
+        raise HTTPException(400, "视频尚未预处理完成，暂时不能识别字幕")
+    if not video.has_audio:
+        raise HTTPException(400, "源视频没有音轨，没有可识别的人声")
+    sources = {s["code"] for s in localize.source_langs()}
+    if body.source_lang not in sources:
+        raise HTTPException(400, f"不支持的源语言：{body.source_lang}")
+    previous = copy.deepcopy(video.localization) if video.localization else None
+    loc = copy.deepcopy(previous) if previous else {}
+    transcript = loc.get("transcript") or {}
+    if _active(transcript):
+        raise HTTPException(409, "这条视频正在听写中，请等它完成")
+    if any(_active(v) for v in (loc.get("versions") or {}).values()):
+        raise HTTPException(409, "有语言版本正在生成中，请等它完成再识别字幕")
+    _require_enabled()
+    if transcript.get("status") == LOC_DONE and not body.retranscribe:
+        return video_out(video, jobs_for_videos(db, [video.id]))  # already transcribed: no ASR cost
+
+    loc["source_lang"] = body.source_lang
+    loc["transcript"] = {
+        **transcript, "status": LOC_QUEUED, "error": None, "cues": list(transcript.get("cues") or []), "updated_at": iso(utcnow()),
+    }  # fmt: skip
+    loc["pending"] = {"target_langs": [], "retranscribe": True, "transcribe_only": True}
     return _queue(db, video, previous, loc)
 
 
