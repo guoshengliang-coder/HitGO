@@ -16,6 +16,7 @@ import pytest
 
 from app.services import dashscope_providers as dp
 from app.services.localize import LocalizeError
+from app.services.screentext import ScreenTextFrameParseError
 
 MINIMAX_MODEL = "MiniMax/speech-2.8-hd"
 WAV = b"RIFF\x00\x00\x00\x00WAVEfmt "
@@ -288,6 +289,26 @@ def test_parse_detection_json_survives_a_chatty_model():
     assert [d.text for d in out] == ["SALE"]
 
 
+def test_parse_detection_json_ignores_unrelated_brackets_around_the_answer():
+    raw = (
+        "坐标格式为 [x1, y1, x2, y2]。识别结果如下：\n"
+        '[{"text": "SALE", "bbox_2d": [200, 100, 500, 160]}]\n'
+        "以上共有 [1] 项。"
+    )
+
+    out = dp.parse_detection_json(raw)
+
+    assert [d.text for d in out] == ["SALE"]
+
+
+def test_parse_detection_json_prefers_the_real_answer_over_an_empty_array_example():
+    out = dp.parse_detection_json(
+        '没有文字时输出 []；本图结果是 [{"text": "SALE", "bbox_2d": [200, 100, 500, 160]}]'
+    )
+
+    assert [d.text for d in out] == ["SALE"]
+
+
 def test_parse_detection_json_skips_malformed_items_instead_of_failing_the_frame():
     out = dp.parse_detection_json(
         '[{"text": "好的", "box": [0.1, 0.1, 0.2, 0.05]},'
@@ -359,6 +380,26 @@ def test_screen_text_provider_bounds_each_call_and_reads_grid_boxes(fake_sdk, tm
 
     assert fake_sdk.calls[0]["request_timeout"] == 45
     assert out[0].box == pytest.approx({"x": 0.2, "y": 0.1, "w": 0.3, "h": 0.06})
+
+
+def test_screen_text_provider_rejects_a_malformed_response(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_vl_response("我没有按要求返回 JSON")]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen3-vl-plus")
+
+    with pytest.raises(ScreenTextFrameParseError, match="JSON"):
+        provider.detect(frame, hint_lang=None)
+
+
+def test_screen_text_provider_rejects_an_empty_response(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_vl_response("")]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen3-vl-plus")
+
+    with pytest.raises(ScreenTextFrameParseError, match="没有返回内容"):
+        provider.detect(frame, hint_lang=None)
 
 
 def test_screen_text_provider_sends_the_frame_and_the_model(fake_sdk, tmp_path):

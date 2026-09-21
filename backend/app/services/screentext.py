@@ -50,6 +50,14 @@ class ScreenTextError(RuntimeError):
     """Anything the user should see as a Chinese reason on the item."""
 
 
+class ScreenTextFrameParseError(RuntimeError):
+    """One vision response was not a usable JSON array.
+
+    A single bad frame should not discard detections from the rest of the video, but an entire
+    run made of malformed responses must not be reported as "没有识别到文字" either.
+    """
+
+
 def _parse_time(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -654,13 +662,28 @@ def detect_blocks(
     ]
 
     per_frame: list[tuple[float, float, list[DetectedText]]] = []
+    parsed_frames = 0
+    malformed_frames = 0
     if on_progress:
         on_progress(0, len(kept))
     for k, path in enumerate(kept):
         seen_at = frame_time(kept_indices[k], fps)
-        per_frame.append((seen_at, max(seen_at, covers_until[k]), provider.detect(path, hint_lang)))
+        try:
+            detections = provider.detect(path, hint_lang)
+        except ScreenTextFrameParseError:
+            malformed_frames += 1
+            detections = []
+            log.warning("screen text frame %s/%s returned malformed JSON", k + 1, len(kept))
+        else:
+            parsed_frames += 1
+        per_frame.append((seen_at, max(seen_at, covers_until[k]), detections))
         if on_progress:
             on_progress(k + 1, len(kept))
+
+    if malformed_frames and parsed_frames == 0:
+        raise ScreenTextError(
+            f"视觉模型返回的 {malformed_frames} 帧结果都无法解析；没有自动重试，请手动重新识别"
+        )
 
     blocks = cluster_blocks(per_frame, step)
     band, blocks = split_band(blocks)

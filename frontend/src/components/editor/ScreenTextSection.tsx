@@ -64,6 +64,9 @@ function BlockRow({ block, translated, onToggle, onRename }: { block: ScreenBloc
 export function ScreenTextSection({ video, options, langs }: { video: Video; options: LocalizeOptions | null; langs: string[] }) {
   const screen: ScreenText | null | undefined = video.screen_text;
   const stOptions = useEditor((s) => s.screenTextOptions);
+  const stOptionsLoading = useEditor((s) => s.screenTextOptionsLoading);
+  const stOptionsError = useEditor((s) => s.screenTextOptionsError);
+  const loadScreenTextOptions = useEditor((s) => s.loadScreenTextOptions);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const runScreenText = useEditor((s) => s.runScreenText);
   const updateScreenBlocks = useEditor((s) => s.updateScreenBlocks);
@@ -73,7 +76,9 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
   const active = screenTextActive(screen);
   const detect = screen?.detect;
   const detected = detect?.status === 'done';
-  const blocked = !stOptions?.enabled || video.status !== 'ready' || active;
+  const failed = detect?.status === 'failed';
+  const configPending = stOptions === null && !stOptionsError;
+  const blocked = configPending || !!stOptionsError || !stOptions?.enabled || video.status !== 'ready' || active;
   const tooLong = !!stOptions?.max_seconds && video.duration > stOptions.max_seconds;
   const usingClean = spec?.source_variant === 'clean';
 
@@ -86,14 +91,22 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
 
   return (
     <Section id="localize.screenText" title="画面文字" bodyClass="stack" summary={<span>{summary}</span>} help={DETECT_HELP} defaultOpen={false}>
-      {!stOptions?.enabled && <div className="error-text">服务器没有配置百炼 API Key（DASHSCOPE_API_KEY），画面文字识别不可用。</div>}
+      {configPending && <div className="hint">{stOptionsLoading ? '正在读取画面文字配置…' : '画面文字配置尚未读取…'}</div>}
+      {stOptionsError && (
+        <div className="inline error-text">
+          <span>{stOptionsError}</span>
+          <button className="btn ghost sm" disabled={stOptionsLoading} onClick={() => void loadScreenTextOptions(true)}>重试读取</button>
+        </div>
+      )}
+      {stOptions && !stOptions.enabled && <div className="error-text">服务器没有配置百炼 API Key（DASHSCOPE_API_KEY），画面文字识别不可用。</div>}
       {tooLong && <div className="error-text">源视频超过 {stOptions?.max_seconds} 秒，暂不支持画面文字处理。</div>}
+      {failed && <div className="hint">这是上次识别留下的失败结果，不会自动重复调用外部服务；配置可用后可在下方手动重新识别。</div>}
 
       <Field label="识别">
         <span className="small">{detectStatusText(detect)}</span>
         {detected && !!detect?.frames && <span className="small muted">送去识别 {detect.frames} 帧</span>}
-        <button className="btn" disabled={blocked || tooLong} onClick={() => runScreenText({ detect: true, target_langs: langs })} title={detected ? '重新识别一遍；已有的译文会被标为需要重译' : '识别画面上烧死的文字'}>
-          {detected ? '重新识别' : '识别画面文字'}
+        <button className="btn" disabled={blocked || tooLong} onClick={() => runScreenText({ detect: true, target_langs: langs })} title={detected || failed ? '手动重新识别一遍；已有的译文会被标为需要重译' : '识别画面上烧死的文字'}>
+          {detected || failed ? '重新识别' : '识别画面文字'}
         </button>
       </Field>
 
