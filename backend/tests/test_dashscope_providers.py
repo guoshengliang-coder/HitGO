@@ -306,6 +306,61 @@ def test_parse_detection_json_returns_nothing_for_junk():
     assert dp.parse_detection_json("[不是合法 JSON}") == []
 
 
+def test_parse_detection_json_reads_qwen3_grid_corners():
+    """qwen3-vl answers bbox_2d on a 0–1000 grid regardless of the frame size (checked on real frames)."""
+    out = dp.parse_detection_json('[{"text": "赚的多不多", "bbox_2d": [336, 661, 664, 704]}]', scale=dp.SCALE_GRID)
+
+    assert out[0].box == pytest.approx({"x": 0.336, "y": 0.661, "w": 0.328, "h": 0.043})
+
+
+def test_parse_detection_json_reads_pixel_corners_with_the_frame_size():
+    out = dp.parse_detection_json(
+        '[{"text": "Radar Detector", "bbox_2d": [108, 516, 223, 534]}]', scale=dp.SCALE_PIXELS, size=(406, 720)
+    )
+
+    assert out[0].box == pytest.approx({"x": 108 / 406, "y": 516 / 720, "w": 115 / 406, "h": 18 / 720})
+
+
+def test_parse_detection_json_skips_pixel_boxes_when_the_size_is_unknown():
+    assert dp.parse_detection_json('[{"text": "x", "bbox_2d": [10, 10, 50, 30]}]', scale=dp.SCALE_PIXELS) == []
+
+
+def test_parse_detection_json_accepts_unit_corners_from_a_pixel_model():
+    """qwen-vl-max answered in 0–1 ratios even when pixel corners were expected."""
+    out = dp.parse_detection_json('[{"text": "x", "bbox_2d": [0.06, 0.83, 0.94, 0.87]}]', scale=dp.SCALE_PIXELS, size=(406, 720))
+
+    assert out[0].box == pytest.approx({"x": 0.06, "y": 0.83, "w": 0.88, "h": 0.04})
+
+
+def test_parse_detection_json_orders_and_clamps_corners():
+    out = dp.parse_detection_json('[{"text": "x", "bbox_2d": [964, 895, 20, 823]}, {"text": "y", "bbox_2d": [900, 990, 1200, 1100]}]')
+
+    assert out[0].box == pytest.approx({"x": 0.02, "y": 0.823, "w": 0.944, "h": 0.072})
+    assert out[1].box == pytest.approx({"x": 0.9, "y": 0.99, "w": 0.1, "h": 0.01})
+
+
+def test_parse_detection_json_drops_degenerate_corners():
+    assert dp.parse_detection_json('[{"text": "x", "bbox_2d": [100, 100, 100, 300]}]') == []
+
+
+def test_bbox_scale_follows_the_model_family():
+    assert dp.bbox_scale_for("qwen3-vl-plus") == dp.SCALE_GRID
+    assert dp.bbox_scale_for("qwen3-vl-flash") == dp.SCALE_GRID
+    assert dp.bbox_scale_for("qwen-vl-max") == dp.SCALE_PIXELS
+
+
+def test_screen_text_provider_bounds_each_call_and_reads_grid_boxes(fake_sdk, tmp_path):
+    frame = tmp_path / "f0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff")
+    fake_sdk.results = [_vl_response('[{"text": "买一送一", "bbox_2d": [200, 100, 500, 160]}]')]
+    provider = dp.DashScopeScreenText(api_key="k", model="qwen3-vl-plus", timeout_seconds=45)
+
+    out = provider.detect(frame, hint_lang=None)
+
+    assert fake_sdk.calls[0]["request_timeout"] == 45
+    assert out[0].box == pytest.approx({"x": 0.2, "y": 0.1, "w": 0.3, "h": 0.06})
+
+
 def test_screen_text_provider_sends_the_frame_and_the_model(fake_sdk, tmp_path):
     frame = tmp_path / "f0001.jpg"
     frame.write_bytes(b"\xff\xd8\xff")

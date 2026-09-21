@@ -144,6 +144,84 @@ def test_bottom_centred_lines_become_the_subtitle_band():
     assert rest[0]["id"] == screentext.block_id("角标")
 
 
+def test_popups_low_in_frame_do_not_inflate_the_band():
+    """Real creative (v0.32 line-up): centred pop-ups at y≈0.6 used to merge with the subtitle row
+    into a band a third of the frame tall, which erasure then blurred for the whole clip."""
+    per_frame = [
+        seen(0.0, [DetectedText("第一句字幕", box(0.12, 0.86, 0.76, 0.04)), DetectedText("开心收下", box(0.38, 0.58, 0.24, 0.04))]),
+        seen(2.0, [DetectedText("第二句字幕", box(0.1, 0.86, 0.8, 0.04)), DetectedText("CLEAN NOW!", box(0.33, 0.6, 0.34, 0.04))]),
+        seen(4.0, [DetectedText("第三句字幕", box(0.14, 0.861, 0.72, 0.04))]),
+    ]
+    band, rest = screentext.split_band(screentext.cluster_blocks(per_frame, step=2.0))
+
+    assert band is not None
+    assert band["box"]["y"] == pytest.approx(0.86, abs=0.01)
+    assert band["box"]["h"] < 0.06
+    assert sorted(b["text"] for b in rest) == ["CLEAN NOW!", "开心收下"]
+
+
+def test_a_two_line_subtitle_band_takes_both_rows():
+    per_frame = [
+        seen(0.0, [DetectedText("第一句上行", box(0.1, 0.82, 0.8, 0.04)), DetectedText("第一句下行", box(0.1, 0.87, 0.8, 0.04))]),
+        seen(2.0, [DetectedText("第二句上行", box(0.1, 0.82, 0.8, 0.04)), DetectedText("第二句下行", box(0.1, 0.87, 0.8, 0.04))]),
+    ]
+    band, rest = screentext.split_band(screentext.cluster_blocks(per_frame, step=2.0))
+
+    assert band["box"]["y"] == pytest.approx(0.82, abs=0.01)
+    assert band["box"]["h"] == pytest.approx(0.09, abs=0.01)
+    assert rest == []
+
+
+def test_ocr_noise_on_a_persistent_line_stays_one_block():
+    """The model misreads a character or two differently per frame; that is still one line."""
+    b = box(0.13, 0.95, 0.72, 0.02)
+    per_frame = [
+        seen(0.0, [DetectedText("视频内容仅为广告创意具体奖励以实际规则为准", b)]),
+        seen(2.0, [DetectedText("视频内容仅为广告创意员受助以实际规则为准", b)]),
+        seen(4.0, [DetectedText("视频内容仅为广告创意具体奖励以实际规则为准", b)]),
+    ]
+    blocks = screentext.cluster_blocks(per_frame, step=2.0)
+
+    assert len(blocks) == 1
+    assert blocks[0]["text"] == "视频内容仅为广告创意具体奖励以实际规则为准"  # the most frequent reading
+    assert blocks[0]["t"] == [0.0, 5.0]
+
+
+def test_a_thin_line_whose_box_jitters_vertically_stays_one_block():
+    """Real disclaimer line, h≈0.03, placed at y=0.962 / 0.941 / 0.956 on consecutive frames."""
+    text = "素材为广告创意，所有奖励需完成指定任务"
+    per_frame = [
+        seen(0.0, [DetectedText(text, box(0.033, 0.962, 0.932, 0.033))]),
+        seen(2.0, [DetectedText(text, box(0.042, 0.941, 0.91, 0.028))]),
+        seen(4.0, [DetectedText(text, box(0.031, 0.956, 0.936, 0.03))]),
+    ]
+    blocks = screentext.cluster_blocks(per_frame, step=2.0)
+
+    assert len(blocks) == 1
+    assert blocks[0]["moving"] is False
+
+
+def test_stacked_lines_with_the_same_text_do_not_merge():
+    per_frame = [seen(0.0, [DetectedText("立即下载", box(0.3, 0.5, 0.4, 0.04)), DetectedText("立即下载", box(0.3, 0.6, 0.4, 0.04))])]
+    assert len(screentext.cluster_blocks(per_frame, step=2.0)) == 2
+
+
+def test_short_labels_that_differ_by_one_character_stay_apart():
+    b = box(0.4, 0.4, 0.1, 0.05)
+    per_frame = [seen(0.0, [DetectedText("1元", b)]), seen(2.0, [DetectedText("2元", b)])]
+    assert len(screentext.cluster_blocks(per_frame, step=2.0)) == 2
+
+
+def test_box_wobble_from_the_model_is_not_movement():
+    """The model's width estimate for a static caption wobbles by a few percent between frames."""
+    per_frame = [
+        seen(0.0, [DetectedText("Your Device Has Not Been", box(0.042, 0.862, 0.705, 0.038))]),
+        seen(2.0, [DetectedText("Your Device Has Not Been", box(0.040, 0.863, 0.674, 0.039))]),
+        seen(4.0, [DetectedText("Your Device Has Not Been", box(0.046, 0.864, 0.726, 0.030))]),
+    ]
+    assert screentext.cluster_blocks(per_frame, step=2.0)[0]["moving"] is False
+
+
 def test_a_single_low_line_is_not_a_subtitle_band():
     """One line low in frame is as likely a slogan; blurring it for the whole clip is worse."""
     per_frame = [seen(0.0, [DetectedText("立即下载", box(0.3, 0.85, 0.4, 0.05))])]
@@ -201,6 +279,19 @@ def test_sample_args_caps_the_frame_count():
     argv = screentext.sample_args(__import__("pathlib").Path("/x/source.mp4"), __import__("pathlib").Path("/tmp/out"), 0.5, 20, "ffmpeg")
     assert "-frames:v" in argv and argv[argv.index("-frames:v") + 1] == "20"
     assert any("fps=0.5" in a for a in argv)
+
+
+def test_effective_fps_spreads_the_frames_over_a_long_video():
+    """0.5 fps × 20 frames used to stop at 40 s: the second half of a 120 s creative was never read."""
+    fps = screentext.effective_fps(0.5, 20, 120.0)
+    assert fps < 0.5
+    assert screentext.frame_time(19, fps) >= 100  # the last frame lands near the end
+    assert screentext.frame_time(19, fps) <= 120
+
+
+def test_effective_fps_keeps_the_configured_rate_for_short_videos():
+    assert screentext.effective_fps(0.5, 20, 30.0) == 0.5
+    assert screentext.effective_fps(0.5, 20, None) == 0.5
 
 
 def test_dedupe_drops_frames_that_look_the_same(tmp_path):
@@ -322,6 +413,22 @@ def test_stale_detection_is_reported_failed_and_can_be_retried(client, ready_vid
     assert "hitgo.screen_text_video" in enqueued.names()
 
 
+def test_stale_queued_detection_says_it_never_started():
+    """A task stuck behind other work on the single worker slot is not a recognition timeout."""
+    state = {"detect": {"status": "queued", "updated_at": iso(utcnow() - timedelta(hours=1))}, "versions": {}}
+    out, changed = screentext.expire_stale_state(state, task_timeout_seconds=1200, erase_timeout_seconds=1800)
+
+    assert changed is True
+    assert "排队" in out["detect"]["error"] and "仍未开始" in out["detect"]["error"]
+
+
+def test_stale_running_detection_says_it_stopped_progressing():
+    state = {"detect": {"status": "running", "updated_at": iso(utcnow() - timedelta(hours=1))}, "versions": {}}
+    out, _ = screentext.expire_stale_state(state, task_timeout_seconds=1200, erase_timeout_seconds=1800)
+
+    assert "没有进展" in out["detect"]["error"]
+
+
 def test_recent_active_screen_text_is_not_expired():
     state = {"detect": {"status": "running", "updated_at": iso(utcnow())}, "versions": {}}
     out, changed = screentext.expire_stale_state(
@@ -396,7 +503,10 @@ def test_options_reports_what_this_deployment_can_do(client):
 def stub_detect(monkeypatch):
     """Replace the ffmpeg + vision half so the orchestration can be tested on its own."""
 
-    def fake_detect_blocks(video, provider, tmp, hint_lang, cfg=None):
+    def fake_detect_blocks(video, provider, tmp, hint_lang, cfg=None, on_progress=None):
+        if on_progress:
+            on_progress(0, 3)
+            on_progress(3, 3)
         return {
             "status": ST_DONE,
             "error": None,
@@ -455,6 +565,74 @@ def test_detection_failure_fails_the_languages_too_but_nothing_else(db, ready_vi
     assert st["versions"]["ko"]["status"] == ST_FAILED
     # The dubbing chain is a different feature and must be untouched by this failure.
     assert ready_video.localization["transcript"]["status"] == "done"
+
+
+def test_vision_model_error_fails_detection_with_its_real_reason(db, ready_video, monkeypatch, enqueued):
+    """HIG-86: a 403 from the vision model escaped as LocalizeError and left detect "running"
+    until a 20-minute stale check turned it into a bare timeout. It must fail at once, with the reason."""
+    from app.services.localize import LocalizeError
+
+    def denied(*a, **k):
+        raise LocalizeError("画面文字识别失败（403）：Access denied.")
+
+    monkeypatch.setattr(screentext, "detect_blocks", denied)
+    ready_video.screen_text = {
+        "detect": {"status": ST_QUEUED},
+        "versions": {"ko": {"status": ST_QUEUED, "texts": []}},
+        "erase": {"status": ST_QUEUED},
+        "pending": {"target_langs": ["ko"], "source_lang": "auto", "terms": [], "erase": True, "scope": None},
+    }
+    db.commit()
+
+    screentext.run_screen_text(db, ready_video.id)
+
+    db.refresh(ready_video)
+    st = ready_video.screen_text
+    assert st["detect"]["status"] == ST_FAILED
+    assert "403" in st["detect"]["error"] and "SCREENTEXT_MODEL" in st["detect"]["error"]
+    assert st["versions"]["ko"]["status"] == ST_FAILED
+    assert st["erase"]["status"] == ST_FAILED
+    assert "pending" not in st
+
+
+def test_unexpected_detection_error_is_not_left_running(db, ready_video, monkeypatch, enqueued):
+    def bug(*a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(screentext, "detect_blocks", bug)
+    ready_video.screen_text = {"detect": {"status": ST_QUEUED}, "versions": {}, "pending": {"target_langs": [], "erase": False}}
+    db.commit()
+
+    screentext.run_screen_text(db, ready_video.id)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["detect"]["status"] == ST_FAILED
+    assert ready_video.screen_text["detect"]["error"] == "画面文字识别失败：boom"
+
+
+def test_detection_records_progress_as_a_heartbeat(db, ready_video, monkeypatch, enqueued):
+    seen: list[dict] = []
+
+    def slow(video, provider, tmp, hint_lang, cfg=None, on_progress=None):
+        on_progress(0, 2)
+        db.refresh(ready_video)
+        seen.append(dict(ready_video.screen_text["detect"]))
+        on_progress(1, 2)
+        db.refresh(ready_video)
+        seen.append(dict(ready_video.screen_text["detect"]))
+        return {"status": ST_DONE, "error": None, "model": "fake", "frames": 2, "subtitle_band": None, "blocks": [], "updated_at": None}
+
+    monkeypatch.setattr(screentext, "detect_blocks", slow)
+    ready_video.screen_text = {"detect": {"status": ST_QUEUED}, "versions": {}, "pending": {"target_langs": [], "erase": False}}
+    db.commit()
+
+    screentext.run_screen_text(db, ready_video.id)
+
+    assert [s["progress"] for s in seen] == [{"done": 0, "total": 2}, {"done": 1, "total": 2}]
+    assert all(s["status"] == "running" and s["updated_at"] for s in seen)
+    db.refresh(ready_video)
+    assert ready_video.screen_text["detect"]["status"] == ST_DONE
+    assert "progress" not in ready_video.screen_text["detect"]
 
 
 def test_one_language_failing_does_not_stop_the_others(db, ready_video, stub_detect, monkeypatch, enqueued):

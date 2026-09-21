@@ -298,11 +298,31 @@ export function bandHint(screen: ScreenText | null | undefined, lang: string): S
   return { anchor: placement.anchor, margin: placement.margin, style };
 }
 
+/** 识别状态的一句话（HIG-86）：排队和识别分开说，识别中带帧数进度——排队久是后台忙，不是识别慢。 */
+export function detectStatusText(detect: ScreenText['detect']): string {
+  if (!detect) return '未开始';
+  if (detect.status === 'queued') return '排队中…（后台有其它任务时会等一会儿）';
+  if (detect.status === 'running') {
+    const p = detect.progress;
+    if (!p) return '准备中…（抽帧）';
+    return p.total > 0 ? `识别中 ${p.done}/${p.total} 帧…` : '识别中…';
+  }
+  if (detect.status === 'failed') return `失败：${detect.error ?? '未知原因'}`;
+  if (detect.status === 'done') return '已完成';
+  return '未开始';
+}
+
+/** 后端的原因多半已经以「画面文字识别失败」开头，不再重复一遍。 */
+function withPrefix(prefix: string, error: string | null | undefined): string {
+  const reason = error ?? '未知原因';
+  return reason.startsWith(prefix) ? reason : `${prefix}：${reason}`;
+}
+
 /** 轮询结束时的一句话提示：先说坏消息，再说好消息。 */
 export function screenTextFinishText(screen: ScreenText | null | undefined): string {
   if (!screen) return '画面文字处理结束';
   const detect = screen.detect;
-  if (detect?.status === 'failed') return `画面文字识别失败：${detect.error ?? '未知原因'}`;
+  if (detect?.status === 'failed') return withPrefix('画面文字识别失败', detect.error);
   const failedLang = Object.entries(screen.versions ?? {}).find(([, v]) => v.status === 'failed');
   if (failedLang) return `画面文字翻译失败：${failedLang[1].error ?? '未知原因'}`;
   if (screen.erase?.status === 'failed') return `画面文字擦除失败：${screen.erase.error ?? '未知原因'}`;

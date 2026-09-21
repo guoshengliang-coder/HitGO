@@ -121,6 +121,8 @@ export interface ScreenDetect {
   model?: string | null;
   /** 实际送去识别的帧数（去重之后）。 */
   frames?: number;
+  /** 识别进行中：已送 / 共要送的帧数（HIG-86）。每送完一帧刷新一次，也是后台的心跳。 */
+  progress?: { done: number; total: number } | null;
   subtitle_band?: SubtitleBand | null;
   blocks: ScreenBlock[];
   updated_at?: string | null;

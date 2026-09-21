@@ -7,10 +7,12 @@ import {
   blockTextStyle,
   boxToPlacement,
   cleanReady,
+  detectStatusText,
   mergedBlocks,
   screenLayers,
   screenLayerTemplate,
   screenTextActive,
+  screenTextFinishText,
   SCREEN_ORIGIN,
   stripScreenText,
 } from './screentext';
@@ -309,5 +311,23 @@ describe('与多片段拼接共存（契约 §2）', () => {
     // 退回原片就还需要遮盖顶替原文字
     expect(s.layers.filter((l) => l.type === 'mask').length).toBeGreaterThan(0);
     expect(warnings.join()).toContain('多片段拼接');
+  });
+});
+
+describe('detectStatusText', () => {
+  it('tells queueing apart from recognising, with frame progress', () => {
+    expect(detectStatusText({ status: 'queued', blocks: [] })).toContain('排队中');
+    expect(detectStatusText({ status: 'running', blocks: [] })).toContain('抽帧');
+    expect(detectStatusText({ status: 'running', blocks: [], progress: { done: 3, total: 12 } })).toBe('识别中 3/12 帧…');
+    expect(detectStatusText({ status: 'failed', blocks: [], error: '画面文字识别失败（403）' })).toBe('失败：画面文字识别失败（403）');
+    expect(detectStatusText(null)).toBe('未开始');
+  });
+});
+
+describe('screenTextFinishText', () => {
+  it('does not repeat the prefix the backend already wrote', () => {
+    const text = screenTextFinishText({ detect: { status: 'failed', blocks: [], error: '画面文字识别失败（403）：Access denied.' }, versions: {} });
+    expect(text).toBe('画面文字识别失败（403）：Access denied.');
+    expect(screenTextFinishText({ detect: { status: 'failed', blocks: [], error: '抽帧失败' }, versions: {} })).toBe('画面文字识别失败：抽帧失败');
   });
 });

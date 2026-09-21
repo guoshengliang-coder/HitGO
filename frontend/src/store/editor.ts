@@ -931,10 +931,11 @@ export const useEditor = create<EditorState>((set, get) => {
         pollPreparingVideos();
         void get().loadAssets();
         void get().loadTextPresets();
-        // 刷新页面时分离 / 改语言可能还在跑：恢复轮询，结束时照常提示
+        // 刷新页面时分离 / 改语言 / 画面文字可能还在跑：恢复轮询，结束时照常提示
         for (const v of batch.videos) {
           if (fieldActive(v, 'separation')) pollVideoField(v.id, 'separation', set, get);
           if (fieldActive(v, 'localization')) pollVideoField(v.id, 'localization', set, get);
+          if (fieldActive(v, 'screen_text')) pollVideoField(v.id, 'screen_text', set, get);
         }
         // 恢复未完成的渲染任务
         try {

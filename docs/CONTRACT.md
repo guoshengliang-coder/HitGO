@@ -162,8 +162,10 @@
   "detect": {                        // 识别：整条视频做一次
     "status": "done",                // queued | running | done | failed
     "error": null,                   // failed 时的中文原因
-    "model": "qwen-vl-max-latest",   // 实际用的视觉模型，排查用
+    "model": "qwen3-vl-plus",        // 实际用的视觉模型，排查用
     "frames": 12,                    // 这次真正送去识别的帧数（对账费用用）
+    "progress": null,                // 可选（HIG-86）：running 时为 {"done": 3, "total": 12}，每送完一帧刷新一次（也是心跳）；
+                                     // 抽帧阶段与其它状态为 null / 缺席
     "subtitle_band": {               // 可选，缺省 null：硬字幕带，整条视频共用一个矩形
       "box": { "x": 0.06, "y": 0.80, "w": 0.88, "h": 0.075 },   // 相对源画面宽 / 高，0–1
       "style": { "font_size": 0.048, "color": "#FFFFFF", "stroke_color": "#000000",
@@ -1060,14 +1062,23 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    合成 / 复刻都用假实现（静音配音、固定 voice_id），只给测试 / 演示。
 
 ### 画面文字（`POST /api/videos/{id}/screen-text` 之后，普通 worker，HIG-38）
-识别走阿里云百炼的视觉模型（`DASHSCOPE_API_KEY`，`SCREENTEXT_MODEL` 缺省 `qwen-vl-max-latest`），翻译复用改语言那一套
+识别走阿里云百炼的视觉模型（`DASHSCOPE_API_KEY`，`SCREENTEXT_MODEL` 缺省 `qwen3-vl-plus`），翻译复用改语言那一套
 `qwen-mt-plus`，两者都是纯网络调用。任务 `hitgo.screen_text_video` 在默认队列，软超时 `SCREENTEXT_TIMEOUT_SECONDS`
 （缺省 1200 秒）。
 
-1. **识别一次**（`detect` 不是 done 或请求带 `detect`）：`ffmpeg -vf "fps=SCREENTEXT_SAMPLE_FPS,scale=-2:720"` 抽帧到
-   `tmp/{video_id}.st/`，最多 `SCREENTEXT_MAX_FRAMES` 帧（缺省 20）。抽完先做一次**感知去重**（缩到 32×32 灰度，
+**失败必须当场可见（HIG-86）。** 识别阶段的任何异常（视觉模型 4xx / 5xx 用尽重试、抽帧失败、代码错误）都立即把
+`detect` 写成 `failed` 并带上真实原因，同批的语言版本与擦除一并 failed；403 / 未开通这类权限错误在原因后面附一句
+「请检查 `SCREENTEXT_MODEL` 或在百炼控制台开通该模型」。单次视觉调用有请求超时 `SCREENTEXT_CALL_TIMEOUT_SECONDS`
+（缺省 60 秒，SDK 自带的是 300 秒）。读取时的过期投射（`GET` 不写库、`POST` 重试前落库）按「多久没有更新」判断：
+`queued` 超过 `SCREENTEXT_TIMEOUT_SECONDS` 仍未开始 →「排队超过 N 秒仍未开始」（worker 被其它任务占着或没在跑）；
+`running` 期间每送完一帧就刷新 `updated_at` 与 `progress`，超过同样时长没有进展 →「超过 N 秒没有进展」。
+
+1. **识别一次**（`detect` 不是 done 或请求带 `detect`）：`ffmpeg -vf "fps=<采样率>,scale=-2:720"` 抽帧到
+   `tmp/{video_id}.st/`，最多 `SCREENTEXT_MAX_FRAMES` 帧（缺省 20）。采样率取 `SCREENTEXT_SAMPLE_FPS`（缺省 0.5），
+   视频长于 `MAX_FRAMES / SAMPLE_FPS` 秒时降为 `MAX_FRAMES / 时长`，保证抽帧摊满整条视频而不是只看开头。抽完先做一次**感知去重**（缩到 32×32 灰度，
    逐像素平均绝对差低于阈值的帧丢掉）——投放素材里大段画面是静止的，去重通常能把送去识别的帧数再砍掉一半，
-   而费用是按帧算的。逐帧调视觉模型拿到文字和框，跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
+   而费用是按帧算的。逐帧调视觉模型拿到文字和框（提示词要求 Qwen 原生的 `bbox_2d` 左上 / 右下角坐标：`qwen3-*` 按 0–1000 网格换算，
+   其它 `qwen-vl-*` 按帧像素换算，见 `dashscope_providers.bbox_scale_for`），跨帧按「文本相同 + 框 IoU > 0.5」聚成 block，时段取首末帧各外扩半个
    抽帧间隔。落在画面底部且横向居中的那一类合并成 `subtitle_band`（整条视频一个矩形），其余是 `blocks`，最多
    `SCREENTEXT_MAX_BLOCKS` 个（缺省 40，超出按面积取前 N，其余丢弃）。同一文本在相邻帧之间位移超过
    阈值的判为「会动」，标出来但不参与擦除和写回。一帧都识别不出内容时 `detect` 仍是 `done`，`blocks` 为空。

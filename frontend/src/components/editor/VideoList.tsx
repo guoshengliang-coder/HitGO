@@ -182,9 +182,11 @@ export function VideoList() {
                   {v.kind === 'blank' && <span className="vkind">空白</span>}
                   {formatSeconds(v.duration)} · {v.width}×{v.height}
                 </div>
-                <div className={`vstate ${kind}`}>
+                {/* 失败只写「失败」看不出是哪一步坏了（HIG-38 验收时就卡在这里）：悬停给出后端的原因 */}
+                <div className={`vstate ${kind}`} title={kind === 'failed' ? (v.error ?? (v.render_status === 'failed' ? '最近一次导出失败，打开「产物」查看原因' : undefined)) : undefined}>
                   <i />
                   {PILL_LABELS[kind]}
+                  {kind === 'failed' && v.status === 'failed' && ' · 预处理失败'}
                   {kind === 'edited' && layerCount > 0 && ` · ${layerCount} 图层`}
                 </div>
               </div>
