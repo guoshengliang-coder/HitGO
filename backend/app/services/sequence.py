@@ -84,7 +84,8 @@ def resolve_video_tracks(db: Session, owner: Video, spec: EditSpec) -> list[Vide
 def _referenced_video_ids(raw: dict) -> set[str]:
     sequence = ((raw or {}).get("sequence") or {}).get("clips", [])
     upper = [clip for track in (raw or {}).get("video_tracks", []) for clip in track.get("clips", [])]
-    return {clip.get("video_id") for clip in [*sequence, *upper] if clip.get("video_id")}
+    audio_videos = [track.get("asset_id") for track in ((raw or {}).get("audio") or {}).get("tracks", []) if track.get("source_kind") == "video"]
+    return {clip.get("video_id") for clip in [*sequence, *upper] if clip.get("video_id")} | {video_id for video_id in audio_videos if video_id}
 
 
 def referencing_videos(db: Session, source: Video) -> list[Video]:

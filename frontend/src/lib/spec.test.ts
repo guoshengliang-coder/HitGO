@@ -35,6 +35,19 @@ describe('toContractSpec · 变速序列（HIG-73）', () => {
   });
 });
 
+describe('toContractSpec · 视频轨、画面变换和关联原声（HIG-81 / HIG-89 / HIG-87）', () => {
+  it('保存上层视频变换与视频来源音轨关系', () => {
+    const spec: EditSpec = {
+      ...emptySpec(),
+      video_tracks: [{ id: 'vt', clips: [{ id: 'vc', video_id: 'v2', start: 1, in: 0, out: 3, transform: { fit: 'contain', scale: 1.2, x: 0.4, y: 0.6 } }] }],
+      audio: { source_volume: 1, tracks: [{ id: 'va', source_kind: 'video', asset_id: 'v2', linked_clip_id: 'vc', role: 'voice', t: [1, 4], offset: 0 }] },
+    };
+    const out = toContractSpec(spec);
+    expect(out.video_tracks?.[0].clips[0].transform).toMatchObject({ fit: 'contain', scale: 1.2, x: 0.4, y: 0.6 });
+    expect(out.audio?.tracks[0]).toMatchObject({ source_kind: 'video', asset_id: 'v2', linked_clip_id: 'vc' });
+  });
+});
+
 describe('toContractSpec · audio', () => {
   it('没有 audio 块、或全是缺省值时不带此字段（保持旧 spec 形状）', () => {
     expect('audio' in toContractSpec(emptySpec())).toBe(false);

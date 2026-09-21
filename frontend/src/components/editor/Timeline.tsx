@@ -34,6 +34,7 @@ import { IconEye, IconLock, IconTrash } from '../ui/Icons';
 import { newTextLayer } from './LayerParts';
 import { InlineName } from '../ui/InlineName';
 import { audioTrackName, cleanTrackName, sourceAudioLabel, sourceAudioName, TRACK_NAME_MAX } from '../../lib/trackNames';
+import { resolveAudioTrackSource } from '../../lib/audioTrackSource';
 import { api } from '../../api';
 import { isFileDrag, rejectedText, splitByAccept } from '../../lib/fileDrop';
 import { dropKind, dropRole, dropWindow, isAssetDrag, parseAssetDrag, ASSET_DRAG_MIME } from '../../lib/timelineDrop';
@@ -268,6 +269,7 @@ export function Timeline() {
   const updateRemoveRange = useEditor((s) => s.updateRemoveRange);
   const selectedLayerIds = useEditor((s) => s.selectedLayerIds);
   const timelineSelection = useEditor((s) => s.timelineSelection);
+  const timelineMarqueeEnabled = useEditor((s) => s.timelineMarqueeEnabled);
   const selectTimelineItems = useEditor((s) => s.selectTimelineItems);
   const shiftTimelineItems = useEditor((s) => s.shiftTimelineItems);
   const shiftSelectedLayers = useEditor((s) => s.shiftSelectedLayers);
@@ -852,15 +854,9 @@ export function Timeline() {
       selectTimelineItems([key]);
     }
   };
-  /**
-   * 空白区域横向拖动连续预览；纵向拖动跨轨框选，修饰键拖动始终框选。
-   *
-   * 和 scrub 共存靠「按下先不接管」：按下时只记起点，播放头照常跟着点一下走（这个手感不变），
-   * 等指针真的移开超过阈值才改判成框选，把 scrub 叫停并接过捕获。按在条上则一开始就不记起点
-   * ——那是拖条，不是框选。
-   */
+  /** 独立框选工具（HIG-63 返工）：开启后空白区域的任意方向拖动都画框，不再和播放头争手势。 */
   const marqueeDown = (e: RPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (!timelineMarqueeEnabled || e.button !== 0) return;
     const t = e.target as HTMLElement;
     if (!t.closest('.body')) return; // 标尺、轨道头：不框选
     if (t.closest('[data-timeline-key], .tl-bar, .tl-cut, .tl-mute')) return; // 按在条上：交给拖条
@@ -873,18 +869,15 @@ export function Timeline() {
       mode: e.altKey || e.ctrlKey ? 'subtract' : e.shiftKey ? 'add' : 'replace',
       active: false,
     };
+    e.preventDefault();
+    e.stopPropagation();
   };
   const marqueeMove = (e: RPointerEvent<HTMLDivElement>) => {
     const m = marqueeStart.current;
     if (!m) return;
     if (!m.active) {
       if (Math.abs(e.clientX - m.clientX) < MARQUEE_PX && Math.abs(e.clientY - m.clientY) < MARQUEE_PX) return;
-      if (!e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && Math.abs(e.clientX - m.clientX) >= Math.abs(e.clientY - m.clientY)) {
-        marqueeStart.current = null;
-        return;
-      }
       m.active = true;
-      scrub.cancel(e.target as HTMLElement, e.pointerId); // 改判成框选：播放头停在按下的位置
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
       } catch {
@@ -921,7 +914,7 @@ export function Timeline() {
   };
 
   return (
-    <div className="timeline" style={{ '--tl-label-w': `${labelW}px` } as CSSProperties} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div className={`timeline ${timelineMarqueeEnabled ? 'marquee-mode' : ''}`} style={{ '--tl-label-w': `${labelW}px` } as CSSProperties} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="tl-label-resizer" role="separator" aria-label="轨道名称栏宽度" aria-orientation="vertical" aria-valuemin={TRACK_LABEL_MIN} aria-valuemax={Math.max(TRACK_LABEL_MIN, Math.min(TRACK_LABEL_MAX, Math.round(containerW * 0.45)))} aria-valuenow={labelW} tabIndex={0}
         title="左右拖动调整轨道名称栏宽度；双击恢复默认"
         onDoubleClick={() => resizeLabels(TRACK_LABEL_DEFAULT)}
@@ -1085,13 +1078,15 @@ export function Timeline() {
               const left = off + postToSource(pa, remove) * pps;
               const right = off + postToSource(pb, remove) * pps;
               const sel = selectedTrackId === t.id;
-              const name = audioTrackName(t, assets);
-              const problem = trackAssetProblem(t, assets);
+              const resolvedSource = resolveAudioTrackSource(t, assets, videos);
+              const name = cleanTrackName(t.name) || resolvedSource?.name || audioTrackName(t, assets);
+              const problem = t.source_kind === 'video' ? (!resolvedSource ? 'missing' : resolvedSource.ready ? null : 'not-ready') : trackAssetProblem(t, assets);
+              const linked = !!t.linked_clip_id;
               const hidden = !!t.hidden;
               return (
                 <div key={t.id} data-drop-role={r.role} className={`tl-row tl-audio ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${t.locked ? 'locked' : ''} ${problem === 'missing' ? 'broken' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pickTrack(t.id); }}>
                   <div className="lbl" title={`${r.role === 'voice' ? '口播' : 'BGM'} · ${name}${r.align === 'source' ? '（对齐源时间轴：随剪辑一起裁）' : ''}${hidden ? '（已隐藏，导出时不混入）' : ''}`}>
-                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}</span>
+                    <span className={`role ${r.role}`} style={{ fontSize: 10, flex: 'none' }}>{r.role === 'voice' ? '口播' : 'BGM'}{r.align === 'source' ? ' · 源' : ''}{linked ? ' · 绑定' : ''}</span>
                     <TrackName value={name} label="音轨名" disabled={!!t.locked} onSave={(v) => renameAudioTrack(t.id, v)} />
                     <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                       <EyeButton hidden={hidden} onToggle={() => toggleTrackHidden(t.id)} />
@@ -1111,11 +1106,11 @@ export function Timeline() {
                       </div>
                     )) : <div data-timeline-key={`track:${t.id}`}
                       className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${r.volume === 0 || hidden ? 'muted' : ''} ${hidden ? 'hidden' : ''}`}
-                      style={{ left, width: Math.max(4, right - left), cursor: all || t.locked ? 'default' : 'grab' }}
+                      style={{ left, width: Math.max(4, right - left), cursor: all || t.locked || linked ? 'default' : 'grab' }}
                       onPointerDown={(e) => {
                         if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id);
                         pickTimeline(`track:${t.id}`, e);
-                        if (all || e.metaKey || e.ctrlKey || e.shiftKey) {
+                        if (all || linked || e.metaKey || e.ctrlKey || e.shiftKey) {
                           e.stopPropagation();
                           return;
                         }
@@ -1126,7 +1121,7 @@ export function Timeline() {
                       {r.loop ? ' ↻' : ''}
                       {r.volume !== 1 ? ` ${Math.round(r.volume * 100)}%` : ''}
                       {hidden ? ' · 已隐藏' : problem === 'missing' ? ' · 素材已失效，导出会跳过' : problem === 'not-ready' ? ' · 素材处理中' : ''}
-                      {!all && !t.locked && (
+                      {!all && !t.locked && !linked && (
                         <>
                           <div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} />
                           <div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} />

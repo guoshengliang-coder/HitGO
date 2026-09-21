@@ -368,6 +368,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - 每段可选 `speed`（0.5–2.0，缺省 1）：成片时长为 `(out - in) / speed`，画面用 `setpts`、该片段原声及
   源对齐音轨用 `atempo` 同步变速且不变调。`origin = "localize"`、`localize_cue` 是 HIG-73 自动画面适配标记；
   切换语言版本时只替换这种自动时序，不覆盖用户手工拼接。
+- 主轨与上层轨的每个 clip 都可选 `transform`（HIG-89）：`fit = auto | contain | cover | original`，
+  `scale` 为基础适配尺寸的 0.05–20 倍，`x / y` 是画面中心相对输出画布宽高的位置（缺省 0.5 / 0.5，允许移出画布），
+  `crop = {x,y,w,h}` 是源画面的比例裁切窗口。整个 `transform` 缺省时严格保持旧版铺画布行为；拆分和复制继承该字段。
 - 每段的 `transition` 表示**该段进入时**与前一段的转场；首段不设。`type` 为
   `cut | fade | slide_left | slide_right | wipe_left | wipe_right`；`cut` 时 `duration = 0`，
   其它效果的时长为 0.1–1.5 秒且小于相邻片段时长。拼接总时长等于各片段时长之和减去转场重叠时长。
@@ -390,13 +393,14 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   渲染任务保存该次 `edit_spec` 快照，之后编辑时间轴不会改变已入队任务的配置。
 
 **上层视频轨（HIG-81）**：`video_tracks` 为可选数组，缺省 `[]`。每次把左侧已就绪视频拖到“新上层视频轨”会新增 V2/V3…；
-数组靠后的轨道绘制在靠前轨道之上，所有片段按当前输出的 fill 规则铺满整张画布，再叠普通文字/贴纸/遮盖图层。上层视频暂不混入自身音频。
+数组靠后的轨道绘制在靠前轨道之上；未设置 `transform` 的片段按当前输出的 fill 规则铺画布，设置后按片段自己的适配、位置、缩放和裁切绘制，再叠普通文字/贴纸/遮盖图层。
 
 ```jsonc
 "video_tracks": [
   { "id": "vt_2", "name": "V2", "hidden": false, "locked": false,
     "clips": [
-      { "id": "vc_1", "video_id": "v_d4e5f6", "start": 1.2, "in": 0.5, "out": 4.5, "speed": 1 }
+      { "id": "vc_1", "video_id": "v_d4e5f6", "start": 1.2, "in": 0.5, "out": 4.5, "speed": 1,
+        "transform": { "fit": "contain", "scale": 1.15, "x": 0.5, "y": 0.45 } }
     ] }
 ]
 ```
@@ -404,7 +408,10 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `start` 是剪后正片时间；显示时长为 `(out - in) / speed`，`speed` 范围 0.5–2。同轨片段不重叠，轨道和片段 id 各自唯一。
 - `video_id` 只可引用同批次已就绪的视频/图片源片，保存与渲染时校验；引用中的源视频不可单独删除。
 - `hidden` 同时影响预览和导出；`locked` 只限制编辑器的移动、裁边、拆分、删除操作，worker 忽略。
-- 片段支持移动、左右裁边、在播放头拆分、复制/粘贴和删除；不提供画中画的位置、缩放或透明度控制。
+- 片段支持移动、左右裁边、在播放头拆分、复制/粘贴和删除；`transform` 让 V1/V2/V3 使用同一套画面移动、缩放、适配与裁切能力。
+- 带原声的视频拖入上层轨时，编辑器在 `audio.tracks[]` 中创建 `source_kind = "video"`、`asset_id = video_id`、
+  `linked_clip_id = clip.id` 的关联原声音轨（HIG-87）。移动、裁边、变速、拆分和删除同步更新仍绑定的音轨；拆分产生两组关联。
+  解除绑定会移除 `linked_clip_id`，音轨仍引用视频原声并作为普通独立音轨存在，后续视频操作不再影响它。
 
 ```jsonc
 {
@@ -659,6 +666,9 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   - 音量上限是 1（不能放大）：浏览器 `HTMLMediaElement.volume` 只到 1，这样编辑器预览能原样复现成片。
   - `asset_id` 对应的素材不存在、不是音频、还没 `ready`，或 `offset` 不小于素材时长时，worker 跳过该 track
     并在 job.error 里记警告（不失败）。track `id` 在同一 spec 内唯一。
+  - **视频原声音轨（HIG-87）**：`source_kind` 缺省 `"asset"`；为 `"video"` 时，`asset_id` 改为同批次
+    `Video.id`，worker 从该视频源文件读取音频。可选 `linked_clip_id` 只供编辑器同步对应上层视频；worker 仍按普通
+    `t / offset / speed / volume / hidden` 混音。解除绑定只移除 `linked_clip_id`，不改变声音和时段。
   - **`source_mute`**（可选，缺省 `[]`，HIG-25）：源音轨（× `source_volume` 之后）在这些时段内静音，时段基于剪后
     时间轴，升序、不重叠、起点 ≥ 0、终点 > 起点；超出剪后时长的部分忽略。只影响源音轨：画面、贴纸音轨、各 track
     不受影响，后面的声音也不前移（音画保持同步）。编辑器里「剪掉一段原声」就是往这里加一个时段。

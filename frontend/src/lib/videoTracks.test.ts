@@ -24,4 +24,18 @@ describe('video tracks', () => {
     removeVideoTrackClips(value, new Set([right!]));
     expect(value.video_tracks?.[0].clips).toHaveLength(1);
   });
+
+  it('keeps linked audio when a locked video clip cannot be removed', () => {
+    const value = spec();
+    value.video_tracks = [{ id: 'vt1', locked: true, clips: [{ id: 'vc1', video_id: 'v2', start: 0, in: 0, out: 2 }] }];
+    value.audio = {
+      source_volume: 1,
+      tracks: [{ id: 'au1', source_kind: 'video', asset_id: 'v2', linked_clip_id: 'vc1', role: 'voice', align: 'post', t: [0, 2], offset: 0, volume: 1 }],
+    };
+
+    removeVideoTrackClips(value, new Set(['vc1']));
+
+    expect(value.video_tracks[0].clips).toHaveLength(1);
+    expect(value.audio.tracks).toHaveLength(1);
+  });
 });

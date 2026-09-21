@@ -9,16 +9,17 @@ import { useEditor, usePostDuration } from '../../store/editor';
 import { player } from '../../lib/player';
 import { resolveTrack, trackGain, trackMediaTime, trackSpeed } from '../../lib/audioTracks';
 import { sequenceSourceTime } from '../../lib/sequence';
-import { isAssetReady, type AudioTrack } from '../../types';
+import { resolveAudioTrackSource } from '../../lib/audioTrackSource';
+import type { AudioTrack } from '../../types';
 
 function TrackAudio({ track }: { track: AudioTrack }) {
   const ownerId = useEditor((s) => s.currentVideoId);
   const sequence = useEditor((s) => s.currentVideoId ? s.specs[s.currentVideoId]?.sequence : null);
-  const asset = useEditor((s) => s.assets.find((a) => a.id === track.asset_id));
+  const source = useEditor((s) => resolveAudioTrackSource(track, s.assets, s.videos));
   const postDuration = usePostDuration();
   const elRef = useRef<HTMLAudioElement | null>(null);
-  const url = asset && isAssetReady(asset) ? asset.url : undefined;
-  const mediaDuration = asset?.duration ?? 0;
+  const url = source?.ready ? source.url : undefined;
+  const mediaDuration = source?.duration ?? 0;
 
   useEffect(() => {
     if (!url) return;

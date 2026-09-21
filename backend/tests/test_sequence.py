@@ -13,6 +13,7 @@ from app.db import utcnow
 from app.models import Video
 from app.schemas import EditSpec
 from app.services import ffprobe, storage
+from app.services.render import collect_audio
 from app.services.filtergraph import AudioSource, build_render_command
 from app.services.sequence import ClipSource, VideoTrackSource
 
@@ -78,9 +79,46 @@ def test_upper_video_track_schema_and_filtergraph():
     assert "trim=start=0.5:end=2.5,setpts=(PTS-STARTPTS)/2+1/TB" in plan.filter_complex
     assert "overlay=0:0:eof_action=pass:enable='between(t,1,2)'" in plan.filter_complex
 
+    data["video_tracks"][0]["clips"][0]["transform"] = {"fit": "contain", "scale": 0.5, "x": 0.25, "y": 0.75}
+    transformed = EditSpec.model_validate(data)
+    plan = build_render_command(
+        transformed, {"video_id": "owner", "duration": 4, "width": 128, "height": 128, "fps": 25, "has_audio": False},
+        {}, transformed.outputs[0], source_path="/owner.mp4", output_path="/out.mp4",
+        sequence_sources=[ClipSource(transformed.sequence.clips[0], "/owner.mp4", 128, 128, 25, False)],
+        video_track_sources=[VideoTrackSource("vt2", transformed.video_tracks[0].clips[0], "/other.mp4", 1920, 1080, 25)],
+    )
+    assert "scale=64:36,format=rgba[vtfront_upper0]" in plan.filter_complex
+    assert "colorchannelmixer=aa=0[vtbase_upper0]" in plan.filter_complex
+    assert "overlay=0:78:eof_action=pass:format=auto[upperfill0]" in plan.filter_complex
+
     data["video_tracks"][0]["clips"].append({"id": "overlap", "video_id": "other", "start": 1.5, "in": 0, "out": 1})
     with pytest.raises(ValueError, match="不能重叠"):
         EditSpec.model_validate(data)
+
+
+def test_video_transform_and_linked_video_audio_schema():
+    data = sequence_spec({**clip("main", "owner", end=4), "transform": {"fit": "cover", "scale": 1.2, "x": 0.4, "y": 0.6, "crop": {"x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8}}})
+    data["video_tracks"] = [{"id": "vt", "clips": [{"id": "upper", "video_id": "other", "start": 1, "in": 0, "out": 2}]}]
+    data["audio"] = {"source_volume": 1, "tracks": [{"id": "va1", "source_kind": "video", "asset_id": "other", "linked_clip_id": "upper", "role": "voice", "t": [1, 3], "offset": 0.5}]}
+    spec = EditSpec.model_validate(data)
+    assert spec.sequence.clips[0].transform.fit == "cover"
+    assert spec.audio.tracks[0].source_kind == "video"
+    assert spec.audio.tracks[0].linked_clip_id == "upper"
+    broken_link = {**data, "audio": {"source_volume": 1, "tracks": [{"id": "va1", "source_kind": "video", "asset_id": "wrong", "linked_clip_id": "upper", "t": [1, 3]}]}}
+    with pytest.raises(ValueError, match="linked_clip_id"):
+        EditSpec.model_validate(broken_link)
+    for patch in ({"scale": 0.01}, {"x": 4}, {"crop": {"x": 0.8, "y": 0, "w": 0.3, "h": 1}}):
+        bad = sequence_spec({**clip("main", "owner", end=4), "transform": patch})
+        with pytest.raises(ValueError):
+            EditSpec.model_validate(bad)
+
+
+def test_collect_audio_resolves_video_source(db, ready_video):
+    data = sequence_spec(clip("main", ready_video.id, end=4))
+    data["audio"] = {"source_volume": 1, "tracks": [{"id": "va1", "source_kind": "video", "asset_id": ready_video.id, "role": "voice", "t": [1, 3]}]}
+    sources = collect_audio(db, EditSpec.model_validate(data), ready_video)
+    assert sources[ready_video.id].path == str(storage.source_path(ready_video.batch_id, ready_video.id, ready_video.source_ext))
+    assert sources[ready_video.id].duration == ready_video.duration
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
@@ -92,7 +130,7 @@ def test_real_upper_video_track_render(tmp_path):
             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
         ], check=True, capture_output=True)
     data = sequence_spec(clip("main", "owner", end=3))
-    data["video_tracks"] = [{"id": "vt2", "clips": [{"id": "upper", "video_id": "other", "start": 1, "in": 0, "out": 1}]}]
+    data["video_tracks"] = [{"id": "vt2", "clips": [{"id": "upper", "video_id": "other", "start": 1, "in": 0, "out": 1, "transform": {"fit": "contain", "scale": 0.5, "x": 0.25, "y": 0.5}}]}]
     spec = EditSpec.model_validate(data)
     plan = build_render_command(
         spec, {"video_id": "owner", "duration": 3, "width": 128, "height": 96, "fps": 25, "has_audio": False},

@@ -1,16 +1,18 @@
 // 剪辑模块右侧分为「剪辑 / 视频拼接」；只切换检查器内容，不影响播放器和底部轨道。
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { useCoverDuration, useEditor, usePostDuration, selectSourceDuration } from '../../store/editor';
+import { useCoverDuration, useEditor, usePostDuration, selectPostTime, selectSourceDuration } from '../../store/editor';
 import { formatSeconds, formatTime } from '../../lib/time';
 import { estimateOutputBytes, formatBytes, qualityOf } from '../../lib/estimate';
 import { defaultCropRect, describeCrop, isDefaultCrop } from '../../lib/crop';
 import { BG_BRIGHTNESS_MAX, BG_BRIGHTNESS_MIN, BLUR_MAX, BLUR_MIN, bgBrightnessOf, blurOf } from '../../lib/blurFill';
 import { countSafeZoneOverlaps, exportKeys, outputFor } from '../../lib/spec';
 import { toggleExportVariant } from '../../lib/exportScope';
+import { clipAt } from '../../lib/sequence';
+import { resolveVideoTransform } from '../../lib/videoTransform';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose } from '../ui/Icons';
-import { Field, Slider } from '../ui/Num';
+import { Field, Num, Slider } from '../ui/Num';
 import { Seg } from '../ui/Seg';
 import { Section } from '../ui/Section';
 import { ColorPicker } from '../ui/ColorPicker';
@@ -31,6 +33,52 @@ function canvasDimension(raw: string): number | null {
 function evenDimension(n: number): number | null {
   const rounded = Math.max(2, Math.round(n / 2) * 2);
   return Number.isSafeInteger(rounded) ? rounded : null;
+}
+
+function VideoTransformSection() {
+  const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
+  const videos = useEditor((s) => s.videos);
+  const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const selection = useEditor((s) => [...s.timelineSelection].reverse().find((key) => key.startsWith('clip:') || key.startsWith('vclip:')) ?? null);
+  const postTime = useEditor(selectPostTime);
+  const update = useEditor((s) => s.updateSelectedVideoTransform);
+  const previewKey = useEditor((s) => s.previewVariantKey);
+  const output = spec ? outputFor(spec, previewKey) : null;
+  const size = output ? outputSize(output) : variantDef(previewKey);
+  if (!video || !spec) return null;
+  const mainClip = spec.sequence ? (selection?.startsWith('clip:') ? spec.sequence.clips.find((clip) => clip.id === selection.slice(5)) : clipAt(spec.sequence, postTime)?.clip) : undefined;
+  const upperClip = selection?.startsWith('vclip:') ? spec.video_tracks?.flatMap((track) => track.clips).find((clip) => clip.id === selection.slice(6)) : undefined;
+  const clip = upperClip ?? mainClip;
+  const source = videos.find((item) => item.id === clip?.video_id) ?? video;
+  const t = resolveVideoTransform(clip?.transform);
+  const crop = t.crop ?? { x: 0, y: 0, w: 1, h: 1 };
+  const cropped = !!t.crop;
+  const patchCrop = (patch: Partial<typeof crop>) => update({ crop: { ...crop, ...patch } });
+  return (
+    <Section id="trim.video-transform" title="视频画面" bodyClass="stack" summary={<span className="mono">{source.name} · {Math.round(t.scale * 100)}%</span>} help="选中任意主轨或上层视频片段后，可在画布拖动和等比缩放；这里可精确输入位置、尺寸模式与源画面裁切。">
+      <div className="hint">{upperClip ? '上层视频片段' : '当前主视频片段'} · 坐标基于当前 {size.width}×{size.height} 画布</div>
+      <Seg label="尺寸" options={[
+        { v: 'contain' as const, label: '适应画布' },
+        { v: 'cover' as const, label: '填满画布' },
+        { v: 'original' as const, label: '原始尺寸' },
+      ]} value={t.fit === 'auto' ? (output?.fill === 'crop' ? 'cover' : 'contain') : t.fit} onChange={(fit) => update({ fit, scale: 1, x: 0.5, y: 0.5 })} />
+      <Slider label="缩放" value={t.scale} min={0.05} max={5} step={0.01} onChange={(scale) => update({ scale })} />
+      <div className="g2">
+        <Num label="X" value={t.x * size.width} scale={1} step={1} min={-2 * size.width} max={3 * size.width} suffix="px" onChange={(x) => update({ x: x / size.width })} />
+        <Num label="Y" value={t.y * size.height} scale={1} step={1} min={-2 * size.height} max={3 * size.height} suffix="px" onChange={(y) => update({ y: y / size.height })} />
+      </div>
+      <Field label="源画面裁切">
+        <button className={`btn sm ${cropped ? 'on' : ''}`} onClick={() => update({ crop: cropped ? null : { x: 0, y: 0, w: 1, h: 1 } })}>{cropped ? '取消裁切' : '启用裁切'}</button>
+      </Field>
+      {cropped && <div className="g2">
+        <Num label="左" value={crop.x} min={0} max={Math.max(0, 1 - crop.w)} step={0.01} onChange={(x) => patchCrop({ x })} />
+        <Num label="上" value={crop.y} min={0} max={Math.max(0, 1 - crop.h)} step={0.01} onChange={(y) => patchCrop({ y })} />
+        <Num label="宽" value={crop.w} min={0.01} max={1 - crop.x} step={0.01} onChange={(w) => patchCrop({ w })} />
+        <Num label="高" value={crop.h} min={0.01} max={1 - crop.y} step={0.01} onChange={(h) => patchCrop({ h })} />
+      </div>}
+      <button className="btn sm" style={{ alignSelf: 'flex-start' }} onClick={() => update(null)}>恢复片段默认画面</button>
+    </Section>
+  );
 }
 
 /** 成片画面：按画幅页签设置填充方式、裁切范围、清晰度（HIG-8 搬到这里，HIG-29 恢复多画幅）。页签与画布预览联动。 */
@@ -319,6 +367,7 @@ export function TrimPanel() {
         )}
 
         <RangesSection />
+        <VideoTransformSection />
         <FrameSection />
         <DurationSection />
       </div>

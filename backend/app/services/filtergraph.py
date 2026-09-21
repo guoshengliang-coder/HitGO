@@ -40,6 +40,7 @@ from app.schemas import (
     ShapeLayer,
     StickerLayer,
     TextLayer,
+    VideoTransform,
 )
 from app.services import reveal as reveal_mask
 from app.services.animation import AnimExpr, enter_delay, expressions, scale_headroom, with_time
@@ -257,6 +258,50 @@ def fill_chains(
             )
             label = f"[cs{tag}]"
         chains.append(f"{label}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}{out}")
+    return chains
+
+
+def video_transform_chains(
+    label: str,
+    transform: VideoTransform,
+    variant: OutputVariant,
+    source_w: float,
+    source_h: float,
+    W: int,
+    H: int,
+    out: str,
+    tag: str,
+    transparent_background: bool = False,
+) -> list[str]:
+    """Place one clip on its output canvas using the shared HIG-89 geometry model."""
+    chains: list[str] = []
+    crop = transform.crop
+    if crop is not None:
+        chains.append(
+            f"{label}crop=w='iw*{_fmt(crop.w)}':h='ih*{_fmt(crop.h)}'"
+            f":x='iw*{_fmt(crop.x)}':y='ih*{_fmt(crop.y)}'[vtcrop{tag}]"
+        )
+        label = f"[vtcrop{tag}]"
+    sw = max(1.0, source_w * (float(crop.w) if crop is not None else 1.0))
+    sh = max(1.0, source_h * (float(crop.h) if crop is not None else 1.0))
+    fit = transform.fit
+    if fit == "auto":
+        fit = "cover" if variant.fill == "crop" else "contain"
+    base = 1.0 if fit == "original" else max(W / sw, H / sh) if fit == "cover" else min(W / sw, H / sh)
+    tw = max(2, round(sw * base * float(transform.scale) / 2) * 2)
+    th = max(2, round(sh * base * float(transform.scale) / 2) * 2)
+    x = float(transform.x) * W - tw / 2
+    y = float(transform.y) * H - th / 2
+    chains.append(f"{label}split=2[vtbg{tag}][vtfg{tag}]")
+    if transparent_background:
+        chains.append(f"[vtbg{tag}]scale={W}:{H},format=rgba,colorchannelmixer=aa=0[vtbase{tag}]")
+    else:
+        chains += fill_chains(
+            f"[vtbg{tag}]", variant.fill, variant.color, variant.crop, W, H, f"[vtbase{tag}]",
+            tag=f"{tag}bg", blur=variant.blur, brightness=variant.bg_brightness,
+        )
+    chains.append(f"[vtfg{tag}]scale={tw}:{th},format=rgba[vtfront{tag}]")
+    chains.append(f"[vtbase{tag}][vtfront{tag}]overlay={_fmt(x)}:{_fmt(y)}:eof_action=pass:format=auto{out}")
     return chains
 
 
@@ -559,10 +604,13 @@ def build_render_command(
                 f"{tempo[1:]},fps={fps},setsar=1{raw}"
             )
             filled = f"[seqfill{i}]"
-            chains += fill_chains(
-                raw, variant.fill, variant.color, variant.crop, canvas_w, canvas_h, filled,
-                tag=f"_seq{i}", blur=variant.blur, brightness=variant.bg_brightness,
-            )
+            if clip.transform is not None:
+                chains += video_transform_chains(raw, clip.transform, variant, src.width, src.height, canvas_w, canvas_h, filled, f"_seq{i}")
+            else:
+                chains += fill_chains(
+                    raw, variant.fill, variant.color, variant.crop, canvas_w, canvas_h, filled,
+                    tag=f"_seq{i}", blur=variant.blur, brightness=variant.bg_brightness,
+                )
             chains.append(f"{filled}format=yuv420p,setsar=1[seqv{i}]")
             if source_heard:
                 if src.has_audio and clip_gains[i] > 0:
@@ -686,10 +734,13 @@ def build_render_command(
             f"setpts=(PTS-STARTPTS)/{_fmt(speed)}+{_fmt(start)}/TB,setsar=1{raw}"
         )
         filled = f"[upperfill{upper_index}]"
-        chains += fill_chains(
-            raw, variant.fill, variant.color, None, W, H, filled,
-            tag=f"_upper{upper_index}", blur=variant.blur, brightness=variant.bg_brightness,
-        )
+        if clip.transform is not None:
+            chains += video_transform_chains(raw, clip.transform, variant, source.width, source.height, W, H, filled, f"_upper{upper_index}", transparent_background=True)
+        else:
+            chains += fill_chains(
+                raw, variant.fill, variant.color, None, W, H, filled,
+                tag=f"_upper{upper_index}", blur=variant.blur, brightness=variant.bg_brightness,
+            )
         out = f"[upperout{upper_index}]"
         chains.append(
             f"{current}{filled}overlay=0:0:eof_action=pass:enable='between(t,{_fmt(start)},{_fmt(end)})'{out}"
