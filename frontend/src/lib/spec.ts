@@ -30,6 +30,8 @@ export function toContractSpec(spec: EditSpec, duration?: number): EditSpec {
     trim: {
       remove: normalizeRanges(spec.trim.remove, spec.sequence ? spec.sequence.clips.reduce((n, c) => n + (c.out - c.in) / (c.speed ?? 1) - (c.transition?.duration ?? 0), 0) : duration).map(([a, b]) => [round3(a), round3(b)]),
       ...(typeof fixedDuration === 'number' && fixedDuration > 0 ? { duration: round3(fixedDuration) } : {}),
+      // 主轨分割点（HIG-85）只在非空时发，保持旧 spec 形状
+      ...(!spec.sequence && spec.trim.splits?.length ? { splits: spec.trim.splits.map(round3) } : {}),
     },
     layers: spec.layers.map((l) => {
       // 浅拷贝即可：style（含 shadow / letter_spacing）等嵌套对象原样透传

@@ -573,6 +573,8 @@ export interface LayerBase {
   locked?: boolean;
   /** 可选（HIG-84）：origin='subtitle' 且是「自动识别字幕」生成的；再识别时按它整批替换，手动 / .srt 字幕不带。 */
   auto?: boolean;
+  /** 可选（HIG-85）：复合组 id；同组的时间线片段一起选中、移动、删除。只给编辑器用，worker 忽略。 */
+  group?: string;
 }
 
 /** 视频贴纸短于显示时段时的行为；静态图忽略。 */
@@ -893,6 +895,8 @@ export interface AudioTrack {
   locked?: boolean;
   /** 可选（HIG-48）：时间线上改的轨道名；缺省显示素材文件名，只在非空时发。 */
   name?: string;
+  /** 可选（HIG-85）：复合组 id；同组的时间线片段一起选中、移动、删除。只给编辑器用，worker 忽略。 */
+  group?: string;
 }
 
 /** 视频片段相对输出画布的变换。缺省整个对象时保持旧版自动铺画布行为（HIG-89）。 */
@@ -936,6 +940,11 @@ export interface Trim {
   remove: [number, number][];
   /** 秒，(0, 600]；只在正数时发送。 */
   duration?: number | null;
+  /**
+   * 可选（HIG-85）：主轨分割点，源时间秒。只把保留段切成可单独选中 / 删除的片段，不改变成片；
+   * worker 忽略，非空时才发。拼接视频（sequence）直接拆片段，不用它。
+   */
+  splits?: number[];
 }
 
 /** HIG-39：当前视频的拼接时间轴引用本批次的原始源视频，不套用来源视频的 edit_spec。 */
@@ -959,6 +968,8 @@ export interface SequenceClip {
   transition?: ClipTransition | null;
   /** 可选（HIG-89）：该片段自己的画面位置、缩放和裁切。 */
   transform?: VideoTransform | null;
+  /** 可选（HIG-85）：复合组 id；同组的时间线片段一起选中、移动、删除。只给编辑器用，worker 忽略。 */
+  group?: string;
 }
 export interface SequenceSpec {
   clips: SequenceClip[];
@@ -976,6 +987,8 @@ export interface VideoTrackClip {
   speed?: number;
   /** 可选（HIG-89）：该片段自己的画面位置、缩放和裁切。 */
   transform?: VideoTransform | null;
+  /** 可选（HIG-85）：复合组 id；同组的时间线片段一起选中、移动、删除。只给编辑器用，worker 忽略。 */
+  group?: string;
 }
 export interface VideoTrack {
   id: string;

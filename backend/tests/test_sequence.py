@@ -285,3 +285,35 @@ def test_sequence_speed_retimes_picture_source_audio_and_source_aligned_stems():
     assert plan.expected_duration == pytest.approx(2.5)
     assert 'setpts=(PTS-STARTPTS)/0.8' in plan.filter_complex
     assert plan.filter_complex.count('atempo=0.8') == 2  # raw source audio + source-aligned stem
+
+
+def test_compound_groups_and_splits_validate_and_round_trip(client, ready_video):
+    """HIG-85: group ids on layers / tracks / clips and trim.splits are editor-only and survive a save."""
+    spec = sequence_spec({**clip("main", ready_video.id, end=4), "group": "cg_main"})
+    spec["video_tracks"] = [{"id": "vt", "clips": [{"id": "upper", "video_id": ready_video.id, "start": 1, "in": 0, "out": 2, "group": "cg_upper"}]}]
+    spec["layers"] = [{"id": "l1", "type": "shape", "shape": "rect", "t": [0, 2], "group": "cg_main"}]
+    spec["audio"] = {"source_volume": 1, "tracks": [{"id": "a1", "asset_id": "a_x", "t": [1, 3], "group": "cg_upper"}]}
+    parsed = EditSpec.model_validate(spec)
+    assert parsed.sequence.clips[0].group == "cg_main"
+    assert parsed.video_tracks[0].clips[0].group == "cg_upper"
+    assert parsed.layers[0].group == "cg_main"
+    assert parsed.audio.tracks[0].group == "cg_upper"
+    assert EditSpec.model_validate(sequence_spec(clip("c1", "v1"))).sequence.clips[0].group is None
+    with pytest.raises(ValueError):
+        EditSpec.model_validate(sequence_spec({**clip("c1", "v1"), "group": "g" * 65}))
+
+    saved = client.put(f"/api/videos/{ready_video.id}/spec", json={"edit_spec": spec})
+    assert saved.status_code == 200, saved.text
+    reopened = client.get(f"/api/videos/{ready_video.id}").json()["edit_spec"]
+    assert reopened["sequence"]["clips"][0]["group"] == "cg_main"
+    assert reopened["video_tracks"][0]["clips"][0]["group"] == "cg_upper"
+    assert reopened["layers"][0]["group"] == "cg_main"
+    assert reopened["audio"]["tracks"][0]["group"] == "cg_upper"
+
+    plain = {"spec_version": 1, "trim": {"remove": [[2, 3]], "splits": [1.5, 6]}, "layers": [], "outputs": spec["outputs"]}
+    assert EditSpec.model_validate(plain, context={"duration": 24.6}).trim.splits == [1.5, 6]
+    saved = client.put(f"/api/videos/{ready_video.id}/spec", json={"edit_spec": plain})
+    assert saved.status_code == 200, saved.text
+    assert client.get(f"/api/videos/{ready_video.id}").json()["edit_spec"]["trim"]["splits"] == [1.5, 6]
+    with pytest.raises(ValueError):
+        EditSpec.model_validate({**plain, "trim": {"remove": [], "splits": [-1]}})

@@ -233,3 +233,14 @@ describe('导出勾选 exportKeys / setExportKeys（HIG-35）', () => {
     expect(toContractSpec(next).outputs.map((o) => o.export)).toEqual([true, false]);
   });
 });
+
+describe('toContractSpec · 复合片段 / 主轨分割点（HIG-85）', () => {
+  it('trim.splits 只在非空且非拼接视频时发送；group 原样透传', () => {
+    expect(toContractSpec(emptySpec()).trim).not.toHaveProperty('splits');
+    expect(toContractSpec({ ...emptySpec(), trim: { remove: [], splits: [1.23456] } }).trim.splits).toEqual([1.235]);
+    const out = toContractSpec({ ...emptySpec(), trim: { remove: [], splits: [1] }, layers: [sticker({ group: 'cg_x' })], sequence: { clips: [{ id: 'c', video_id: 'v', in: 0, out: 2, group: 'cg_x' }] } });
+    expect(out.trim).not.toHaveProperty('splits');
+    expect(out.layers[0].group).toBe('cg_x');
+    expect(out.sequence!.clips[0].group).toBe('cg_x');
+  });
+});

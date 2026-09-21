@@ -46,3 +46,19 @@ const ZOOM_STEP = 1.5;
 export function stepZoom(pps: number, dir: 1 | -1): number {
   return Math.min(MAX_PPS, Math.max(MIN_PPS, pps * (dir > 0 ? ZOOM_STEP : 1 / ZOOM_STEP)));
 }
+
+export type SplitTarget = 'videos' | 'main' | 'track' | 'layer' | null;
+
+/**
+ * ⌘B 分割作用在谁身上（HIG-85）：选了视频片段（clip: / vclip:）→ 拆所选视频；选了主轨片段（seg:）、
+ * 或剪辑模块里没选别的 → 在播放头分割主轨；否则沿用各模块原来的行为（音频拆选中音轨、图层模块拆选中图层）。
+ */
+export function splitTarget(opts: { selection: string[]; step: string; selectedTrackId: string | null; sourceTrackId: string; selectedLayerId: string | null; layerStep: boolean }): SplitTarget {
+  const { selection, step } = opts;
+  if (selection.some((k) => k.startsWith('clip:') || k.startsWith('vclip:'))) return 'videos';
+  if (selection.some((k) => k.startsWith('seg:'))) return 'main';
+  if (step === 'audio' && opts.selectedTrackId && opts.selectedTrackId !== opts.sourceTrackId) return 'track';
+  if (opts.layerStep && opts.selectedLayerId) return 'layer';
+  if (step === 'trim' && !selection.length) return 'main';
+  return null;
+}

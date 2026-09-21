@@ -418,6 +418,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - `video_id` 只可引用同批次已就绪的视频/图片源片，保存与渲染时校验；引用中的源视频不可单独删除。
 - `hidden` 同时影响预览和导出；`locked` 只限制编辑器的移动、裁边、拆分、删除操作，worker 忽略。
 - 片段支持移动、左右裁边、在播放头拆分、复制/粘贴和删除；`transform` 让 V1/V2/V3 使用同一套画面移动、缩放、适配与裁切能力。
+- 主轨与上层轨的 clip 都可选 `group`（HIG-85，复合组 id，仅编辑器用、worker 忽略），规则见下方「复合片段」。
 - 带原声的视频拖入上层轨时，编辑器在 `audio.tracks[]` 中创建 `source_kind = "video"`、`asset_id = video_id`、
   `linked_clip_id = clip.id` 的关联原声音轨（HIG-87）。移动、裁边、变速、拆分和删除同步更新仍绑定的音轨；拆分产生两组关联。
   解除绑定会移除 `linked_clip_id`，音轨仍引用视频原声并作为普通独立音轨存在，后续视频操作不再影响它。
@@ -430,7 +431,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   "video_locked": false,                   // 可选，缺省 false（HIG-62）：编辑器时间线禁止修改主视频片段，worker 忽略
   "trim": {
     "remove": [[3.2, 5.8], [17.0, 18.4]],    // 秒，基于源视频时间轴，互不重叠、升序
-    "duration": null                         // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
+    "duration": null,                        // 可选（HIG-50）：成片正片时长，秒，(0, 600]；null / 缺省 = 剪后时长。见下方规则
+    "splits": [8.5]                          // 可选，缺省 []（HIG-85）：主轨分割点，源时间秒，仅编辑器用、worker 忽略。见下方「复合片段」
   },
   "layers": [
     {
@@ -445,6 +447,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
       "t": [0, 6],                           // 出现时段，秒，基于剪后时间轴；"all" 表示全程
       "hidden": false,                       // 可选，缺省 false：编辑器里关掉眼睛，留在 spec 里但成片不出（HIG-33，所有图层类型通用）
       "locked": false,                       // 可选，缺省 false（HIG-62）：禁止编辑该轨道，worker 忽略
+      "group": "cg_c_1",                     // 可选（HIG-85）：复合组 id，仅编辑器用、worker 忽略。见下方「复合片段」
       "name": "品牌角标",                     // 可选（HIG-48）：轨道 / 图层显示名，所有图层类型通用；缺省 = 编辑器自动命名，worker 忽略
       "source_in": 1.5,                      // 可选，缺省 0（HIG-67）：素材内入点，秒；只对视频素材生效
       "source_out": 7.5,                     // 可选，缺省素材时长（HIG-67）：素材内出点，秒
@@ -562,6 +565,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长
         "hidden": false,                     // 可选，缺省 false：关掉眼睛，不混进成片（HIG-33）
         "locked": false,                     // 可选，缺省 false（HIG-62）：禁止编辑该音轨，worker 忽略
+        "group": "cg_c_1",                   // 可选（HIG-85）：复合组 id，仅编辑器用、worker 忽略
         "name": "开场 BGM",                  // 可选（HIG-48）：音轨显示名；缺省 = 素材文件名，worker 忽略
         "origin": "localize", "lang": "ko"   // 可选；前端标记：改语言套用出来的配音轨（见下方规则）
       }
@@ -635,6 +639,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   不变。编辑器预览按同样的规则隐藏 / 静音。前端只在为 `true` 时发送这些字段。批量套用时随所在的图层 / `audio`
   块一起复制（`style_only` 匹配上的目标保留自己的 `hidden`）。
 - **视频主轨隐藏与锁定（HIG-62）**：`video_hidden` / `video_locked` 均可选，缺省 `false`。隐藏时只把正片的主视频画面替换为黑底，封面、可见图层、源音轨及独立音轨保留；编辑器预览和 worker 一致。锁定只限制编辑器对主视频片段及剪辑区间的修改，worker 忽略。主轨仍至少保留一个片段，不能整轨删除。
+- **复合片段（HIG-85，编辑器专用，worker 全部忽略）**：`layers[].group`、`audio.tracks[].group`、
+  `sequence.clips[].group`、`video_tracks[].clips[].group` 均为可选字符串（≤ 64 字符），缺省不发。同一 id 的片段
+  在时间线上组成一组：点任一成员即选中整组（⌥ 点只选单个），随后的移动、删除、复制按多选处理。「一键复合」按画面
+  自动编组（id 前缀 `cg_`，每次重算）：拼接主轨片段 / 非拼接视频的保留段 / 上层视频片段各为一个画面片段，有具体时段的
+  图层与独立音轨归到与其重叠最长、且重叠不少于自身时长一半的画面片段，关联原声随其上层片段；一组至少两个成员。
+  ⌘G 手动组合（id 前缀 `grp_`，一键复合不改动），⇧⌘G 解除。粘贴出的副本另起新组，删到只剩一个成员的组自动解散。
+  `trim.splits`（可选，缺省 `[]`，每个值 ≥ 0，源时间秒）是非拼接视频主轨上的分割点：只把保留段切成可单独选中的
+  片段，选中片段按 Delete 即并入 `trim.remove`（删掉的区间照旧画斜纹、横轴不收拢，不能删光整条视频）；
+  落在删除区间里或贴着保留段两端的分割点由编辑器忽略。拼接视频（`sequence`）直接拆分片段，不用 `splits`，编辑器也不发。
 - **单轨锁定（HIG-62）**：`layers[].locked`、`audio.tracks[].locked`、`audio.source_locked` 可选，缺省 `false`；编辑器禁止移动、裁剪、删除或修改被锁定的轨道，隐藏开关和解锁仍可用。worker 忽略锁定字段。源音轨不能整轨删除。
 - 文字图层没有 `image_url` 时 worker 跳过该图层并在 job.error 里记警告（不失败）。贴纸素材不存在、或
   视频贴纸还没预处理完（`status != "ready"`）时同样跳过并记警告。
