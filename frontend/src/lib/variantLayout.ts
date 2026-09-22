@@ -109,6 +109,11 @@ export function referenceOutput(spec: EditSpec): OutputVariant | undefined {
   return spec.outputs.find((o) => o.variant_key === '9x16');
 }
 
+/** 参考画幅（9x16）的画面几何；spec 里没有参考输出时按缺省的 blur 1080×1920。 */
+export function referenceFrame(spec: EditSpec): FrameSpec {
+  return frameOf(referenceOutput(spec));
+}
+
 function frameOf(o: OutputVariant | undefined): FrameSpec {
   if (!o) return { fill: 'blur', W: 1080, H: 1920 };
   const d = outputSize(o);

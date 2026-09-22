@@ -63,6 +63,8 @@ class EraseProgress:
     status: str  # "running" | "done" | "failed"
     url: str | None = None
     error: str | None = None
+    # What the vendor itself says about the job ("排队中", "处理中 40%"), shown while running.
+    detail: str | None = None
 
 
 class EraseProvider(Protocol):
@@ -299,6 +301,8 @@ def start(db: Session, video: Video, st: dict[str, Any], scope: dict[str, Any] |
         scope={"band": bool((scope or {}).get("band", True)), "block_ids": (scope or {}).get("block_ids")},
         stale=False,
         error=None,
+        resumable=False,
+        vendor_status=None,
         clean_url=None,
         clean_proxy_url=None,
         clean_poster_url=None,
@@ -318,8 +322,28 @@ def provider_for(video: Video, cfg: Settings | None = None) -> EraseProvider:
     return make_provider(video, cfg)
 
 
+def resumable_provider(name: str | None) -> bool:
+    """Cloud jobs keep running on the vendor's side after we stop waiting, so they can be
+    picked up again; the local / fake ones finish inside ``submit`` and have nothing to resume."""
+    return bool(name) and name not in ("local", "fake")
+
+
+def timeout_reason(seconds: int, resumable: bool) -> str:
+    reason = f"擦除超过 {seconds} 秒仍未完成，已中止"
+    if resumable:
+        reason += "；供应商可能还在处理，可以点「继续等待」接着查同一个任务（不会重新提交）"
+    return reason
+
+
 def poll_once(db: Session, video_id: str, cfg: Settings | None = None) -> None:
-    """One tick of ``hitgo.erase_poll``: finish, give up, or ask to be woken again."""
+    """One tick of ``hitgo.erase_poll``: finish, give up, or ask to be woken again.
+
+    Every way out leaves a terminal status or schedules the next tick. A tick that dies in the
+    middle (provider misconfigured, download or proxy past the task's soft limit) used to leave
+    ``erase`` on running with nobody polling it, until the stale check said "没有进展".
+    """
+    from celery.exceptions import SoftTimeLimitExceeded  # noqa: PLC0415
+
     from app import worker  # noqa: PLC0415
     from app.services import screentext  # noqa: PLC0415
 
@@ -331,7 +355,16 @@ def poll_once(db: Session, video_id: str, cfg: Settings | None = None) -> None:
     er = dict(st.get("erase") or {})
     if er.get("status") != ST_RUNNING or not er.get("task_id"):
         return  # cancelled, replaced or already finished
-    provider = provider_for(video, cfg)
+
+    def fail(reason: str, **extra: Any) -> None:
+        st["erase"] = screentext.stamp(er, status=ST_FAILED, error=reason, **extra)
+        screentext.save(db, video, st, erase=True)
+
+    try:
+        provider = provider_for(video, cfg)
+    except EraseError as exc:
+        fail(str(exc))
+        return
     try:
         progress = provider.poll(str(er["task_id"]))
     except Exception as exc:  # noqa: BLE001  a transient vendor error should not kill the job
@@ -339,21 +372,29 @@ def poll_once(db: Session, video_id: str, cfg: Settings | None = None) -> None:
         progress = EraseProgress(status="running", error=str(exc))
 
     er["polls"] = int(er.get("polls") or 0) + 1
+    if progress.detail:
+        er["vendor_status"] = progress.detail
     if progress.status == "failed":
-        st["erase"] = screentext.stamp(er, status=ST_FAILED, error=progress.error or "擦除失败")
-        screentext.save(db, video, st, erase=True)
+        fail(progress.error or "擦除失败", resumable=False)
         return
     if progress.status == "done":
         try:
             _finish(video, provider, str(er["task_id"]), progress, cfg)
         except EraseError as exc:
-            st["erase"] = screentext.stamp(er, status=ST_FAILED, error=str(exc))
-            screentext.save(db, video, st, erase=True)
+            fail(str(exc), resumable=False)
+            return
+        except SoftTimeLimitExceeded:
+            fail("下载或处理擦除结果超时，已中止；可以点「继续等待」再取一次结果", resumable=resumable_provider(provider.name))
+            raise
+        except Exception as exc:  # noqa: BLE001  e.g. a disk error while publishing clean.mp4
+            log.exception("erase finish failed for %s", video_id)
+            fail(f"处理擦除结果出错：{exc}", resumable=resumable_provider(provider.name))
             return
         st["erase"] = screentext.stamp(
             er,
             status=ST_DONE,
             error=None,
+            resumable=False,
             clean_url=storage.media_url(storage.clean_path(video.batch_id, video.id)),
             clean_proxy_url=storage.media_url(storage.clean_proxy_path(video.batch_id, video.id)),
             clean_poster_url=storage.media_url(storage.clean_poster_path(video.batch_id, video.id)),
@@ -363,12 +404,40 @@ def poll_once(db: Session, video_id: str, cfg: Settings | None = None) -> None:
 
     deadline = er.get("deadline")
     if deadline and iso(utcnow()) >= str(deadline):
-        st["erase"] = screentext.stamp(er, status=ST_FAILED, error=f"擦除超过 {cfg.erase_max_wait_seconds} 秒仍未完成，已中止")
-        screentext.save(db, video, st, erase=True)
+        resumable = resumable_provider(provider.name)
+        fail(timeout_reason(cfg.erase_max_wait_seconds, resumable), resumable=resumable)
         return
     st["erase"] = screentext.stamp(er)
     screentext.save(db, video, st, erase=True)
-    worker.enqueue_later(worker.erase_poll, cfg.erase_poll_interval_seconds, video_id)
+    try:
+        worker.enqueue_later(worker.erase_poll, cfg.erase_poll_interval_seconds, video_id)
+    except Exception as exc:  # noqa: BLE001  a broker hiccup must not strand the job on running
+        fail(f"无法安排下一次擦除进度查询：{exc}", resumable=resumable_provider(provider.name))
+
+
+def resume(db: Session, video: Video, cfg: Settings | None = None) -> None:
+    """「继续等待」: poll the same vendor job again with a fresh deadline — no new submission.
+
+    Raises ``EraseError`` with the Chinese reason when there is nothing to resume. The caller
+    queues the first tick.
+    """
+    from app.services import screentext  # noqa: PLC0415
+
+    cfg = cfg or settings
+    st: dict[str, Any] = dict(video.screen_text or {})
+    er = dict(st.get("erase") or {})
+    if er.get("status") != ST_FAILED or not er.get("resumable") or not er.get("task_id"):
+        raise EraseError("没有可以继续等待的擦除任务：请重新擦除")
+    if not resumable_provider(er.get("provider")):
+        raise EraseError("本地擦除没有可以继续等待的任务：请重新擦除")
+    st["erase"] = screentext.stamp(
+        er,
+        status=ST_RUNNING,
+        error=None,
+        resumable=False,
+        deadline=iso(utcnow() + timedelta(seconds=cfg.erase_max_wait_seconds)),
+    )
+    video.screen_text = st
 
 
 def _finish(video: Video, provider: EraseProvider, task_id: str, progress: EraseProgress, cfg: Settings) -> None:

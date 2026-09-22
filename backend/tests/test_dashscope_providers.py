@@ -414,7 +414,8 @@ def test_screen_text_provider_sends_the_frame_and_the_model(fake_sdk, tmp_path):
     call = fake_sdk.calls[0]
     assert call["model"] == "qwen-vl-max-latest"
     content = call["messages"][0]["content"]
-    assert content[0]["image"].startswith("file://")
+    # Inlined, not a file:// URI: the SDK's own upload of local files ignores request_timeout.
+    assert content[0]["image"] == "data:image/jpeg;base64,/9j/"
     assert "zh" in content[1]["text"]
 
 

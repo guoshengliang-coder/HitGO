@@ -9,6 +9,7 @@ import pytest
 from app.db import iso, utcnow
 from app.models import ST_DONE, ST_FAILED, ST_QUEUED, Video
 from app.services import screentext
+from app.services.localize import LocalizeError
 from app.services.screentext import DetectedText, FakeScreenText
 
 
@@ -602,6 +603,98 @@ def test_detect_blocks_keeps_valid_frames_when_only_one_response_is_malformed(tm
 
     assert result["status"] == ST_DONE
     assert [block["text"] for block in result["blocks"]] == ["SALE"]
+
+
+def _stub_frames(tmp_path, ready_video, monkeypatch, count):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    frames = [tmp_path / f"f{i:04d}.jpg" for i in range(1, count + 1)]
+    for frame in frames:
+        frame.write_bytes(b"frame")
+    monkeypatch.setattr(screentext.storage, "source_path", lambda *args: source)
+    monkeypatch.setattr(screentext, "_run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(screentext, "frame_paths", lambda *args: frames)
+    monkeypatch.setattr(screentext, "dedupe_frames", lambda paths: paths)
+
+
+def test_detect_blocks_skips_a_frame_whose_call_failed(tmp_path, ready_video, monkeypatch):
+    """HIG-86: one frame timing out (or a 400 on one image) must not throw away the rest."""
+    _stub_frames(tmp_path, ready_video, monkeypatch, 3)
+
+    class OneTimeout:
+        calls = 0
+
+        def detect(self, frame, hint_lang):
+            self.calls += 1
+            if self.calls == 2:
+                raise LocalizeError("画面文字识别失败：Read timed out")
+            return [DetectedText("SALE", box(0.2, 0.2, 0.3, 0.06))]
+
+    provider = OneTimeout()
+    result = screentext.detect_blocks(ready_video, provider, tmp_path / "out", None)
+
+    assert result["status"] == ST_DONE
+    assert provider.calls == 3
+    assert result["skipped_frames"] == 1
+    assert [block["text"] for block in result["blocks"]] == ["SALE"]
+
+
+def test_detect_blocks_fails_at_once_on_a_permission_error(tmp_path, ready_video, monkeypatch):
+    _stub_frames(tmp_path, ready_video, monkeypatch, 3)
+
+    class Denied:
+        calls = 0
+
+        def detect(self, frame, hint_lang):
+            self.calls += 1
+            raise LocalizeError("画面文字识别失败（403）：Access denied")
+
+    provider = Denied()
+    with pytest.raises(LocalizeError, match="403"):
+        screentext.detect_blocks(ready_video, provider, tmp_path / "out", None)
+    assert provider.calls == 1  # every frame would fail the same way
+
+
+def test_detect_blocks_gives_up_when_the_first_frames_all_fail(tmp_path, ready_video, monkeypatch):
+    """Nothing working yet: stop after a few instead of burning the task budget on timeouts."""
+    _stub_frames(tmp_path, ready_video, monkeypatch, 10)
+
+    class Down:
+        calls = 0
+
+        def detect(self, frame, hint_lang):
+            self.calls += 1
+            raise LocalizeError(f"画面文字识别失败：timeout {self.calls}")
+
+    provider = Down()
+    with pytest.raises(LocalizeError, match="timeout 3"):
+        screentext.detect_blocks(ready_video, provider, tmp_path / "out", None)
+    assert provider.calls == screentext.FRAME_FAILURES_BEFORE_ABORT
+
+
+def test_detect_blocks_reports_the_real_reason_when_every_frame_failed(tmp_path, ready_video, monkeypatch):
+    _stub_frames(tmp_path, ready_video, monkeypatch, 2)
+
+    class Down:
+        def detect(self, frame, hint_lang):
+            raise LocalizeError("画面文字识别失败（400）：data inspection failed")
+
+    with pytest.raises(LocalizeError, match="400"):
+        screentext.detect_blocks(ready_video, Down(), tmp_path / "out", None)
+
+
+def test_detect_progress_reaches_the_response(client, ready_video, db):
+    """#97 wrote progress into the state, but the response model dropped it."""
+    ready_video.screen_text = {
+        "detect": {"status": "running", "progress": {"done": 2, "total": 5}, "updated_at": iso(utcnow())},
+        "versions": {},
+    }
+    db.commit()
+
+    detect = client.get(f"/api/videos/{ready_video.id}").json()["screen_text"]["detect"]
+
+    assert detect["progress"] == {"done": 2, "total": 5}
+    assert detect["skipped_frames"] == 0
 
 
 # --- the task end to end (fake providers, no ffmpeg) ------------------------

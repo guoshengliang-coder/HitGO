@@ -626,6 +626,11 @@ def parse_detection_json(
     return out
 
 
+def _data_uri(path: Path) -> str:
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+
+
 def _image_size(path: Path) -> tuple[int, int] | None:
     try:
         from PIL import Image  # noqa: PLC0415
@@ -673,7 +678,10 @@ class DashScopeScreenText:
         prompt = SCREEN_TEXT_PROMPT
         if hint_lang:
             prompt += f"画面文字的语言大概率是 {hint_lang}。"
-        messages = [{"role": "user", "content": [{"image": frame.resolve().as_uri()}, {"text": prompt}]}]
+        # Inline the frame instead of handing the SDK a file:// URI: for a local file the SDK
+        # first uploads it to its own storage, and that upload ignores ``request_timeout`` and
+        # waits the SDK default 300 s (seen in production, HIG-86). A 720p JPEG is a few dozen KB.
+        messages = [{"role": "user", "content": [{"image": _data_uri(frame)}, {"text": prompt}]}]
 
         def call() -> Any:
             # Without a request timeout the SDK waits 300 s per attempt, so one stalled frame

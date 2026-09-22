@@ -311,6 +311,21 @@ function wrapTextLines(lines: TextRun[][], style: TextStyle, wrapWidth: number):
   return wrapRuns(lines, Math.max(1, inner), (s) => measureLine(ctx, [{ text: s }], spacingPx, native));
 }
 
+/**
+ * 画面文字写回时的折行测宽（HIG-86，lib/screentext.fitScreenText 注入）：与 wrapTextLines 同一套字体与字距。
+ * 字体还没加载完时 canvas 用回退字体量，宽度只差几个百分点，fit 本身留了余量。
+ */
+export function measureTextWidth(text: string, fontPx: number, style: TextStyle): number {
+  const ctx = measureCtx ?? (measureCtx = document.createElement('canvas').getContext('2d') as Ctx2D | null);
+  if (!ctx) return text.length * fontPx * 0.6;
+  const spacingPx = (style.letter_spacing || 0) * fontPx;
+  ctx.font = fontString(style, fontPx);
+  const native = supportsLetterSpacing(ctx);
+  if (native) ctx.letterSpacing = `${spacingPx}px`;
+  return measureLine(ctx, [{ text }], spacingPx, native);
+}
+let measureCtx: Ctx2D | null = null;
+
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   const rr = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();

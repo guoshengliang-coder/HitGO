@@ -202,6 +202,24 @@ describe('画面文字配置状态（HIG-86）', () => {
   });
 });
 
+describe('画面文字 409（HIG-86）', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('已经在处理中时接着轮询显示进度，而不是报失败', async () => {
+    const base = { ...VIDEO, id: 'v_st409', status: 'ready' } as Video;
+    const running = { detect: { status: 'running', blocks: [], progress: { done: 1, total: 4 } }, versions: {} } as unknown as Video['screen_text'];
+    useEditor.setState({ videos: [{ ...base, screen_text: null }], currentVideoId: base.id, toast: null });
+    vi.spyOn(api, 'screenText').mockRejectedValue(new ApiError(409, '这条视频正在识别画面文字，请等它完成'));
+    const getVideo = vi.spyOn(api, 'getVideo').mockResolvedValue({ ...base, screen_text: running });
+
+    expect(await useEditor.getState().runScreenText({ detect: true })).toBe(true);
+
+    expect(getVideo).toHaveBeenCalled();
+    expect(useEditor.getState().videos[0].screen_text?.detect?.status).toBe('running');
+    expect(useEditor.getState().toast).toContain('已接着显示进度');
+  });
+});
+
 describe('复合片段（HIG-85 审查修正）', () => {
   it('一键复合编不出新组时也清掉上一次留下的自动组', () => {
     useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字幕'), t: [1, 2], group: 'cg_seg0' }] });

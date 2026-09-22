@@ -1390,6 +1390,8 @@ class ScreenTextIn(BaseModel):
     terms: list[TermIn] = Field(default_factory=list, max_length=200)
     erase: bool = False
     scope: EraseScopeIn | None = None
+    # 「继续等待」(HIG-86): poll the timed-out vendor job again instead of submitting a new one.
+    erase_resume: bool = False
 
     @field_validator("target_langs")
     @classmethod
@@ -1479,11 +1481,21 @@ class SubtitleBandOut(BaseModel):
     confidence: float | None = None
 
 
+class ScreenDetectProgressOut(BaseModel):
+    done: int
+    total: int
+
+
 class ScreenDetectOut(BaseModel):
     status: str
     error: str | None = None
     model: str | None = None
     frames: int = 0
+    # Frames whose vision call failed or came back unparseable and were skipped (HIG-86).
+    skipped_frames: int = 0
+    # {"done": 3, "total": 12} while running. Listed in the contract since #97 but missing here,
+    # so the response model silently dropped it and "识别中 N/M 帧" never reached the editor.
+    progress: ScreenDetectProgressOut | None = None
     subtitle_band: SubtitleBandOut | None = None
     blocks: list[ScreenBlockOut] = Field(default_factory=list)
     updated_at: str | None = None
@@ -1504,6 +1516,10 @@ class EraseOut(BaseModel):
     # Which regions this run covered (contract §1); the editor shows it as "重新擦除" guidance.
     scope: EraseScopeOut | None = None
     stale: bool = False
+    # The vendor's own status text while running, e.g. "排队中（状态 0）" (HIG-86).
+    vendor_status: str | None = None
+    # A timed-out cloud job that may still finish: POST … {erase_resume: true} polls it again.
+    resumable: bool = False
     clean_url: str | None = None
     clean_proxy_url: str | None = None
     clean_poster_url: str | None = None
