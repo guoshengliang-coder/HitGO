@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AudioTrack, EditSpec, Layer } from '../types';
-import { allTimelineKeys, buildCompoundGroups, expandGroupSelection, groupColor, groupItems, pruneSingletonGroups, shiftTimedItems, ungroupItems } from './groups';
+import { allTimelineKeys, buildCompoundGroups, compoundLanes, expandGroupSelection, groupColor, groupItems, pruneSingletonGroups, shiftTimedItems, ungroupItems } from './groups';
 
 const layer = (id: string, t: Layer['t'], extra: Partial<Layer> = {}): Layer =>
   ({ id, type: 'shape', shape: 'rect', anchor: 'top-left', margin: [0, 0], width: 0.3, rotate: 0, opacity: 1, t, ...extra }) as Layer;
@@ -102,6 +102,13 @@ describe('group selection / group / ungroup', () => {
   it('组色稳定', () => {
     expect(groupColor('g1')).toBe(groupColor('g1'));
     expect(groupColor('g1')).toMatch(/^hsl\(/);
+  });
+
+  it('同组成员折叠成一条复合轨，范围取成员并集且全程成员覆盖成片', () => {
+    const spec = grouped();
+    expect(compoundLanes(spec, 8)).toEqual([{ id: 'g1', keys: ['layer:a', 'layer:c', 'track:t'], window: [0, 3] }]);
+    spec.layers[0].t = 'all';
+    expect(compoundLanes(spec, 8)[0].window).toEqual([0, 8]);
   });
 });
 

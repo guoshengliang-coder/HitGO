@@ -172,6 +172,67 @@ def test_a_two_line_subtitle_band_takes_both_rows():
     assert rest == []
 
 
+def test_subtitle_rows_from_different_shots_do_not_merge():
+    """Same creative can move captions between cuts; absent temporal overlap they are layouts,
+    not the two rows of one subtitle. The winning row stays a compact band and the other remains.
+    """
+    per_frame = [
+        seen(0.0, [DetectedText("第一幕甲", box(0.15, 0.72, 0.7, 0.04))]),
+        seen(2.0, [DetectedText("第一幕乙", box(0.15, 0.72, 0.7, 0.04))]),
+        seen(8.0, [DetectedText("第二幕甲", box(0.1, 0.84, 0.8, 0.04))]),
+        seen(10.0, [DetectedText("第二幕乙", box(0.1, 0.84, 0.8, 0.04))]),
+    ]
+    band, rest = screentext.split_band(screentext.cluster_blocks(per_frame, step=2.0))
+
+    assert band is not None
+    assert band["box"]["h"] < 0.06
+    assert len(rest) == 2
+
+
+def test_subtitle_band_uses_median_geometry_instead_of_union_outlier():
+    blocks = [
+        {"text": "a", "box": box(0.2, 0.82, 0.6, 0.04), "t": [0, 1], "moving": False},
+        {"text": "b", "box": box(0.21, 0.82, 0.58, 0.04), "t": [1, 2], "moving": False},
+        {"text": "c", "box": box(0.01, 0.82, 0.98, 0.04), "t": [2, 3], "moving": False},
+    ]
+    band, _ = screentext.split_band(blocks)
+
+    assert band is not None
+    assert band["box"]["x"] == pytest.approx(0.2)
+    assert band["box"]["w"] == pytest.approx(0.6)
+
+
+def test_subtitle_band_style_uses_each_members_real_frame_and_box(tmp_path, monkeypatch):
+    from PIL import Image
+    from app.services import screen_style
+
+    paths = []
+    for i in range(2):
+        path = tmp_path / f"f{i}.png"
+        Image.new("RGB", (100, 100), "white").save(path)
+        paths.append(path)
+    first = box(0.1, 0.8, 0.7, 0.04)
+    second = box(0.2, 0.8, 0.6, 0.04)
+    calls = []
+
+    def estimate(_image, target):
+        calls.append(target)
+        return {"font_size": 0.04 if target is first else 0.06, "color": "#EEEEEE", "lines": 1}
+
+    monkeypatch.setattr(screen_style, "estimate_style", estimate)
+    band = {
+        "box": box(0.1, 0.8, 0.7, 0.04),
+        "_members": [
+            {"id": "a", "box": first, "first_seen": 0.0},
+            {"id": "b", "box": second, "first_seen": 2.0},
+        ],
+    }
+    screentext._estimate_styles([], band, {0.0: paths[0], 2.0: paths[1]})
+
+    assert calls == [first, second]
+    assert band["style"] == {"font_size": 0.05, "color": "#EEEEEE"}
+
+
 def test_ocr_noise_on_a_persistent_line_stays_one_block():
     """The model misreads a character or two differently per frame; that is still one line."""
     b = box(0.13, 0.95, 0.72, 0.02)

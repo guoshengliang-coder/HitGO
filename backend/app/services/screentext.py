@@ -33,6 +33,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -158,6 +159,11 @@ def union_box(boxes: list[Box]) -> Box:
 
 def center(b: Box) -> tuple[float, float]:
     return (b["x"] + b["w"] / 2, b["y"] + b["h"] / 2)
+
+
+def median_box(boxes: list[Box]) -> Box:
+    """Robust representative geometry; one unusually wide OCR box must not inflate a band."""
+    return box(*(median([b[k] for b in boxes]) for k in ("x", "y", "w", "h")))
 
 
 # --- provider boundary ------------------------------------------------------
@@ -495,19 +501,32 @@ def split_band(blocks: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, lis
         return None, blocks
     best = max(rows, key=lambda r: (len({x["text"] for x in r}), center(r[0]["box"])[1]))
     members = list(best)
+
+    def coexists(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> bool:
+        # A genuine two-line subtitle has both rows on screen at the same time. Rows used by
+        # different shots can be close vertically too, but joining those makes one giant band.
+        return any(min(x["t"][1], y["t"][1]) > max(x["t"][0], y["t"][0]) + 1e-6 for x in a for y in b)
+
+    joined_rows = [best]
     for row in rows:
         if row is best:
             continue
-        trial = union_box([x["box"] for x in members + row])
-        if trial["h"] <= BAND_MAX_HEIGHT:
+        trial = union_box([median_box([x["box"] for x in r]) for r in joined_rows + [row]])
+        if trial["h"] <= BAND_MAX_HEIGHT and coexists(best, row):
             members += row
-    band_box = union_box([x["box"] for x in members])
+            joined_rows.append(row)
+    # Use one representative box per row instead of the union of every OCR sighting. A single
+    # loose box otherwise turns a normal subtitle into an almost full-screen translation.
+    band_box = union_box([median_box([x["box"] for x in row]) for row in joined_rows])
     if band_box["h"] > BAND_MAX_HEIGHT:
         return None, blocks
     band = {
         "box": band_box,
         "style": {},
         "confidence": round(min(1.0, len(members) / 4), 2),
+        # Internal only: style must be measured on a frame where each member really existed,
+        # using that member's own box (not the union band box). Removed before serialization.
+        "_members": members,
     }
     ids = {id(x) for x in members}
     return band, [b for b in blocks if id(b) not in ids]
@@ -692,6 +711,8 @@ def detect_blocks(
     # Style: measured on the exact frame each block was first seen on, not the nearest guess.
     by_time = {seen_at: path for (seen_at, _, _), path in zip(per_frame, kept, strict=False)}
     _estimate_styles(blocks, band, by_time)
+    if band is not None:
+        band.pop("_members", None)
     for block in blocks:
         block.pop("first_seen", None)
 
@@ -746,14 +767,29 @@ def _estimate_styles(blocks: list[dict[str, Any]], band: dict[str, Any] | None, 
         block["lines"] = style.pop("lines", block.get("lines", 1))
         block["style"] = style
     if band is not None:
-        # The band is measured on the first frame any of its lines showed up on.
-        image = frame_for(next(iter(sorted(by_time))) if by_time else None)
-        if image is not None:
+        measured: list[dict[str, Any]] = []
+        for member in band.get("_members") or []:
+            image = frame_for(member.get("first_seen"))
+            if image is None:
+                continue
             try:
-                band["style"] = screen_style.estimate_style(image, band["box"])
-                band["style"].pop("lines", None)
+                style = screen_style.estimate_style(image, member["box"])
+                style.pop("lines", None)
+                measured.append(style)
             except Exception:  # noqa: BLE001
-                log.warning("style estimation failed for the subtitle band", exc_info=True)
+                log.warning("style estimation failed for a subtitle band member", exc_info=True)
+        if measured:
+            # Numeric style values use the median; colours/alignment use the most common value.
+            # Keep an explicit null (notably stroke_color) when all samples agree it is absent.
+            merged: dict[str, Any] = {}
+            for key in set().union(*(style.keys() for style in measured)):
+                values = [style[key] for style in measured if key in style]
+                numeric = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+                if numeric:
+                    merged[key] = round(float(median(numeric)), 4)
+                elif values:
+                    merged[key] = Counter(values).most_common(1)[0][0]
+            band["style"] = merged
 
 
 def translate_blocks(

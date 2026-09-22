@@ -93,6 +93,7 @@ describe('HIG-44 高级项', () => {
     expect(d).toBe(0);
   });
   it('换预设：新选滑动用新幅度，同类之间沿用', () => {
+    expect(NEW_PRESET_DEFAULTS.slide_up!.distance).toBe(0.3);
     expect(switchPreset(undefined, 'slide_up')).toEqual({ preset: 'slide_up', duration: 0.5, distance: NEW_PRESET_DEFAULTS.slide_up!.distance });
     expect(switchPreset({ preset: 'slide_up', duration: 0.8, distance: 0.3, easing: 'bounce' }, 'slide_left')).toEqual({ preset: 'slide_left', duration: 0.8, distance: 0.3, easing: 'bounce' });
     expect(switchPreset({ preset: 'slide_up', duration: 0.8, distance: 0.3, fade: false }, 'pop')).toEqual({ preset: 'pop', duration: 0.8 });

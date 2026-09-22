@@ -21,6 +21,7 @@ import {
   cueSourceWindow,
   MAX_SUBTITLE_LAYERS,
   localizedCuesToLayers,
+  normalizeCueWindows,
   localizeTextStyle,
   mergedCues,
   parseTerms,
@@ -242,9 +243,20 @@ describe('cueSourceWindow', () => {
   it('配音比原句短时不提前收尾——句子还没说完就没字了很怪', () => {
     expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 0.5 })).toEqual([1, 3]);
   });
-  it('配音溢出到下一句时用下一句的起点收住，但至少留最短显示时长', () => {
+  it('配音溢出到下一句时用下一句的起点硬收住，短句也不能压住下一句', () => {
     expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 4)).toEqual([1, 4]);
-    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 1.1)).toEqual([1, 1.7]);
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 1.1)).toEqual([1, 1.1]);
+    expect(cueSourceWindow({ ...cue, dubStart: 1, dubDuration: 9 }, 1)).toEqual([1, 1]);
+  });
+  it('换算后的最后归一化会收住相邻重叠并丢掉零长字幕', () => {
+    expect(normalizeCueWindows([
+      { index: 1, start: 1, end: 2.2, text: 'a' },
+      { index: 2, start: 2, end: 3, text: 'b' },
+      { index: 3, start: 3, end: 3, text: 'drop' },
+    ])).toEqual([
+      { index: 1, start: 1, end: 2, text: 'a' },
+      { index: 2, start: 2, end: 3, text: 'b' },
+    ]);
   });
 });
 
@@ -309,13 +321,14 @@ describe('localizedCuesToLayers', () => {
   });
   it('跨删除区的句子缩短；超出剪后时长的裁掉；沿用给定样式与位置', () => {
     const style = { ...defaultTextStyle(), color: '#FF0000' };
-    const layers = localizedCuesToLayers(cues, { lang: 'ko', langLabel: '韩语', remove: [[4, 5]], postDuration: 6.5, style, placement: { anchor: 'top-center', margin: [0, 0.2] }, newId: ids });
+    const layers = localizedCuesToLayers(cues, { lang: 'ko', langLabel: '韩语', remove: [[4, 5]], postDuration: 6.5, style, placement: { anchor: 'top-center', margin: [0, 0.2], width: 0.63 }, newId: ids });
     expect(layers.map((l) => l.t)).toEqual([
       [0.4, 2.4],
       [3.4, 4.4],
       [5.4, 6.5],
     ]);
     expect(layers.every((l) => l.style.color === '#FF0000' && l.anchor === 'top-center' && l.margin[1] === 0.2)).toBe(true);
+    expect(layers.every((l) => l.width === 0.63)).toBe(true);
     // 样式逐条拷贝，互不共享引用
     expect(layers[0].style).not.toBe(layers[1].style);
   });

@@ -536,6 +536,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 /* HIG-85：复合组标记——片段左缘一道同组同色的细条 */
 .tl-group-mark { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 1; pointer-events: none; background: var(--group-color); }
+.tl-compound-row { min-height: 30px; }
+.tl-compound { background: color-mix(in srgb, var(--group-color) 22%, var(--s1)); border-color: var(--group-color); padding-left: 8px; }
+.tl-compound.expanded { border-style: dashed; opacity: 0.8; }
 .timeline { position: relative; }
 .timeline.marquee-mode .tl-row .body { cursor: crosshair; }
 .tl-label-resizer { position: absolute; top: 0; bottom: 0; left: calc(var(--tl-label-w) - 4px); width: 8px; z-index: 25; cursor: col-resize; touch-action: none; }

@@ -60,6 +60,32 @@ function entries(spec: EditSpec): Entry[] {
   return out;
 }
 
+export interface CompoundLane {
+  id: string;
+  keys: string[];
+  window: [number, number];
+}
+
+/**
+ * 时间线的“复合片段”虚拟单轨：不改 worker 契约，只把同组成员的可见范围合成一个条。
+ * 全程成员按成片全长计；每组至少两个现存成员，孤儿组不显示。
+ */
+export function compoundLanes(spec: EditSpec, postDuration: number): CompoundLane[] {
+  const grouped = new Map<string, Entry[]>();
+  for (const e of entries(spec)) if (e.group) grouped.set(e.group, [...(grouped.get(e.group) ?? []), e]);
+  const out: CompoundLane[] = [];
+  for (const [id, members] of grouped) {
+    if (members.length < 2) continue;
+    const windows = members.map((m) => m.window ?? [0, postDuration] as [number, number]);
+    out.push({
+      id,
+      keys: members.map((m) => m.key),
+      window: [Math.min(...windows.map((w) => w[0])), Math.max(...windows.map((w) => w[1]))],
+    });
+  }
+  return out.sort((a, b) => a.window[0] - b.window[0] || a.id.localeCompare(b.id));
+}
+
 /** 片段的组 id；没有组或不是可进组的片段时为 undefined。 */
 export function groupOf(spec: EditSpec, key: string): string | undefined {
   return entries(spec).find((e) => e.key === key)?.group;

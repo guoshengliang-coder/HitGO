@@ -47,7 +47,7 @@ import { enterDelay, hasAnimation, phaseLengths } from '../../lib/textAnimation'
 import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type Layer } from '../../types';
 import { timelineAutoScrollDelta } from '../../lib/timelineAutoScroll';
 import { updateVideoTrackClip, videoTrackClipDuration } from '../../lib/videoTracks';
-import { groupColor, shiftTimedItems } from '../../lib/groups';
+import { compoundLanes, groupColor, shiftTimedItems, type CompoundLane } from '../../lib/groups';
 import { mainSegments, normalizeSplits, segKey } from '../../lib/segments';
 import { playheadSnapCandidates, snapPlayhead } from '../../lib/playheadSnap';
 
@@ -340,6 +340,9 @@ export function Timeline() {
   const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
   const [sequenceDropAt, setSequenceDropAt] = useState<number | null>(null);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
+  // 只影响本机这次编辑，不写进 spec：默认把复合组折成单轨，双击临时展开成员。
+  const [expandedCompoundGroups, setExpandedCompoundGroups] = useState<Set<string>>(() => new Set());
+  useEffect(() => setExpandedCompoundGroups(new Set()), [currentVideoId]);
 
   const sequence = spec?.sequence;
   const upperTracks = spec?.video_tracks ?? [];
@@ -349,6 +352,9 @@ export function Timeline() {
   const postLen = postTrimDuration(duration, remove);
   // 成片时长（trim.duration，HIG-50）：比剪后长的部分接在源片右边（循环补足块），横轴按它延长；图层 / 音轨的时段上限也是它
   const postDuration = Math.max(outputLen, 0);
+  const compounds = spec ? compoundLanes(spec, postDuration) : [];
+  const collapsedGroups = new Set(compounds.filter((lane) => !expandedCompoundGroups.has(lane.id)).map((lane) => lane.id));
+  const memberVisible = (group?: string) => !group || !collapsedGroups.has(group);
   const extra = sequence ? 0 : Math.max(0, postDuration - postLen);
   const axisLen = duration + extra;
   const fitPps = Math.max(1, containerW - labelW - 2) / (axisLen + preroll);
@@ -544,6 +550,36 @@ export function Timeline() {
     const next = clampTrackLabelWidth(width, containerW);
     setLabelWidth(next);
     saveTrackLabelWidth(next);
+  };
+
+  const toggleCompound = (id: string) => setExpandedCompoundGroups((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  /** 无主轨拼接片段的复合条可按现有整体平移能力拖动；主轨组继续走已有拖放重排。 */
+  const beginCompoundDrag = (e: RPointerEvent<HTMLElement>, lane: CompoundLane) => {
+    if (e.button !== 0 || !spec || !video || lane.keys.some((key) => key.startsWith('clip:'))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectTimelineItems(lane.keys, 'replace', { expand: false });
+    const startX = e.clientX;
+    const original = structuredClone(spec);
+    let moved = false;
+    const onMove = (event: PointerEvent) => {
+      const px = event.clientX - startX;
+      if (!moved && Math.abs(px) < MARQUEE_PX) return;
+      if (!moved) { pushHistorySnapshot(structuredClone(original)); moved = true; }
+      const shifted = shiftTimedItems(original, new Set(lane.keys), px / ppsRef.current, postDuration);
+      if (shifted) replaceSpec(video.id, shifted, { history: false });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
   };
 
   // ---- 拖放加音轨（HIG-33）----
@@ -972,13 +1008,54 @@ export function Timeline() {
             </div>
           </div>
 
+          {compounds.length > 0 && (
+            <TrackGroup id="tl.compound" label="复合片段" count={compounds.length}>
+              <div className="tl-row tl-compound-row">
+                <div className="lbl"><span className="lname">复合轨</span></div>
+                <div className="body" {...scrub.handlers}>
+                  <CoverGap width={off} />
+                  {compounds.map((lane, index) => {
+                    const [pa, pb] = lane.window;
+                    const left = off + postToSource(pa, remove) * pps;
+                    const right = off + postToSource(pb, remove) * pps;
+                    const selected = lane.keys.every((key) => timelineSelection.includes(key));
+                    const expanded = expandedCompoundGroups.has(lane.id);
+                    const mainKey = lane.keys.find((key) => key.startsWith('clip:'));
+                    return (
+                      <div
+                        key={lane.id}
+                        data-timeline-key={lane.keys[0]}
+                        className={`tl-bar tl-compound ${selected ? 'selected' : ''} ${expanded ? 'expanded' : ''}`}
+                        style={{ left, width: Math.max(12, right - left), '--group-color': groupColor(lane.id) } as CSSProperties}
+                        draggable={!!mainKey}
+                        onDragStart={(e) => { if (mainKey) { e.dataTransfer.setData(CLIP_DRAG, mainKey.slice(5)); e.dataTransfer.effectAllowed = 'move'; } }}
+                        onPointerDown={(e) => {
+                          if (mainKey) {
+                            selectTimelineItems(lane.keys, 'replace', { expand: false });
+                            setStep('trim');
+                          } else beginCompoundDrag(e, lane);
+                        }}
+                        onClick={(e) => { e.stopPropagation(); selectTimelineItems(lane.keys, 'replace', { expand: false }); }}
+                        onDoubleClick={(e) => { e.stopPropagation(); toggleCompound(lane.id); }}
+                        title={`复合片段 ${index + 1} · ${lane.keys.length} 个成员 · 双击${expanded ? '收起' : '展开'}成员`}
+                      >
+                        <GroupMark group={lane.id} />
+                        <span>复合片段 {index + 1} · {lane.keys.length}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </TrackGroup>
+          )}
+
           <TrackGroup id="tl.video" label="视频" count={video ? (sequence ? sequence.clips.length : 1) + upperTracks.reduce((n, track) => n + track.clips.length, 0) : 0} onAdd={video ? () => { setStep('trim'); setToast('拖到「新上层视频轨」会创建 V2 / V3；拖到主轨会顺序拼接'); } : undefined}>
           {[...upperTracks].reverse().map((track, reverseIndex) => {
             const displayIndex = upperTracks.length - reverseIndex + 1;
             return <div className={`tl-row tl-upper ${track.hidden ? 'hidden' : ''} ${track.locked ? 'locked' : ''}`} key={track.id}>
               <div className="lbl"><span className="lname">{track.name || `V${displayIndex}`}</span><span className="tl-acts"><button className="btn ghost icon" title={track.hidden ? '显示轨道' : '隐藏轨道'} onClick={() => useEditor.getState().updateSpec((draft) => { const found = draft.video_tracks?.find((item) => item.id === track.id); if (found) found.hidden = !found.hidden; })}><IconEye off={!!track.hidden} /></button><button className="btn ghost icon" title={track.locked ? '解锁轨道' : '锁定轨道'} onClick={() => useEditor.getState().updateSpec((draft) => { const found = draft.video_tracks?.find((item) => item.id === track.id); if (found) found.locked = !found.locked; })}><IconLock open={!track.locked} /></button></span></div>
               <div className="body" {...scrub.handlers}>
-                {track.clips.map((clip) => {
+                {track.clips.filter((clip) => memberVisible(clip.group)).map((clip) => {
                   const source = videos.find((item) => item.id === clip.video_id);
                   const length = videoTrackClipDuration(clip);
                   const selected = timelineSelection.includes(`vclip:${clip.id}`);
@@ -1014,7 +1091,7 @@ export function Timeline() {
                 </div>
               )}
               {tiles.map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: off + tile.left, pointerEvents: 'none' }} />)}
-              {sequence && clipWindows(sequence).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
+              {sequence && clipWindows(sequence).filter(({ clip }) => memberVisible(clip.group)).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
               {!sequence && video && mainSegments(video.duration, spec?.trim ?? { remove: [] }).map((seg) => {
                 const key = segKey(seg);
                 return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + seg[0] * pps, width: Math.max(6, (seg[1] - seg[0]) * pps) }}
@@ -1112,7 +1189,7 @@ export function Timeline() {
               })}
               {inPoint !== null && selectedTrackId === SOURCE_TRACK_ID && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="静音入点" />}
           </SourceAudioRow>
-          {tracks.map((t, i) => {
+          {tracks.map((t, i) => ({ t, i })).filter(({ t }) => memberVisible(t.group)).map(({ t, i }) => {
               const r = resolveTrack(t);
               const all = r.t === 'all';
               const win = windowRange(r.t, postDuration);
@@ -1182,7 +1259,7 @@ export function Timeline() {
               <div className="body hint" style={{ padding: '6px 8px' }}>还没有 BGM / 口播：把右侧「音频素材」或电脑里的音频文件拖到这里，或点右侧「+ BGM / + 口播」。</div>
             </div>
           )}
-          {stickerAudio.map((l) => {
+          {stickerAudio.filter((l) => memberVisible(l.group)).map((l) => {
             const [pa, pb] = windowRange(l.t, postDuration);
             const left = off + postToSource(pa, remove) * pps;
             const right = off + postToSource(pb, remove) * pps;
@@ -1206,7 +1283,8 @@ export function Timeline() {
           </TrackGroup>
 
           {visualGroups.map((group) => {
-          const rows = layerRows.filter(({ l }) => layerLane(l) === group.lane);
+          const allRows = layerRows.filter(({ l }) => layerLane(l) === group.lane);
+          const rows = allRows.filter(({ l }) => memberVisible(l.group));
           return <TrackGroup key={group.id} id={group.id} label={group.label} count={rows.length} reveal={rows.some(({ l }) => l.id === selectedLayerId) ? layerRevealVersion : 0} onAdd={video ? () => {
             if (group.lane === 'subtitle') addText(true);
             else if (group.lane === 'text') addText(false);
@@ -1284,7 +1362,7 @@ export function Timeline() {
               </div>
             );
           })}
-          {rows.length === 0 && (
+          {rows.length === 0 && allRows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
               <div className="lbl">{group.label}</div>
               <div className="body hint" style={{ padding: '6px 8px' }}>{group.empty}</div>
