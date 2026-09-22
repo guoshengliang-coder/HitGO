@@ -71,6 +71,9 @@ def _parse_time(value: object) -> datetime | None:
     return parsed
 
 
+ERASE_LABEL = "画面文字擦除"
+
+
 def expire_stale_state(
     state: dict[str, Any] | None,
     *,
@@ -103,6 +106,20 @@ def expire_stale_state(
         )
         if not stale:
             return
+        if part.get("status") == ST_RUNNING and label == ERASE_LABEL and deadline is not None and current >= deadline:
+            # The deadline, not a missing heartbeat: ticks were arriving, the vendor just never
+            # finished. Its job may still complete, so offer to keep waiting on the same task.
+            from app.services import erase as erase_service  # noqa: PLC0415
+
+            resumable = bool(part.get("task_id")) and erase_service.resumable_provider(part.get("provider"))
+            part.update(
+                status=ST_FAILED,
+                error=erase_service.timeout_reason(seconds, resumable),
+                resumable=resumable,
+                updated_at=iso(current),
+            )
+            changed = True
+            return
         if part.get("status") == ST_QUEUED:
             # Never picked up: the single worker slot was busy (render, preprocessing, dubbing)
             # or the worker is down. Saying "识别超时" here sent people hunting in the wrong place.
@@ -115,7 +132,7 @@ def expire_stale_state(
     expire(out.get("detect"), task_timeout_seconds, "画面文字识别")
     for lang, version in (out.get("versions") or {}).items():
         expire(version, task_timeout_seconds, f"{lang}画面文字翻译")
-    expire(out.get("erase"), erase_timeout_seconds, "画面文字擦除")
+    expire(out.get("erase"), erase_timeout_seconds, ERASE_LABEL)
     if changed:
         out.pop("pending", None)
     return out, changed
@@ -683,6 +700,8 @@ def detect_blocks(
     per_frame: list[tuple[float, float, list[DetectedText]]] = []
     parsed_frames = 0
     malformed_frames = 0
+    failed_frames = 0
+    last_failure: Exception | None = None
     if on_progress:
         on_progress(0, len(kept))
     for k, path in enumerate(kept):
@@ -693,16 +712,37 @@ def detect_blocks(
             malformed_frames += 1
             detections = []
             log.warning("screen text frame %s/%s returned malformed JSON", k + 1, len(kept))
+        except Exception as exc:  # noqa: BLE001  one frame's timeout / 400 must not sink the run
+            if is_config_failure(exc):
+                raise  # a wrong key or model fails every frame the same way: say so now
+            failed_frames += 1
+            last_failure = exc
+            log.warning("screen text frame %s/%s failed: %s", k + 1, len(kept), exc)
+            if parsed_frames == 0 and failed_frames >= FRAME_FAILURES_BEFORE_ABORT:
+                # Nothing has worked yet: keep going and a run of timeouts eats the whole task
+                # budget before the user sees any reason.
+                raise
+            # Unknown is not "no text": let the previous frame stand in for this one, as it does
+            # for de-duplicated frames, so a title seen on both sides stays one block.
+            if per_frame:
+                prev_at, prev_until, prev_items = per_frame[-1]
+                per_frame[-1] = (prev_at, max(prev_until, covers_until[k]), prev_items)
+            if on_progress:
+                on_progress(k + 1, len(kept))
+            continue
         else:
             parsed_frames += 1
         per_frame.append((seen_at, max(seen_at, covers_until[k]), detections))
         if on_progress:
             on_progress(k + 1, len(kept))
 
-    if malformed_frames and parsed_frames == 0:
-        raise ScreenTextError(
-            f"视觉模型返回的 {malformed_frames} 帧结果都无法解析；没有自动重试，请手动重新识别"
-        )
+    if parsed_frames == 0:
+        if last_failure is not None:
+            raise last_failure
+        if malformed_frames:
+            raise ScreenTextError(
+                f"视觉模型返回的 {malformed_frames} 帧结果都无法解析；没有自动重试，请手动重新识别"
+            )
 
     blocks = cluster_blocks(per_frame, step)
     band, blocks = split_band(blocks)
@@ -721,6 +761,7 @@ def detect_blocks(
         "error": None,
         "model": cfg.screentext_model if cfg.screentext_provider != "fake" else "fake",
         "frames": len(kept),
+        "skipped_frames": malformed_frames + failed_frames,
         "subtitle_band": band,
         "blocks": blocks,
         "updated_at": iso(utcnow()),
@@ -807,6 +848,23 @@ def translate_blocks(
     texts = [b["text"] for b in blocks]
     translated = localize.translate_with_fallback(mt, texts, source_lang, target_lang, terms)
     return [{"id": b["id"], "translated": t.strip()} for b, t in zip(blocks, translated, strict=False)]
+
+
+FRAME_FAILURES_BEFORE_ABORT = 3
+
+
+def is_config_failure(exc: BaseException) -> bool:
+    """A key / model / permission problem: every frame would fail the same way, so fail at once."""
+    reason = str(exc)
+    lowered = reason.lower()
+    return (
+        "（401）" in reason
+        or "（403）" in reason
+        or "access denied" in lowered
+        or "not activated" in lowered
+        or "invalidapikey" in lowered
+        or "invalid api-key" in lowered
+    )
 
 
 def detection_failure_reason(exc: BaseException) -> str:

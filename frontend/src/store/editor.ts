@@ -12,7 +12,7 @@ import { defaultTextStyle, emptySpec, isAssetReady, isVideoAsset } from '../type
 import { addMuteRange, clampSpeed, newTrackId, splitTrackAt, SOURCE_TRACK_ID, trackDefaultsFor, windowForSpeed } from '../lib/audioTracks';
 import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
-import { applyScreenTextToSpec, bandHint, cleanReady, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
+import { applyScreenTextToSpec, bandHint, cleanReady, screenSource, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
 import { replaceAutoSubtitles, transcriptToSubtitleLayers, type VideoTranscript } from '../lib/autoSubtitle';
 import { planLanguageExport, specLang } from '../lib/langExport';
@@ -39,7 +39,7 @@ import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
 import { indexWithinType, insertIndexBelow, layersInCategory, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
-import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered } from '../lib/textImage';
+import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered, measureTextWidth } from '../lib/textImage';
 import { bakeShapeLayer } from '../lib/shapeImage';
 import { player } from '../lib/player';
 import { ensureFontsLoaded } from '../lib/fonts';
@@ -2034,6 +2034,17 @@ export const useEditor = create<EditorState>((set, get) => {
         pollVideoField(video.id, 'screen_text', set, get);
         return true;
       } catch (e) {
+        if (e instanceof ApiError && e.status === 409) {
+          // 活已经在跑（另一个标签页、刷新前点过、或本地状态还没追上）：接着显示进度，不当失败（HIG-86）。
+          try {
+            mergeVideoField(set, await api.getVideo(video.id), 'screen_text');
+          } catch {
+            /* 拉不到就让轮询下一轮再试 */
+          }
+          pollVideoField(video.id, 'screen_text', set, get);
+          get().setToast(`${e.message}；已接着显示进度`);
+          return true;
+        }
         get().setToast(e instanceof ApiError ? e.message : '画面文字请求失败');
         return false;
       }
@@ -2332,9 +2343,10 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((s) => {
         // 一次 updateSpec = 一步历史：配音 / 字幕和画面文字一起进去，⌘Z 一次全撤。
         // 两个函数各清各的 origin，互不误伤（HIG-38）。
-        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, band: bandHint(video.screen_text, lang), langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+        const source = screenSource(s, video);
+        warnings = applyLocalizationToSpec(s, lang, { video, assets, bgm, band: bandHint(video.screen_text, lang, source), langLabel: label, split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
         if (video.screen_text?.detect?.status === 'done') {
-          warnings = [...warnings, ...applyScreenTextToSpec(s, lang, { screen: video.screen_text, remove: s.trim.remove, postDuration: postTrimDuration(video.duration, s.trim.remove), newLayerId })];
+          warnings = [...warnings, ...applyScreenTextToSpec(s, lang, { screen: video.screen_text, remove: s.trim.remove, postDuration: postTrimDuration(video.duration, s.trim.remove), newLayerId, source, measure: measureTextWidth })];
         }
       });
       set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
@@ -2951,9 +2963,10 @@ export const useEditor = create<EditorState>((set, get) => {
               const bgmAssetId = bgm.mode === 'replace' ? bgm.assetId : video.separation?.status === 'done' ? video.separation.instrumental_asset_id : null;
               if (!isAssetReady(assets.find((a) => a.id === bgmAssetId))) throw new Error(`${video.name} 的 BGM 尚未就绪，未提交多语言导出`);
               // 和预览用同一个开关：否则画面上拆了、导出的成片没拆（HIG-36）
-              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, band: bandHint(video.screen_text, it.lang), langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
+              const source = screenSource(spec, video);
+              applyLocalizationToSpec(spec, it.lang, { video, assets, bgm, band: bandHint(video.screen_text, it.lang, source), langLabel: langLabel(get().localizeOptions, it.lang), split: loadFeaturePrefs().localizeSplitCues, newLayerId, newTrackId });
               if (video.screen_text?.detect?.status === 'done') {
-                applyScreenTextToSpec(spec, it.lang, { screen: video.screen_text, remove: spec.trim.remove, postDuration: postTrimDuration(video.duration, spec.trim.remove), newLayerId });
+                applyScreenTextToSpec(spec, it.lang, { screen: video.screen_text, remove: spec.trim.remove, postDuration: postTrimDuration(video.duration, spec.trim.remove), newLayerId, source, measure: measureTextWidth });
               }
               for (let i = 0; i < spec.layers.length; i++) {
                 const l = spec.layers[i];

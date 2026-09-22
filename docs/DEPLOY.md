@@ -169,7 +169,7 @@ Cloudflare 免费版单次上传上限 100 MB（超过直接回 413，到不了�
 | `GHOSTCUT_APP_KEY` / `GHOSTCUT_APP_SECRET` | 空 | 鬼手剪辑（GhostCut）凭据，`ERASE_PROVIDER=ghostcut` 时必填；两者缺一，`GET /api/screen-text/options` 的 `erase_enabled` 为 false，前端禁用擦除入口。**不要提交到 git**。对方会用签了只读票据的 `/media` 地址自己拉源片，所以 `PUBLIC_BASE_URL` 必须是它能访问到的公网地址，票据有效期由 `MEDIA_TICKET_TTL_SECONDS`（缺省 1800 秒）决定 |
 | `GHOSTCUT_BASE_URL` | `https://api.zhaoli.com` | 鬼手剪辑网关地址 |
 | `GHOSTCUT_RESOLUTION` | 空 | 成片分辨率档位；留空 = 跟随源片高度自动选（480p / 720p / 1080p）。**不要随手写死**：该家按这个档位重新编码，写死会把 1080p 素材压成 720p |
-| `ERASE_POLL_INTERVAL_SECONDS` / `ERASE_MAX_WAIT_SECONDS` | `10` / `1800` | 云端擦除是异步任务：每隔多少秒轮询一次、总共等多久。超过就判 failed，防止云端任务丢了把条目永远卡在「处理中」 |
+| `ERASE_POLL_INTERVAL_SECONDS` / `ERASE_MAX_WAIT_SECONDS` | `10` / `3600` | 云端擦除是异步任务：每隔多少秒轮询一次、总共等多久。超过就判 failed，防止云端任务丢了把条目永远卡在「处理中」；云端任务还在时界面给「继续等待」，用同一个任务接着查，不重新提交（HIG-86：鬼手单个任务实测排队超过 30 分钟） |
 | `ENV` | `prod` | `dev` 开启 Vite 跨域 |
 | `FFMPEG_BIN` / `FFPROBE_BIN` | `ffmpeg` / `ffprobe` | 二进制路径 |
 

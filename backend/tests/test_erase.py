@@ -465,3 +465,170 @@ def test_a_cloud_provider_is_handed_a_public_url(db, ready_video, enqueued, monk
 
     assert seen["public_url"].startswith("https://")
     assert "/media/batches/" in seen["public_url"]
+
+
+# --- HIG-86: timeouts that can be resumed, ticks that must not strand the job ---
+
+
+def _running(deadline_in: int, **extra):
+    return {
+        "status": ST_RUNNING,
+        "provider": "ghostcut",
+        "task_id": "249943229",
+        "polls": 3,
+        "deadline": iso(utcnow() + timedelta(seconds=deadline_in)),
+        **extra,
+    }
+
+
+def test_a_cloud_timeout_can_be_resumed(db, ready_video, enqueued, monkeypatch):
+    class Slow(FakeErase):
+        def poll(self, task_id):
+            return erase.EraseProgress(status="running", detail="排队中（状态 0）")
+
+    monkeypatch.setattr(erase, "provider_for", lambda video, cfg=None: Slow(name="ghostcut"))
+    ready_video.screen_text = {"detect": _detect(), "erase": _running(-1), "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    er = ready_video.screen_text["erase"]
+    assert er["status"] == ST_FAILED
+    assert er["resumable"] is True
+    assert er["vendor_status"] == "排队中（状态 0）"
+    assert "继续等待" in er["error"]
+    assert er["task_id"] == "249943229"  # kept, so the same job can be polled again
+
+
+def test_a_local_timeout_is_not_resumable(db, ready_video, enqueued, monkeypatch):
+    monkeypatch.setattr(erase, "provider_for", lambda video, cfg=None: FakeErase(running_polls=99))
+    ready_video.screen_text = {"detect": _detect(), "erase": {**_running(-1), "provider": "fake"}, "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["resumable"] is False
+    assert "继续等待" not in ready_video.screen_text["erase"]["error"]
+
+
+def test_a_running_tick_records_the_vendor_status(db, ready_video, enqueued, monkeypatch):
+    class Slow(FakeErase):
+        def poll(self, task_id):
+            return erase.EraseProgress(status="running", detail="处理中 40%（状态 3）")
+
+    monkeypatch.setattr(erase, "provider_for", lambda video, cfg=None: Slow())
+    ready_video.screen_text = {"detect": _detect(), "erase": _running(600), "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["vendor_status"] == "处理中 40%（状态 3）"
+    assert enqueued.later_names() == ["hitgo.erase_poll"]
+
+
+def test_a_misconfigured_provider_fails_the_tick_instead_of_stranding_it(db, ready_video, enqueued, monkeypatch):
+    def boom(video, cfg=None):
+        raise erase.EraseError("没有配置 GHOSTCUT_APP_KEY / GHOSTCUT_APP_SECRET")
+
+    monkeypatch.setattr(erase, "provider_for", boom)
+    ready_video.screen_text = {"detect": _detect(), "erase": _running(600), "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["status"] == ST_FAILED
+    assert "GHOSTCUT_APP_KEY" in ready_video.screen_text["erase"]["error"]
+
+
+def test_an_unexpected_finish_error_fails_the_job(db, ready_video, enqueued, monkeypatch):
+    class Broken(FakeErase):
+        def fetch(self, task_id, progress, dst):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(erase, "provider_for", lambda video, cfg=None: Broken(name="ghostcut", running_polls=0))
+    ready_video.screen_text = {"detect": _detect(), "erase": _running(600), "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    er = ready_video.screen_text["erase"]
+    assert er["status"] == ST_FAILED
+    assert "disk full" in er["error"]
+    assert er["resumable"] is True  # the vendor still has the result; fetching again is enough
+
+
+def test_a_broker_hiccup_between_ticks_fails_the_job(db, ready_video, monkeypatch):
+    from app import worker
+
+    monkeypatch.setattr(erase, "provider_for", lambda video, cfg=None: FakeErase(running_polls=99))
+
+    def boom(*args, **kwargs):
+        raise worker.QueueUnavailable("redis down")
+
+    monkeypatch.setattr(worker, "enqueue_later", boom)
+    ready_video.screen_text = {"detect": _detect(), "erase": _running(600), "versions": {}}
+    db.commit()
+
+    erase.poll_once(db, ready_video.id)
+
+    db.refresh(ready_video)
+    assert ready_video.screen_text["erase"]["status"] == ST_FAILED
+    assert "redis down" in ready_video.screen_text["erase"]["error"]
+
+
+def test_the_stale_projection_offers_to_keep_waiting_past_the_deadline():
+    state = {"erase": _running(-5, updated_at=iso(utcnow())), "versions": {}}
+    out, changed = screentext.expire_stale_state(state, task_timeout_seconds=1200, erase_timeout_seconds=3600)
+
+    assert changed
+    assert out["erase"]["status"] == ST_FAILED
+    assert out["erase"]["resumable"] is True
+    assert "3600 秒仍未完成" in out["erase"]["error"]
+
+
+def _texted_detect():
+    detect = _detect()
+    for block in detect["blocks"]:
+        block["text"] = f"文字{block['id']}"
+    return detect
+
+
+def test_resume_polls_the_same_task_with_a_fresh_deadline(client, db, ready_video, enqueued):
+    ready_video.screen_text = {
+        "detect": _texted_detect(),
+        "erase": {**_running(-60), "status": ST_FAILED, "resumable": True, "error": "擦除超过 3600 秒仍未完成"},
+        "versions": {},
+    }
+    db.commit()
+
+    r = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"erase_resume": True})
+
+    assert r.status_code == 202
+    er = r.json()["screen_text"]["erase"]
+    assert er["status"] == ST_RUNNING
+    assert er["task_id"] == "249943229"
+    assert er["resumable"] is False
+    assert er["deadline"] > iso(utcnow())
+    # Only a poll tick: nothing is resubmitted to the vendor.
+    assert enqueued.later_names() == ["hitgo.erase_poll"]
+    assert "hitgo.screen_text_video" not in enqueued.names()
+
+
+def test_resume_refuses_when_there_is_nothing_to_resume(client, db, ready_video, enqueued):
+    ready_video.screen_text = {
+        "detect": _texted_detect(),
+        "erase": {"status": ST_FAILED, "provider": "ghostcut", "task_id": "1", "error": "供应商擦除失败"},
+        "versions": {},
+    }
+    db.commit()
+
+    r = client.post(f"/api/videos/{ready_video.id}/screen-text", json={"erase_resume": True})
+
+    assert r.status_code == 400
+    assert "重新擦除" in r.json()["detail"]
+    assert enqueued.later_names() == []

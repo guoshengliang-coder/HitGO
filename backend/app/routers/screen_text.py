@@ -89,6 +89,8 @@ def start_screen_text(video_id: str, body: ScreenTextIn, db: Session = Depends(g
         video.updated_at = utcnow()
         db.commit()
     previous = copy.deepcopy(st) if st else None
+    if body.erase_resume:
+        return _resume_erase(db, video, previous)
     detect = st.get("detect") or {}
     versions = dict(st.get("versions") or {})
     if _active(detect):
@@ -133,6 +135,23 @@ def start_screen_text(video_id: str, body: ScreenTextIn, db: Session = Depends(g
         "scope": body.scope.model_dump() if body.scope else None,
     }
     return _queue(db, video, previous, st)
+
+
+def _resume_erase(db: Session, video: Video, previous: dict | None) -> VideoOut:
+    """「继续等待」: same vendor task, fresh deadline, first tick right away. Nothing is resubmitted."""
+    try:
+        erase_service.resume(db, video, settings)
+    except erase_service.EraseError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    video.updated_at = utcnow()
+    db.commit()
+    try:
+        worker.enqueue_later(worker.erase_poll, 0, video.id)
+    except worker.QueueUnavailable as exc:
+        video.screen_text = previous
+        db.commit()
+        raise HTTPException(503, f"任务队列不可用（Redis 未连接）：{exc}") from exc
+    return video_out(video, jobs_for_videos(db, [video.id]))
 
 
 @router.put("/videos/{video_id}/screen-text/blocks", response_model=VideoOut)

@@ -7,6 +7,8 @@
 
 import { fontForLang, type SubtitleBandHint } from './localize';
 import { sourceRangeToPost, type Range } from './time';
+import { wrapLineRanges, wrapTokens } from './textWrap';
+import { frameRegion, referenceFrame, type FrameSpec } from './variantLayout';
 import { defaultTextStyle, type Anchor, type EditSpec, type Layer, type MaskLayer, type ScreenBlock, type ScreenBlockStyle, type ScreenBox, type ScreenDetect, type ScreenText, type ScreenVersion, type TextLayer, type TextStyle } from '../types';
 
 /** origin 标记：与改语言的 'localize' 并列，各清各的。 */
@@ -20,6 +22,126 @@ const MASK_PADDING = 0.01;
 
 /** 译文通常比原文长，文字框留一点富余再自动换行。 */
 const WIDTH_SLACK = 1.1;
+
+/** 译文放不下时字号最多缩到原字号的这个比例（HIG-86），再放不下就放宽框。 */
+export const FIT_MIN_FONT_SCALE = 0.6;
+
+/** 基准画布（与 lib/textImage 的 TEXT_CANVAS 相同）：font_size 相对 H，wrap_width 相对 W。 */
+const CANVAS_W = 1080;
+const CANVAS_H = 1920;
+
+/** 测一段文字在 fontPx 字号下的宽度（px）。浏览器里用 canvas 实测，测试和缺省用 estimateTextWidth。 */
+export type TextMeasure = (text: string, fontPx: number, style: TextStyle) => number;
+
+const WIDE_CHAR = /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u;
+
+/** 粗估：中日韩与全角 1em，空格 0.3em，其余 0.6em（偏宽一点，宁可早缩字号也别在实测时拆词）。 */
+export function estimateTextWidth(text: string, fontPx: number): number {
+  let em = 0;
+  for (const ch of text) em += WIDE_CHAR.test(ch) ? 1 : ch === ' ' ? 0.3 : 0.6;
+  return em * fontPx;
+}
+
+/**
+ * 源画面在参考画布上的几何：识别出来的框和字号都相对源画面（契约 §1），
+ * 画布却是 1080×1920——非 9:16 的源片要先换算到画布里源画面实际所在的区域（HIG-86）。
+ */
+export interface SourceFrame {
+  srcW: number;
+  srcH: number;
+  frame: FrameSpec;
+}
+
+/** 这条视频的源画面在 spec 参考画幅上的几何；源片尺寸未知时 null（按 9:16 原样处理）。 */
+export function screenSource(spec: EditSpec, video: { width?: number | null; height?: number | null }): SourceFrame | null {
+  const srcW = video.width ?? 0;
+  const srcH = video.height ?? 0;
+  if (!(srcW > 0 && srcH > 0)) return null;
+  return { srcW, srcH, frame: referenceFrame(spec) };
+}
+
+/** 源画面归一化框 → 参考画布归一化框；fontScale 把相对源画面高的字号换成相对画布高。无几何信息时原样返回。 */
+export function sourceBoxToCanvas(box: ScreenBox, source?: SourceFrame | null): { box: ScreenBox; fontScale: number } {
+  if (!source || !(source.srcW > 0 && source.srcH > 0) || !(source.frame.W > 0 && source.frame.H > 0)) return { box, fontScale: 1 };
+  const { srcW, srcH, frame } = source;
+  const [s, d] = frameRegion(frame, srcW, srcH);
+  const scale = d.w / s.w;
+  const out = {
+    x: (d.x + (box.x * srcW - s.x) * scale) / frame.W,
+    y: (d.y + (box.y * srcH - s.y) * scale) / frame.H,
+    w: (box.w * srcW * scale) / frame.W,
+    h: (box.h * srcH * scale) / frame.H,
+  };
+  return {
+    box: { x: round4(out.x), y: round4(out.y), w: round4(out.w), h: round4(out.h) },
+    fontScale: (srcH * scale) / frame.H,
+  };
+}
+
+/** 文字图层 PNG 左右被内边距和描边占掉的宽度（px，基准画布），与 textImage.wrapTextLines 同一算法。 */
+function sidePadPx(style: TextStyle): number {
+  return 2 * Math.max(0, style.padding * CANVAS_H) + 2 * Math.max(0, style.stroke_width * CANVAS_H);
+}
+
+export interface ScreenTextFit {
+  font_size: number;
+  wrap_width: number;
+}
+
+/**
+ * 译文写回原框（HIG-86）：先按原字号在原框宽内折行；行数超过「原文行数 + 1」或有单词被拆开，就逐步缩字号，
+ * 最小到 FIT_MIN_FONT_SCALE；还放不下再放宽，最宽到画布宽。wrap_width 在框宽上补回内边距与描边，
+ * 文字的可用宽度才等于原框宽——以前直接用框宽，小框扣掉约 54px 后只剩一两个字宽，英文被拆成一字母一行。
+ */
+export function fitScreenText(text: string, style: TextStyle, boxW: number, lines: number | undefined, measure: TextMeasure = estimateTextWidth): ScreenTextFit {
+  const pads = sidePadPx(style);
+  const maxInner = Math.max(1, CANVAS_W - pads);
+  const target = Math.min(maxInner, Math.max(1, boxW * CANVAS_W * WIDTH_SLACK));
+  const maxLines = Math.max(1, Math.round(lines ?? 1)) + 1;
+  const paragraphs = text.split('\n');
+
+  const fits = (fontSize: number, inner: number): boolean => {
+    const px = Math.max(4, fontSize * CANVAS_H);
+    const m = (s: string) => measure(s, px, style);
+    let count = 0;
+    for (const line of paragraphs) {
+      for (const [a, b] of wrapTokens(line)) {
+        if (m(line.slice(a, b).trim()) > inner) return false; // 单词会被拆开
+      }
+      count += wrapLineRanges(line, inner, m).length;
+    }
+    return count <= maxLines;
+  };
+  const done = (fontSize: number, inner: number): ScreenTextFit => ({
+    font_size: round4(fontSize),
+    wrap_width: round4(Math.min(1, (inner + pads) / CANVAS_W)),
+  });
+
+  const base = style.font_size;
+  for (let k = 0; k <= 8; k++) {
+    const f = Math.max(FIT_MIN_FONT_SCALE, 1 - k * 0.05);
+    if (fits(base * f, target)) return done(base * f, target);
+    if (f === FIT_MIN_FONT_SCALE) break;
+  }
+  const smallest = base * FIT_MIN_FONT_SCALE;
+  let inner = target;
+  while (inner < maxInner) {
+    inner = Math.min(maxInner, inner * 1.15);
+    if (fits(smallest, inner)) break;
+  }
+  return done(smallest, inner);
+}
+
+/** 放宽后的框：按对齐方式保住文字起点（左对齐守左边、右对齐守右边、居中守中心），再收回画布内。 */
+function widenedBox(box: ScreenBox, wrapWidth: number, align: TextStyle['align'], style: TextStyle): ScreenBox {
+  const padN = sidePadPx(style) / 2 / CANVAS_W;
+  let x: number;
+  if (align === 'left') x = box.x - padN;
+  else if (align === 'right') x = box.x + box.w + padN - wrapWidth;
+  else x = box.x + box.w / 2 - wrapWidth / 2;
+  x = Math.min(Math.max(0, x), Math.max(0, 1 - wrapWidth));
+  return { x, y: box.y, w: wrapWidth, h: box.h };
+}
 
 function round4(n: number): number {
   return Math.round(n * 1e4) / 1e4;
@@ -39,7 +161,7 @@ function clamp01(n: number): number {
  * 垂直方向用 center / bottom 锚点时 margin 按框高估算，而文字图层的真实高度要等烤图之后才知道，
  * 所以这两档是近似；top 锚点是精确的。
  */
-export function boxToPlacement(box: ScreenBox): { anchor: Anchor; margin: [number, number]; width: number } {
+export function boxToPlacement(box: ScreenBox, width?: number): { anchor: Anchor; margin: [number, number]; width: number } {
   const cx = box.x + box.w / 2;
   const cy = box.y + box.h / 2;
   const ax: 'left' | 'center' | 'right' = Math.abs(cx - 0.5) < 0.08 ? 'center' : cx < 0.5 ? 'left' : 'right';
@@ -47,23 +169,22 @@ export function boxToPlacement(box: ScreenBox): { anchor: Anchor; margin: [numbe
   const mx = ax === 'left' ? box.x : ax === 'right' ? 1 - (box.x + box.w) : cx - 0.5;
   const my = ay === 'top' ? box.y : ay === 'bottom' ? 1 - (box.y + box.h) : cy - 0.5;
   const anchor = (ax === 'center' && ay === 'center' ? 'center' : `${ay}-${ax}`) as Anchor;
-  return { anchor, margin: [round4(mx), round4(my)], width: round4(Math.min(1, box.w * WIDTH_SLACK)) };
+  return { anchor, margin: [round4(mx), round4(my)], width: round4(width ?? Math.min(1, box.w * WIDTH_SLACK)) };
 }
 
 /** 估出来的样式 → 文字图层样式；估不出的字段回落到默认值，字体一律按目标语言选。 */
-export function blockTextStyle(style: ScreenBlockStyle | null | undefined, lang: string, box: ScreenBox): TextStyle {
+export function blockTextStyle(style: ScreenBlockStyle | null | undefined, lang: string, box: ScreenBox, fontScale = 1): TextStyle {
   const base = defaultTextStyle();
   const out: TextStyle = {
     ...base,
     font_family: fontForLang(lang),
-    // 原框宽度内自动换行；用户仍可拖宽（HIG-51）。
-    wrap_width: round4(Math.min(1, box.w * WIDTH_SLACK)),
   };
-  if (style?.font_size) out.font_size = round4(style.font_size);
+  // box 与字号都已换算到画布（sourceBoxToCanvas）；估出来的字号和描边相对源画面高，同样乘 fontScale。
+  if (style?.font_size) out.font_size = round4(style.font_size * fontScale);
   if (style?.color) out.color = style.color;
   if (style?.stroke_color) {
     out.stroke_color = style.stroke_color;
-    out.stroke_width = style.stroke_width ?? base.stroke_width;
+    out.stroke_width = style.stroke_width != null ? round4(style.stroke_width * fontScale) : base.stroke_width;
   } else if (style?.color) {
     // 估出了主色却没测到描边 = 这段文字本来就没有描边：不要留着默认的黑边，
     // 那会让原本干净的字看起来变脏。
@@ -74,6 +195,8 @@ export function blockTextStyle(style: ScreenBlockStyle | null | undefined, lang:
   if (style?.background) out.background = style.background;
   if (style?.align === 'left' || style?.align === 'center' || style?.align === 'right') out.align = style.align;
   if (style?.line_height) out.line_height = style.line_height;
+  // 原框宽度内自动换行，补回内边距与描边，文字可用宽度才等于原框宽；用户仍可拖宽（HIG-51）。
+  out.wrap_width = round4(Math.min(1, (box.w * CANVAS_W * WIDTH_SLACK + sidePadPx(out)) / CANVAS_W));
   return out;
 }
 
@@ -97,6 +220,22 @@ export interface ScreenLayerOptions {
   newId: () => string;
   /** 上一次套用时这一块被人调过的几何与样式，按 screen_block 接回去。 */
   previous?: Map<string, Pick<TextLayer, 'anchor' | 'margin' | 'width' | 'style'>>;
+  /** 源画面在参考画布上的几何（HIG-86）；缺省按源片就是 9:16 处理。 */
+  source?: SourceFrame | null;
+  /** 折行测宽；浏览器里注入 canvas 实测，缺省粗估。 */
+  measure?: TextMeasure;
+}
+
+/** 一块画面文字在画布上的位置与样式：换算画幅，放不下时先缩字号再放宽（HIG-86）。 */
+export function screenBlockLayout(block: ScreenBlock, text: string, lang: string, opts: Pick<ScreenLayerOptions, 'source' | 'measure'> = {}): { anchor: Anchor; margin: [number, number]; width: number; style: TextStyle } {
+  const { box, fontScale } = sourceBoxToCanvas(block.box, opts.source);
+  const style = blockTextStyle(block.style, lang, box, fontScale);
+  const fit = fitScreenText(text, style, box.w, block.lines, opts.measure);
+  style.font_size = fit.font_size;
+  style.wrap_width = fit.wrap_width;
+  const placed = widenedBox(box, fit.wrap_width, style.align, style);
+  const placement = boxToPlacement(placed, fit.wrap_width);
+  return { ...placement, style };
 }
 
 /**
@@ -112,8 +251,9 @@ export function blockToTextLayer(block: MergedBlock, opts: ScreenLayerOptions): 
   if (end <= window[0]) return null;
 
   const kept = opts.previous?.get(block.id);
-  const placement = kept ?? boxToPlacement(block.box);
-  const style = kept?.style ?? blockTextStyle(block.style, opts.lang, block.box);
+  const layout = kept ?? screenBlockLayout(block, text, opts.lang, opts);
+  const placement = layout;
+  const style = layout.style;
   return {
     id: opts.newId(),
     type: 'text',
@@ -136,17 +276,18 @@ export function blockToTextLayer(block: MergedBlock, opts: ScreenLayerOptions): 
  * 擦除还没就位时的顶替遮盖：把原文字糊掉，好让译文盖上去时下面不是两层字。
  * 只是模糊 / 色块，不是无痕擦除——真正擦干净要靠无字版（契约 §1）。
  */
-export function blockToMaskLayer(block: ScreenBlock, opts: Pick<ScreenLayerOptions, 'remove' | 'postDuration' | 'newId'>): MaskLayer | null {
+export function blockToMaskLayer(block: ScreenBlock, opts: Pick<ScreenLayerOptions, 'remove' | 'postDuration' | 'newId' | 'source'>): MaskLayer | null {
   if (block.moving || block.enabled === false) return null;
   const window = sourceRangeToPost(block.t, opts.remove);
   if (!window) return null;
   const end = opts.postDuration > 0 ? Math.min(window[1], opts.postDuration) : window[1];
   if (end <= window[0]) return null;
+  const src = sourceBoxToCanvas(block.box, opts.source).box;
   const box = {
-    x: clamp01(block.box.x - MASK_PADDING),
-    y: clamp01(block.box.y - MASK_PADDING),
-    w: clamp01(block.box.w + MASK_PADDING * 2),
-    h: clamp01(block.box.h + MASK_PADDING * 2),
+    x: clamp01(src.x - MASK_PADDING),
+    y: clamp01(src.y - MASK_PADDING),
+    w: clamp01(src.w + MASK_PADDING * 2),
+    h: clamp01(src.h + MASK_PADDING * 2),
   };
   const placement = boxToPlacement(box);
   return {
@@ -198,6 +339,9 @@ export interface ScreenApplyContext {
   remove: Range[];
   postDuration: number;
   newLayerId: () => string;
+  /** 源画面几何与测宽（HIG-86），见 ScreenLayerOptions。 */
+  source?: SourceFrame | null;
+  measure?: TextMeasure;
 }
 
 /**
@@ -230,7 +374,7 @@ export function applyScreenTextToSpec(spec: EditSpec, lang: string, ctx: ScreenA
   }
 
   const blocks = mergedBlocks(detect, version);
-  const opts: ScreenLayerOptions = { lang, remove: ctx.remove, postDuration: ctx.postDuration, newId: ctx.newLayerId, previous };
+  const opts: ScreenLayerOptions = { lang, remove: ctx.remove, postDuration: ctx.postDuration, newId: ctx.newLayerId, previous, source: ctx.source, measure: ctx.measure };
 
   // 没有无字版时，先把原文字糊掉再叠译文。
   const masks: Layer[] = [];
@@ -290,11 +434,13 @@ export function screenTextActive(screen: ScreenText | null | undefined): boolean
 }
 
 /** 识别出来的硬字幕带 → 译文字幕的落点与样式（HIG-38）。没有带、或带的把握太低时返回 null。 */
-export function bandHint(screen: ScreenText | null | undefined, lang: string): SubtitleBandHint | null {
+export function bandHint(screen: ScreenText | null | undefined, lang: string, source?: SourceFrame | null): SubtitleBandHint | null {
   const band = screen?.detect?.subtitle_band;
   if (!band) return null;
-  const placement = boxToPlacement(band.box);
-  const style = band.style ? blockTextStyle(band.style, lang, band.box) : undefined;
+  const { box, fontScale } = sourceBoxToCanvas(band.box, source);
+  const style = band.style ? blockTextStyle(band.style, lang, box, fontScale) : undefined;
+  // 图层宽度跟 PNG 宽（= wrap_width，已补回内边距）一致，文字可用宽度才是带宽 × 1.1。
+  const placement = boxToPlacement(box, style?.wrap_width ?? undefined);
   return { anchor: placement.anchor, margin: placement.margin, width: placement.width, style };
 }
 
@@ -310,6 +456,22 @@ export function detectStatusText(detect: ScreenText['detect']): string {
   if (detect.status === 'failed') return `失败：${detect.error ?? '未知原因'}`;
   if (detect.status === 'done') return '已完成';
   return '未开始';
+}
+
+/** 擦除状态的一句话（HIG-86）：运行中带上供应商自己报的状态——卡在供应商排队和我们这边没在查是两回事。 */
+export function eraseStatusText(erase: ScreenText['erase']): string {
+  if (!erase) return '未开始';
+  if (erase.status === 'queued') return '排队中…（识别和翻译做完才会提交）';
+  if (erase.status === 'running') return erase.vendor_status ? `擦除中…供应商：${erase.vendor_status}` : '擦除中…';
+  if (erase.status === 'failed') return `失败：${erase.error ?? '未知原因'}`;
+  if (erase.status === 'done') return '已完成';
+  return '未开始';
+}
+
+/** 跳过了几帧的提示（HIG-86）；没跳过时为空串。 */
+export function skippedFramesText(detect: ScreenText['detect']): string {
+  const n = detect?.status === 'done' ? detect.skipped_frames ?? 0 : 0;
+  return n > 0 ? `${n} 帧识别失败已跳过，那几帧的文字由前后帧补上；漏了可以重新识别` : '';
 }
 
 /** 后端的原因多半已经以「画面文字识别失败」开头，不再重复一遍。 */

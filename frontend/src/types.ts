@@ -123,6 +123,8 @@ export interface ScreenDetect {
   frames?: number;
   /** 识别进行中：已送 / 共要送的帧数（HIG-86）。每送完一帧刷新一次，也是后台的心跳。 */
   progress?: { done: number; total: number } | null;
+  /** 调用失败或结果无法解析而被跳过的帧数（HIG-86），缺省 0。 */
+  skipped_frames?: number;
   subtitle_band?: SubtitleBand | null;
   blocks: ScreenBlock[];
   updated_at?: string | null;
@@ -139,6 +141,10 @@ export interface ScreenErase {
   scope?: { band: boolean; block_ids: string[] | null } | null;
   /** 识别结果改过之后为 true：无字版对不上当前的框，建议重擦。 */
   stale?: boolean;
+  /** 运行中供应商自己报的状态（HIG-86），如「排队中（状态 0）」。 */
+  vendor_status?: string | null;
+  /** 超时 / 取结果出错但云端任务可能还在：可用 erase_resume「继续等待」同一个任务（HIG-86）。 */
+  resumable?: boolean;
   clean_url?: string | null;
   clean_proxy_url?: string | null;
   clean_poster_url?: string | null;
@@ -172,6 +178,8 @@ export interface ScreenTextIn {
   terms?: LocalizationTerm[];
   erase?: boolean;
   scope?: { band?: boolean; block_ids?: string[] | null } | null;
+  /** 「继续等待」（HIG-86）：只对 erase.resumable 的失败擦除接着查同一个云端任务，不重新提交。 */
+  erase_resume?: boolean;
 }
 
 export interface ScreenTextOptions {

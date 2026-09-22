@@ -171,6 +171,8 @@
     "error": null,                   // failed 时的中文原因
     "model": "qwen3-vl-plus",        // 实际用的视觉模型，排查用
     "frames": 12,                    // 这次真正送去识别的帧数（对账费用用）
+    "skipped_frames": 0,             // 可选，缺省 0（HIG-86）：单帧调用失败或结果无法解析而被跳过的帧数；
+                                     // 跳过的帧由前一帧代替（与感知去重同一语义），不当作「这一帧没有文字」
     "progress": null,                // 可选（HIG-86）：running 时为 {"done": 3, "total": 12}，每送完一帧刷新一次（也是心跳）；
                                      // 抽帧阶段与其它状态为 null / 缺席
     "subtitle_band": {               // 可选，缺省 null：硬字幕带，整条视频共用一个矩形
@@ -202,6 +204,9 @@
     "deadline": "2026-09-19T10:30:00Z",   // 过了这个时刻仍未完成就判 failed
     "scope": { "band": true, "block_ids": ["s3f2a1b0c"] },   // 这次擦了哪些区域；block_ids 为 null = 所有启用的块
     "stale": false,                  // 识别结果改过之后为 true：无字版对不上当前的框，建议重擦
+    "vendor_status": null,           // 可选（HIG-86）：running 时供应商自己报的状态文案，如 "排队中（状态 0）"
+    "resumable": false,              // 可选，缺省 false（HIG-86）：failed 且云端任务可能还在跑（等到期、结果下载 / 处理出错）
+                                     // 时为 true，可用 `erase_resume` 接着查同一个 task_id
     "clean_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean.mp4",          // done 才有
     "clean_proxy_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean_proxy.mp4",
     "clean_poster_url": "/media/batches/b_x1y2z3/v_a1b2c3/clean_poster.jpg",
@@ -234,6 +239,12 @@
 **样式估计只做到「近似」**（HIG-38）：`style` 里的字号、主色、对齐由画面估出来，可靠；描边色和背景块中等；
 描边粗细只是粗估。**字体识别做不到**，一律落成按语言选的默认字体。生成出来的是样式接近、**可编辑**的普通文字图层，
 需要人微调。会动的、带透视的、带动画的画面文字（花字动效、商品包装上的字）不在处理范围内，识别阶段会标出来但不生成图层。
+
+**写回原位的排版**（HIG-86，纯前端，不改 `edit_spec` 结构）：`box` 与 `style.font_size` 相对**源画面**，套用时先换算到
+画布里源画面实际所在的区域——竖版参考画幅下按 contain 缩放居中（与 `fill = "blur"` 同一套几何），非 9:16 源片的位置
+和字号才对得上。`wrap_width` 在框宽上补回左右内边距与描边，让文字可用宽度等于原框宽。译文比原文长（小按钮、角标的
+中文翻成英文常长好几倍）放不下时：先缩字号，直到行数不超过原文行数 + 1 且没有单词被拆开，最小到原字号的 60%；
+还放不下再把 `wrap_width` 放宽到能整词放下，最宽到画布宽。单词永远不会被拆成逐个字母一行。
 
 ### Asset（素材）
 
@@ -895,12 +906,15 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   `aliyun` = CosyVoice / Qwen3-TTS，`minimax` = 百炼托管的 MiniMax 语音；前端只在一种语言同时有两家音色时才给分组名加厂商前缀
   （`MiniMax · 女声`），具体模型名不外泄。每种语言第一个音色是缺省音色。
   `enabled = false`（没配 key）时前端禁用模块并提示；语言与音色一律以此为准，前端不写死。`source_langs` 含 `auto`。
-- `POST /api/videos/{id}/screen-text` `{ detect?: true, target_langs?: ["ko"], terms?: [{ source, target }], erase?: false, scope?: { band?: true, block_ids?: ["s0"] } }`
+- `POST /api/videos/{id}/screen-text` `{ detect?: true, target_langs?: ["ko"], terms?: [{ source, target }], erase?: false, scope?: { band?: true, block_ids?: ["s0"] }, erase_resume?: false }`
   → 202 `Video`。一个任务：`detect` 为 true（或还没识别过）就先识别画面文字，再对每个目标语言翻译，最后按 `erase`
   决定要不要提交擦除。`target_langs` 可以为空——**只识别 + 擦除是合法用法**（去掉旧字幕再自己配字，不改语言）。
   `scope` 指定这次擦哪些区域，缺省 = 字幕带 + 所有 `enabled` 的块。视频未 `ready` 400；超过
   `SCREENTEXT_MAX_SECONDS` 400；`detect` 或任一请求的版本正在 queued / running 409；没配 `DASHSCOPE_API_KEY`
-  或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`。
+  或队列不可用 503（状态回滚）。前端轮询 `GET /api/videos/{id}`；收到 409 时同样接着轮询（活已经在跑），不当作失败。
+  `erase_resume: true`（可选，缺省 false，HIG-86「继续等待」）：忽略其它字段，只对 `erase.resumable = true` 的
+  失败擦除用**同一个 `task_id`** 重设 `deadline` 并立即入队一个 `hitgo.erase_poll`，不重新提交、不重复计费；
+  没有可续查的任务 400「请重新擦除」，队列不可用 503（状态回滚）。
 - `PUT /api/videos/{id}/screen-text/blocks` `{ blocks: [{ id, text?, t?, box?, enabled? }] }` → 200 `Video`。修正识别结果
   （只传改动的块），不触发任务；所有已有译文的版本 `stale = true`，`erase.stale = true`。还没有识别结果 400；
   有任务进行中 409。
@@ -1104,7 +1118,11 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 **失败必须当场可见（HIG-86）。** 识别阶段的任何异常（视觉模型 4xx / 5xx 用尽重试、抽帧失败、代码错误）都立即把
 `detect` 写成 `failed` 并带上真实原因，同批的语言版本与擦除一并 failed；403 / 未开通这类权限错误在原因后面附一句
 「请检查 `SCREENTEXT_MODEL` 或在百炼控制台开通该模型」。单次视觉调用有请求超时 `SCREENTEXT_CALL_TIMEOUT_SECONDS`
-（缺省 60 秒，SDK 自带的是 300 秒）。读取时的过期投射（`GET` 不写库、`POST` 重试前落库）按「多久没有更新」判断：
+（缺省 60 秒，SDK 自带的是 300 秒）；帧以 base64 data URI 内联发送——交给 SDK 一个 `file://` 时它会先把文件
+传到自己的存储，那一步不受请求超时约束，线上实测卡满 300 秒。**单帧失败只跳过这一帧**（超时、400、429 用尽重试、
+结果无法解析），计入 `skipped_frames`；401 / 403 / 未开通这类配置错误每一帧都会一样失败，立即整次 failed；
+还没有任何一帧成功就已连续失败 3 帧时也整次 failed（带最后一帧的原因），免得一串超时把任务预算耗光；
+所有帧都没成功时整次 failed。读取时的过期投射（`GET` 不写库、`POST` 重试前落库）按「多久没有更新」判断：
 `queued` 超过 `SCREENTEXT_TIMEOUT_SECONDS` 仍未开始 →「排队超过 N 秒仍未开始」（worker 被其它任务占着或没在跑）；
 `running` 期间每送完一帧就刷新 `updated_at` 与 `progress`，超过同样时长没有进展 →「超过 N 秒没有进展」。
 
@@ -1127,7 +1145,10 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
    随即**重新入队**一个 `hitgo.erase_poll` 就结束本任务：`WORKER_CONCURRENCY` 缺省 1，阻塞轮询会把改语言任务饿死。
    `erase_poll` 每次只做一个 tick：完成就下载结果，`ffprobe` 校验时长与帧率和源片一致（容差 0.2 秒），通过才原子替换
    `clean.mp4` 并生成 `clean_proxy.mp4` / `clean_poster.jpg`；还没完成且未到 `deadline` 就带 `countdown`
-   （`ERASE_POLL_INTERVAL_SECONDS`，缺省 10 秒）再入队一次；到期或云端报错写 `failed` + 中文原因。
+   （`ERASE_POLL_INTERVAL_SECONDS`，缺省 10 秒）再入队一次，每次把供应商报的状态写进 `vendor_status`；到期
+   （`ERASE_MAX_WAIT_SECONDS`，缺省 3600 秒）或云端报错写 `failed` + 中文原因。云端任务到期、结果下载或处理出错时
+   `resumable = true`，界面给「继续等待」（`erase_resume`）；本地 / fake 供应商没有可续查的任务。tick 自己出的任何错
+   （供应商配置错误、下一次入队失败、处理结果超过软超时）都落成 `failed`，不会让 `running` 悬着没人查。
    `ERASE_PROVIDER = local` 时不出网，直接用 ffmpeg `delogo` 按区域出片——本地开发、smoke 和云厂商不可用时的降级都靠它。
    `ERASE_PROVIDER = ghostcut`（鬼手剪辑）时走云端无痕修复：源片用 `/media` 的只读票据签成公网地址交给对方自己拉取
    （与 HIG-58 声音复刻同一套机制，不为它在访问码网关上开洞），对方在我们标出的矩形里做自己的 OCR 并把文字修掉。

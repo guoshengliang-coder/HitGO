@@ -139,7 +139,7 @@ def load_settings() -> Settings:
         # inpainting-quality, until a cloud vendor is picked (HIG-38).
         erase_provider=_env("ERASE_PROVIDER", "local").strip().lower(),
         erase_poll_interval_seconds=int(_env("ERASE_POLL_INTERVAL_SECONDS", "10")),
-        erase_max_wait_seconds=int(_env("ERASE_MAX_WAIT_SECONDS", "1800")),
+        erase_max_wait_seconds=int(_env("ERASE_MAX_WAIT_SECONDS", "3600")),
         ghostcut_base_url=_env("GHOSTCUT_BASE_URL", "https://api.zhaoli.com").strip().rstrip("/"),
         ghostcut_app_key=_env("GHOSTCUT_APP_KEY", "").strip(),
         ghostcut_app_secret=_env("GHOSTCUT_APP_SECRET", "").strip(),

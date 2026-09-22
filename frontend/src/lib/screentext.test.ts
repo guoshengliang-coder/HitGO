@@ -15,8 +15,16 @@ import {
   screenTextActive,
   screenTextFinishText,
   SCREEN_ORIGIN,
+  eraseStatusText,
+  estimateTextWidth,
+  skippedFramesText,
+  fitScreenText,
+  FIT_MIN_FONT_SCALE,
+  screenBlockLayout,
+  sourceBoxToCanvas,
   stripScreenText,
 } from './screentext';
+import { wrapLineRanges, wrapTokens } from './textWrap';
 import { emptySpec, type EditSpec, type ScreenBlock, type ScreenText, type TextLayer } from '../types';
 
 const box = (x: number, y: number, w: number, h: number) => ({ x, y, w, h });
@@ -86,7 +94,9 @@ describe('blockTextStyle', () => {
   it('估不出的字段回落默认值，并开自动换行', () => {
     const style = blockTextStyle(null, 'ko', box(0.3, 0.5, 0.4, 0.06));
     expect(style.color).toBe('#FFFFFF');
-    expect(style.wrap_width).toBeCloseTo(0.44, 4);
+    // 框宽 × 1.1，再补回左右内边距与描边（HIG-86）：文字的可用宽度 = 原框宽 × 1.1，不再被扣掉约 54px。
+    const pads = 2 * style.padding * 1920 + 2 * style.stroke_width * 1920;
+    expect(style.wrap_width).toBeCloseTo((0.4 * 1080 * 1.1 + pads) / 1080, 4);
   });
 
   it('估出「没有描边」时不留默认黑边——那会让干净的字看起来变脏', () => {
@@ -275,8 +285,11 @@ describe('辅助判断', () => {
     sc.detect!.subtitle_band = { box: box(0.15, 0.78, 0.7, 0.06), style: { font_size: 0.04, color: '#EEEEEE' } };
     const hint = bandHint(sc, 'ja')!;
     expect(hint.anchor).toBe('bottom-center');
-    expect(hint.width).toBeCloseTo(0.77, 4);
-    expect(hint.style).toMatchObject({ font_size: 0.04, color: '#EEEEEE', wrap_width: 0.77 });
+    expect(hint.style).toMatchObject({ font_size: 0.04, color: '#EEEEEE' });
+    // 可用文字宽 = 带宽 × 1.1；wrap_width / 图层宽另补回左右内边距与描边（HIG-86）。
+    const pads = 2 * hint.style!.padding! * 1920 + 2 * hint.style!.stroke_width! * 1920;
+    expect(hint.style!.wrap_width).toBeCloseTo((0.77 * 1080 + pads) / 1080, 4);
+    expect(hint.width).toBe(hint.style!.wrap_width);
   });
 
   it('cleanReady 要求 done、没过期、有文件', () => {
@@ -339,5 +352,116 @@ describe('screenTextFinishText', () => {
     const text = screenTextFinishText({ detect: { status: 'failed', blocks: [], error: '画面文字识别失败（403）：Access denied.' }, versions: {} });
     expect(text).toBe('画面文字识别失败（403）：Access denied.');
     expect(screenTextFinishText({ detect: { status: 'failed', blocks: [], error: '抽帧失败' }, versions: {} })).toBe('画面文字识别失败：抽帧失败');
+  });
+});
+
+
+// --- HIG-86：画幅换算与「放不下先缩后放」 ---------------------------------------
+
+const blurFrame = { fill: 'blur' as const, W: 1080, H: 1920 };
+
+describe('sourceBoxToCanvas', () => {
+  it('9:16 源片原样返回', () => {
+    const out = sourceBoxToCanvas(box(0.2, 0.3, 0.4, 0.05), { srcW: 720, srcH: 1280, frame: blurFrame });
+    expect(out.box).toEqual(box(0.2, 0.3, 0.4, 0.05));
+    expect(out.fontScale).toBeCloseTo(1, 6);
+  });
+
+  it('1:1 源片落到画布中间那块正方形里，字号按源画面在画布上的高度缩', () => {
+    const out = sourceBoxToCanvas(box(0.25, 0.1, 0.5, 0.1), { srcW: 1080, srcH: 1080, frame: blurFrame });
+    expect(out.box.x).toBeCloseTo(0.25, 4);
+    expect(out.box.y).toBeCloseTo((420 + 108) / 1920, 4);
+    expect(out.box.w).toBeCloseTo(0.5, 4);
+    expect(out.box.h).toBeCloseTo(108 / 1920, 3);
+    expect(out.fontScale).toBeCloseTo(1080 / 1920, 6);
+  });
+
+  it('16:9 源片：字号约为原来的 0.32 倍——以前直接当成画布比例，字大了 3 倍', () => {
+    const out = sourceBoxToCanvas(box(0.1, 0.8, 0.8, 0.08), { srcW: 1920, srcH: 1080, frame: blurFrame });
+    expect(out.fontScale).toBeCloseTo((1080 * 0.5625) / 1920, 6);
+    expect(out.box.y).toBeGreaterThan(0.4);
+    expect(out.box.y + out.box.h).toBeLessThan(0.7);
+  });
+
+  it('不知道源片尺寸时原样返回', () => {
+    expect(sourceBoxToCanvas(box(0.1, 0.1, 0.2, 0.2), null).fontScale).toBe(1);
+  });
+});
+
+/** 按 fit 的结果在 wrap_width 内实际折行：返回行数和最宽的单词是否放得下。 */
+function wrapped(text: string, fontSize: number, wrapWidth: number, padding = 0.01, stroke = 0.004) {
+  const px = fontSize * 1920;
+  const inner = wrapWidth * 1080 - 2 * padding * 1920 - 2 * stroke * 1920;
+  const m = (s: string) => estimateTextWidth(s, px);
+  const lines = wrapLineRanges(text, inner, m).length;
+  const wordsFit = wrapTokens(text).every(([a, b]) => m(text.slice(a, b).trim()) <= inner + 1e-6);
+  return { lines, wordsFit };
+}
+
+describe('fitScreenText', () => {
+  const style = (font_size: number, w = 0.1) => blockTextStyle({ font_size }, 'en', box(0, 0, w, 0.1));
+
+  it('放得下时字号不变，可用宽度 = 原框宽 × 1.1', () => {
+    const st = style(0.03, 0.4);
+    const fit = fitScreenText('SALE', st, 0.4, 1);
+    expect(fit.font_size).toBe(0.03);
+    expect(fit.wrap_width).toBeCloseTo(st.wrap_width!, 3);
+  });
+
+  it('截图 4：小按钮的中文翻成长英文，单词整词换行，不再一字母一行', () => {
+    const text = 'Lucky wheel ¥0.45 withdrawal';
+    const fit = fitScreenText(text, style(0.03), 0.12, 1);
+    const out = wrapped(text, fit.font_size, fit.wrap_width);
+    expect(out.wordsFit).toBe(true);
+    expect(out.lines).toBeLessThanOrEqual(2);
+    expect(fit.font_size).toBeGreaterThanOrEqual(0.03 * FIT_MIN_FONT_SCALE - 1e-6);
+    expect(fit.wrap_width).toBeGreaterThan(0.12);
+  });
+
+  it('稍长一点先缩字号、不放宽', () => {
+    const st = style(0.04, 0.3);
+    const fit = fitScreenText('Download now', st, 0.3, 1);
+    expect(fit.font_size).toBeLessThan(0.04);
+    expect(fit.font_size).toBeGreaterThanOrEqual(0.04 * FIT_MIN_FONT_SCALE - 1e-6);
+    expect(fit.wrap_width).toBeCloseTo(st.wrap_width!, 3);
+  });
+
+  it('最宽只到画布宽', () => {
+    const fit = fitScreenText('Supercalifragilisticexpialidocious-extraordinarily-long', style(0.08), 0.1, 1);
+    expect(fit.wrap_width).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('screenBlockLayout', () => {
+  it('左对齐的块放宽时守住左边，不往左边跑出去', () => {
+    const block: ScreenBlock = { id: 'b', text: '提现', box: box(0.1, 0.5, 0.1, 0.03), t: [0, 1], lines: 1, style: { font_size: 0.03, align: 'left' }, moving: false, enabled: true };
+    const out = screenBlockLayout(block, 'Withdraw to your wallet instantly', 'en');
+    expect(out.anchor.endsWith('left')).toBe(true);
+    expect(out.margin[0]).toBeLessThanOrEqual(0.1);
+    expect(out.margin[0]).toBeGreaterThan(0.07);
+    expect(out.style.wrap_width!).toBeGreaterThan(0.1);
+  });
+
+  it('非 9:16 源片的块换算后再排版', () => {
+    const block: ScreenBlock = { id: 'b', text: 'SALE', box: box(0.3, 0.1, 0.4, 0.06), t: [0, 1], lines: 1, style: { font_size: 0.05, align: 'center' }, moving: false, enabled: true };
+    const out = screenBlockLayout(block, 'SALE', 'en', { source: { srcW: 1080, srcH: 1080, frame: blurFrame } });
+    expect(out.style.font_size).toBeCloseTo(0.05 * (1080 / 1920), 4);
+    expect(out.anchor.startsWith('top')).toBe(true);
+    expect(out.margin[1]).toBeCloseTo((420 + 0.1 * 1080) / 1920, 3);
+  });
+});
+
+describe('eraseStatusText / skippedFramesText（HIG-86）', () => {
+  it('擦除中带上供应商状态', () => {
+    expect(eraseStatusText({ status: 'running', vendor_status: '排队中（状态 0）' })).toBe('擦除中…供应商：排队中（状态 0）');
+    expect(eraseStatusText({ status: 'running' })).toBe('擦除中…');
+    expect(eraseStatusText({ status: 'failed', error: '擦除超过 3600 秒仍未完成' })).toContain('3600');
+    expect(eraseStatusText(null)).toBe('未开始');
+  });
+
+  it('跳过的帧数只在识别完成后提示', () => {
+    expect(skippedFramesText({ status: 'done', blocks: [], skipped_frames: 2 })).toContain('2 帧');
+    expect(skippedFramesText({ status: 'done', blocks: [] })).toBe('');
+    expect(skippedFramesText({ status: 'running', blocks: [], skipped_frames: 2 })).toBe('');
   });
 });

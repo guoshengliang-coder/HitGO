@@ -272,3 +272,11 @@ def test_an_explicit_resolution_overrides_the_source(http):
     forced.submit(Path("/x/source.mp4"), "https://pub/a.mp4", [EraseRegion(box=box(0, 0.8, 1, 0.2))], 3.0)
 
     assert json.loads(http.sent[0]["body"])["resolution"] == "480p"
+
+
+def test_vendor_status_text_names_the_state():
+    from app.services.erase_ghostcut import vendor_status_text
+
+    assert vendor_status_text({"processStatus": 0}) == "处理中（状态 0）"
+    assert vendor_status_text({"processStatus": 3, "processStatusEnum": {"description": "排队中"}}) == "排队中（状态 3）"
+    assert vendor_status_text({"processStatus": 5, "progress": 40}) == "处理中 40%（状态 5）"

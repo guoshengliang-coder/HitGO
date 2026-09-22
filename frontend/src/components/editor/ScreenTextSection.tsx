@@ -10,7 +10,7 @@ import { useEditor } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
 import { langLabel } from '../../lib/localize';
-import { cleanReady, detectStatusText, mergedBlocks, screenTextActive, STYLE_CONFIDENCE_HINT } from '../../lib/screentext';
+import { cleanReady, detectStatusText, eraseStatusText, mergedBlocks, screenTextActive, skippedFramesText, STYLE_CONFIDENCE_HINT } from '../../lib/screentext';
 import { Section } from '../ui/Section';
 import { Field } from '../ui/Num';
 import type { LocalizeOptions, ScreenBlock, ScreenText, Video } from '../../types';
@@ -26,14 +26,6 @@ const WRITE_HELP =
   '译文会在原位置生成可编辑的文字图层：字号、颜色、对齐、出现时间都按画面估出来，' +
   '但字体识别做不到，一律用该语言的默认字体。估出来的只是起点，拖一拖调成想要的样子，' +
   '下次重新套用会按块接回你调过的结果。';
-
-function statusText(status: string | undefined, error?: string | null): string {
-  if (status === 'queued') return '排队中…';
-  if (status === 'running') return '处理中…';
-  if (status === 'failed') return `失败：${error ?? '未知原因'}`;
-  if (status === 'done') return '已完成';
-  return '未开始';
-}
 
 function BlockRow({ block, translated, onToggle, onRename }: { block: ScreenBlock; translated: string; onToggle: (on: boolean) => void; onRename: (text: string) => void }) {
   const [draft, setDraft] = useState(block.text);
@@ -105,6 +97,7 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
       <Field label="识别">
         <span className="small">{detectStatusText(detect)}</span>
         {detected && !!detect?.frames && <span className="small muted">送去识别 {detect.frames} 帧</span>}
+        {skippedFramesText(detect) && <span className="small muted">{skippedFramesText(detect)}</span>}
         <button className="btn" disabled={blocked || tooLong} onClick={() => runScreenText({ detect: true, target_langs: langs })} title={detected || failed ? '手动重新识别一遍；已有的译文会被标为需要重译' : '识别画面上烧死的文字'}>
           {detected || failed ? '重新识别' : '识别画面文字'}
         </button>
@@ -139,11 +132,16 @@ export function ScreenTextSection({ video, options, langs }: { video: Video; opt
           </Field>
 
           <Field label="擦除" title={ERASE_HELP}>
-            <span className="small">{statusText(screen?.erase?.status, screen?.erase?.error)}</span>
+            <span className="small">{eraseStatusText(screen?.erase)}</span>
             {screen?.erase?.stale && <span className="badge-stale">识别结果改过，建议重擦</span>}
             <button className="btn" disabled={blocked || !stOptions?.erase_enabled} onClick={() => runScreenText({ erase: true, target_langs: langs })} title="把原文字从画面上擦掉，生成无字版源片；原片保留">
               {screen?.erase?.status === 'done' ? '重新擦除' : '擦除原文字'}
             </button>
+            {screen?.erase?.status === 'failed' && screen.erase.resumable && (
+              <button className="btn" disabled={blocked || !stOptions?.erase_enabled} onClick={() => runScreenText({ erase_resume: true })} title="供应商那边的任务可能还在跑：接着查同一个任务，不重新提交、不重复计费">
+                继续等待
+              </button>
+            )}
             {screen?.erase?.status === 'done' && (
               <button className="btn" disabled={active} onClick={() => deleteScreenErase()} title="删掉无字版文件并切回原片">
                 删除无字版

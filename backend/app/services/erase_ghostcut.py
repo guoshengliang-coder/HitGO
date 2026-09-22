@@ -112,6 +112,17 @@ def submit_payload(public_url: str, regions: list[EraseRegion], resolution: str,
     }
 
 
+def vendor_status_text(row: dict[str, Any]) -> str:
+    """The vendor's own word on a running job, for the editor: "处理中（状态 0）" at least."""
+    state = row.get("processStatus")
+    description = (row.get("processStatusEnum") or {}).get("description")
+    progress = row.get("progress")
+    text = str(description) if description else "处理中"
+    if isinstance(progress, (int, float)) and 0 < progress <= 100:
+        text += f" {progress:g}%"
+    return f"{text}（状态 {state}）" if state is not None else text
+
+
 @dataclass
 class GhostCutErase:
     """Calls the vendor over plain HTTP; no SDK to install."""
@@ -186,7 +197,7 @@ class GhostCutErase:
         if state in STATUS_FAILED:
             detail = row.get("errorDetail") or ((row.get("processStatusEnum") or {}).get("description")) or "未知原因"
             return EraseProgress(status="failed", error=f"供应商擦除失败：{detail}")
-        return EraseProgress(status="running")
+        return EraseProgress(status="running", detail=vendor_status_text(row))
 
     def fetch(self, task_id: str, progress: EraseProgress, dst: Path) -> None:
         if not progress.url:
