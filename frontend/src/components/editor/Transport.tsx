@@ -30,6 +30,8 @@ export function Transport() {
   const onSlider = (v: number) => window.dispatchEvent(new CustomEvent(TIMELINE_ZOOM_EVENT, { detail: { pps: MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, v / 1000) } }));
   // 滚轮方向（HIG-79）：本机偏好，Timeline 的 wheel 监听靠 saveFeaturePrefs 的广播收到改动
   const [wheelVertical, setWheelVertical] = useState(() => loadFeaturePrefs().timelineWheelVertical);
+  // 收起删除段（HIG-93）：同样是本机偏好，Timeline 靠广播换横轴
+  const [collapseCuts, setCollapseCuts] = useState(() => loadFeaturePrefs().timelineCollapseCuts);
 
   return (
     <div className="transport">
@@ -69,6 +71,17 @@ export function Transport() {
             }}
           />
           滚轮上下
+        </label>
+        <label className="inline small" title="开：删掉的片段直接从时间轴上收起，后面的内容接上（按剪后时间）；关：按源时间显示，删除区间以斜纹留在原位、可拖边调整">
+          <input
+            type="checkbox"
+            checked={collapseCuts}
+            onChange={(e) => {
+              setCollapseCuts(e.target.checked);
+              saveFeaturePrefs({ timelineCollapseCuts: e.target.checked });
+            }}
+          />
+          收起删除段
         </label>
       </span>
     </div>

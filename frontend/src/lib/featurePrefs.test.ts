@@ -49,3 +49,13 @@ describe('localizeSplitCues（HIG-36）', () => {
     expect(saveFeaturePrefs({ localizeSplitCues: false }, store)).toMatchObject({ localizeSplitCues: false, autoApplyDub: false });
   });
 });
+
+describe('timelineCollapseCuts（HIG-93）', () => {
+  it('默认收起删除段，坏值回落，关掉后存得住', () => {
+    const store = memStorage();
+    expect(loadFeaturePrefs(store).timelineCollapseCuts).toBe(true);
+    expect(cleanFeaturePrefs({ timelineCollapseCuts: 'no' }).timelineCollapseCuts).toBe(true);
+    expect(saveFeaturePrefs({ timelineCollapseCuts: false }, store).timelineCollapseCuts).toBe(false);
+    expect(loadFeaturePrefs(store).timelineCollapseCuts).toBe(false);
+  });
+});

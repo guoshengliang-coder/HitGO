@@ -1,6 +1,6 @@
 // 功能开关类的本机偏好（存 localStorage）：口播生成完自动套用（HIG-56）、用原声配音（HIG-58）、
 // 大字报粘贴按标点分行及标点处理（HIG-55）、时间线滚轮方向与大字报跟随朗读调速（HIG-79 / HIG-75）、
-// 译文字幕长句拆成多段（HIG-36）。
+// 译文字幕长句拆成多段（HIG-36）、时间轴收起删除段（HIG-93）。
 // 和 layoutPrefs / sectionPrefs 一样是纯函数 + 可注入 storage；读到坏值逐项回落默认，不把界面卡在错误状态。
 
 export type PunctMode = 'keep' | 'drop-pause' | 'drop-all';
@@ -20,9 +20,11 @@ export interface FeaturePrefs {
   posterFitVoiceSpeed: boolean;
   /** 译文字幕按标点和字数拆成多段依次显示（HIG-36）；关掉就是一条听写句一条字幕。 */
   localizeSplitCues: boolean;
+  /** 时间轴按剪后时间画，删掉的片段直接收起、后面接上来（HIG-93）；关掉回到源时间轴，删除区间以斜纹留在原位。 */
+  timelineCollapseCuts: boolean;
 }
 
-export const FEATURE_DEFAULTS: FeaturePrefs = { autoApplyDub: true, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'keep', timelineWheelVertical: true, posterFitVoiceSpeed: true, localizeSplitCues: true };
+export const FEATURE_DEFAULTS: FeaturePrefs = { autoApplyDub: true, useSourceVoice: false, posterSplitOnPaste: true, posterPunct: 'keep', timelineWheelVertical: true, posterFitVoiceSpeed: true, localizeSplitCues: true, timelineCollapseCuts: true };
 
 const KEY = 'hitgo.prefs';
 
@@ -49,6 +51,7 @@ export function cleanFeaturePrefs(p: unknown): FeaturePrefs {
     timelineWheelVertical: typeof o.timelineWheelVertical === 'boolean' ? o.timelineWheelVertical : FEATURE_DEFAULTS.timelineWheelVertical,
     posterFitVoiceSpeed: typeof o.posterFitVoiceSpeed === 'boolean' ? o.posterFitVoiceSpeed : FEATURE_DEFAULTS.posterFitVoiceSpeed,
     localizeSplitCues: typeof o.localizeSplitCues === 'boolean' ? o.localizeSplitCues : FEATURE_DEFAULTS.localizeSplitCues,
+    timelineCollapseCuts: typeof o.timelineCollapseCuts === 'boolean' ? o.timelineCollapseCuts : FEATURE_DEFAULTS.timelineCollapseCuts,
   };
 }
 
