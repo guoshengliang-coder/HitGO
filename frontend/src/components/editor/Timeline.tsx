@@ -1,7 +1,8 @@
 // 时间轴：标尺 + 视频轨（雪碧图）+ 删除区间（剪辑模块，区间可拖边）/ 音轨行（音频模块：源音轨可选中并画出静音区间（可拖边，HIG-25）、
 // BGM / 口播可拖动拉伸、贴纸音轨只读）/
 // 图层行常显全部类型；点选后切到对应编辑面板，可拖动、拉伸，轨道头可锁定 / 隐藏。
-// 横轴为源时间；图层与音轨的 t 基于剪后时间，显示时用 postToSource 映射。
+// 横轴（lib/timelineAxis，HIG-93）：默认按剪后时间，删掉的片段收起、后面接上；本机偏好关掉时回到源时间，删除区间以斜纹留在原位。
+// 主轨片段 / 删除区间是源（拼接）时间，图层与音轨的 t 是剪后时间，画的时候都经 axis 换到横轴。
 // 有封面（HIG-9）时最前面多出 N·pps 宽的封面块，正片所有行整体右移（lib/cover 的 timelineX / timelineTime），
 // 播放头可以落进封面段（time < 0）；封面期间其余各行画斜纹，表示不叠图层、不放音轨。
 // 交互：⌘/Ctrl+滚轮 围绕光标缩放；普通滚轮横向滚动；标尺 / 轨道按下即定位、拖动连续 scrub（pointer capture）；
@@ -19,7 +20,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type 
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { activeSourceDrag, clipDisplayGroups, clipWindows, insertClip, moveClipGroup, moveClipSet, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
-import { clamp, lapsFor, postToSource, postTrimDuration, sourceToPost, splitPostTime } from '../../lib/time';
+import { clamp, lapsFor, postToSource, postTrimDuration, splitPostTime } from '../../lib/time';
+import { makeTimelineAxis } from '../../lib/timelineAxis';
+import { dropSnapCandidates, mainInsertPosition, snapDrop } from '../../lib/dropSnap';
+import { packSubtitleRows, type SubtitleRow } from '../../lib/subtitleRows';
 import { layerName } from '../../lib/spec';
 import { timelineThumbnails } from '../../lib/timelineThumbnails';
 import { layerLane } from '../../lib/timelineTracks';
@@ -334,11 +338,14 @@ export function Timeline() {
   const currentVideoId = useEditor((s) => s.currentVideoId);
   const videos = useEditor((s) => s.videos);
   const setSelectedClip = useEditor((s) => s.setSelectedClip);
+  const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const replaceSpec = useEditor((s) => s.replaceSpec);
   const addUpperVideo = useEditor((s) => s.addUpperVideo);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
   const [dropHint, setDropHint] = useState<{ x: number; role: AudioRole; post: number; kind: 'sticker' | 'audio' } | null>(null);
   const [sequenceDropAt, setSequenceDropAt] = useState<number | null>(null);
+  const [upperDropAt, setUpperDropAt] = useState<number | null>(null);
+  const [collapseCuts, setCollapseCuts] = useState(() => loadFeaturePrefs().timelineCollapseCuts);
   const [pendingDrops, setPendingDrops] = useState<PendingDrop[]>([]);
   // 只影响本机这次编辑，不写进 spec：默认把复合组折成单轨，双击临时展开成员。
   const [expandedCompoundGroups, setExpandedCompoundGroups] = useState<Set<string>>(() => new Set());
@@ -356,16 +363,23 @@ export function Timeline() {
   const collapsedGroups = new Set(compounds.filter((lane) => !expandedCompoundGroups.has(lane.id)).map((lane) => lane.id));
   const memberVisible = (group?: string) => !group || !collapsedGroups.has(group);
   const extra = sequence ? 0 : Math.max(0, postDuration - postLen);
-  const axisLen = duration + extra;
+  // 主轨时钟上的横轴总长（含循环补足段）；吸附候选、播放头换算用它
+  const srcAxisLen = duration + extra;
+  const axis = makeTimelineAxis({ collapsed: collapseCuts, duration, remove, extra });
+  const axisLen = axis.length;
   const fitPps = Math.max(1, containerW - labelW - 2) / (axisLen + preroll);
   const pps = clamp(timelinePps ?? fitPps, MIN_PPS, MAX_PPS);
   const trackW = axisLen * pps;
   // 封面块宽度：正片各行的横坐标都要加上它
   const off = preroll * pps;
-  /** 横轴时刻（源时间，超过 duration 的部分是循环补足段）→ 成片时刻。 */
-  const axisToPost = (t: number) => (t <= duration ? sourceToPost(t, remove) : postLen + (t - duration));
+  /** 主轨时钟 → 横轴；封面段（负数）原样保留。 */
+  const toAxis = (t: number) => (t < 0 ? t : axis.srcToAxis(t));
+  /** 剪后时间 → 横坐标（不含封面偏移）。 */
+  const postX = (p: number) => axis.postToAxis(p) * pps;
+  /** 主轨时钟 → 横坐标（不含封面偏移）。 */
+  const srcX = (t: number) => toAxis(t) * pps;
   // 播放头在横轴上的位置：第 0 遍就是源时刻，之后的遍数落在循环补足段里
-  const axisTime = sequence || lap === 0 ? time : duration + Math.max(0, postTime - postLen);
+  const axisTime = toAxis(sequence || lap === 0 ? time : duration + Math.max(0, postTime - postLen));
   const headX = timelineX(axisTime, preroll, pps);
   const trimStep = step === 'trim';
   const tracks = spec?.audio?.tracks ?? [];
@@ -374,10 +388,11 @@ export function Timeline() {
   const stickerAudio = stickerAudioLayers(spec?.layers ?? [], assets);
   // 全部图层行；保留在 spec.layers 里的下标，拖动时按它写回
   const layerRows = (spec?.layers ?? []).map((l, i) => ({ l, i }));
+  // 空行不再放提示文字（HIG-91）：拖动时很容易被选成文字选区；新增入口在各组的「+」和右栏
   const visualGroups = [
-    { id: 'tl.subtitle', label: '字幕', lane: 'subtitle', empty: '还没有字幕；在「字幕」模块导入 .srt 或新增字幕。' },
-    { id: 'tl.text', label: '文本', lane: 'text', empty: '还没有文字；在「文本」模块添加。' },
-    { id: 'tl.layers', label: '贴纸', lane: 'other', empty: '还没有贴纸或形状；在「贴纸」模块添加。' },
+    { id: 'tl.subtitle', label: '字幕', lane: 'subtitle' },
+    { id: 'tl.text', label: '文本', lane: 'text' },
+    { id: 'tl.layers', label: '贴纸', lane: 'other' },
   ] as const;
   const addText = (subtitle: boolean) => {
     if (!video) return;
@@ -404,6 +419,7 @@ export function Timeline() {
   useEffect(() => {
     const onPrefs = (e: Event) => {
       wheelVerticalRef.current = (e as CustomEvent<FeaturePrefs>).detail.timelineWheelVertical;
+      setCollapseCuts((e as CustomEvent<FeaturePrefs>).detail.timelineCollapseCuts);
     };
     window.addEventListener(PREFS_EVENT, onPrefs);
     return () => window.removeEventListener(PREFS_EVENT, onPrefs);
@@ -489,7 +505,7 @@ export function Timeline() {
     if (x < el.scrollLeft || x > el.scrollLeft + viewW) el.scrollLeft = Math.max(0, x - viewW * 0.2);
   }, [headX, playing]);
 
-  /** 横坐标 → 横轴时刻（源时间；循环补足段延伸到 duration + extra），夹到 [-封面, axisLen]。 */
+  /** 横坐标 → 横轴时刻（见 timelineAxis；循环补足段接在主轨后面），夹到 [-封面, axisLen]。 */
   const xToTime = (clientX: number) => {
     const el = scrollRef.current;
     if (!el) return 0;
@@ -500,15 +516,15 @@ export function Timeline() {
   /** 定位播放头：源片段里是第 0 遍；循环补足段里换算成第几遍 + 遍内源时刻（HIG-50）。 */
   const [headSnapX, setHeadSnapX] = useState<number | null>(null);
   const seekAt = (clientX: number, altKey = false) => {
-    const snapped = snapPlayhead(xToTime(clientX), playheadSnapCandidates(spec, { duration, axisLen }), { pps: ppsRef.current, px: SNAP_PX, enabled: useEditor.getState().snapEnabled, bypassHeld: altKey });
-    const t = snapped.t;
+    const snapped = snapPlayhead(xToTime(clientX), playheadSnapCandidates(spec, { duration, axisLen: srcAxisLen }).map(axis.srcToAxis), { pps: ppsRef.current, px: SNAP_PX, enabled: useEditor.getState().snapEnabled, bypassHeld: altKey });
+    const t = snapped.t < 0 ? snapped.t : axis.axisToSrc(snapped.t);
     setHeadSnapX(snapped.hit === null ? null : timelineX(snapped.hit, prerollRef.current, ppsRef.current));
     if (sequence) { player.seek(t); return; }
     if (t <= duration) {
       player.seek(t, 0);
       return;
     }
-    const { lap: n, rem } = splitPostTime(axisToPost(t), postLen, lapsFor(postDuration, postLen));
+    const { lap: n, rem } = splitPostTime(axis.axisToPost(snapped.t), postLen, lapsFor(postDuration, postLen));
     player.seek(postToSource(rem, remove), n);
   };
   const autoScrollScrub = (clientX: number, elapsedMs: number) => {
@@ -531,7 +547,8 @@ export function Timeline() {
     const id = useEditor.getState().selectedLayerId;
     const frame = requestAnimationFrame(() => {
       const el = scrollRef.current;
-      const row = [...el?.querySelectorAll<HTMLElement>('[data-layer-row]') ?? []].find((node) => node.dataset.layerRow === id);
+      // 字幕同轨后一行有多条（HIG-92）：按图层条找它所在的行
+      const row = [...el?.querySelectorAll<HTMLElement>('[data-layer-id]') ?? []].find((node) => node.dataset.layerId === id)?.closest<HTMLElement>('.tl-row');
       if (!el || !row) return;
       const viewport = el.getBoundingClientRect();
       const bounds = row.getBoundingClientRect();
@@ -584,10 +601,19 @@ export function Timeline() {
 
   // ---- 拖放加音轨（HIG-33）----
   const dropPoint = (e: React.DragEvent<HTMLElement>) => {
-    const src = Math.max(0, xToTime(e.clientX));
+    const v = Math.max(0, xToTime(e.clientX));
     const rowRole = (e.target as HTMLElement).closest<HTMLElement>('[data-drop-role]')?.dataset.dropRole as AudioRole | undefined;
-    return { x: off + src * pps, role: dropRole(rowRole), post: Math.min(axisToPost(src), postDuration) };
+    return { x: off + v * pps, role: dropRole(rowRole), post: Math.min(axis.axisToPost(v), postDuration) };
   };
+  /** 视频拖进来的落点（HIG-93）：横轴时刻，吸附到 0 / 播放头 / 片段与剪辑点 / 其他轨两端，夹到 [0, max]。 */
+  const videoDropAt = (e: React.DragEvent<HTMLElement>, max: number) => {
+    const v = clamp(xToTime(e.clientX), 0, Math.max(0, max));
+    const candidates = dropSnapCandidates(spec, axis, { duration, srcAxisLen, playhead: time }).filter((c) => c <= max + 1e-6);
+    return snapDrop(v, candidates, { pps, px: SNAP_PX, enabled: useEditor.getState().snapEnabled, bypassHeld: e.altKey }).at;
+  };
+  // 主轨末端 / 上层轨可放的最远处（横轴）
+  const mainEnd = axis.srcToAxis(duration);
+  const upperEnd = axis.postToAxis(outputLen);
   const addDropped = (assetId: string, role: AudioRole, start: number): boolean => {
     const asset = useEditor.getState().assets.find((a) => a.id === assetId);
     const t = dropWindow({ start, role, postDuration, mediaDuration: asset?.duration });
@@ -599,13 +625,16 @@ export function Timeline() {
     if ((e.target as HTMLElement).closest('.tl-upper-drop') && e.dataTransfer.types.includes(VIDEO_DRAG)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
+      setSequenceDropAt(null);
+      setUpperDropAt(videoDropAt(e, upperEnd));
       return;
     }
+    setUpperDropAt(null);
     const videoTrack = !!(e.target as HTMLElement).closest('.tl-video .body');
     if (video && spec && !spec.video_locked && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
       e.preventDefault();
       e.dataTransfer.dropEffect = e.dataTransfer.types.includes(CLIP_DRAG) ? 'move' : 'copy';
-      setSequenceDropAt(Math.max(0, Math.min(duration, xToTime(e.clientX))));
+      setSequenceDropAt(e.dataTransfer.types.includes(CLIP_DRAG) ? clamp(xToTime(e.clientX), 0, mainEnd) : videoDropAt(e, mainEnd));
       return;
     }
     setSequenceDropAt(null);
@@ -616,18 +645,19 @@ export function Timeline() {
     setDropHint((h) => (h && Math.abs(h.x - p.x) < 0.5 && h.role === p.role && h.kind === p.kind ? h : p));
   };
   const onDragLeave = (e: React.DragEvent<HTMLElement>) => {
-    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropHint(null); setSequenceDropAt(null); }
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropHint(null); setSequenceDropAt(null); setUpperDropAt(null); }
   };
   const onDrop = (e: React.DragEvent<HTMLElement>) => {
     setDropHint(null);
     setSequenceDropAt(null);
+    setUpperDropAt(null);
     if (!video || !spec) return;
     if ((e.target as HTMLElement).closest('.tl-upper-drop')) {
       const sourceId = e.dataTransfer.getData(VIDEO_DRAG);
       const source = videos.find((v) => v.id === sourceId && v.status === 'ready');
       if (source) {
         e.preventDefault();
-        const at = Math.max(0, Math.min(outputLen, axisToPost(xToTime(e.clientX))));
+        const at = Math.max(0, Math.min(outputLen, axis.axisToPost(videoDropAt(e, upperEnd))));
         addUpperVideo(source.id, at);
         player.seek(postToSource(at, remove));
       }
@@ -635,10 +665,10 @@ export function Timeline() {
     }
     if ((e.target as HTMLElement).closest('.tl-video .body')) {
       if (spec.video_locked && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) { e.preventDefault(); setToast('Video 轨道已锁定'); return; }
-      const at = Math.max(0, Math.min(duration, xToTime(e.clientX)));
       const moving = e.dataTransfer.getData(CLIP_DRAG);
       if (moving && sequence) {
         e.preventDefault();
+        const at = axis.axisToSrc(clamp(xToTime(e.clientX), 0, mainEnd));
         const index = sequenceGroups.findIndex((g) => at < (g.start + g.end) / 2);
         const selected = timelineSelection.filter((key) => key.startsWith('clip:')).map((key) => key.slice(5));
         replaceSpec(video.id, selected.length > 1 && selected.includes(moving) ? moveClipSet(spec, selected, index < 0 ? sequence.clips.length : index) : moveClipGroup(spec, video.id, moving, index < 0 ? sequenceGroups.length - 1 : index), { history: true });
@@ -649,6 +679,8 @@ export function Timeline() {
       const source = videos.find((v) => v.id === sourceId && v.status === 'ready' && (v.kind === 'image' || (v.kind ?? 'video') === 'video'));
       if (source) {
         e.preventDefault();
+        // 插入点按主轨时钟换算（HIG-94）：以前拿源时间轴坐标直接插，有删除区间时会落到松手处后面
+        const at = mainInsertPosition(videoDropAt(e, mainEnd), axis, !!sequence);
         const inserted = insertClip(spec, video.id, video.duration, source.id, source.duration, at);
         replaceSpec(video.id, inserted.spec, { history: true });
         setSelectedClip(inserted.clipId);
@@ -834,7 +866,7 @@ export function Timeline() {
       }
       setDragVal([a, b]);
       dragRef.current = [a, b];
-      setSnapX(hit === null ? null : off + (postAxis ? postToSource(hit, remove) : hit) * pps);
+      setSnapX(hit === null ? null : off + (postAxis ? postX(hit) : srcX(hit)));
     };
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener('pointermove', onMove);
@@ -983,6 +1015,128 @@ export function Timeline() {
     }
   };
 
+  /** 一个图层的时间条；cue = 字幕同轨里的一句（HIG-92），条上显示文字。 */
+  const layerBar = (l: Layer, i: number, cue = false) => {
+    const v = barVal(i, l);
+    const all = v === 'all';
+    const [pa, pb] = all ? [0, postDuration] : v;
+    const left = off + postX(pa);
+    const right = off + postX(pb);
+    const sel = selectedLayerIds.includes(l.id);
+    const locked = !!l.locked;
+    const range = all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`;
+    const text = cue && l.type === 'text' ? l.text.replace(/\s+/g, ' ').trim() : '';
+    // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
+    const pick = (reveal = true) => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l, { reveal }); };
+    return (
+      <div
+        key={l.id}
+        data-layer-id={l.id}
+        data-timeline-key={`layer:${l.id}`}
+        className={`tl-bar ${l.type === 'mask' ? 'mask' : isOverlayVideo(l, assets) ? 'overlay' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''} ${cue ? 'cue' : ''} ${cue && l.hidden ? 'cue-hidden' : ''}`}
+        style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
+        title={cue ? `${text || layerName(l, assets)}\n${range}${l.hidden ? ' · 已隐藏' : ''}${locked ? ' · 已锁定' : ''}` : all ? '全程；拖两端收成具体时段' : undefined}
+        onPointerDown={(e) => {
+          if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`layer:${l.id}`))) pick(all || locked);
+          pickTimeline(`layer:${l.id}`, e);
+          if (all || locked || e.metaKey || e.ctrlKey || e.shiftKey) {
+            // 全程条（未锁、无修饰键）占满整条时间轴，中间没有可移动的余地（拖了也会被夹回
+            // 原位），所以不接管：让它冒泡下去做 scrub / 框选。要收成具体时段就拖两端（HIG-79）。
+            const passThrough = all && !locked && !e.metaKey && !e.ctrlKey && !e.shiftKey;
+            if (!passThrough) e.stopPropagation();
+            return;
+          }
+          startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
+        }}
+      >
+        {l.type === 'text' && hasAnimation(l.animation) && (() => {
+          // 入场 / 出场段（HIG-40）：按剪后时长近似画宽，时段里有删除区间时略有偏差；入场延迟（HIG-44）让入场段右移
+          const [di, dout] = phaseLengths(l.animation, pb - pa);
+          const dl = enterDelay(l.animation, pb - pa);
+          const px = Math.max(4, right - left) / Math.max(1e-6, pb - pa);
+          return (
+            <>
+              {di > 0 && <span className="tl-anim in" style={{ left: dl * px, width: di * px }} title={dl > 0 ? `入场 ${di.toFixed(2)}s（延迟 ${dl.toFixed(2)}s）` : `入场 ${di.toFixed(2)}s`} />}
+              {dout > 0 && <span className="tl-anim out" style={{ width: dout * px }} title={`出场 ${dout.toFixed(2)}s`} />}
+            </>
+          );
+        })()}
+        <GroupMark group={l.group} />
+        {text || range}
+        {/* 全程条也给把手（HIG-79）：拖两端就把「全程」收成具体时段 */}
+        {!locked && (
+          <>
+            <div className="edge l" onPointerDown={(e) => { pick(false); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
+            <div className="edge r" onPointerDown={(e) => { pick(false); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
+          </>
+        )}
+      </div>
+    );
+  };
+  /** 一层一行（文本、贴纸、遮盖）：轨道头可改名、隐藏、锁定、删除。 */
+  const layerRow = (l: Layer, i: number) => {
+    const sel = selectedLayerIds.includes(l.id);
+    const hidden = !!l.hidden;
+    const locked = !!l.locked;
+    return (
+      <div key={l.id} data-layer-row={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl') && (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id))) focusLayer(l); }}>
+        <div className="lbl" title={`${layerName(l, assets)} · ${l.t === 'all' ? '全程' : '区间'}`}>
+          <TrackName value={layerName(l, assets)} label="图层名" disabled={locked} onSave={(v) => renameLayer(l, v)} />
+          <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+            <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
+              <IconEye off={hidden} />
+            </button>
+            <button className="btn ghost icon" title="锁定 / 解锁" aria-pressed={locked} onClick={() => updateLayer(l.id, { locked: !locked })}>
+              <IconLock open={!locked} />
+            </button>
+            <button className="btn ghost icon" title="删除图层" aria-label="删除图层" disabled={locked} onClick={() => removeLayer(l.id)}><IconTrash /></button>
+          </span>
+        </div>
+        <div className="body" {...scrub.handlers}>
+          <CoverGap width={off} />
+          {layerBar(l, i)}
+        </div>
+      </div>
+    );
+  };
+  /** 字幕同轨的一行（HIG-92）：轨道头的隐藏 / 锁定 / 删除作用于整行；点行头选中整行，点条目单独编辑。 */
+  const cueRow = (row: SubtitleRow) => {
+    const ids = new Set(row.items.map(({ l }) => l.id));
+    const hidden = row.items.every(({ l }) => l.hidden);
+    const locked = row.items.every(({ l }) => l.locked);
+    const sel = row.items.some(({ l }) => selectedLayerIds.includes(l.id));
+    const setAll = (patch: { hidden?: boolean; locked?: boolean }) => useEditor.getState().updateSpec((draft) => {
+      for (const l of draft.layers) if (ids.has(l.id)) Object.assign(l, patch);
+    });
+    const removeRow = () => {
+      const n = row.items.filter(({ l }) => !l.locked).length;
+      if (!n || (n > 1 && !window.confirm(`删除「${row.label}」这一行的 ${n} 条字幕？（可撤销）`))) return;
+      useEditor.getState().updateSpec((draft) => { draft.layers = draft.layers.filter((l) => !ids.has(l.id) || l.locked); });
+      if (sel) { selectTimelineItems([]); setSelectedLayer(null); }
+    };
+    return (
+      <div key={row.key} className={`tl-row tl-layer tl-cues ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) { setStep('subtitle'); selectTimelineItems([...ids].map((id) => `layer:${id}`)); } }}>
+        <div className="lbl" title={`${row.label} · ${row.items.length} 条（每句仍是独立字幕，点条目单独编辑；点这里选中整行）`}>
+          <span className="lname">{row.label}</span>
+          <span className="tl-group-count mono">{row.items.length}</span>
+          <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+            <button className="btn ghost icon" title={hidden ? '显示整行（导出时恢复）' : '隐藏整行（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => setAll({ hidden: !hidden })}>
+              <IconEye off={hidden} />
+            </button>
+            <button className="btn ghost icon" title={locked ? '解锁整行' : '锁定整行'} aria-pressed={locked} onClick={() => setAll({ locked: !locked })}>
+              <IconLock open={!locked} />
+            </button>
+            <button className="btn ghost icon" title="删除整行字幕" aria-label="删除整行字幕" disabled={locked} onClick={removeRow}><IconTrash /></button>
+          </span>
+        </div>
+        <div className="body" {...scrub.handlers}>
+          <CoverGap width={off} />
+          {row.items.map(({ l, i }) => layerBar(l, i, true))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className={`timeline ${timelineMarqueeEnabled ? 'marquee-mode' : ''}`} style={{ '--tl-label-w': `${labelW}px` } as CSSProperties} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
       <div className="tl-label-resizer" role="separator" aria-label="轨道名称栏宽度" aria-orientation="vertical" aria-valuemin={TRACK_LABEL_MIN} aria-valuemax={Math.max(TRACK_LABEL_MIN, Math.min(TRACK_LABEL_MAX, Math.round(containerW * 0.45)))} aria-valuenow={labelW} tabIndex={0}
@@ -997,7 +1151,7 @@ export function Timeline() {
       <div className={`tl-scroll ${scrub.scrubbing ? 'scrubbing' : ''} ${dropHint ? 'drop-over' : ''}`} ref={scrollRef}>
         <div className="tl-inner" style={{ width: off + trackW + labelW }} onPointerDownCapture={marqueeDown} onPointerMove={marqueeMove} onPointerUpCapture={marqueeUp} onPointerCancelCapture={marqueeUp}>
           <div className="tl-row" style={{ height: 20 }}>
-            <div className="lbl mono" style={{ height: 20, fontSize: 10 }}>{trimStep ? '秒' : '剪后'}</div>
+            <div className="lbl mono" style={{ height: 20, fontSize: 10 }} title={collapseCuts ? '横轴为剪后时间：删掉的片段已收起（右侧「已删除区间」可恢复）' : '横轴为源时间：删除区间以斜纹显示'}>{collapseCuts ? '剪后' : '源'}</div>
             <div className="tl-ruler" {...scrub.handlers}>
               {off > 0 && <div className="tl-cover-mark" style={{ width: off }}>封面</div>}
               {ticks.map((k) => (
@@ -1016,8 +1170,8 @@ export function Timeline() {
                   <CoverGap width={off} />
                   {compounds.map((lane, index) => {
                     const [pa, pb] = lane.window;
-                    const left = off + postToSource(pa, remove) * pps;
-                    const right = off + postToSource(pb, remove) * pps;
+                    const left = off + postX(pa);
+                    const right = off + postX(pb);
                     const selected = lane.keys.every((key) => timelineSelection.includes(key));
                     const expanded = expandedCompoundGroups.has(lane.id);
                     const mainKey = lane.keys.find((key) => key.startsWith('clip:'));
@@ -1059,14 +1213,14 @@ export function Timeline() {
                   const source = videos.find((item) => item.id === clip.video_id);
                   const length = videoTrackClipDuration(clip);
                   const selected = timelineSelection.includes(`vclip:${clip.id}`);
-                  return <div key={clip.id} data-timeline-key={`vclip:${clip.id}`} className={`tl-upper-clip ${selected ? 'selected' : ''}`} style={{ left: off + clip.start * pps, width: Math.max(12, length * pps) }} onPointerDown={(e) => beginUpperDrag(e, clip, 'move', !!track.locked)} title={`${source?.name ?? '视频'} · ${clip.start.toFixed(1)}–${(clip.start + length).toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /><div className="edge l" onPointerDown={(e) => beginUpperDrag(e, clip, 'left', !!track.locked)} /><span>{source?.name ?? '视频'}</span><div className="edge r" onPointerDown={(e) => beginUpperDrag(e, clip, 'right', !!track.locked)} /></div>;
+                  return <div key={clip.id} data-timeline-key={`vclip:${clip.id}`} className={`tl-upper-clip ${selected ? 'selected' : ''}`} style={{ left: off + postX(clip.start), width: Math.max(12, postX(clip.start + length) - postX(clip.start)) }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`vclip:${clip.id}`))) setStep('trim'); beginUpperDrag(e, clip, 'move', !!track.locked); }} title={`${source?.name ?? '视频'} · ${clip.start.toFixed(1)}–${(clip.start + length).toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /><div className="edge l" onPointerDown={(e) => beginUpperDrag(e, clip, 'left', !!track.locked)} /><span>{source?.name ?? '视频'}</span><div className="edge r" onPointerDown={(e) => beginUpperDrag(e, clip, 'right', !!track.locked)} /></div>;
                 })}
               </div>
             </div>;
           })}
           <div className="tl-row tl-upper-drop">
             <div className="lbl"><span className="lname">＋ 上层轨</span></div>
-            <div className="body" title="把左侧视频拖到这里，新建一条铺满画布的上层视频轨"><span className="tl-upper-hint">拖入左侧视频，创建新轨</span></div>
+            <div className="body" title="把左侧视频拖到这里，新建一条铺满画布的上层视频轨（盖在主视频上面）；要插进主视频请拖到下面的主轨"><span className="tl-upper-hint">拖入左侧视频，创建新轨</span></div>
           </div>
           <div className={`tl-row tl-video ${spec?.video_hidden ? 'hidden' : ''} ${spec?.video_locked ? 'locked' : ''}`}>
             <div className="lbl" title="视频轨：双击改视频名（与左栏同一个名字）">
@@ -1079,7 +1233,7 @@ export function Timeline() {
             <div className="body" {...scrub.handlers}>
               {sequenceDropAt !== null && activeSourceDrag() && (() => {
                 const source = videos.find((v) => v.id === activeSourceDrag());
-                return source ? <div className="tl-ghost-clip" style={{ left: off + sequenceDropAt * pps, width: Math.max(24, source.duration * pps) }} title={`插入 ${source.name} · ${sequenceDropAt.toFixed(1)}s`}>{source.name} · {sequenceDropAt.toFixed(1)}s</div> : null;
+                return source ? <div className="tl-ghost-clip" style={{ left: off + sequenceDropAt * pps, width: Math.max(24, source.duration * pps) }} title={`插入 ${source.name} · ${sequenceDropAt.toFixed(1)}s`}>插入并在此切分 · {source.name} · {sequenceDropAt.toFixed(1)}s</div> : null;
               })()}
               {off > 0 && (
                 <div
@@ -1090,16 +1244,24 @@ export function Timeline() {
                   <span>封面 {preroll.toFixed(1)}s</span>
                 </div>
               )}
-              {tiles.map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: off + tile.left, pointerEvents: 'none' }} />)}
-              {sequence && clipWindows(sequence).filter(({ clip }) => memberVisible(clip.group)).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + start * pps, width: Math.max(12, (end - start) * pps), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
+              {axis.visibleSpans.map(([a, b]) => {
+                // 缩略图按主轨时钟排好，收起删除段时逐个保留段裁出来、按横轴接上
+                const [la, lb] = [a * pps, b * pps];
+                return <div key={a} className="tl-span" style={{ left: off + srcX(a), width: lb - la }}>
+                  {tiles.filter((tile) => tile.left < lb && tile.left + tile.width > la).map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: tile.left - la }} />)}
+                </div>;
+              })}
+              {sequence && clipWindows(sequence).filter(({ clip, start, end }) => memberVisible(clip.group) && srcX(end) - srcX(start) > 0.5).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + srcX(start), width: Math.max(12, srcX(end) - srcX(start)), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
               {!sequence && video && mainSegments(video.duration, spec?.trim ?? { remove: [] }).map((seg) => {
                 const key = segKey(seg);
-                return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + seg[0] * pps, width: Math.max(6, (seg[1] - seg[0]) * pps) }}
-                  onPointerDown={(e) => { setSelectedRange(null); pickTimeline(key, e); }}
+                // 点片段：切到「剪辑」右栏并选中它（HIG-93）；setStep 会清空选择，所以先切再选
+                return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + srcX(seg[0]), width: Math.max(6, srcX(seg[1]) - srcX(seg[0])) }}
+                  onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(key))) setStep('trim'); setSelectedRange(null); pickTimeline(key, e); }}
                   title={`主轨片段 ${seg[0].toFixed(2)}–${seg[1].toFixed(2)}s · Delete 删除 · ⌘B 在播放头分割`} />;
               })}
-              {!sequence && video && normalizeSplits(spec?.trim.splits, video.duration, remove).map((t) => <div key={t} className="tl-split" style={{ left: off + t * pps }} title={`分割点 ${t.toFixed(2)}s`} />)}
-              {remove.map((r, i) => {
+              {!sequence && video && normalizeSplits(spec?.trim.splits, video.duration, remove).map((t) => <div key={t} className="tl-split" style={{ left: off + srcX(t) }} title={`分割点 ${t.toFixed(2)}s`} />)}
+              {axis.joins.map((v) => <div key={v} className="tl-join" style={{ left: off + v * pps }} title="这里删掉过一段（右侧「已删除区间」可恢复；Transport 里关掉「收起删除段」可按源时间查看）" />)}
+              {!axis.collapsed && remove.map((r, i) => {
                 const [a, b] = cutVal(i, r);
                 return (
                   <div
@@ -1122,7 +1284,7 @@ export function Timeline() {
                   </div>
                 );
               })}
-              {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="入点" />}
+              {inPoint !== null && trimStep && <div className="tl-inpoint" style={{ left: off + srcX(inPoint) }} title="入点" />}
               {extra > 0 && (
                 <div
                   className="tl-loop-fill"
@@ -1130,7 +1292,7 @@ export function Timeline() {
                     position: 'absolute',
                     top: 0,
                     bottom: 0,
-                    left: off + duration * pps,
+                    left: off + srcX(duration),
                     width: extra * pps,
                     borderLeft: '2px solid var(--accent)',
                     background: 'repeating-linear-gradient(135deg, rgba(127, 127, 127, 0.28) 0 4px, rgba(127, 127, 127, 0.08) 4px 8px)',
@@ -1168,8 +1330,8 @@ export function Timeline() {
             >
               {mutes.map((m, i) => {
                 const [pa, pb] = drag && drag.kind.startsWith('mute') && drag.index === i && dragVal ? dragVal : m;
-                const left = off + postToSource(pa, remove) * pps;
-                const right = off + postToSource(pb, remove) * pps;
+                const left = off + postX(pa);
+                const right = off + postX(pb);
                 return (
                   <div
                     key={i}
@@ -1187,15 +1349,15 @@ export function Timeline() {
                   </div>
                 );
               })}
-              {inPoint !== null && selectedTrackId === SOURCE_TRACK_ID && <div className="tl-inpoint" style={{ left: off + inPoint * pps }} title="静音入点" />}
+              {inPoint !== null && selectedTrackId === SOURCE_TRACK_ID && <div className="tl-inpoint" style={{ left: off + srcX(inPoint) }} title="静音入点" />}
           </SourceAudioRow>
           {tracks.map((t, i) => ({ t, i })).filter(({ t }) => memberVisible(t.group)).map(({ t, i }) => {
               const r = resolveTrack(t);
               const all = r.t === 'all';
               const win = windowRange(r.t, postDuration);
               const [pa, pb] = drag && drag.kind.startsWith('track') && drag.index === i && dragVal ? dragVal : win;
-              const left = off + postToSource(pa, remove) * pps;
-              const right = off + postToSource(pb, remove) * pps;
+              const left = off + postX(pa);
+              const right = off + postX(pb);
               const sel = selectedTrackId === t.id;
               const resolvedSource = resolveAudioTrackSource(t, assets, videos);
               const name = cleanTrackName(t.name) || resolvedSource?.name || audioTrackName(t, assets);
@@ -1217,7 +1379,7 @@ export function Timeline() {
                     <CoverGap width={off} />
                     {sequence && video && r.align === 'source' ? sequenceTrackWindows(sequence, video.id, [postToSource(pa, remove), postToSource(pb, remove)]).map(([start, end]) => (
                       <div key={start} data-timeline-key={`track:${t.id}`} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
-                        style={{ left: off + start * pps, width: Math.max(4, (end - start) * pps), cursor: all || t.locked ? 'default' : 'grab' }}
+                        style={{ left: off + srcX(start), width: Math.max(4, srcX(end) - srcX(start)), cursor: all || t.locked ? 'default' : 'grab' }}
                         title="只随原视频片段播放；插入的其他视频期间不播放这条配音"
                         onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id); pickTimeline(`track:${t.id}`, e); if (all || e.metaKey || e.ctrlKey || e.shiftKey) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
                         <GroupMark group={t.group} />
@@ -1256,13 +1418,13 @@ export function Timeline() {
           {tracks.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
               <div className="lbl">BGM / 口播</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>还没有 BGM / 口播：把右侧「音频素材」或电脑里的音频文件拖到这里，或点右侧「+ BGM / + 口播」。</div>
+              <div className="body" title="把右侧「音频素材」或电脑里的音频文件拖到这里，或点右侧「+ BGM / + 口播」" />
             </div>
           )}
           {stickerAudio.filter((l) => memberVisible(l.group)).map((l) => {
             const [pa, pb] = windowRange(l.t, postDuration);
-            const left = off + postToSource(pa, remove) * pps;
-            const right = off + postToSource(pb, remove) * pps;
+            const left = off + postX(pa);
+            const right = off + postX(pb);
             const on = !!l.mix_audio && !l.hidden;
             const name = layerName(l, assets);
             return (
@@ -1290,82 +1452,14 @@ export function Timeline() {
             else if (group.lane === 'text') addText(false);
             else { setStep('sticker'); setToast('在右侧贴纸面板添加图片、视频或形状'); }
           } : undefined}>
-          {rows.map(({ l, i }) => {
-            const v = barVal(i, l);
-            const all = v === 'all';
-            const [pa, pb] = all ? [0, postDuration] : v;
-            const left = off + postToSource(pa, remove) * pps;
-            const right = off + postToSource(pb, remove) * pps;
-            const sel = selectedLayerIds.includes(l.id);
-            const hidden = !!l.hidden;
-            const locked = !!l.locked;
-            // 轨道与画布共用选中路由，让右栏始终显示该图层的编辑入口。
-            const pick = (reveal = true) => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l, { reveal }); };
-            return (
-              <div key={l.id} data-layer-row={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) pick(); }}>
-                <div className="lbl" title={`${layerName(l, assets)} · ${all ? '全程' : '区间'}`}>
-                  <TrackName value={layerName(l, assets)} label="图层名" disabled={locked} onSave={(v) => renameLayer(l, v)} />
-                  <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
-                    <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
-                      <IconEye off={hidden} />
-                    </button>
-                    <button className="btn ghost icon" title="锁定 / 解锁" aria-pressed={locked} onClick={() => updateLayer(l.id, { locked: !locked })}>
-                      <IconLock open={!locked} />
-                    </button>
-                    <button className="btn ghost icon" title="删除图层" aria-label="删除图层" disabled={locked} onClick={() => removeLayer(l.id)}><IconTrash /></button>
-                  </span>
-                </div>
-                <div className="body" {...scrub.handlers}>
-                  <CoverGap width={off} />
-                  <div
-                    data-layer-id={l.id}
-                    data-timeline-key={`layer:${l.id}`}
-                    className={`tl-bar ${l.type === 'mask' ? 'mask' : isOverlayVideo(l, assets) ? 'overlay' : ''} ${sel ? 'selected' : ''} ${all ? 'all' : ''} ${locked ? 'locked' : ''}`}
-                    style={{ left, width: Math.max(4, right - left), cursor: all || locked ? 'default' : 'grab' }}
-                    title={all ? '全程；拖两端收成具体时段' : undefined}
-                    onPointerDown={(e) => {
-                      if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`layer:${l.id}`))) pick(all || locked);
-                      pickTimeline(`layer:${l.id}`, e);
-                      if (all || locked || e.metaKey || e.ctrlKey || e.shiftKey) {
-                        // 全程条（未锁、无修饰键）占满整条时间轴，中间没有可移动的余地（拖了也会被夹回
-                        // 原位），所以不接管：让它冒泡下去做 scrub / 框选。要收成具体时段就拖两端（HIG-79）。
-                        const passThrough = all && !locked && !e.metaKey && !e.ctrlKey && !e.shiftKey;
-                        if (!passThrough) e.stopPropagation();
-                        return;
-                      }
-                      startDrag(e, { kind: 'bar-move', index: i, startX: e.clientX, orig: v as [number, number] });
-                    }}
-                  >
-                    {l.type === 'text' && hasAnimation(l.animation) && (() => {
-                      // 入场 / 出场段（HIG-40）：按剪后时长近似画宽，时段里有删除区间时略有偏差；入场延迟（HIG-44）让入场段右移
-                      const [di, dout] = phaseLengths(l.animation, pb - pa);
-                      const dl = enterDelay(l.animation, pb - pa);
-                      const px = Math.max(4, right - left) / Math.max(1e-6, pb - pa);
-                      return (
-                        <>
-                          {di > 0 && <span className="tl-anim in" style={{ left: dl * px, width: di * px }} title={dl > 0 ? `入场 ${di.toFixed(2)}s（延迟 ${dl.toFixed(2)}s）` : `入场 ${di.toFixed(2)}s`} />}
-                          {dout > 0 && <span className="tl-anim out" style={{ width: dout * px }} title={`出场 ${dout.toFixed(2)}s`} />}
-                        </>
-                      );
-                    })()}
-                    <GroupMark group={l.group} />
-                    {all ? '全程' : `${pa.toFixed(1)}s – ${pb.toFixed(1)}s`}
-                    {/* 全程条也给把手（HIG-79）：拖两端就把「全程」收成具体时段 */}
-                    {!locked && (
-                      <>
-                        <div className="edge l" onPointerDown={(e) => { pick(false); startDrag(e, { kind: 'bar-l', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
-                        <div className="edge r" onPointerDown={(e) => { pick(false); startDrag(e, { kind: 'bar-r', index: i, startX: e.clientX, orig: [pa, pb] }); }} />
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {group.lane === 'subtitle'
+            // 字幕同轨（HIG-92）：按来源 / 语种各一行，一行排多句；遮盖仍一层一行
+            ? packSubtitleRows(rows, postDuration, (l) => layerName(l, assets)).map((row) => (row.kind === 'mask' ? layerRow(row.items[0].l, row.items[0].i) : cueRow(row)))
+            : rows.map(({ l, i }) => layerRow(l, i))}
           {rows.length === 0 && allRows.length === 0 && (
             <div className="tl-row" style={{ height: 30 }}>
               <div className="lbl">{group.label}</div>
-              <div className="body hint" style={{ padding: '6px 8px' }}>{group.empty}</div>
+              <div className="body" />
             </div>
           )}
           </TrackGroup>;
@@ -1382,6 +1476,7 @@ export function Timeline() {
             </div>
           )}
           {sequenceDropAt !== null && <div className="tl-snap" style={{ left: labelW + off + sequenceDropAt * pps }} />}
+          {upperDropAt !== null && <div className="tl-snap" style={{ left: labelW + off + upperDropAt * pps }} />}
           <div className="tl-playhead" style={{ left: labelW + headX }}>
             <div className="grip" {...scrub.handlers} title="拖动定位" />
           </div>

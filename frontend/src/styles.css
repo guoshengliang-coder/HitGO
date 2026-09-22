@@ -529,8 +529,14 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-row .body { touch-action: none; }
 .tl-snap { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--focus); z-index: 5; pointer-events: none; }
 .tl-ghost-clip { position: absolute; top: 3px; bottom: 3px; z-index: 6; pointer-events: none; border: 1px dashed var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--ink); padding: 4px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
-.tl-clip-hit { position: absolute; top: 1px; height: 14px; z-index: 3; border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 14%, transparent); cursor: grab; }
-.tl-clip-hit.selected { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 35%, transparent); }
+/* HIG-93：主轨片段框占满整行高度（以前只有顶部 14px 的细条，点缩略图点不中），片段之间有可见边界，选中整框描边 */
+.tl-clip-hit { position: absolute; top: 0; bottom: 0; z-index: 3; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--ink) 35%, transparent); border-radius: 4px; background: transparent; cursor: grab; }
+.tl-clip-hit:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tl-clip-hit.selected { border: 2px solid var(--accent); box-shadow: inset 0 0 0 1px color-mix(in srgb, white 70%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+/* 收起删除段时，一个保留段一块，缩略图按段裁切后接上（HIG-93） */
+.tl-span { position: absolute; top: 0; bottom: 0; overflow: hidden; pointer-events: none; }
+/* 收起删除段后的接缝：这里删掉过一段 */
+.tl-join { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dotted var(--danger); z-index: 4; pointer-events: none; }
 /* HIG-85：主轨片段（非拼接视频）沿用拼接片段的外观，只是不能拖；分割点是一条细实线 */
 .tl-seg-hit { cursor: pointer; }
 .tl-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
@@ -539,7 +545,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-compound-row { min-height: 30px; }
 .tl-compound { background: color-mix(in srgb, var(--group-color) 22%, var(--s1)); border-color: var(--group-color); padding-left: 8px; }
 .tl-compound.expanded { border-style: dashed; opacity: 0.8; }
-.timeline { position: relative; }
+.timeline { position: relative; user-select: none; -webkit-user-select: none; }
+/* HIG-91：时间轴上拖动不再拉出文字选区；改名输入框照常可选 */
+.timeline input, .timeline textarea { user-select: text; -webkit-user-select: text; }
 .timeline.marquee-mode .tl-row .body { cursor: crosshair; }
 .tl-label-resizer { position: absolute; top: 0; bottom: 0; left: calc(var(--tl-label-w) - 4px); width: 8px; z-index: 25; cursor: col-resize; touch-action: none; }
 .tl-label-resizer:hover, .tl-label-resizer:focus-visible { background: var(--accent-soft); outline: none; border-inline: 1px solid var(--accent); }
@@ -933,6 +941,10 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-audio.hidden .lbl .role { opacity: 0.5; }
 .tl-bar.audio.hidden { opacity: 0.35; }
 .tl-layer.hidden .tl-bar { opacity: 0.4; }
+/* HIG-92：字幕同轨的一句——条上显示文字，单句隐藏时单独变淡 */
+.tl-bar.cue { text-overflow: ellipsis; }
+.tl-bar.cue-hidden { opacity: 0.4; }
+.tl-cues .lbl .tl-group-count { margin-left: 4px; }
 .track-item.hidden .tname { color: var(--ink-3); text-decoration: line-through; }
 
 /* HIG-33：拖音频到时间线——落点竖线 + 提示 */
