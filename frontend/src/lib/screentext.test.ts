@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appliedScreenLang,
+  bandHint,
   applyScreenTextToSpec,
   blockToMaskLayer,
   blockToTextLayer,
@@ -269,6 +270,15 @@ describe('stripScreenText（多语言导出「原版」）', () => {
 });
 
 describe('辅助判断', () => {
+  it('硬字幕提示把识别框的完整位置、宽度和样式交给改语言字幕', () => {
+    const sc = screen();
+    sc.detect!.subtitle_band = { box: box(0.15, 0.78, 0.7, 0.06), style: { font_size: 0.04, color: '#EEEEEE' } };
+    const hint = bandHint(sc, 'ja')!;
+    expect(hint.anchor).toBe('bottom-center');
+    expect(hint.width).toBeCloseTo(0.77, 4);
+    expect(hint.style).toMatchObject({ font_size: 0.04, color: '#EEEEEE', wrap_width: 0.77 });
+  });
+
   it('cleanReady 要求 done、没过期、有文件', () => {
     expect(cleanReady({ erase: { status: 'done', stale: false, clean_url: '/x' }, versions: {} })).toBe(true);
     expect(cleanReady({ erase: { status: 'done', stale: true, clean_url: '/x' }, versions: {} })).toBe(false);

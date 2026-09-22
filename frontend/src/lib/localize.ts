@@ -335,7 +335,7 @@ export interface LocalizedLayersOptions {
   /** 缺省用 localizeTextStyle(lang)。 */
   style?: TextStyle;
   /** 缺省贴底居中（cuesToTextLayers 的位置）；重新套用时沿用上次的位置。 */
-  placement?: Pick<TextLayer, 'anchor' | 'margin'>;
+  placement?: Pick<TextLayer, 'anchor' | 'margin' | 'width'>;
   /** 长句拆成多段（HIG-36）；缺省拆。关掉就是一条听写句一条字幕（HIG-36 之前的行为）。 */
   split?: boolean;
   newId: () => string;
@@ -416,13 +416,23 @@ export function setLayerWrapWidth(layer: TextLayer, wrap: number | null): void {
 export function cueSourceWindow(cue: MergedCue, nextStart?: number): Range {
   const a = cue.dubStart ?? cue.start;
   if (cue.adaptive && cue.dubDuration) {
-    const b = nextStart === undefined ? a + cue.dubDuration : Math.min(a + cue.dubDuration, Math.max(nextStart, a + MIN_CUE_SECONDS));
-    return [round3(a), round3(Math.max(b, a + MIN_CUE_SECONDS))];
+    const wanted = Math.max(a + cue.dubDuration, a + MIN_CUE_SECONDS);
+    const b = nextStart === undefined ? wanted : Math.min(wanted, nextStart);
+    return [round3(a), round3(Math.max(b, a))];
   }
   let b = cue.dubDuration ? a + cue.dubDuration : cue.end;
   b = Math.max(b, cue.end);
-  if (nextStart !== undefined) b = Math.min(b, Math.max(nextStart, a + MIN_CUE_SECONDS));
+  // 下一句起点是硬边界。即使不足默认最短时长，也宁可保留短字幕；把前一句
+  // 撑过 nextStart 会造成两层字幕同时出现（HIG-70 返工）。零长在下游丢掉。
+  if (nextStart !== undefined) b = Math.min(b, nextStart);
   return [round3(a), round3(Math.max(b, a))];
+}
+
+/** 最后一道防线：换算 / 拆句 / 三位小数取整之后仍保证相邻字幕不重叠，并丢掉零长项。 */
+export function normalizeCueWindows(cues: SrtCue[]): SrtCue[] {
+  const out = cues.map((cue) => ({ ...cue }));
+  for (let i = 0; i + 1 < out.length; i++) out[i].end = Math.min(out[i].end, out[i + 1].start);
+  return out.filter((cue) => cue.end > cue.start);
 }
 
 /**
@@ -454,7 +464,7 @@ export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOp
   }
   const base = opts.style ?? localizeTextStyle(opts.lang);
   const style = base.wrap_width === undefined ? { ...base, wrap_width: LOCALIZE_WRAP_WIDTH } : base;
-  const layers = cuesToTextLayers(srtCues, { style, newId: opts.newId, maxEnd: opts.postDuration > 0 ? opts.postDuration : undefined });
+  const layers = cuesToTextLayers(normalizeCueWindows(srtCues), { style, newId: opts.newId, maxEnd: opts.postDuration > 0 ? opts.postDuration : undefined });
   layers.forEach((l, k) => {
     l.origin = LOCALIZE_ORIGIN;
     l.lang = opts.lang;
@@ -462,6 +472,7 @@ export function localizedCuesToLayers(cues: MergedCue[], opts: LocalizedLayersOp
     if (opts.placement) {
       l.anchor = opts.placement.anchor;
       l.margin = [opts.placement.margin[0], opts.placement.margin[1]];
+      l.width = opts.placement.width;
     }
   });
   return layers;
@@ -566,6 +577,7 @@ export function applyAdaptiveTiming(spec: EditSpec, video: Video, version: Local
 export interface SubtitleBandHint {
   anchor: Anchor;
   margin: [number, number];
+  width: number;
   style?: Partial<TextStyle>;
 }
 
@@ -573,7 +585,7 @@ export interface SubtitleBandHint {
  * 上一次生成的译文字幕层带着的样式与位置：重新套用 / 重新拆分时沿用，用户调过的不丢。
  * 换语言时只把「自动」选出来的字体换成新语言的，手选过的字体保留。
  */
-export function localizeLayerTemplate(spec: EditSpec, lang: string): { style?: TextStyle; placement?: Pick<TextLayer, 'anchor' | 'margin'> } {
+export function localizeLayerTemplate(spec: EditSpec, lang: string): { style?: TextStyle; placement?: Pick<TextLayer, 'anchor' | 'margin' | 'width'> } {
   const prev = localizeLayers(spec)[0];
   if (!prev) return {};
   const style: TextStyle = {
@@ -582,7 +594,7 @@ export function localizeLayerTemplate(spec: EditSpec, lang: string): { style?: T
     glow: prev.style.glow ? { ...prev.style.glow } : prev.style.glow,
   };
   if (prev.lang !== lang && isAutoFont(style.font_family)) style.font_family = fontForLang(lang);
-  return { style, placement: { anchor: prev.anchor, margin: [prev.margin[0], prev.margin[1]] } };
+  return { style, placement: { anchor: prev.anchor, margin: [prev.margin[0], prev.margin[1]], width: prev.width } };
 }
 
 /** 该语言版本现在能不能套用；不能时给出中文原因（面板按钮的 title / toast）。 */
@@ -616,7 +628,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   // 上一次生成的译文字幕：样式与位置沿用；没有上一版时才用识别出来的字幕带（HIG-38）
   const template = localizeLayerTemplate(spec, lang);
   const style = template.style ?? (ctx.band?.style ? { ...localizeTextStyle(lang), ...ctx.band.style } : undefined);
-  const placement = template.placement ?? (ctx.band ? { anchor: ctx.band.anchor, margin: ctx.band.margin } : undefined);
+  const placement = template.placement ?? (ctx.band ? { anchor: ctx.band.anchor, margin: ctx.band.margin, width: ctx.band.width } : undefined);
   const timingWarning = applyAdaptiveTiming(spec, video, version, ctx.newClipId);
   if (timingWarning) warnings.push(timingWarning);
 

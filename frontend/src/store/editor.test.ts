@@ -755,6 +755,64 @@ describe('改语言套用（applyVersion）', () => {
     expect(localizeTracks()).toEqual([]);
     expect(useEditor.getState().toast).toContain('原伴奏尚未就绪');
   });
+
+  it('检测到硬字幕且没有无字版时先征得付费擦除确认；取消不叠字幕', () => {
+    const withBand = {
+      ...LOC_VIDEO,
+      screen_text: {
+        detect: { status: 'done', blocks: [], subtitle_band: { box: { x: 0.1, y: 0.8, w: 0.8, h: 0.05 }, style: {} } },
+        erase: null,
+        versions: {},
+      },
+    } as Video;
+    useEditor.setState({ videos: [withBand], screenTextOptions: { enabled: true, erase_enabled: true, erase_provider: 'ghostcut', max_seconds: 180, max_frames: 20, max_blocks: 40 } });
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+
+    expect(useEditor.getState().applyVersion('ko')).toBe(false);
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(localizeLayers()).toEqual([]);
+    expect(useEditor.getState().history.v1?.past ?? []).toHaveLength(0);
+  });
+
+  it('确认后只提交一次擦除，成功切到无字版并自动套用', async () => {
+    const detected = {
+      detect: { status: 'done' as const, blocks: [], subtitle_band: { box: { x: 0.1, y: 0.8, w: 0.8, h: 0.05 }, style: {} } },
+      erase: null,
+      versions: {},
+    };
+    const queued = { ...detected, erase: { status: 'queued' as const } };
+    const done = { ...detected, erase: { status: 'done' as const, stale: false, clean_url: '/media/clean.mp4' } };
+    const withBand = { ...LOC_VIDEO, screen_text: detected } as Video;
+    useEditor.setState({
+      videos: [withBand],
+      screenTextOptions: { enabled: true, erase_enabled: true, erase_provider: 'ghostcut', max_seconds: 180, max_frames: 20, max_blocks: 40 },
+      loadAssets: vi.fn(async () => {}),
+    });
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    const erase = vi.spyOn(api, 'screenText').mockResolvedValue({ ...withBand, screen_text: queued } as Video);
+    vi.spyOn(api, 'getVideo').mockResolvedValue({ ...withBand, screen_text: done } as Video);
+
+    expect(useEditor.getState().applyVersion('ko')).toBe(true);
+    expect(erase).toHaveBeenCalledOnce();
+    expect(localizeLayers()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useEditor.getState().currentSpec()!.source_variant).toBe('clean');
+    expect(localizeLayers().map((layer) => (layer as TextLayer).text)).toEqual(['안녕.']);
+  });
+});
+
+describe('视频列表批量选择（HIG-90）', () => {
+  it('单点当前视频或另一条视频都会退出批量全选', () => {
+    const second = { ...VIDEO, id: 'v2', name: 'b.mp4' };
+    useEditor.setState({ videos: [VIDEO, second], currentVideoId: 'v1', selectedIds: ['v1', 'v2'] });
+    useEditor.getState().setCurrent('v1');
+    expect(useEditor.getState().selectedIds).toEqual([]);
+    useEditor.getState().setSelectedAll(true);
+    useEditor.getState().setCurrent('v2');
+    expect(useEditor.getState().selectedIds).toEqual([]);
+    expect(useEditor.getState().currentVideoId).toBe('v2');
+  });
 });
 
 describe('转语言主流程（HIG-74）', () => {

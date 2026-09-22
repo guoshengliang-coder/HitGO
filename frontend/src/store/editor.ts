@@ -354,7 +354,7 @@ export interface EditorState {
    * 已是当前套用的版本时不重复套（返回 false，不记历史）；force 强制重建层 / 轨（沿用已调过的字幕样式）。
    * 版本不可用（没生成完 / 配音素材不存在）时 toast 原因并返回 false。
    */
-  applyVersion: (lang: string, opts?: { force?: boolean }) => boolean;
+  applyVersion: (lang: string, opts?: { force?: boolean; skipScreenErase?: boolean }) => boolean;
 
   // 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）
   /** GET /api/screen-text/options 的结果；null = 尚未成功读取，不能等同于服务器没配 key。 */
@@ -569,6 +569,8 @@ const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
 const quickRequests: Record<string, { langs: string[]; readyLang?: string }> = {};
+/** 用户确认过“先付费擦除再套用”的请求；同一视频只保留最后一次目标语言。 */
+const screenEraseApplyRequests: Record<string, string> = {};
 /** 「自动识别字幕」（HIG-84）最多等多久；超过当作这个视频识别失败（服务器上的任务照跑，下次再点直接用结果）。 */
 const AUTO_SUBTITLE_TIMEOUT_MS = 15 * 60 * 1000;
 const BGM_CHOICE_KEY = 'hitgo.localizeBgm';
@@ -661,7 +663,16 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
         else get().setToast(`分离失败：${fresh.separation?.error ?? '未知原因'}`);
         applyQuickWhenReady(videoId, get);
       } else if (field === 'screen_text') {
-        get().setToast(screenTextFinishText(fresh.screen_text));
+        const pendingLang = screenEraseApplyRequests[videoId];
+        if (pendingLang) {
+          delete screenEraseApplyRequests[videoId];
+          if (cleanReady(fresh.screen_text)) {
+            if (get().currentVideoId === videoId) get().applyVersion(pendingLang, { force: true, skipScreenErase: true });
+            else get().setToast(`${fresh.name} 的无字版已生成；切回视频后可套用`);
+          } else {
+            get().setToast(`${screenTextFinishText(fresh.screen_text)}；未叠加译文，可重试擦除`);
+          }
+        } else get().setToast(screenTextFinishText(fresh.screen_text));
       } else {
         const text = localizationFinishText(before, fresh.localization, get().localizeOptions);
         if (text) get().setToast(text);
@@ -1194,9 +1205,14 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     setCurrent: (id) => {
-      if (id === get().currentVideoId) return;
+      // 点任一视频（包括当前视频）都退出左栏的批量选择；“当前编辑”和“批量勾选”
+      // 是两种状态，单点行的用户意图是回到单条操作（HIG-90）。
+      if (id === get().currentVideoId) {
+        if (get().selectedIds.length) set({ selectedIds: [] });
+        return;
+      }
       player.pause();
-      set({ currentVideoId: id, selectedLayerId: null, selectedLayerIds: [], subtitleSyncEnabled: false, selectedClipId: null, timelineSelection: [], selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
+      set({ currentVideoId: id, selectedIds: [], selectedLayerId: null, selectedLayerIds: [], subtitleSyncEnabled: false, selectedClipId: null, timelineSelection: [], selectedRangeIndex: null, selectedTrackId: null, selectedMuteIndex: null, inPoint: null, time: 0, playing: false, lap: 0, cropEditing: false, timelinePps: null });
     },
     toggleSelected: (id) =>
       set((s) => ({ selectedIds: s.selectedIds.includes(id) ? s.selectedIds.filter((x) => x !== id) : [...s.selectedIds, id] })),
@@ -2288,6 +2304,29 @@ export const useEditor = create<EditorState>((set, get) => {
       if (bgm.mode === 'replace' && !isAssetReady(assets.find((a) => a.id === bgm.assetId))) {
         get().setToast('所选 BGM 不可用，请在改语言里重新选择');
         return false;
+      }
+      // 硬字幕必须先得到无字版，不能再用“大块模糊 + 译文覆盖”冒充擦除（HIG-83）。
+      // 付费调用只在用户本次确认后提交；已经在擦除则复用该任务，完成后自动套用。
+      const hasHardSubtitles = !!video.screen_text?.detect?.subtitle_band;
+      if (!opts?.skipScreenErase && hasHardSubtitles && !spec.sequence && !cleanReady(video.screen_text)) {
+        const erase = video.screen_text?.erase;
+        const running = erase?.status === 'queued' || erase?.status === 'running';
+        if (!running && get().screenTextOptions?.erase_enabled === false) {
+          get().setToast('检测到硬字幕，但服务器未启用无字版擦除；未叠加译文');
+          return false;
+        }
+        if (!window.confirm(`检测到硬字幕。套用${label}版前需要先生成无字版（会调用付费擦除服务），是否继续？`)) return false;
+        screenEraseApplyRequests[video.id] = lang;
+        if (running) {
+          pollVideoField(video.id, 'screen_text', set, get);
+          get().setToast('无字版正在生成；完成后会自动套用');
+        } else {
+          void get().runScreenText({ erase: true }).then((ok) => {
+            if (!ok && screenEraseApplyRequests[video.id] === lang) delete screenEraseApplyRequests[video.id];
+          });
+          get().setToast(erase?.stale ? '无字版已过期，正在重新擦除；完成后会自动套用' : '正在擦除硬字幕；完成后会自动套用');
+        }
+        return true;
       }
       let warnings: string[] = [];
       get().updateSpec((s) => {

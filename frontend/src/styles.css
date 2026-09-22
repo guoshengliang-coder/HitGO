@@ -542,6 +542,9 @@ body.is-resizing-y, body.is-resizing-y * { user-select: none; cursor: row-resize
 .tl-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 /* HIG-85：复合组标记——片段左缘一道同组同色的细条 */
 .tl-group-mark { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; z-index: 1; pointer-events: none; background: var(--group-color); }
+.tl-compound-row { min-height: 30px; }
+.tl-compound { background: color-mix(in srgb, var(--group-color) 22%, var(--s1)); border-color: var(--group-color); padding-left: 8px; }
+.tl-compound.expanded { border-style: dashed; opacity: 0.8; }
 .timeline { position: relative; user-select: none; -webkit-user-select: none; }
 /* HIG-91：时间轴上拖动不再拉出文字选区；改名输入框照常可选 */
 .timeline input, .timeline textarea { user-select: text; -webkit-user-select: text; }

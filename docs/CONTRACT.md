@@ -221,7 +221,9 @@
 
 **硬字幕不逐句识别**（HIG-38）：硬字幕的内容就是口播，而口播的译文和时间 `localization` 已经有了
 （`versions[lang].cues[].dub_start / dub_duration`）。所以识别只测出字幕带的位置和样式（`subtitle_band`），
-擦掉这条带之后，直接把改语言生成的译文字幕层挪到 `subtitle_band.box` 并套上估计出来的样式。**代价**：源片有硬字幕
+字幕带只合并时间上真实同时出现的两行；几何取各行代表值，样式在字幕实际出现的帧与单行框内估计。擦掉这条带之后，
+直接把改语言生成的译文字幕层挪到 `subtitle_band.box`（含宽度）并套上估计出来的样式。套用语言时若无字版缺失或过期，
+编辑器先确认一次付费擦除；用户取消、擦除失败或超时均不叠加译文，成功后自动切无字版并套用。**代价**：源片有硬字幕
 但没有口播（纯 BGM 卡点素材）时，字幕没有译文来源，当前版本不处理这种片子。
 
 **无字版 `clean.mp4`**（HIG-38）：擦除的产物，和 `source.mp4` 放在同一个目录，**分辨率、帧率、时长、音轨都与原片
@@ -641,7 +643,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
 - **视频主轨隐藏与锁定（HIG-62）**：`video_hidden` / `video_locked` 均可选，缺省 `false`。隐藏时只把正片的主视频画面替换为黑底，封面、可见图层、源音轨及独立音轨保留；编辑器预览和 worker 一致。锁定只限制编辑器对主视频片段及剪辑区间的修改，worker 忽略。主轨仍至少保留一个片段，不能整轨删除。
 - **复合片段（HIG-85，编辑器专用，worker 全部忽略）**：`layers[].group`、`audio.tracks[].group`、
   `sequence.clips[].group`、`video_tracks[].clips[].group` 均为可选字符串（≤ 64 字符），缺省不发。同一 id 的片段
-  在时间线上组成一组：点任一成员即选中整组（⌥ 点只选单个），随后的移动、删除、复制按多选处理。「一键复合」按画面
+  在时间线上默认折叠为一条虚拟「复合轨」（只影响编辑器显示，不改变渲染契约）；点复合条选中整组，双击展开 / 收起成员，
+  随后的移动、删除、复制按多选处理。展开后点任一成员仍选中整组（⌥ 点只选单个）。「一键复合」按画面
   自动编组（id 前缀 `cg_`，每次重算）：拼接主轨片段 / 非拼接视频的保留段 / 上层视频片段各为一个画面片段，有具体时段的
   图层与独立音轨归到与其重叠最长、且重叠不少于自身时长一半的画面片段，关联原声随其上层片段；一组至少两个成员。
   ⌘G 手动组合（id 前缀 `grp_`，一键复合不改动），⇧⌘G 解除。粘贴出的副本另起新组，删到只剩一个成员的组自动解散。
@@ -765,7 +768,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
     - `in.delay`：入场延迟秒，缺省 0，[0, 10]，`out` 上忽略。时段内 `dl = min(delay, L)`，入场占 `[dl, dl + di]`（`p = clip((u − dl)/di, 0, 1)`，`di = min(in.duration, L − dl)`），
       出场 `do = min(out.duration, L − dl − di)`，循环从 `dl + di` 开始。`t` 为区间时 `delay + in.duration + out.duration` 不能超过 `L`（400）。
     - `loop.amount`：循环幅度倍数，缺省 1，[0, 3]，乘在 0.03 / 0.008 / 0.35 上；`blink` 的透明度裁到 [0, 1]。
-    - 编辑器新选滑动预设时显式写入 `distance = 0.1`（比缺省明显）；契约缺省不变。
+    - 编辑器新选滑动预设时显式写入 `distance = 0.3`；契约缺省 0.05 不变，老 spec 不变。
     - 缩放动画的留白（成片）：按动画实际达到的最大缩放 × 1.02 计算，不小于 1.1。
   - **逐字显现 `reveal`**（HIG-45，可选）：`{ preset, duration?, unit?, cursor?, easing? }`，`preset` ∈ `typewriter | fade_chars | wipe`，`duration` 秒 (0, 30]，缺省 1；
     `unit` ∈ `char | word`，缺省 `char`，只决定前端怎么生成 `glyph_layout`，worker 不读；`cursor` 缺省 false，只对 `typewriter` 生效；`easing` ∈ `linear | ease_in | ease_out | ease_in_out`，缺省 `linear`。

@@ -60,13 +60,13 @@ export const MAX_REVEAL_SECONDS = 30;
 
 /**
  * 编辑器里新选一个滑动预设时写进 spec 的距离（HIG-44）。契约缺省仍是 v0.16.0 的 SLIDE，老 spec 导出不变；
- * 新选的按这里更明显的幅度（本机按帧对比 0.05 / 0.10 / 0.15 后定）。
+ * 新选的按这里更明显的幅度。返工验收指定 30%；老 spec 仍走上面的 0.05 契约缺省。
  */
 export const NEW_PRESET_DEFAULTS: Partial<Record<TextAnimMovePreset, Partial<TextAnimPhase>>> = {
-  slide_up: { distance: 0.1 },
-  slide_down: { distance: 0.1 },
-  slide_left: { distance: 0.1 },
-  slide_right: { distance: 0.1 },
+  slide_up: { distance: 0.3 },
+  slide_down: { distance: 0.3 },
+  slide_left: { distance: 0.3 },
+  slide_right: { distance: 0.3 },
 };
 
 export const isSlide = (p: TextAnimMovePreset) => p.startsWith('slide_');

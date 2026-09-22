@@ -295,7 +295,7 @@ export function bandHint(screen: ScreenText | null | undefined, lang: string): S
   if (!band) return null;
   const placement = boxToPlacement(band.box);
   const style = band.style ? blockTextStyle(band.style, lang, band.box) : undefined;
-  return { anchor: placement.anchor, margin: placement.margin, style };
+  return { anchor: placement.anchor, margin: placement.margin, width: placement.width, style };
 }
 
 /** 识别状态的一句话（HIG-86）：排队和识别分开说，识别中带帧数进度——排队久是后台忙，不是识别慢。 */

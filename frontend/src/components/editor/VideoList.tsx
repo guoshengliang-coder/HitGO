@@ -159,7 +159,7 @@ export function VideoList() {
         </label>
         <span className="mono muted">已勾选 {selectedIds.length} / {videos.length}</span>
       </div>
-      <div className="vlist">
+      <div className="vlist" onClick={() => selectedIds.length && setSelectedAll(false)}>
         {videos.map((v) => {
           const spec = specs[v.id];
           const hasDraft = !!spec && (spec.trim.remove.length > 0 || spec.layers.length > 0 || !!spec.cover);
