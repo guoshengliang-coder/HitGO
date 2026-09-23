@@ -11,10 +11,18 @@ describe('HIG-39 composed timeline', () => {
   it('turns legacy split segments into stable sequence clips before editing', () => {
     const spec: EditSpec = { ...emptySpec(), trim: { remove: [[4, 5]], splits: [2, 7] } };
     const converted = materializeEditableSegments(spec, 'owner', 10);
-    expect(converted.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[0, 2], [2, 4], [5, 7], [7, 10]]);
-    expect(converted.clipForSegment.get(segKey([5, 7]))).toBe(converted.spec.sequence?.clips[2].id);
-    expect(converted.spec.trim.remove).toEqual([]);
+    expect(converted.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[0, 2], [2, 4], [4, 5], [5, 7], [7, 10]]);
+    expect(converted.clipForSegment.get(segKey([5, 7]))).toBe(converted.spec.sequence?.clips[3].id);
+    expect(converted.spec.trim.remove).toEqual([[4, 5]]);
+    expect({ ...converted.spec, trim: { remove: [] } }.sequence?.clips[2]).toMatchObject({ in: 4, out: 5 });
     expect(spec.sequence).toBeUndefined();
+  });
+
+  it('moves a deleted interval with the sequence so it remains restorable', () => {
+    const spec: EditSpec = { ...emptySpec(), trim: { remove: [[4, 5]], splits: [2, 7] } };
+    const moved = moveLegacySegment(spec, 'owner', 10, segKey([0, 2]), 9);
+    expect(moved.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[2, 4], [4, 5], [5, 7], [7, 10], [0, 2]]);
+    expect(moved.spec.trim.remove).toEqual([[2, 3]]);
   });
 
   it('reorders a split clip, moving its local content while a cross-cut item stays at its time', () => {

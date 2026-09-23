@@ -128,17 +128,31 @@ export function materializeEditableSegments(spec: EditSpec, videoId: string, dur
   if (spec.sequence) return { spec: cloneSpec(spec), clipForSegment };
   const sourceSegments = mainSegments(duration, spec.trim);
   const splits = normalizeSplits(spec.trim.splits, duration, spec.trim.remove);
-  const next = materializeSequence(spec, videoId, duration);
-  next.sequence!.clips = next.sequence!.clips.flatMap((clip) => {
-    const cuts = [clip.in, ...splits.filter((t) => t > clip.in + 1e-6 && t < clip.out - 1e-6), clip.out];
-    return cuts.slice(0, -1).map((start, index) => {
-      const end = cuts[index + 1];
-      const part = { ...clip, id: index === 0 ? clip.id : id('c'), in: start, out: end };
-      const source = sourceSegments.find(([a, b]) => Math.abs(a - start) < 1e-3 && Math.abs(b - end) < 1e-3);
-      if (source && !clipForSegment.has(segKey(source))) clipForSegment.set(segKey(source), part.id);
-      return part;
+  const removed = normalizeRanges(spec.trim.remove, duration);
+  const onePass = postTrimDuration(duration, removed);
+  const cuts = [0, duration, ...splits, ...removed.flat()].sort((a, b) => a - b).filter((t, i, all) => i === 0 || t - all[i - 1] > 1e-6);
+  const ranges = cuts.slice(0, -1).map((start, i) => [start, cuts[i + 1]] as [number, number]);
+  // Keep deleted footage and trim.remove so the existing restore control still works.
+  // A loop/truncation must first be expanded through the legacy materializer.
+  const keepDeleted = (spec.trim.duration == null || Math.abs(spec.trim.duration - onePass) < 1e-6)
+    && ranges.every(([start, end]) => end - start >= MIN_CLIP - 1e-6);
+  let next: EditSpec;
+  if (keepDeleted) {
+    next = cloneSpec(spec);
+    next.sequence = { clips: ranges.map(([start, end]) => ({ id: id('c'), video_id: videoId, in: start, out: end })) };
+    next.trim = { remove: removed };
+    next = normalizeSequenceAudio(next, videoId);
+  } else {
+    next = materializeSequence(spec, videoId, duration);
+    next.sequence!.clips = next.sequence!.clips.flatMap((clip) => {
+      const bounds = [clip.in, ...splits.filter((t) => t > clip.in + 1e-6 && t < clip.out - 1e-6), clip.out];
+      return bounds.slice(0, -1).map((start, index) => ({ ...clip, id: index === 0 ? clip.id : id('c'), in: start, out: bounds[index + 1] }));
     });
-  });
+  }
+  for (const clip of next.sequence!.clips) {
+    const source = sourceSegments.find(([a, b]) => Math.abs(a - clip.in) < 1e-3 && Math.abs(b - clip.out) < 1e-3);
+    if (source && !clipForSegment.has(segKey(source))) clipForSegment.set(segKey(source), clip.id);
+  }
   return { spec: next, clipForSegment };
 }
 
@@ -361,7 +375,7 @@ export function moveLegacySegment(spec: EditSpec, ownerId: string, duration: num
   if (!clipId) return { spec: cloneSpec(spec), clipId: null };
   const windows = clipWindows(converted.spec.sequence!);
   const from = windows.findIndex((w) => w.clip.id === clipId);
-  const target = sourceToPost(sourceAt, spec.trim.remove);
+  const target = converted.spec.trim.remove.length ? sourceAt : sourceToPost(sourceAt, spec.trim.remove);
   const others = windows.filter((w) => w.clip.id !== clipId);
   const insertion = others.findIndex((w) => target < (w.start + w.end) / 2);
   const to = insertion < 0 ? others.length : insertion;
