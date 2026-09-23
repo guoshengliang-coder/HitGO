@@ -68,14 +68,14 @@ export interface CompoundLane {
 
 /**
  * 时间线的“复合片段”虚拟单轨：不改 worker 契约，只把同组成员的可见范围合成一个条。
- * 全程成员按成片全长计；每组至少两个现存成员，孤儿组不显示。
+ * 全程成员按成片全长计；手动复合允许一个成员，自动组仍须至少两个。
  */
 export function compoundLanes(spec: EditSpec, postDuration: number): CompoundLane[] {
   const grouped = new Map<string, Entry[]>();
   for (const e of entries(spec)) if (e.group) grouped.set(e.group, [...(grouped.get(e.group) ?? []), e]);
   const out: CompoundLane[] = [];
   for (const [id, members] of grouped) {
-    if (members.length < 2) continue;
+    if (members.length < 2 && id.startsWith(AUTO_GROUP_PREFIX)) continue;
     const windows = members.map((m) => m.window ?? [0, postDuration] as [number, number]);
     out.push({
       id,
@@ -104,12 +104,12 @@ export function newGroupId(): string {
   return `${MANUAL_GROUP_PREFIX}${crypto.randomUUID().slice(0, 12)}`;
 }
 
-/** ⌘G：把选中的片段编成一个新组（原来属于别的组的一并并进来）。少于两个可进组的片段时返回 null。 */
+/** ⌘G：把选中的片段编成一个新组（原来属于别的组的一并并进来）。单个成员也可复合。 */
 export function groupItems(spec: EditSpec, keys: string[], id: string = newGroupId()): EditSpec | null {
   const next = cloneSpec(spec);
   const wanted = new Set(expandGroupSelection(next, keys));
   const members = entries(next).filter((e) => wanted.has(e.key));
-  if (members.length < 2) return null;
+  if (!members.length) return null;
   for (const m of members) m.set(id);
   return next;
 }
@@ -124,12 +124,12 @@ export function ungroupItems(spec: EditSpec, keys: string[]): EditSpec | null {
   return next;
 }
 
-/** 组内至少还有两个成员才算组；拆剩一个的组去掉 group（删除 / 解绑之后调用）。原地修改。 */
+/** 自动组拆剩一个时解散；手动复合保留单成员。原地修改。 */
 export function pruneSingletonGroups(spec: EditSpec): void {
   const all = entries(spec);
   const count = new Map<string, number>();
   for (const e of all) if (e.group) count.set(e.group, (count.get(e.group) ?? 0) + 1);
-  for (const e of all) if (e.group && (count.get(e.group) ?? 0) < 2) e.set(undefined);
+  for (const e of all) if (e.group?.startsWith(AUTO_GROUP_PREFIX) && (count.get(e.group) ?? 0) < 2) e.set(undefined);
 }
 
 export interface CompoundContext {

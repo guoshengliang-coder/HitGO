@@ -5,7 +5,7 @@
 
 import type { EditSpec, Layer, TextLayer, TextStyle, TranscriptCue } from '../types';
 import { defaultTextStyle } from '../types';
-import { cleanCueText, MAX_SUBTITLE_LAYERS } from './localize';
+import { cleanCueText, MAX_SUBTITLE_LAYERS, normalizeCueWindows } from './localize';
 import { sliceWindow, splitCueRanges, visibleLength } from './cueSplit';
 import { clipWindows } from './sequence';
 import { cuesToTextLayers, type SrtCue } from './srt';
@@ -96,7 +96,10 @@ export function transcriptToSubtitleLayers(transcripts: VideoTranscript[], spec:
   // 拆得太碎会把预览烤图和导出拖垮：回到一句一条，再不行就截断。
   if (cues.length > MAX_SUBTITLE_LAYERS) cues = build(false);
   cues.sort((x, y) => x.start - y.start || x.end - y.end);
-  cues = cues.slice(0, MAX_SUBTITLE_LAYERS).map((c, k) => ({ ...c, index: k + 1 }));
+  // The transcript service can return overlapping source cues. Conversion,
+  // splitting and millisecond rounding can also introduce a shared frame.
+  // Apply the next cue's start as a hard boundary after all three steps.
+  cues = normalizeCueWindows(cues).slice(0, MAX_SUBTITLE_LAYERS).map((c, k) => ({ ...c, index: k + 1 }));
   const layers = cuesToTextLayers(cues, { style: autoSubtitleStyle(), newId: opts.newId, maxEnd: opts.postDuration > 0 ? opts.postDuration : undefined });
   layers.forEach((layer) => {
     layer.origin = 'subtitle';

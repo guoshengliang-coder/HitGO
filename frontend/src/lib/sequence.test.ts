@@ -1,12 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type SequenceClip } from '../types';
-import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeSequence, moveClip, moveClipGroup, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, updateClip } from './sequence';
+import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeEditableSegments, materializeSequence, moveClip, moveClipGroup, moveLegacySegment, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, updateClip } from './sequence';
 import { trackMediaTime } from './audioTracks';
+import { segKey } from './segments';
 
 const clip = (id: string, videoId: string, start: number, end: number): SequenceClip => ({ id, video_id: videoId, in: start, out: end });
 const withSequence = (...clips: SequenceClip[]): EditSpec => ({ ...emptySpec(), sequence: { clips } });
 
 describe('HIG-39 composed timeline', () => {
+  it('turns legacy split segments into stable sequence clips before editing', () => {
+    const spec: EditSpec = { ...emptySpec(), trim: { remove: [[4, 5]], splits: [2, 7] } };
+    const converted = materializeEditableSegments(spec, 'owner', 10);
+    expect(converted.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[0, 2], [2, 4], [4, 5], [5, 7], [7, 10]]);
+    expect(converted.clipForSegment.get(segKey([5, 7]))).toBe(converted.spec.sequence?.clips[3].id);
+    expect(converted.spec.trim.remove).toEqual([[4, 5]]);
+    expect({ ...converted.spec, trim: { remove: [] } }.sequence?.clips[2]).toMatchObject({ in: 4, out: 5 });
+    expect(spec.sequence).toBeUndefined();
+  });
+
+  it('moves a deleted interval with the sequence so it remains restorable', () => {
+    const spec: EditSpec = { ...emptySpec(), trim: { remove: [[4, 5]], splits: [2, 7] } };
+    const moved = moveLegacySegment(spec, 'owner', 10, segKey([0, 2]), 9);
+    expect(moved.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[2, 4], [4, 5], [5, 7], [7, 10], [0, 2]]);
+    expect(moved.spec.trim.remove).toEqual([[2, 3]]);
+  });
+
+  it('reorders a split clip, moving its local content while a cross-cut item stays at its time', () => {
+    const makeLayer = (id: string, t: [number, number]) => ({ id, type: 'shape' as const, shape: 'rect' as const, anchor: 'top-left' as const, margin: [0, 0] as [number, number], width: 0.3, height: 0.2, fill: '#FFFFFF', stroke: '#000000', stroke_width: 0, radius: 0, rotate: 0, opacity: 1, t });
+    const spec: EditSpec = {
+      ...emptySpec(), trim: { remove: [], splits: [2, 4] },
+      layers: [makeLayer('local', [2.2, 3.2]), makeLayer('cross', [1, 3])],
+      audio: { source_volume: 0.5, tracks: [{ id: 'voice', asset_id: 'a', t: [2.3, 3] }] },
+    };
+    const moved = moveLegacySegment(spec, 'owner', 6, segKey([2, 4]), 5.8);
+    expect(moved.spec.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[0, 2], [4, 6], [2, 4]]);
+    expect(moved.spec.layers.map((l) => l.t)).toEqual([[4.2, 5.2], [1, 3]]);
+    expect(moved.spec.audio?.tracks[0].t).toEqual([4.3, 5]);
+    expect(sequenceSourceGain(moved.spec, 'owner', 4.5)).toBe(0.5);
+    expect(spec.sequence).toBeUndefined();
+  });
   it('adding and reordering sources preserves recoverable cuts on the composed source', () => {
     const spec: EditSpec = { ...withSequence(clip('a', 'owner', 0, 5), clip('b', 'other', 0, 5)), trim: { remove: [[2, 3], [7, 8]] } };
     const inserted = insertClip(spec, 'owner', 5, 'new', 2, 4).spec;

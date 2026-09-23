@@ -254,7 +254,7 @@ describe('cueSourceWindow', () => {
       { index: 2, start: 2, end: 3, text: 'b' },
       { index: 3, start: 3, end: 3, text: 'drop' },
     ])).toEqual([
-      { index: 1, start: 1, end: 2, text: 'a' },
+      { index: 1, start: 1, end: 1.999, text: 'a' },
       { index: 2, start: 2, end: 3, text: 'b' },
     ]);
   });
@@ -273,7 +273,7 @@ describe('localizedCuesToLayers', () => {
     expect(layers[0].anchor).toBe('bottom-center');
     expect(layers[0].style.wrap_width).toBe(LOCALIZE_WRAP_WIDTH);
   });
-  it('长句拆成多段（HIG-36）：时段首尾相接、合起来还是原来那一段、编号连号', () => {
+  it('长句拆成多段（HIG-36）：交界相隔 1 ms 以免同帧显示，编号连号', () => {
     const long = '힛고에 오신 것을 환영합니다. 오늘은 언어 바꾸기부터 시작하겠습니다. 자막이 길면 여러 조각으로 나뉩니다.';
     const one = [{ i: 0, start: 0, end: 9, text: 'x', translated: long }];
     const layers = localizedCuesToLayers(one, { lang: 'ko', langLabel: '韩语', remove: [], postDuration: 9, newId: ids });
@@ -283,7 +283,7 @@ describe('localizedCuesToLayers', () => {
     const ts = layers.map((l) => l.t as [number, number]);
     expect(ts[0][0]).toBe(0);
     expect(ts[ts.length - 1][1]).toBe(9);
-    ts.forEach(([, end], k) => k + 1 < ts.length && expect(ts[k + 1][0]).toBe(end));
+    ts.forEach(([, end], k) => k + 1 < ts.length && expect(Number((ts[k + 1][0] - end).toFixed(3))).toBe(0.001));
   });
 
   it('关掉拆分就是 HIG-36 之前的行为：一条听写句一条字幕', () => {

@@ -25,7 +25,7 @@ export interface ExportDialogRequest {
 }
 import { cloneSpec, ensureVariants, layerAspect, newLayerId, normalizeOutputs, outputFor, setExportKeys, toContractSpec } from '../lib/spec';
 import { retrimForAsset } from '../lib/sourceTrim';
-import { clipAt, clipWindows, materializeSequence, MIN_CLIP, moveClipSet, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain, splitClip } from '../lib/sequence';
+import { clipAt, clipWindows, materializeEditableSegments, materializeSequence, MIN_CLIP, moveClipSet, moveLegacySegment, normalizeSequenceAudio, pasteClipSet, removeClipSet, sequenceDuration, setOwnerSourceGain, splitClip } from '../lib/sequence';
 import { effectiveGeometry, overrideFromBox, resolveLayerBox } from '../lib/variantLayout';
 import { clamp, lapsFor, normalizeRanges, outputDuration, postTimeOf, postToSource, postTrimDuration, sourceToPost, splitPostTime, wouldRemoveAll } from '../lib/time';
 import { layerFocusTime } from '../lib/layerFocus';
@@ -231,6 +231,7 @@ export interface EditorState {
   splitSelectedVideos: () => void;
   /** HIG-85：在播放头分割主轨（拼接视频拆片段，否则加 trim.splits 分割点）。 */
   splitMainAtPlayhead: () => void;
+  moveMainSegment: (key: string, sourceAt: number) => void;
   /** HIG-85：一键复合 / ⌘G 编组 / ⇧⌘G 解组 / ⌘A 全选时间线，各记一步历史。 */
   compoundAll: () => void;
   groupSelection: () => void;
@@ -739,8 +740,12 @@ function syncSubtitleLayerChange(layers: Layer[], source: TextLayer, before: Tex
       }
     }
     for (const key of SUBTITLE_SYNC_GEOMETRY_KEYS) {
+      // The preview recalculates width from each subtitle's own text. Copying
+      // that derived width makes different cues render at different scales.
+      if (key === 'width' && !source.width_manual) continue;
       if (JSON.stringify(before[key]) !== JSON.stringify(source[key])) {
         Object.assign(other, { [key]: structuredClone(source[key]) });
+        if (key === 'width') other.width_manual = true;
       }
     }
   }
@@ -1549,6 +1554,15 @@ export const useEditor = create<EditorState>((set, get) => {
       const right = mainSegments(video.duration, { remove: spec.trim.remove, splits }).find(([a]) => Math.abs(a - at) < 2e-3);
       get().selectTimelineItems(right ? [segKey(right)] : []);
     },
+    moveMainSegment: (key, sourceAt) => {
+      const video = get().currentVideo();
+      const spec = get().currentSpec();
+      if (!video || !spec || spec.video_locked || !key.startsWith('seg:')) return;
+      const moved = moveLegacySegment(spec, video.id, video.duration, key, sourceAt);
+      if (!moved.clipId) return;
+      get().replaceSpec(video.id, moved.spec, { history: true });
+      get().selectTimelineItems([`clip:${moved.clipId}`]);
+    },
     compoundAll: () => {
       const video = get().currentVideo();
       const spec = get().currentSpec();
@@ -1569,9 +1583,14 @@ export const useEditor = create<EditorState>((set, get) => {
       const video = get().currentVideo();
       const spec = get().currentSpec();
       if (!video || !spec) return;
-      const next = groupItems(spec, get().timelineSelection);
-      if (!next) { get().setToast('至少选中两个视频 / 音频 / 文字 / 贴纸片段才能组合'); return; }
-      const keys = get().timelineSelection;
+      const selected = get().timelineSelection;
+      const converted = !spec.sequence && selected.some((key) => key.startsWith('seg:'))
+        ? materializeEditableSegments(spec, video.id, video.duration)
+        : null;
+      const base = converted?.spec ?? spec;
+      const keys = selected.map((key) => converted?.clipForSegment.get(key) ? `clip:${converted.clipForSegment.get(key)}` : key);
+      const next = groupItems(base, keys);
+      if (!next) { get().setToast('先选中至少一个视频 / 音频 / 文字 / 贴纸片段'); return; }
       get().replaceSpec(video.id, next, { history: true });
       get().selectTimelineItems(keys);
       get().setToast('已组合');

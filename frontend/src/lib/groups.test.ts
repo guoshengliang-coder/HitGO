@@ -69,12 +69,21 @@ describe('group selection / group / ungroup', () => {
     expect(expandGroupSelection(grouped(), ['seg:0.000~1.000'])).toEqual(['seg:0.000~1.000']);
   });
 
-  it('⌘G 编新组并吞并已有组；少于两个成员时拒绝', () => {
+  it('⌘G 编新组并吞并已有组；单个有效成员也能复合', () => {
     const out = groupItems(grouped(), ['layer:b', 'layer:a'], 'grp_new')!;
     expect(out.layers.map((l) => l.group)).toEqual(['grp_new', 'grp_new', 'grp_new']);
     expect(out.audio!.tracks[0].group).toBe('grp_new');
-    expect(groupItems(grouped(), ['layer:b'])).toBeNull();
-    expect(groupItems(grouped(), ['layer:b', 'seg:0.000~1.000'])).toBeNull();
+    expect(groupItems(grouped(), ['layer:b'], 'grp_single')?.layers[1].group).toBe('grp_single');
+    expect(groupItems(grouped(), ['seg:0.000~1.000'])).toBeNull();
+  });
+
+  it('两个视频或视频与文字可自由复合', () => {
+    const spec = grouped();
+    spec.sequence = { clips: [{ id: 'c1', video_id: 'v', in: 0, out: 2 }, { id: 'c2', video_id: 'v', in: 2, out: 4 }] };
+    expect(groupItems(spec, ['clip:c1', 'clip:c2'], 'grp_video')?.sequence?.clips.map((c) => c.group)).toEqual(['grp_video', 'grp_video']);
+    const mixed = groupItems(spec, ['clip:c1', 'layer:b'], 'grp_mixed')!;
+    expect(mixed.sequence!.clips[0].group).toBe('grp_mixed');
+    expect(mixed.layers[1].group).toBe('grp_mixed');
   });
 
   it('⇧⌘G 解散整组，字段被删掉', () => {
@@ -84,12 +93,16 @@ describe('group selection / group / ungroup', () => {
     expect(ungroupItems(grouped(), ['layer:b'])).toBeNull();
   });
 
-  it('只剩一个成员的组被拆掉', () => {
+  it('自动组只剩一个成员时解散，手动单成员组保留', () => {
     const spec = grouped();
+    spec.layers[0].group = 'cg_auto';
     spec.layers = spec.layers.filter((l) => l.id !== 'c');
     spec.audio!.tracks = [];
     pruneSingletonGroups(spec);
     expect(spec.layers[0].group).toBeUndefined();
+    spec.layers[1].group = 'grp_manual';
+    pruneSingletonGroups(spec);
+    expect(compoundLanes(spec, 8)).toEqual([{ id: 'grp_manual', keys: ['layer:b'], window: [1, 2] }]);
   });
 
   it('全选列出所有片段但不单列关联原声', () => {

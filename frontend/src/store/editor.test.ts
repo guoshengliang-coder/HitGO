@@ -115,6 +115,29 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
     expect(layers.map((layer) => [layer.text, layer.t])).toEqual([['甲', [0, 1]], ['乙', [2, 3]], ['锁定', [4, 5]]]);
   });
 
+  it('初始字号不同也按本次绝对值同步，开启开关本身不改字幕', () => {
+    const a = { ...textLayer('短句'), origin: 'subtitle' as const, style: { ...defaultTextStyle(), font_size: 0.08 }, t: [0, 1] as [number, number] };
+    const b = { ...textLayer('较长的后一句'), id: 'L2', origin: 'subtitle' as const, style: { ...defaultTextStyle(), font_size: 0.04 }, t: [1, 2] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().setSelectedLayer('L1');
+    useEditor.getState().setSubtitleSyncEnabled(true);
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.font_size).toBe(0.04);
+    // Applying the selected cue's existing value via a preset still unifies the other cue.
+    useEditor.getState().updateSelectedTextStyle({ font_size: 0.08 });
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.font_size).toBe(0.08);
+  });
+
+  it('字幕文字的自动宽度按各自内容保留，手动设置的宽度才同步', () => {
+    const a = { ...textLayer('短句'), origin: 'subtitle' as const, width: 0.2, t: [0, 1] as [number, number] };
+    const b = { ...textLayer('较长的后一句'), id: 'L2', origin: 'subtitle' as const, width: 0.7, t: [1, 2] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    useEditor.getState().setSubtitleSyncEnabled(true);
+    useEditor.getState().updateLayer('L1', { width: 0.3 }, false);
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).width).toBe(0.7);
+    useEditor.getState().updateLayer('L1', (layer) => { if (layer.type === 'text') { layer.width = 0.5; layer.width_manual = true; } });
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer)).toMatchObject({ width: 0.5, width_manual: true });
+  });
+
   it('粘贴整份样式也遵守字幕同步开关', () => {
     const a = { ...textLayer('甲'), origin: 'subtitle' as const };
     const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const };
@@ -221,6 +244,25 @@ describe('画面文字 409（HIG-86）', () => {
 });
 
 describe('复合片段（HIG-85 审查修正）', () => {
+  it('单个主轨分割段手动复合时转成持久片段，并可撤销', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), trim: { remove: [], splits: [4] } });
+    useEditor.getState().selectTimelineItems(['seg:0.000~4.000']);
+    useEditor.getState().groupSelection();
+    const spec = useEditor.getState().currentSpec()!;
+    expect(spec.sequence?.clips).toHaveLength(2);
+    expect(spec.sequence?.clips[0].group).toMatch(/^grp_/);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.sequence).toBeUndefined();
+  });
+
+  it('拖动非拼接主轨分割段后按插入点重排', () => {
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), trim: { remove: [], splits: [2, 5] } });
+    useEditor.getState().moveMainSegment('seg:2.000~5.000', 9);
+    expect(useEditor.getState().currentSpec()?.sequence?.clips.map((c) => [c.in, c.out])).toEqual([[0, 2], [5, 10], [2, 5]]);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()?.trim.splits).toEqual([2, 5]);
+  });
+
   it('一键复合编不出新组时也清掉上一次留下的自动组', () => {
     useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [{ ...textLayer('字幕'), t: [1, 2], group: 'cg_seg0' }] });
     useEditor.getState().compoundAll();

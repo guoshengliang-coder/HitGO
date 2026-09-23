@@ -19,7 +19,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
-import { activeSourceDrag, clipDisplayGroups, clipWindows, insertClip, moveClipGroup, moveClipSet, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
+import { activeSourceDrag, clipWindows, insertClip, moveClipSetKeepingCrossingContent, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
 import { clamp, lapsFor, postToSource, postTrimDuration, splitPostTime } from '../../lib/time';
 import { makeTimelineAxis } from '../../lib/timelineAxis';
 import { dropSnapCandidates, mainInsertPosition, snapDrop } from '../../lib/dropSnap';
@@ -52,7 +52,7 @@ import { isVideoAsset, type Asset, type AudioRole, type AudioSpec, type Layer } 
 import { timelineAutoScrollDelta } from '../../lib/timelineAutoScroll';
 import { updateVideoTrackClip, videoTrackClipDuration } from '../../lib/videoTracks';
 import { compoundLanes, groupColor, shiftTimedItems, type CompoundLane } from '../../lib/groups';
-import { mainSegments, normalizeSplits, segKey } from '../../lib/segments';
+import { mainSegments, normalizeSplits, segKey, SEG_DRAG } from '../../lib/segments';
 import { playheadSnapCandidates, snapPlayhead } from '../../lib/playheadSnap';
 
 /** 复合组标记（HIG-85）：片段左缘的同色细条。 */
@@ -338,6 +338,7 @@ export function Timeline() {
   const currentVideoId = useEditor((s) => s.currentVideoId);
   const videos = useEditor((s) => s.videos);
   const setSelectedClip = useEditor((s) => s.setSelectedClip);
+  const moveMainSegment = useEditor((s) => s.moveMainSegment);
   const setSelectedLayer = useEditor((s) => s.setSelectedLayer);
   const replaceSpec = useEditor((s) => s.replaceSpec);
   const addUpperVideo = useEditor((s) => s.addUpperVideo);
@@ -353,7 +354,6 @@ export function Timeline() {
 
   const sequence = spec?.sequence;
   const upperTracks = spec?.video_tracks ?? [];
-  const sequenceGroups = sequence && video ? clipDisplayGroups(sequence, video.id) : [];
   const duration = Math.max(0.1, sequence ? sequenceDuration(sequence) : video?.duration ?? 0);
   const remove = spec?.trim.remove ?? [];
   const postLen = postTrimDuration(duration, remove);
@@ -631,10 +631,11 @@ export function Timeline() {
     }
     setUpperDropAt(null);
     const videoTrack = !!(e.target as HTMLElement).closest('.tl-video .body');
-    if (video && spec && !spec.video_locked && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
+    if (video && spec && !spec.video_locked && videoTrack && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(SEG_DRAG) || (sequence && e.dataTransfer.types.includes(CLIP_DRAG)))) {
       e.preventDefault();
-      e.dataTransfer.dropEffect = e.dataTransfer.types.includes(CLIP_DRAG) ? 'move' : 'copy';
-      setSequenceDropAt(e.dataTransfer.types.includes(CLIP_DRAG) ? clamp(xToTime(e.clientX), 0, mainEnd) : videoDropAt(e, mainEnd));
+      const moving = e.dataTransfer.types.includes(CLIP_DRAG) || e.dataTransfer.types.includes(SEG_DRAG);
+      e.dataTransfer.dropEffect = moving ? 'move' : 'copy';
+      setSequenceDropAt(moving ? clamp(xToTime(e.clientX), 0, mainEnd) : videoDropAt(e, mainEnd));
       return;
     }
     setSequenceDropAt(null);
@@ -664,14 +665,22 @@ export function Timeline() {
       return;
     }
     if ((e.target as HTMLElement).closest('.tl-video .body')) {
-      if (spec.video_locked && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG))) { e.preventDefault(); setToast('Video 轨道已锁定'); return; }
+      if (spec.video_locked && (e.dataTransfer.types.includes(VIDEO_DRAG) || e.dataTransfer.types.includes(CLIP_DRAG) || e.dataTransfer.types.includes(SEG_DRAG))) { e.preventDefault(); setToast('Video 轨道已锁定'); return; }
+      const segment = e.dataTransfer.getData(SEG_DRAG);
+      if (segment && !sequence) {
+        e.preventDefault();
+        moveMainSegment(segment, axis.axisToSrc(clamp(xToTime(e.clientX), 0, mainEnd)));
+        return;
+      }
       const moving = e.dataTransfer.getData(CLIP_DRAG);
       if (moving && sequence) {
         e.preventDefault();
         const at = axis.axisToSrc(clamp(xToTime(e.clientX), 0, mainEnd));
-        const index = sequenceGroups.findIndex((g) => at < (g.start + g.end) / 2);
         const selected = timelineSelection.filter((key) => key.startsWith('clip:')).map((key) => key.slice(5));
-        replaceSpec(video.id, selected.length > 1 && selected.includes(moving) ? moveClipSet(spec, selected, index < 0 ? sequence.clips.length : index) : moveClipGroup(spec, video.id, moving, index < 0 ? sequenceGroups.length - 1 : index), { history: true });
+        const ids = selected.length > 1 && selected.includes(moving) ? selected : [moving];
+        const remaining = clipWindows(sequence).filter((w) => !ids.includes(w.clip.id));
+        const index = remaining.findIndex((w) => at < (w.start + w.end) / 2);
+        replaceSpec(video.id, moveClipSetKeepingCrossingContent(spec, ids, index < 0 ? remaining.length : index), { history: true });
         setSelectedClip(moving);
         return;
       }
@@ -1255,9 +1264,10 @@ export function Timeline() {
               {!sequence && video && mainSegments(video.duration, spec?.trim ?? { remove: [] }).map((seg) => {
                 const key = segKey(seg);
                 // 点片段：切到「剪辑」右栏并选中它（HIG-93）；setStep 会清空选择，所以先切再选
-                return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + srcX(seg[0]), width: Math.max(6, srcX(seg[1]) - srcX(seg[0])) }}
+                return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + srcX(seg[0]), width: Math.max(6, srcX(seg[1]) - srcX(seg[0])), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked}
+                  onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(SEG_DRAG, key); e.dataTransfer.effectAllowed = 'move'; }}
                   onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(key))) setStep('trim'); setSelectedRange(null); pickTimeline(key, e); }}
-                  title={`主轨片段 ${seg[0].toFixed(2)}–${seg[1].toFixed(2)}s · Delete 删除 · ⌘B 在播放头分割`} />;
+                  title={`主轨片段 ${seg[0].toFixed(2)}–${seg[1].toFixed(2)}s · 拖动重排 · Delete 删除 · ⌘B 在播放头分割`} />;
               })}
               {!sequence && video && normalizeSplits(spec?.trim.splits, video.duration, remove).map((t) => <div key={t} className="tl-split" style={{ left: off + srcX(t) }} title={`分割点 ${t.toFixed(2)}s`} />)}
               {axis.joins.map((v) => <div key={v} className="tl-join" style={{ left: off + v * pps }} title="这里删掉过一段（右侧「已删除区间」可恢复；Transport 里关掉「收起删除段」可按源时间查看）" />)}

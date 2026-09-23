@@ -61,6 +61,18 @@ describe('ownerSourceRangeToPost', () => {
 });
 
 describe('transcriptToSubtitleLayers', () => {
+  it('相邻识别字幕以后一条起点收住前一条，避免同帧重叠', () => {
+    const layers = transcriptToSubtitleLayers(
+      [{ videoId: 'A', cues: [
+        { i: 0, start: 0, end: 1.033, text: '前一句' },
+        { i: 1, start: 1, end: 2, text: '后一句' },
+      ] }],
+      emptySpec(),
+      { ownerId: 'A', postDuration: 3, newId, split: false },
+    );
+    expect(layers.map((layer) => layer.t)).toEqual([[0, 0.999], [1, 2]]);
+  });
+
   it('每个视频各自换算，按时间排序，打上 subtitle / auto 标记并套字幕条样式', () => {
     const layers = transcriptToSubtitleLayers(
       [
