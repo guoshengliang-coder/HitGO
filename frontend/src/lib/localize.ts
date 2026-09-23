@@ -428,10 +428,12 @@ export function cueSourceWindow(cue: MergedCue, nextStart?: number): Range {
   return [round3(a), round3(Math.max(b, a))];
 }
 
-/** 最后一道防线：换算 / 拆句 / 三位小数取整之后仍保证相邻字幕不重叠，并丢掉零长项。 */
+/** 最后一道防线：预览和 FFmpeg 都包含结束点，交界处留 1 ms 防止同帧叠字。 */
 export function normalizeCueWindows(cues: SrtCue[]): SrtCue[] {
-  const out = cues.map((cue) => ({ ...cue }));
-  for (let i = 0; i + 1 < out.length; i++) out[i].end = Math.min(out[i].end, out[i + 1].start);
+  const out = cues.filter((cue) => cue.end > cue.start).map((cue) => ({ ...cue }));
+  for (let i = 0; i + 1 < out.length; i++) {
+    if (out[i].end >= out[i + 1].start) out[i].end = Math.min(out[i].end, round3(out[i + 1].start - 0.001));
+  }
   return out.filter((cue) => cue.end > cue.start);
 }
 

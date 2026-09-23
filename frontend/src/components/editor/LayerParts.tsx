@@ -84,17 +84,14 @@ export function newTextLayer(style?: Partial<TextStyle>, text = '双击编辑文
  */
 function StylePresetSection({ layer }: { layer: TextLayer }) {
   const presets = useEditor((s) => s.textPresets);
-  const updateLayer = useEditor((s) => s.updateLayer);
+  const updateSelectedTextStyle = useEditor((s) => s.updateSelectedTextStyle);
   const savePreset = useEditor((s) => s.saveTextPreset);
   const deletePreset = useEditor((s) => s.deleteTextPreset);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
   const groups = useMemo(() => groupPresets(presets), [presets]);
 
-  const apply = (p: TextStylePreset) =>
-    updateLayer(layer.id, (l) => {
-      if (l.type === 'text') Object.assign(l.style, p.style);
-    });
+  const apply = (p: TextStylePreset) => updateSelectedTextStyle(p.style);
   const submit = async () => {
     const nm = name.trim();
     if (!nm) return;

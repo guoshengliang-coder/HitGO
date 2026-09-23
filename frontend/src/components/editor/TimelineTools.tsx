@@ -59,6 +59,8 @@ export function TimelineTools() {
   const snapEnabled = useEditor((s) => s.snapEnabled);
   const toggleSnap = useEditor((s) => s.toggleSnap);
   const compoundAll = useEditor((s) => s.compoundAll);
+  const groupSelection = useEditor((s) => s.groupSelection);
+  const ungroupSelection = useEditor((s) => s.ungroupSelection);
   const splitMainAtPlayhead = useEditor((s) => s.splitMainAtPlayhead);
   const onSource = selectedTrackId === SOURCE_TRACK_ID;
   const videoLocked = !!spec?.video_locked;
@@ -89,7 +91,9 @@ export function TimelineTools() {
   return (
     <div className="tl-tools">
       <button className={`btn icon ${snapEnabled ? 'on' : ''}`} aria-pressed={snapEnabled} aria-label="自动吸附" onClick={toggleSnap} title={snapEnabled ? '关闭自动吸附 (N)' : '开启自动吸附 (N)'}><IconMagnet /></button>
-      <button className="btn" onClick={compoundAll} title="按画面把每个片段和对应的音频/文字/贴纸组合在一起 (Ctrl+G)"><IconGroup /> 一键复合</button>
+      <button className="btn" onClick={compoundAll} title="按画面把每个片段和对应的音频/文字/贴纸自动编组"><IconGroup /> 一键复合</button>
+      <button className="btn" onClick={groupSelection} disabled={!timelineSelection.length} title="将选中的一个或多个视频、字幕、文字、贴纸、音频片段复合 (Ctrl+G)">复合所选</button>
+      <button className="btn" onClick={ungroupSelection} disabled={!timelineSelection.length} title="解除选中片段所在的复合组 (Ctrl+Shift+G)">解除复合</button>
       <button className={`btn ${marqueeEnabled ? 'on' : ''}`} aria-pressed={marqueeEnabled} onClick={() => setMarqueeEnabled(!marqueeEnabled)} title="开启后可从轨道空白处向任意方向拖框；Shift 追加，Alt/Ctrl 排除">框选</button>
       <button className="btn" onClick={selectAllLayers} title="选中当前视频所有可见且未锁定的视觉图层">全选图层</button>
       <button className="btn" onClick={() => { selectTimelineItems([]); setSelectedLayer(null); }} disabled={!selectedLayerIds.length && !timelineSelection.length}>取消选择</button>

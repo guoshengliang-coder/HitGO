@@ -9,6 +9,7 @@ const EPS = 1e-3;
 /** 分割点离保留段两端至少这么远，免得切出比最短片段还短的碎段。 */
 export const MIN_SEGMENT = 0.1;
 export const SEG_PREFIX = 'seg:';
+export const SEG_DRAG = 'application/x-hitgo-main-segment';
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
 

@@ -2,6 +2,7 @@
 import type { AudioTrack, EditSpec, Layer, SequenceClip, SequenceSpec } from '../types';
 import { keepSegments, normalizeRanges, postToSource, postTrimDuration, sourceToPost } from './time';
 import { cloneSpec } from './spec';
+import { mainSegments, normalizeSplits, segKey } from './segments';
 
 export const MIN_CLIP = 0.1;
 export const VIDEO_DRAG = 'application/x-hitgo-source-video';
@@ -119,6 +120,26 @@ export function materializeSequence(spec: EditSpec, videoId: string, duration: n
   next.sequence = { clips };
   next.trim = { remove: [] };
   return normalizeSequenceAudio(next, videoId);
+}
+
+/** Give legacy main-track split segments persistent clip ids before grouping or reordering. */
+export function materializeEditableSegments(spec: EditSpec, videoId: string, duration: number): { spec: EditSpec; clipForSegment: Map<string, string> } {
+  const clipForSegment = new Map<string, string>();
+  if (spec.sequence) return { spec: cloneSpec(spec), clipForSegment };
+  const sourceSegments = mainSegments(duration, spec.trim);
+  const splits = normalizeSplits(spec.trim.splits, duration, spec.trim.remove);
+  const next = materializeSequence(spec, videoId, duration);
+  next.sequence!.clips = next.sequence!.clips.flatMap((clip) => {
+    const cuts = [clip.in, ...splits.filter((t) => t > clip.in + 1e-6 && t < clip.out - 1e-6), clip.out];
+    return cuts.slice(0, -1).map((start, index) => {
+      const end = cuts[index + 1];
+      const part = { ...clip, id: index === 0 ? clip.id : id('c'), in: start, out: end };
+      const source = sourceSegments.find(([a, b]) => Math.abs(a - start) < 1e-3 && Math.abs(b - end) < 1e-3);
+      if (source && !clipForSegment.has(segKey(source))) clipForSegment.set(segKey(source), part.id);
+      return part;
+    });
+  });
+  return { spec: next, clipForSegment };
 }
 
 /** A timed thing crossing an insertion is copied to both old-footage sides. */
@@ -315,6 +336,37 @@ export function moveClipSet(spec: EditSpec, ids: string[], to: number): EditSpec
   next.sequence.clips = [...remaining.slice(0, index), ...moving, ...remaining.slice(index)];
   sanitizeTransitions(next.sequence);
   return retimeContent(spec, next);
+}
+
+/** Move clip-local content with its picture, while a layer spanning cuts keeps its absolute time. */
+export function moveClipSetKeepingCrossingContent(spec: EditSpec, ids: string[], to: number): EditSpec {
+  const moved = moveClipSet(spec, ids, to);
+  if (!spec.sequence || !moved.sequence) return moved;
+  const windows = clipWindows(spec.sequence);
+  const followsOneClip = (t: [number, number] | 'all') => t !== 'all' && windows.some((w) => t[0] >= w.start - 1e-6 && t[1] <= w.end + 1e-6);
+  const preserveCrossings = <T extends { id: string; t: [number, number] | 'all' }>(before: T[], after: T[]): T[] => {
+    const changed = new Map(after.map((item) => [item.id, item]));
+    return before.map((item) => followsOneClip(item.t) ? changed.get(item.id) ?? item : structuredClone(item));
+  };
+  moved.layers = preserveCrossings(spec.layers, moved.layers);
+  if (spec.audio && moved.audio) moved.audio.tracks = preserveCrossings(spec.audio.tracks, moved.audio.tracks);
+  return moved;
+}
+
+/** Drag a legacy trim.splits segment to an insertion point, then keep it as an editable sequence clip. */
+export function moveLegacySegment(spec: EditSpec, ownerId: string, duration: number, key: string, sourceAt: number): { spec: EditSpec; clipId: string | null } {
+  if (spec.sequence) return { spec: cloneSpec(spec), clipId: null };
+  const converted = materializeEditableSegments(spec, ownerId, duration);
+  const clipId = converted.clipForSegment.get(key);
+  if (!clipId) return { spec: cloneSpec(spec), clipId: null };
+  const windows = clipWindows(converted.spec.sequence!);
+  const from = windows.findIndex((w) => w.clip.id === clipId);
+  const target = sourceToPost(sourceAt, spec.trim.remove);
+  const others = windows.filter((w) => w.clip.id !== clipId);
+  const insertion = others.findIndex((w) => target < (w.start + w.end) / 2);
+  const to = insertion < 0 ? others.length : insertion;
+  if (from === to) return { spec: cloneSpec(spec), clipId: null };
+  return { spec: moveClipSetKeepingCrossingContent(converted.spec, [clipId], to), clipId };
 }
 
 export function removeClipSet(spec: EditSpec, ids: string[]): EditSpec | null {
