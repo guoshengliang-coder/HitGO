@@ -1,4 +1,4 @@
-// 预览舞台：<video>（proxy）在下，react-konva Stage 同尺寸叠在上面，绘制安全区与图层。
+// 预览舞台：<video>（proxy）在成片画布里，react-konva Stage 向四周外扩，画越界选框、参考线与图层。
 // 图层位置全部由 lib/layout.ts 的契约公式计算；拖动 / 缩放 / 旋转后反算回 margin / width / rotate。
 // 拖动时吸附到画布边 / 中线 / 安全区边（lib/snap.canvasGuides），按住 ⌘/Ctrl 关闭；命中的参考线画在最上层。
 // 画布比例跟着「成片画面」页签的预览画幅（HIG-29，缺省 9:16）；源画面比例不同时按该画幅的填充方式（模糊 / 纯色 / 裁切）画底。
@@ -29,7 +29,7 @@ import { windowContains } from '../../lib/time';
 import { clipAt, clipWindows, sequenceSourceGain } from '../../lib/sequence';
 import { resolveScroll, sampleScrollY, scrollPath } from '../../lib/poster';
 import { boxFromTransform, boxToStage } from '../../lib/scrollBoxDrag';
-import { canvasGuides, snapActive, snapValue } from '../../lib/snap';
+import { canvasGuides, elementGuides, snapActive, snapValue } from '../../lib/snap';
 import { ensureTextRendered, getCachedText, renderTextSync, textCacheKey, TEXT_CANVAS, type RenderedText } from '../../lib/textImage';
 import { boxHeightFromStage, edgeOfAnchor, keepOppositeEdge, wrapWidthFromStage } from '../../lib/textBoxDrag';
 import { setLayerWrapWidth } from '../../lib/localize';
@@ -56,6 +56,8 @@ import { videoTrackClipEnd } from '../../lib/videoTracks';
 // Transformer 把手：贴纸锁比例只留四角；文字四角锁比例、四条边改换行宽度 / 框高（keepRatio 只作用于四角）；遮盖不锁比例，八向都能拉
 /** 指针移开这么多舞台像素才算框选，而不是一次点击（HIG-77，与时间轴同一个阈值）。 */
 const MARQUEE_PX = 4;
+/** 画布四周留给越界元素选框、控制点和参考线的交互区。 */
+const WORKSPACE_PAD = 56;
 
 const CORNER_ANCHORS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
 const EDGE_ANCHORS = ['middle-left', 'middle-right'];
@@ -77,8 +79,8 @@ export function useFitSize(ref: React.RefObject<HTMLDivElement>, aspect: number)
     const el = ref.current;
     if (!el) return;
     const measure = () => {
-      const cw = el.clientWidth - 24;
-      const ch = el.clientHeight - 24;
+      const cw = el.clientWidth - WORKSPACE_PAD * 2;
+      const ch = el.clientHeight - WORKSPACE_PAD * 2;
       if (cw <= 0 || ch <= 0) return;
       let W = ch * aspect;
       let H = ch;
@@ -280,7 +282,7 @@ function LayerNode({
   selected: boolean;
   /** 内联编辑中：节点不画（textarea 叠在原位），避免旧 PNG 和输入框重影 */
   hidden: boolean;
-  guides: Guides;
+  guides: () => Guides;
   onSelect: () => void;
   onEdit: () => void;
   onGuides: (g: Guides) => void;
@@ -542,7 +544,7 @@ function LayerNode({
   };
 
   // 拖动中：外接矩形（考虑旋转）的左 / 中 / 右、上 / 中 / 下 吸附到参考线（stageSnap，与遮盖共用）
-  const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => snapDraggedNode(e.target, e.evt, guides, onGuides);
+  const onDragMove = (e: Konva.KonvaEventObject<DragEvent>) => snapDraggedNode(e.target, e.evt, guides(), onGuides);
 
   return (
     <KImage
@@ -687,7 +689,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const trRef = useRef<Konva.Transformer>(null);
   const videoTrRef = useRef<Konva.Transformer>(null);
-  const videoNodeRef = useRef<Konva.Rect>(null);
+  const videoNodeRef = useRef<Konva.Rect | null>(null);
+  const videoNodes = useRef<Record<string, Konva.Rect | null>>({});
   const nodes = useRef<Record<string, Konva.Node | null>>({});
   const previewKey = useEditor((s) => s.previewVariantKey);
   const isRef = previewKey === '9x16';
@@ -767,8 +770,29 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   // 安全区按竖版平台定义：非 9:16 预览时只吸附画布边与中线
   const guides = canvasGuides(isRef ? zone : null, W, H);
-  const guidesRef = useRef(guides);
-  guidesRef.current = guides;
+  const guidesFor = (excludeKey: string): Guides => {
+    const nodeRects = [
+      ...Object.entries(nodes.current).map(([id, node]) => ({ key: `layer:${id}`, node })),
+      ...Object.entries(videoNodes.current).map(([key, node]) => ({ key, node })),
+    ].flatMap(({ key, node }) => {
+      if (key === excludeKey || !node || !node.isVisible()) return [];
+      const r = node.getClientRect({ skipStroke: true, skipShadow: true, relativeTo: node.getParent() ?? undefined });
+      return [{ x: r.x, y: r.y, width: r.width, height: r.height }];
+    });
+    const videoRects = [
+      ...(!coverActive && frameVideo ? [{
+        key: activeMainClip ? `clip:${activeMainClip.id}` : 'main',
+        box: videoBox(activeMainClip?.transform, frameVideo.width * stageScale, frameVideo.height * stageScale, W, H, fill),
+      }] : []),
+      ...activeUpper.flatMap(({ clip }) => {
+        const source = useEditor.getState().videos.find((item) => item.id === clip.video_id);
+        return source ? [{ key: `vclip:${clip.id}`, box: videoBox(clip.transform, source.width * stageScale, source.height * stageScale, W, H, fill) }] : [];
+      }),
+    ].filter(({ key }) => key !== excludeKey).map(({ box }) => ({ x: box.x, y: box.y, width: box.w, height: box.h }));
+    return elementGuides(guides, [...nodeRects, ...videoRects]);
+  };
+  const guidesRef = useRef<Guides>(guides);
+  guidesRef.current = selectedLayerId ? guidesFor(`layer:${selectedLayerId}`) : guides;
 
   // 源音轨音量（契约 §2 audio.source_volume）：和成片一样直接作用在源视频上；
   // 有原声静音区间（source_mute，HIG-25）时跟着播放头逐帧取增益，落进区间就是 0。
@@ -867,7 +891,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
       if (drawingShape && spec && video && !coverActive) {
         const p = e.target.getStage()?.getPointerPosition();
-        if (p) setShapeDraft({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+        const x = p ? p.x - WORKSPACE_PAD : -1;
+        const y = p ? p.y - WORKSPACE_PAD : -1;
+        if (p && x >= 0 && x <= W && y >= 0 && y <= H) setShapeDraft({ x0: x, y0: y, x1: x, y1: y });
         return;
       }
       // 空白处：先只记起点。是「点一下取消选中」还是「拉框多选」，等松手时才知道。
@@ -882,7 +908,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
     if (shapeDraft) {
       const p = e.target.getStage()?.getPointerPosition();
-      if (p) setShapeDraft((d) => d && { ...d, x1: Math.max(0, Math.min(W, p.x)), y1: Math.max(0, Math.min(H, p.y)) });
+      if (p) setShapeDraft((d) => d && { ...d, x1: Math.max(0, Math.min(W, p.x - WORKSPACE_PAD)), y1: Math.max(0, Math.min(H, p.y - WORKSPACE_PAD)) });
       return;
     }
     const m = marqueeRef.current;
@@ -892,8 +918,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     // 移开超过阈值才算框选，没动就还是一次普通点击
     if (!m.active && Math.abs(p.x - m.x0) < MARQUEE_PX && Math.abs(p.y - m.y0) < MARQUEE_PX) return;
     m.active = true;
-    m.x1 = Math.max(0, Math.min(W, p.x));
-    m.y1 = Math.max(0, Math.min(H, p.y));
+    m.x1 = Math.max(0, Math.min(W + WORKSPACE_PAD * 2, p.x));
+    m.y1 = Math.max(0, Math.min(H + WORKSPACE_PAD * 2, p.y));
     setMarquee({ x0: m.x0, y0: m.y0, x1: m.x1, y1: m.y1 });
   };
   /** 框选结束：命中判定用舞台坐标，和 node.getClientRect() 同一个坐标系。 */
@@ -962,10 +988,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
       return newPos;
     }
     const g = guidesRef.current;
-    const sx = snapValue(newPos.x, g.xs, SNAP_PX);
-    const sy = snapValue(newPos.y, g.ys, SNAP_PX);
+    const sx = snapValue(newPos.x - WORKSPACE_PAD, g.xs, SNAP_PX);
+    const sy = snapValue(newPos.y - WORKSPACE_PAD, g.ys, SNAP_PX);
     setHitGuides({ xs: sx.hit === null ? [] : [sx.hit], ys: sy.hit === null ? [] : [sy.hit] });
-    return { x: sx.value, y: sy.value };
+    return { x: sx.value + WORKSPACE_PAD, y: sy.value + WORKSPACE_PAD };
   }, []);
 
   const layers = spec?.layers ?? [];
@@ -1004,9 +1030,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
 
   return (
     <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
-      <div className="stage-box" ref={boxRef} style={{ width: W, height: H, background: mainVideoHidden ? '#000' : undefined }}>
-        {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
-        <div className="main-video-frame" style={mainFrameStyles.frame}>
+      <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
+        <div className="stage-canvas" style={{ background: mainVideoHidden ? '#000' : undefined }}>
+          {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
+          <div className="main-video-frame" style={mainFrameStyles.frame}>
           <video
             ref={videoRef}
             src={previewUrl || undefined}
@@ -1019,30 +1046,35 @@ export function Stage({ hidden }: { hidden?: boolean }) {
               e.currentTarget.volume = spec?.sequence && video ? sequenceSourceGain(spec, video.id, player.currentTime) : sourceGainAt(srcAudio, player.postTime);
             }}
           />
-        </div>
-        {!coverActive && spec?.video_tracks?.filter((track) => !track.hidden).flatMap((track) => track.clips).map((clip) => {
+          </div>
+          {!coverActive && spec?.video_tracks?.filter((track) => !track.hidden).flatMap((track) => track.clips).map((clip) => {
           const source = useEditor.getState().videos.find((item) => item.id === clip.video_id);
           const active = postTime >= clip.start && postTime < clip.start + (clip.out - clip.in) / (clip.speed ?? 1);
           return source ? <UpperVideoPreview key={clip.id} clip={clip} source={source} active={active} fill={fill} W={W} H={H} outputW={outputW} /> : null;
-        })}
-        {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
-        <AudioTracks />
-        {!coverActive &&
+          })}
+          {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
+          <AudioTracks />
+          {!coverActive &&
           layers.map((l) => {
             if (l.type !== 'mask' || l.hidden || !windowContains(l.t, postTime)) return null;
             const g = geomOf(l);
             const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
             return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
-          })}
-        <div className="konva-layer" style={drawingShape ? { cursor: 'crosshair' } : undefined}>
-          <KStage width={W} height={H} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown} onMouseMove={onStageMouseMove} onTouchMove={onStageMouseMove} onMouseUp={onStageMouseUp} onTouchEnd={onStageMouseUp}>
-            <KLayer listening={false}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</KLayer>
+            })}
+        </div>
+        <div className="konva-layer" style={{ left: -WORKSPACE_PAD, top: -WORKSPACE_PAD, width: W + WORKSPACE_PAD * 2, height: H + WORKSPACE_PAD * 2, ...(drawingShape ? { cursor: 'crosshair' } : {}) }}>
+          <KStage width={W + WORKSPACE_PAD * 2} height={H + WORKSPACE_PAD * 2} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown} onMouseMove={onStageMouseMove} onTouchMove={onStageMouseMove} onMouseUp={onStageMouseUp} onTouchEnd={onStageMouseUp}>
+            <KLayer listening={false}><Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</Group></KLayer>
             <KLayer>
+              <Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>
               {step === 'trim' && videoControls.map((control) => {
                 const selected = selectedVideoKey === control.key;
                 return <Rect
                   key={`video-control:${control.key}`}
-                  ref={selected ? videoNodeRef : undefined}
+                  ref={(node) => {
+                    videoNodes.current[control.key] = node;
+                    if (selected) videoNodeRef.current = node;
+                  }}
                   x={control.box.x}
                   y={control.box.y}
                   width={control.box.w}
@@ -1052,7 +1084,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   strokeWidth={selected ? 1 : 0}
                   draggable={!control.locked}
                   onPointerDown={() => selectVideoControl(control.key)}
+                  onDragMove={(e) => snapDraggedNode(e.target, e.evt, guidesFor(control.key), setHitGuides)}
                   onDragEnd={(e) => {
+                    setHitGuides(NO_GUIDES);
                     const node = e.target;
                     updateSelectedVideoTransform({ x: (node.x() + node.width() / 2) / W, y: (node.y() + node.height() / 2) / H });
                   }}
@@ -1081,7 +1115,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                       selected={selectedLayerIds.includes(l.id) && layerTypes.includes(l.type)}
                       outlined={layerTypes.includes(l.type)}
                       backdrop={backdrop}
-                      guides={guides}
+                      guides={() => guidesFor(`layer:${l.id}`)}
                       onSelect={() => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); }}
                       onGuides={setHitGuides}
                       onLive={(box) => setLiveMask(box ? { id: l.id, box } : null)}
@@ -1102,7 +1136,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                     selectable={selectable}
                     selected={selectedLayerIds.includes(l.id) && layerTypes.includes(l.type)}
                     hidden={!!editingLayer && editingLayer.id === l.id}
-                    guides={guides}
+                    guides={() => guidesFor(`layer:${l.id}`)}
                     onSelect={() => { if (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id)) focusLayer(l); }}
                     onEdit={() => isRef && setEditingLayerId(l.id)}
                     onGuides={setHitGuides}
@@ -1144,9 +1178,9 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   boundBoxFunc={(oldBox, newBox) => (newBox.width < 8 || newBox.height < 8 ? oldBox : newBox)}
                 />
               )}
+              </Group>
             </KLayer>
             <KLayer listening={false}>
-              {shapeDraft && <Rect x={Math.min(shapeDraft.x0, shapeDraft.x1)} y={Math.min(shapeDraft.y0, shapeDraft.y1)} width={Math.abs(shapeDraft.x1 - shapeDraft.x0)} height={Math.abs(shapeDraft.y1 - shapeDraft.y0)} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 4]} />}
               {marquee && (
                 <Rect
                   x={Math.min(marquee.x0, marquee.x1)}
@@ -1160,13 +1194,16 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   listening={false}
                 />
               )}
-              {overlayUrl && <SafeZoneOverlay url={overlayUrl} W={W} H={H} />}
-              {hitGuides.xs.map((x) => (
-                <KLine key={`x${x}`} points={[x, 0, x, H]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
-              ))}
-              {hitGuides.ys.map((y) => (
-                <KLine key={`y${y}`} points={[0, y, W, y]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
-              ))}
+              <Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>
+                {shapeDraft && <Rect x={Math.min(shapeDraft.x0, shapeDraft.x1)} y={Math.min(shapeDraft.y0, shapeDraft.y1)} width={Math.abs(shapeDraft.x1 - shapeDraft.x0)} height={Math.abs(shapeDraft.y1 - shapeDraft.y0)} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 4]} />}
+                {overlayUrl && <SafeZoneOverlay url={overlayUrl} W={W} H={H} />}
+                {hitGuides.xs.map((x) => (
+                  <KLine key={`x${x}`} points={[x, 0, x, H]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
+                ))}
+                {hitGuides.ys.map((y) => (
+                  <KLine key={`y${y}`} points={[0, y, W, y]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
+                ))}
+              </Group>
             </KLayer>
           </KStage>
         </div>

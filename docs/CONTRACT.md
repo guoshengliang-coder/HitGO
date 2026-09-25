@@ -581,7 +581,7 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
         "t": "all",                          // 出声时段，秒，基于剪后时间轴；同 layers[].t
         "align": "post",                     // 可选，缺省 "post"：post = 素材从时段起点开始播 | source = 素材对齐源时间轴（分离出的人声 / 伴奏用），见下方规则
         "offset": 0,                         // 可选，缺省 0：从素材第几秒开始播；loop = true 时是第一遍的起点
-        "volume": 1,                         // 可选，缺省 1：0–1
+        "volume": 1,                         // 可选，缺省 1：0–1；转语言新生成的口播资产约 -16 LUFS
         "loop": false,                       // 可选，缺省 false：素材短于时段时循环；false 播完即静音
         "speed": 1,                          // 可选，缺省 1（HIG-75）：变速 0.5–2.0，atempo 不变调；align = "source" 时必须为 1。见下方规则
         "fade_in": 0, "fade_out": 0,         // 可选，缺省 0：秒；两者之和不能超过时段长

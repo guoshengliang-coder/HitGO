@@ -296,6 +296,16 @@ def test_mix_args_is_one_ffmpeg_command_over_a_silent_bed():
     assert argv[-1] == "/data/assets/a_x.m4a" and "+faststart" in argv
 
 
+def test_dub_mix_can_normalize_loudness_without_changing_other_callers():
+    clips = [(Path("/tmp/a.wav"), 0.0, 1.0)]
+    plain = localize.mix_args(clips, 2.0, Path("/tmp/plain.m4a"), "ffmpeg")
+    normalized = localize.mix_args(clips, 2.0, Path("/tmp/dub.m4a"), "ffmpeg", normalize_loudness=True)
+    plain_graph = plain[plain.index("-filter_complex") + 1]
+    normalized_graph = normalized[normalized.index("-filter_complex") + 1]
+    assert "loudnorm" not in plain_graph
+    assert "[mixed]loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100[aout]" in normalized_graph
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg not installed")
 def test_mix_args_really_produces_a_track_of_the_source_length(tmp_path):
     from app.services import ffprobe
@@ -323,6 +333,18 @@ def test_mixed_voice_signal_check_accepts_audible_output(tmp_path):
     dst = tmp_path / "voice.m4a"
     localize._run(localize.mix_args([(clip, 0, 1.0)], 1.0, dst), "混音")
     assert localize.mixed_voice_has_signal(dst)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg not installed")
+def test_mix_args_really_produces_a_normalized_track_of_the_source_length(tmp_path):
+    from app.services import ffprobe
+
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    a.write_bytes(localize.silent_wav(1.0))
+    b.write_bytes(localize.silent_wav(2.0))
+    normalized = tmp_path / "normalized.m4a"
+    localize._run(localize.mix_args([(a, 0.5, 1.0), (b, 2.0, 1.25)], 6.0, normalized, normalize_loudness=True), "响度标准化")
+    assert normalized.is_file() and ffprobe.probe_audio(normalized)["duration"] == pytest.approx(6.0, abs=0.2)
 
 
 def test_voice_names_and_previous_asset_ids():
@@ -494,6 +516,7 @@ def test_run_localization_transcribes_once_and_builds_one_asset_per_language(rea
     ]  # fmt: skip
     # extract once + mix twice; scratch dir is gone.
     assert len(no_ffmpeg) == 3 and not storage.localize_tmp_dir(VIDEO).exists()
+    assert all("loudnorm=I=-16:TP=-1.5:LRA=11" in call[call.index("-filter_complex") + 1] for call in no_ffmpeg[1:])
 
 
 def test_spoken_localization_builds_an_adaptive_picture_timeline(ready_video, db, no_ffmpeg):

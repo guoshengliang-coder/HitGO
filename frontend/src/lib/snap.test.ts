@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canvasGuides, snapActive, snapValue } from './snap';
+import { canvasGuides, elementGuides, snapActive, snapValue } from './snap';
 import type { SafeZone } from '../types';
 
 describe('snapValue', () => {
@@ -38,6 +38,22 @@ describe('canvasGuides', () => {
     const g = canvasGuides({ ...zone, zones: [], inner: { label: '', x: 0.05, y: 0.05, w: 0.9, h: 0.9 }, outer: null }, 100, 200);
     expect(g.xs).toEqual([0, 5, 50, 95, 100]);
     expect(g.ys).toEqual([0, 10, 100, 190, 200]);
+  });
+});
+
+describe('elementGuides', () => {
+  it('加入其他元素的边缘与中心并去重排序', () => {
+    expect(elementGuides({ xs: [0, 50, 100], ys: [0, 100, 200] }, [
+      { x: 10, y: 20, width: 40, height: 60 },
+      { x: 50, y: 100, width: 20, height: 20 },
+    ])).toEqual({
+      xs: [0, 10, 30, 50, 60, 70, 100],
+      ys: [0, 20, 50, 80, 100, 110, 120, 200],
+    });
+  });
+
+  it('忽略非法矩形', () => {
+    expect(elementGuides({ xs: [0], ys: [0] }, [{ x: NaN, y: 0, width: 1, height: 1 }])).toEqual({ xs: [0], ys: [0] });
   });
 });
 
