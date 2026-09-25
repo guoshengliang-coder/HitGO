@@ -218,6 +218,15 @@ export function insertClip(spec: EditSpec, ownerId: string, ownerDuration: numbe
   return { spec: next, clipId: clip.id };
 }
 
+/** Replace an untouched blank canvas with the first real main-track source. */
+export function firstClipOnBlank(spec: EditSpec, sourceId: string, sourceDuration: number): { spec: EditSpec; clipId: string } {
+  const next = cloneSpec(spec);
+  const clipId = id('c');
+  next.sequence = { clips: [{ id: clipId, video_id: sourceId, in: 0, out: sourceDuration, source_volume: 1 }] };
+  next.trim = { remove: [] };
+  return { spec: next, clipId };
+}
+
 export function updateClip(spec: EditSpec, clipId: string, patch: Partial<SequenceClip>): EditSpec {
   const next = cloneSpec(spec);
   const clip = next.sequence?.clips.find((c) => c.id === clipId);
@@ -374,13 +383,32 @@ export function moveClipSetKeepingCrossingContent(spec: EditSpec, ids: string[],
   const moved = moveClipSet(spec, ids, to);
   if (!spec.sequence || !moved.sequence) return moved;
   const windows = clipWindows(spec.sequence);
+  const afterWindows = new Map(clipWindows(moved.sequence).map((window) => [window.clip.id, window]));
+  const groupDeltas = new Map<string, number>();
+  for (const window of windows) {
+    if (!ids.includes(window.clip.id) || !window.clip.group || groupDeltas.has(window.clip.group)) continue;
+    const after = afterWindows.get(window.clip.id);
+    if (after) groupDeltas.set(window.clip.group, sourceToPost(after.start, moved.trim.remove) - sourceToPost(window.start, spec.trim.remove));
+  }
   const followsOneClip = (t: [number, number] | 'all') => t !== 'all' && windows.some((w) => t[0] >= w.start - 1e-6 && t[1] <= w.end + 1e-6);
-  const preserveCrossings = <T extends { id: string; t: [number, number] | 'all' }>(before: T[], after: T[]): T[] => {
+  const preserveCrossings = <T extends { id: string; t: [number, number] | 'all'; group?: string }>(before: T[], after: T[]): T[] => {
     const changed = new Map(after.map((item) => [item.id, item]));
-    return before.map((item) => followsOneClip(item.t) ? changed.get(item.id) ?? item : structuredClone(item));
+    return before.map((item) => {
+      const delta = item.group ? groupDeltas.get(item.group) : undefined;
+      if (delta !== undefined && item.t !== 'all') {
+        return { ...structuredClone(item), t: [item.t[0] + delta, item.t[1] + delta] as [number, number] };
+      }
+      return followsOneClip(item.t) ? changed.get(item.id) ?? item : structuredClone(item);
+    });
   };
   moved.layers = preserveCrossings(spec.layers, moved.layers);
   if (spec.audio && moved.audio) moved.audio.tracks = preserveCrossings(spec.audio.tracks, moved.audio.tracks);
+  for (const track of moved.video_tracks ?? []) {
+    for (const clip of track.clips) {
+      const delta = clip.group ? groupDeltas.get(clip.group) : undefined;
+      if (delta !== undefined && !track.locked) clip.start = Math.max(0, clip.start + delta);
+    }
+  }
   return moved;
 }
 

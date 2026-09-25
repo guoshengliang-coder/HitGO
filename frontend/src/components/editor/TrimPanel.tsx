@@ -9,6 +9,7 @@ import { BG_BRIGHTNESS_MAX, BG_BRIGHTNESS_MIN, BLUR_MAX, BLUR_MIN, bgBrightnessO
 import { countSafeZoneOverlaps, exportKeys, outputFor } from '../../lib/spec';
 import { toggleExportVariant } from '../../lib/exportScope';
 import { clipAt } from '../../lib/sequence';
+import { parseSegKey } from '../../lib/segments';
 import { resolveVideoTransform } from '../../lib/videoTransform';
 import { durationSummary, frameSummary, rangesSummary, FILL_LABEL, FILL_TIP, QUALITY_LABEL, QUALITY_TIP } from '../../lib/trimSummary';
 import { IconClose } from '../ui/Icons';
@@ -39,7 +40,7 @@ function VideoTransformSection() {
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const videos = useEditor((s) => s.videos);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
-  const selection = useEditor((s) => [...s.timelineSelection].reverse().find((key) => key.startsWith('clip:') || key.startsWith('vclip:')) ?? null);
+  const selection = useEditor((s) => [...s.timelineSelection].reverse().find((key) => key.startsWith('clip:') || key.startsWith('vclip:') || key.startsWith('seg:')) ?? null);
   const postTime = useEditor(selectPostTime);
   const update = useEditor((s) => s.updateSelectedVideoTransform);
   const previewKey = useEditor((s) => s.previewVariantKey);
@@ -48,6 +49,7 @@ function VideoTransformSection() {
   if (!video || !spec) return null;
   const mainClip = spec.sequence ? (selection?.startsWith('clip:') ? spec.sequence.clips.find((clip) => clip.id === selection.slice(5)) : clipAt(spec.sequence, postTime)?.clip) : undefined;
   const upperClip = selection?.startsWith('vclip:') ? spec.video_tracks?.flatMap((track) => track.clips).find((clip) => clip.id === selection.slice(6)) : undefined;
+  const segment = selection?.startsWith('seg:') ? parseSegKey(selection) : null;
   const clip = upperClip ?? mainClip;
   const source = videos.find((item) => item.id === clip?.video_id) ?? video;
   const t = resolveVideoTransform(clip?.transform);
@@ -56,7 +58,7 @@ function VideoTransformSection() {
   const patchCrop = (patch: Partial<typeof crop>) => update({ crop: { ...crop, ...patch } });
   return (
     <Section id="trim.video-transform" title="视频画面" bodyClass="stack" summary={<span className="mono">{source.name} · {Math.round(t.scale * 100)}%</span>} help="选中任意主轨或上层视频片段后，可在画布拖动和等比缩放；这里可精确输入位置、尺寸模式与源画面裁切。">
-      <div className="hint">{upperClip ? '上层视频片段' : '当前主视频片段'} · 坐标基于当前 {size.width}×{size.height} 画布</div>
+      <div className="hint">{upperClip ? '上层视频片段' : segment ? `主轨片段 ${formatTime(segment[0])}–${formatTime(segment[1])}` : '当前主视频片段'} · 坐标基于当前 {size.width}×{size.height} 画布</div>
       <Seg label="尺寸" options={[
         { v: 'contain' as const, label: '适应画布' },
         { v: 'cover' as const, label: '填满画布' },

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import replace
 import shutil
+import struct
 import wave
 from pathlib import Path
 
@@ -37,6 +39,20 @@ def test_silent_wav_and_wav_duration(tmp_path):
     assert localize.wav_duration(clip) == pytest.approx(1.5, abs=1e-3)
     with wave.open(str(clip), "rb") as w:
         assert w.getnchannels() == 1 and w.getsampwidth() == 2 and w.getframerate() == 22050
+    assert not localize.wav_has_signal(clip)
+
+
+def test_valid_length_wav_must_contain_audio_signal(tmp_path):
+    clip = tmp_path / "voice.wav"
+    rate = 22050
+    samples = [int(5000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(rate)]
+    with wave.open(str(clip), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    assert localize.wav_duration(clip) == pytest.approx(1.0)
+    assert localize.wav_has_signal(clip)
 
 
 def test_wav_duration_ignores_a_streaming_placeholder_header(tmp_path):
@@ -291,6 +307,22 @@ def test_mix_args_really_produces_a_track_of_the_source_length(tmp_path):
     localize._run(localize.mix_args([(a, 0.5, 1.0), (b, 2.0, 1.25)], 6.0, dst), "混音")
     assert dst.is_file() and dst.stat().st_size > 0
     assert ffprobe.probe_audio(dst)["duration"] == pytest.approx(6.0, abs=0.2)
+    assert not localize.mixed_voice_has_signal(dst)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_mixed_voice_signal_check_accepts_audible_output(tmp_path):
+    rate = 22050
+    samples = [int(5000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(rate)]
+    clip = tmp_path / "spoken.wav"
+    with wave.open(str(clip), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+    dst = tmp_path / "voice.m4a"
+    localize._run(localize.mix_args([(clip, 0, 1.0)], 1.0, dst), "混音")
+    assert localize.mixed_voice_has_signal(dst)
 
 
 def test_voice_names_and_previous_asset_ids():
@@ -412,6 +444,21 @@ DONE_TRANSCRIPT = {
     "error": None,
     "cues": [{"i": 0, "start": 0.42, "end": 2.91, "text": "Welcome to HitGO."}, {"i": 1, "start": 3.0, "end": 5.5, "text": "Let's get started."}],
 }
+
+
+def test_silent_vendor_response_fails_instead_of_publishing_voice(ready_video, db):
+    class SilentVendor:
+        def synthesize(self, text, voice, speech_rate=1.0, **kwargs):  # noqa: ANN001, ANN003
+            return localize.silent_wav(1.0)
+
+    queue(db, ["ko"], transcript=DONE_TRANSCRIPT)
+    providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=SilentVendor())
+    localize.run_localization(db, VIDEO, providers)
+    db.expire_all()
+    version = db.get(Video, VIDEO).localization["versions"]["ko"]
+    assert version["status"] == "failed"
+    assert "无声音频" in version["error"]
+    assert version["voice_asset_id"] is None
 
 
 def test_run_localization_transcribes_once_and_builds_one_asset_per_language(ready_video, db, no_ffmpeg):
