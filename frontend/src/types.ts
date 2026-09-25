@@ -233,6 +233,12 @@ export interface VersionCue {
   dub_duration?: number | null;
   /** 可选（HIG-73）：套用时该句原画面的播放速度。 */
   video_speed?: number | null;
+  /** 句末补画面的停帧秒数；缺省 0。 */
+  hold_after?: number | null;
+  /** 单句独立口播素材；旧版本缺席时仍使用整版配音素材。 */
+  voice_asset_id?: string | null;
+  /** 旧源时间轴方案为塞进原句而加快的口播速度；独立素材本身保持原速。 */
+  dub_tempo?: number | null;
 }
 
 export interface LocalizationVersion {
@@ -968,6 +974,8 @@ export interface SequenceClip {
   out: number;
   /** 可选（HIG-73）：画面播放速度，0.5–2.0；缺省 1。大于 1 缩短片段，小于 1 延长片段。 */
   speed?: number;
+  /** HIG-108：画面安全调速后仍不够时，在本片段末帧停留的秒数。 */
+  hold_after?: number;
   /** 可选（HIG-73）：自动转语言时对应的听写句编号；非口播间隔不带。 */
   localize_cue?: number;
   /** 本片段原声音量；缺省 1。旧序列全部未设置时由 normalizeSequenceAudio 迁移。 */

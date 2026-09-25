@@ -125,12 +125,21 @@ def test_region_corners_are_clamped_inside_the_frame():
     assert max(xs) <= 1.0 and max(ys) <= 1.0
 
 
-def test_submit_payload_asks_for_the_advanced_removal_mode():
+def test_submit_payload_selects_pro_for_one_small_subtitle_band():
     payload = submit_payload("https://pub/a.mp4", [EraseRegion(box=box(0, 0.8, 1, 0.2))], "1080p", "hitgo")
 
     assert payload["urls"] == ["https://pub/a.mp4"]
-    assert payload["needChineseOcclude"] == 2  # basic mode misses stylised captions
+    assert payload["needChineseOcclude"] == 2
+    assert payload["videoInpaintLang"] == "all"
+    assert json.loads(payload["extraOptions"]) == {"extra_inpaint_config": {"model": "advanced_large_box"}}
     assert payload["resolution"] == "1080p"
+
+
+def test_multiple_regions_use_lite_and_large_or_many_regions_stay_basic():
+    small = EraseRegion(box=box(0.1, 0.8, 0.8, 0.1))
+    assert json.loads(submit_payload("url", [small], "720p", "u")["extraOptions"])["extra_inpaint_config"]["model"] == "advanced"
+    assert json.loads(submit_payload("url", [small, small], "720p", "u")["extraOptions"])["extra_inpaint_config"]["model"] == "advanced_lite"
+    assert "extraOptions" not in submit_payload("url", [small] * 11, "720p", "u")
 
 
 def test_submit_returns_the_project_id(http):

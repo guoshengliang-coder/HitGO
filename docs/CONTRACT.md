@@ -106,11 +106,13 @@
         { "i": 0, "translated": "힛고에 오신 것을 환영합니다.",
           "dub_start": 0.42,        // 可选：配音起点；adaptive_timing=true 时为适配后的成片时间轴，否则为源时间轴
           "dub_duration": 2.13,     // 可选：这句配音实际占用的秒数
-          "video_speed": 1.17 }     // 可选（HIG-73）：套用时这句原画面的播放速度
+          "video_speed": 1.17,      // 可选（HIG-73）：套用时这句原画面的播放速度
+          "hold_after": 0.0,        // 可选（HIG-108）：安全调速后仍不够时，句末停帧的秒数
+          "voice_asset_id": "a_cue0" } // 可选（HIG-108）：单句独立音频素材；旧版本缺席
       ],
       "stale": false,               // 模板改过之后为 true：译文不是最新模板译出来的，需重译
       "error": null, "warnings": [],   // warnings：配音塞不进原句时段等提示
-      "voice_asset_id": "a_d0bb3d", // 合成过才有：配音素材，derived_from = { video_id, video_name, stem: "dubbed", lang: "ko" }
+      "voice_asset_id": "a_d0bb3d", // 合成过才有：整版混音素材，供旧版本与独立音频导出使用
       "dub": true,                  // 可选，缺省 true（HIG-56）：false = 这次只翻译不合成，done 时可能没有 voice_asset_id
       "voice_stale": false,         // 可选，缺省 false（HIG-56）：只翻译覆盖了译文，旧配音还在但对不上新译文，需再合成
       "source_voice": false,        // 可选，缺省 false（HIG-58）：这一版用复刻出来的原声合成（voice 里是 clone_voice.voice_id），界面显示"原声"而不是音色名
@@ -149,10 +151,11 @@
 
 **自然口播与保守画面适配（HIG-73）**：Qwen-MT 先保证语义与术语，再由 `LOCALIZE_SCRIPT_MODEL`（缺省
 `qwen-plus`）按目标语言口语习惯重组语序、展开容易误读的数字/缩写/符号并补自然标点，同时以原句时长为目标。
-服务端按自然语速合成并测量每句；超出画面 `0.8–1.25×` 可适配范围的句子再改写、重合成一次。全部句子都能落在范围内才
-写 `adaptive_timing = true`；否则整版沿用旧的源时间轴与音频变速兜底，并在 `warnings` 明说哪句超限。该能力只调整原画面
-速度和切分，不做生成式口型重绘。编辑器只在没有手工视频拼接、删除区间或固定成片时长时自动建立画面时序；有这些编辑时
-保留用户时序并给警告。
+服务端按自然语速合成并测量每句；超出画面 `0.8–1.25×` 可适配范围的句子再改写、重合成一次。
+重试后仍偏长时，画面最多放慢到 `0.8×`，余下时间用 `hold_after` 在句末停帧，保留完整口播并在 `warnings` 告知。
+每句 WAV 作为独立素材写入 cue 的 `voice_asset_id`；编辑器套用时生成一条 `align = "post"` 的音轨，分别可移动、裁切、
+静音和调音量，整版混音素材仍保留供旧版与导出使用。该能力只调整原画面速度、切分和停帧，不做生成式口型重绘。
+编辑器只在没有手工视频拼接、删除区间或固定成片时长时自动建立画面时序；有这些编辑时保留用户时序并给警告。
 
 **原声配音 `clone_voice`**（可选，缺省 null，HIG-58）：从这条视频自己的人声里截一段样本，用百炼 CosyVoice 的声音
 复刻得到一个音色，之后各语言版本都用它合成，听感仍是原说话人。整条视频只复刻一次：`status = done` 且 `model` 与
@@ -387,7 +390,8 @@ QuickTime RLE / HEVC-with-alpha）与 `webm`（VP8/VP9 alpha）可以带透明�
   当前视频也可重复引用。`in` / `out` 是该源片的秒数，`0 ≤ in < out ≤ 源片时长`；
   `id` 在序列中唯一。至少一个片段，每段不少于 0.1 秒。
   已就绪图片也可作为主轨来源：上传预处理把静帧做成默认 5 秒的无声源片，序列引用该源片。
-- 每段可选 `speed`（0.5–2.0，缺省 1）：成片时长为 `(out - in) / speed`，画面用 `setpts`、该片段原声及
+- 每段可选 `speed`（0.5–2.0，缺省 1）和 `hold_after`（0–3600 秒，缺省 0）：成片时长为 `(out - in) / speed + hold_after`，
+  画面在末尾停留最后一帧，片段原声补静音；画面用 `setpts`、该片段原声及
   源对齐音轨用 `atempo` 同步变速且不变调。`origin = "localize"`、`localize_cue` 是 HIG-73 自动画面适配标记；
   切换语言版本时只替换这种自动时序，不覆盖用户手工拼接。
 - 主轨与上层轨的每个 clip 都可选 `transform`（HIG-89）：`fit = auto | contain | cover | original`，
@@ -1148,7 +1152,9 @@ Job 完成时生成并存到 `job.callback`，产物页按批次筛选（`/outpu
 3. **每个目标语言**：`blocks` 里 `enabled` 的原文整段按 `1. …\n2. …` 编号送 `qwen-mt-plus`（与改语言同一条路，
    共用术语表），回来的编号对不上就逐句重译。`target_langs` 为空时跳过这一步。
 4. **擦除**（请求带 `erase`）：把字幕带和 `scope` 指定的块换算成矩形，交给 `ERASE_PROVIDER`。字幕带**整条视频全程擦**，
-   不按句时段擦——更便宜，也不会因为时段边界没对齐而漏擦几帧。提交后写 `erase.status = running` 与 `deadline`，
+   不按句时段擦——更便宜，也不会因为时段边界没对齐而漏擦几帧。字幕带框向外扩一点，以覆盖描边和阴影。
+   GhostCut 单框按面积选 Pro，小于 20% 用 `advanced`、小于 40% 用 `advanced_large_box`；多框且不超过 10 个用 Lite，
+   更多框退回 Basic。均用 `remove_only_ocr` 保留非文字背景。提交后写 `erase.status = running` 与 `deadline`，
    随即**重新入队**一个 `hitgo.erase_poll` 就结束本任务：`WORKER_CONCURRENCY` 缺省 1，阻塞轮询会把改语言任务饿死。
    `erase_poll` 每次只做一个 tick：完成就下载结果，`ffprobe` 校验时长与帧率和源片一致（容差 0.2 秒），通过才原子替换
    `clean.mp4` 并生成 `clean_proxy.mp4` / `clean_poster.jpg`；还没完成且未到 `deadline` 就带 `countdown`

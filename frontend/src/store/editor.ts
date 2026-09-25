@@ -14,7 +14,7 @@ import { cleanTrackName } from '../lib/trackNames';
 import { appliedVersion, applyLocalizationToSpec, autoApplyLang, canApplyVersion, isLocalizationActive, langLabel, localizationFinishText, LOCALIZE_ORIGIN, stripLocalization, type LocalizeBgmChoice } from '../lib/localize';
 import { applyScreenTextToSpec, bandHint, cleanReady, screenSource, screenTextActive, screenTextFinishText, stripScreenText } from '../lib/screentext';
 import { loadFeaturePrefs } from '../lib/featurePrefs';
-import { replaceAutoSubtitles, transcriptToSubtitleLayers, type VideoTranscript } from '../lib/autoSubtitle';
+import { normalizeGeneratedSubtitleLayers, replaceAutoSubtitles, transcriptToSubtitleLayers, type VideoTranscript } from '../lib/autoSubtitle';
 import { planLanguageExport, specLang } from '../lib/langExport';
 import type { ExportScope } from '../lib/exportScope';
 
@@ -971,7 +971,8 @@ export const useEditor = create<EditorState>((set, get) => {
           }
           const draft = cloneSpec(v.edit_spec);
           specs[v.id] = normalizeSequenceAudio(normalizeOutputs(draft), v.id);
-          if (specs[v.id] !== draft && v.status === 'ready') collapsed.push(v.id);
+          const fixedSubtitles = normalizeGeneratedSubtitleLayers(specs[v.id].layers);
+          if ((specs[v.id] !== draft || fixedSubtitles) && v.status === 'ready') collapsed.push(v.id);
         }
         const currentVideoId = batch.videos[0]?.id ?? null;
         set({
@@ -1229,7 +1230,19 @@ export const useEditor = create<EditorState>((set, get) => {
     },
     setSafeZoneKey: (safeZoneKey) => set({ safeZoneKey }),
     setSelectedLayer: (selectedLayerId) => set({ selectedLayerId, selectedLayerIds: selectedLayerId ? [selectedLayerId] : [] }),
-    setSubtitleSyncEnabled: (subtitleSyncEnabled) => set({ subtitleSyncEnabled }),
+    setSubtitleSyncEnabled: (subtitleSyncEnabled) => {
+      if (subtitleSyncEnabled) {
+        const selected = get().currentSpec()?.layers.find((layer) => layer.id === get().selectedLayerId);
+        if (isSubtitleTextLayer(selected)) {
+          get().updateSpec((spec) => {
+            for (const layer of spec.layers) {
+              if (layer.id !== selected.id && !layer.locked && isSubtitleTextLayer(layer)) layer.style.font_size = selected.style.font_size;
+            }
+          });
+        }
+      }
+      set({ subtitleSyncEnabled });
+    },
     selectLayers: (ids, mode = 'replace') => {
       const spec = get().currentSpec();
       if (!spec) return;
@@ -1756,6 +1769,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const prev = s.specs[videoId] ?? emptySpec();
       const next = cloneSpec(prev);
       fn(next);
+      normalizeGeneratedSubtitleLayers(next.layers);
       const history = { ...s.history };
       if (opts?.history !== false) {
         const h = { ...ensureHistory(history, videoId) };
@@ -1772,6 +1786,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const prev = s.specs[videoId] ?? emptySpec();
       // 后端要求 outputs 至少一个：null 用空 spec 代替
       const next = spec ? normalizeSequenceAudio(cloneSpec(spec), videoId) : emptySpec();
+      normalizeGeneratedSubtitleLayers(next.layers);
       const history = { ...s.history };
       if (opts?.history) {
         const h = { ...ensureHistory(history, videoId) };

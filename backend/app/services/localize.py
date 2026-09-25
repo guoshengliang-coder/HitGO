@@ -19,6 +19,7 @@ import copy
 import io
 import logging
 import re
+import shutil
 import subprocess
 import wave
 from dataclasses import dataclass, field
@@ -919,7 +920,40 @@ def plan_adaptive_placements(
     return placements, round(cursor + max(0.0, total - previous_end), 3), warnings
 
 
-DUB_KEYS = ("dub_start", "dub_duration", "video_speed")
+def plan_complete_placements(
+    cues: list[dict[str, Any]], clip_durations: list[float], total: float,
+    min_speed: float = ADAPTIVE_VIDEO_SPEED_MIN,
+    max_speed: float = ADAPTIVE_VIDEO_SPEED_MAX,
+) -> tuple[list[dict[str, Any]], float, list[str]]:
+    """Keep every spoken line intact; hold its last picture frame if safe speed is insufficient."""
+    placements: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    cursor = 0.0
+    previous_end = 0.0
+    for cue, duration in zip(cues, clip_durations, strict=True):
+        source_start = max(previous_end, float(cue["start"]))
+        source_end = max(source_start, float(cue["end"]))
+        source_seconds = source_end - source_start
+        if source_seconds < 0.1:
+            raise LocalizeError(f"第 {int(cue['i']) + 1} 句原画面不足 0.1 秒，无法按句适配")
+        voice_seconds = max(float(duration), 0.01)
+        speed = min(max(source_seconds / voice_seconds, min_speed), max_speed)
+        picture_seconds = source_seconds / speed
+        hold = max(0.0, voice_seconds - picture_seconds)
+        cursor += max(0.0, source_start - previous_end)
+        placements.append({
+            "i": cue["i"], "start": round(cursor, 3), "tempo": 1.0,
+            "duration": round(voice_seconds, 3), "video_speed": round(speed, 3),
+            "hold_after": round(hold, 3),
+        })
+        if hold > 0.01:
+            warnings.append(f"第 {int(cue['i']) + 1} 句为完整播完口播，在句末停帧 {hold:.1f} 秒")
+        cursor += picture_seconds + hold
+        previous_end = source_end
+    return placements, round(cursor + max(0.0, total - previous_end), 3), warnings
+
+
+DUB_KEYS = ("dub_start", "dub_duration", "video_speed", "hold_after", "voice_asset_id", "dub_tempo")
 
 
 def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -939,6 +973,12 @@ def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]
             clean["dub_duration"] = round(float(hit["duration"]), 3)
             if hit.get("video_speed") is not None:
                 clean["video_speed"] = round(float(hit["video_speed"]), 3)
+            if hit.get("hold_after"):
+                clean["hold_after"] = round(float(hit["hold_after"]), 3)
+            if hit.get("voice_asset_id"):
+                clean["voice_asset_id"] = str(hit["voice_asset_id"])
+            if float(hit.get("tempo") or 1.0) != 1.0:
+                clean["dub_tempo"] = round(float(hit["tempo"]), 3)
         out.append(clean)
     return out
 
@@ -1010,7 +1050,11 @@ def previous_voice_asset_ids(localization: dict[str, Any] | None, langs: list[st
             continue
         if version and version.get("voice_asset_id"):
             out.append(str(version["voice_asset_id"]))
-    return out
+        for cue in (version or {}).get("cues") or []:
+            if cue.get("voice_asset_id"):
+                out.append(str(cue["voice_asset_id"]))
+        out.extend(str(asset_id) for asset_id in (version or {}).get("old_cue_asset_ids") or [])
+    return list(dict.fromkeys(out))
 
 
 def apply_cue_edits(cues: list[dict[str, Any]], edits: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
@@ -1351,6 +1395,10 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     warnings: list[str] = []
 
     if fresh_translation:
+        version["old_cue_asset_ids"] = list(dict.fromkeys([
+            *(version.get("old_cue_asset_ids") or []),
+            *(str(c["voice_asset_id"]) for c in version.get("cues") or [] if c.get("voice_asset_id")),
+        ]))
         _stamp(version, status=LOC_RUNNING, stage=STAGE_TRANSLATE, error=None)
         _save(db, video, loc, langs=[lang])
         translated = translate_with_fallback(providers.mt, [c["text"] for c in cues], mt_name(source_lang), mt_name(lang), terms)
@@ -1393,7 +1441,6 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     clip_durations: list[float] = []
     tmp.mkdir(parents=True, exist_ok=True)
     total = float(video.duration or max(float(c["end"]) for c in cues))
-    slots = dict(zip((int(c["i"]) for c in cues), cue_slots(cues, total), strict=True))
     for cue in cues:
         text = translated_by_i.get(int(cue["i"]), "")
         if not text:
@@ -1401,12 +1448,8 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
         clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
         seconds = wav_duration(clip)
-        # Old/custom providers retain the historical audio-only fit. HIG-73-capable providers keep
-        # natural TTS speed and adapt the picture after measuring the actual clip.
-        rate = speech_rate_for(seconds, slots[int(cue["i"])]) if not adaptive_candidate and supports_speech_rate(model) else 1.0
-        if rate > 1.0:
-            clip.write_bytes(providers.tts.synthesize(text, voice, rate, model=model, lang=lang, emotion=emotion))
-            seconds = wav_duration(clip)
+        # Keep the natural TTS take; all providers now adapt the picture after
+        # measuring it, instead of forcing voice speed or mixing adjacent lines.
         spoken.append(cue)
         clip_paths.append(clip)
         clip_durations.append(seconds)
@@ -1444,22 +1487,9 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
 
     _stamp(version, stage=STAGE_MIX)
     _save(db, video, loc, langs=[lang])
-    adaptive = False
-    mix_total = total
-    placements: list[dict[str, Any]]
-    if adaptive_candidate:
-        adaptive_placements, adapted_total, adaptive_warnings = plan_adaptive_placements(spoken, clip_durations, total)
-        warnings.extend(adaptive_warnings)
-        if adaptive_placements is not None:
-            placements = adaptive_placements
-            mix_total = adapted_total
-            adaptive = True
-        else:
-            placements, legacy_warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
-            warnings.extend(legacy_warnings)
-    else:
-        placements, legacy_warnings = plan_placements(spoken, clip_durations, total, settings.localize_max_tempo)
-        warnings.extend(legacy_warnings)
+    placements, mix_total, adaptive_warnings = plan_complete_placements(spoken, clip_durations, total)
+    warnings.extend(adaptive_warnings)
+    adaptive = True
     asset_id = ids.asset_id()
     dst = storage.asset_path(asset_id, VOICE_EXT)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1467,6 +1497,30 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     try:
         _run(mix_args(clips, mix_total, dst), "混音")
     except Exception:
+        storage.remove_file(dst)
+        raise
+
+    # Preserve each original TTS WAV as an independent editable asset. Legacy versions
+    # keep using the combined m4a; a newly applied version uses these cue assets only.
+    cue_assets: list[Asset] = []
+    cue_paths: list[Path] = []
+    try:
+        for cue, clip_path, seconds, placement in zip(spoken, clip_paths, clip_durations, placements, strict=True):
+            cue_asset_id = ids.asset_id()
+            cue_dst = storage.asset_path(cue_asset_id, "wav")
+            cue_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(clip_path, cue_dst)
+            cue_paths.append(cue_dst)
+            placement["voice_asset_id"] = cue_asset_id
+            cue_assets.append(Asset(
+                id=cue_asset_id, type=ASSET_AUDIO, kind=ASSET_AUDIO, status=ASSET_READY,
+                name=f"{Path(video.name).stem} · {LANGS.get(lang, {}).get('label', lang)}口播第{int(cue['i']) + 1}句.wav",
+                ext="wav", source=ASSET_SOURCE_DERIVED, duration=seconds, has_audio=True,
+                derived_from={"video_id": video.id, "video_name": video.name, "stem": "dubbed_cue", "lang": lang, "cue": cue["i"]},
+            ))
+    except Exception:
+        for path in cue_paths:
+            storage.remove_file(path)
         storage.remove_file(dst)
         raise
 
@@ -1493,8 +1547,10 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
             },
         )
     )
+    db.add_all(cue_assets)
     # Where each line's voice-over actually landed, so the editor can time split subtitles by it (HIG-36).
     version["cues"] = with_placements(version["cues"], placements)
+    version.pop("old_cue_asset_ids", None)
     _stamp(
         version,
         status=LOC_DONE, stage=None, error=None, warnings=warnings, stale=False,

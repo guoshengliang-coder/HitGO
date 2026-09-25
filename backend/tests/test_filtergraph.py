@@ -4,6 +4,7 @@ import shutil
 import subprocess
 
 import pytest
+from PIL import Image
 
 from app.schemas import EditSpec
 from app.services.filtergraph import (
@@ -47,6 +48,46 @@ def build(spec_dict=None, meta=META, variant_key="9x16", assets=None, resolve=re
 
 def fc(plan) -> str:
     return plan.argv[plan.argv.index("-filter_complex") + 1]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+def test_adjacent_subtitle_layers_render_without_a_shared_frame(tmp_path):
+    source = tmp_path / "black.mp4"
+    output = tmp_path / "subtitles.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=128x128:r=25:d=2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+    ], check=True, capture_output=True)
+    paths = {color: tmp_path / f"{color}.png" for color in ("red", "green")}
+    for color, path in paths.items():
+        Image.new("RGBA", (64, 32), color).save(path)
+    layers = []
+    for color, window in (("red", [0, 0.999]), ("green", [1, 2])):
+        layers.append({
+            "id": color, "type": "text", "text": color,
+            "style": {"font_family": "Noto Sans SC", "font_size": 0.05, "color": "#FFFFFF"},
+            "image_url": f"/media/{color}.png", "image_size": [64, 32],
+            "anchor": "center", "margin": [0, 0], "width": 0.5, "rotate": 0, "opacity": 1, "t": window,
+        })
+    data = valid_spec(trim={"remove": []}, layers=layers, outputs=[{"variant_key": "custom", "aspect": "custom", "width": 128, "height": 128, "fill": "color"}])
+    spec = EditSpec.model_validate(data)
+    plan = build_render_command(
+        spec, {"duration": 2, "has_audio": False, "width": 128, "height": 128, "fps": 25}, {}, spec.outputs[0],
+        source_path=str(source), output_path=str(output),
+        resolve_image_url=lambda url: ImageSource(str(paths[url.rsplit("/", 1)[-1].split(".")[0]]), 64, 32),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=60)
+
+    def colors_at(second):
+        frame = tmp_path / f"at_{second}.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", str(second), "-i", str(output), "-frames:v", "1", str(frame)], check=True, capture_output=True)
+        pixels = list(Image.open(frame).convert("RGB").getdata())
+        return (sum(r > 140 and g < 90 for r, g, _ in pixels), sum(g > 100 and r < 90 for r, g, _ in pixels))
+
+    red_before, green_before = colors_at(0.96)
+    red_after, green_after = colors_at(1.04)
+    assert red_before > 100 and green_before == 0
+    assert green_after > 100 and red_after == 0
 
 
 # --- keep segments -------------------------------------------------------------

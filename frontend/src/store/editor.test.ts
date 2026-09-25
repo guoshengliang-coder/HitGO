@@ -74,6 +74,15 @@ describe('时间线轨道锁定（HIG-62）', () => {
 });
 
 describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
+  it('保存入口收住自动字幕的重叠窗口，编辑时也维持相邻句不叠帧', () => {
+    const a = { ...textLayer('甲'), origin: 'subtitle' as const, auto: true, t: [0, 2] as [number, number] };
+    const b = { ...textLayer('乙'), id: 'L2', origin: 'subtitle' as const, auto: true, t: [1, 3] as [number, number] };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
+    expect((useEditor.getState().currentSpec()!.layers[0] as TextLayer).t).toEqual([0, 0.999]);
+    useEditor.getState().updateLayer('L1', { t: [0, 2.5] });
+    expect((useEditor.getState().currentSpec()!.layers[0] as TextLayer).t).toEqual([0, 0.999]);
+  });
+
   it('合并下一句只记一次历史，撤销后恢复两句和各自时段', () => {
     const a = { ...textLayer('甲'), origin: 'subtitle' as const, t: [0, 1] as [number, number] };
     const b = { ...a, id: 'L2', text: '乙', t: [1, 2] as [number, number] };
@@ -115,13 +124,13 @@ describe('字幕同步与跨轨群组（HIG-70 / HIG-60）', () => {
     expect(layers.map((layer) => [layer.text, layer.t])).toEqual([['甲', [0, 1]], ['乙', [2, 3]], ['锁定', [4, 5]]]);
   });
 
-  it('初始字号不同也按本次绝对值同步，开启开关本身不改字幕', () => {
+  it('开启同步时以选中字幕字号统一其它句，之后的绝对值修改继续同步', () => {
     const a = { ...textLayer('短句'), origin: 'subtitle' as const, style: { ...defaultTextStyle(), font_size: 0.08 }, t: [0, 1] as [number, number] };
     const b = { ...textLayer('较长的后一句'), id: 'L2', origin: 'subtitle' as const, style: { ...defaultTextStyle(), font_size: 0.04 }, t: [1, 2] as [number, number] };
     useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [a, b] });
     useEditor.getState().setSelectedLayer('L1');
     useEditor.getState().setSubtitleSyncEnabled(true);
-    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.font_size).toBe(0.04);
+    expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.font_size).toBe(0.08);
     // Applying the selected cue's existing value via a preset still unifies the other cue.
     useEditor.getState().updateSelectedTextStyle({ font_size: 0.08 });
     expect((useEditor.getState().currentSpec()!.layers[1] as TextLayer).style.font_size).toBe(0.08);

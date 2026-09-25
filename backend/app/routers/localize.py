@@ -224,6 +224,10 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     try:
+        old_cue_asset_ids = list(dict.fromkeys([
+            *(version.get("old_cue_asset_ids") or []),
+            *(str(c["voice_asset_id"]) for c in version["cues"] if c.get("voice_asset_id")),
+        ]))
         cues = localize.apply_cue_edits(version["cues"], [c.model_dump() for c in body.cues], "translated")
         # About to re-synthesise: the old voice-over windows no longer describe this text (HIG-36).
         cues = localize.with_placements(cues, [])
@@ -237,6 +241,7 @@ def update_version(video_id: str, lang: str, body: VersionCuesIn, db: Session = 
         voice=voice,
         source_voice=source_voice,
         cues=cues,
+        old_cue_asset_ids=old_cue_asset_ids,
         error=None,
         warnings=[],
         adaptive_timing=False,
@@ -260,8 +265,7 @@ def delete_version(video_id: str, lang: str, db: Session = Depends(get_db)) -> N
         raise HTTPException(404, "没有这个语言版本")
     if _active(version):
         raise HTTPException(409, "这个版本正在生成中，请等它完成再删除")
-    asset_id = version.get("voice_asset_id")
-    if asset_id:
+    for asset_id in localize.previous_voice_asset_ids(loc, [lang]):
         asset = db.get(Asset, asset_id)
         if asset is not None:
             storage.remove_file(storage.asset_path(asset.id, asset.ext))
