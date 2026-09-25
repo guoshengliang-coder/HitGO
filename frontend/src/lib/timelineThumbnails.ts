@@ -14,10 +14,12 @@ export function timelineThumbnails(video: Video | null, sequence: SequenceSpec |
     const tileW = sprite.tile_width * scale, tileH = sprite.tile_height * scale;
     const tiles = [];
     for (let t = w.start; t < end - 1e-6;) {
-      const raw = w.clip.in + (t - w.start);
+      const speed = 'speed' in w.clip ? w.clip.speed ?? 1 : 1;
+      const holdStart = w.start + (w.clip.out - w.clip.in) / speed;
+      const raw = Math.min(w.clip.out - 1e-4, w.clip.in + (t - w.start) * speed);
       const sourceTile = Math.floor(raw / sprite.interval + 1e-6);
       const i = Math.min(sprite.count - 1, sourceTile);
-      const next = Math.min(end, t + (sourceTile + 1) * sprite.interval - raw);
+      const next = t >= holdStart - 1e-6 ? end : Math.min(end, t + ((sourceTile + 1) * sprite.interval - raw) / speed);
       if (next <= t + 1e-6) break;
       tiles.push({ left: t * pps, width: (next - t) * pps, backgroundImage: `url("${sprite.url}")`, backgroundSize: `${sprite.columns * tileW}px auto`, backgroundPosition: `-${(i % sprite.columns) * tileW}px ${-Math.floor(i / sprite.columns) * tileH + (64 - tileH) / 2}px` });
       t = next;

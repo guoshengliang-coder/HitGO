@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type SequenceClip } from '../types';
-import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeEditableSegments, materializeSequence, moveClip, moveClipGroup, moveLegacySegment, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, updateClip } from './sequence';
+import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeEditableSegments, materializeSequence, moveClip, moveClipGroup, moveLegacySegment, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, splitClip, updateClip } from './sequence';
 import { trackMediaTime } from './audioTracks';
 import { segKey } from './segments';
 
@@ -174,6 +174,20 @@ describe('HIG-39 composed timeline', () => {
     expect(sequenceDuration(spec.sequence!)).toBeCloseTo(4.1);
     expect(sequenceSourceTime(spec.sequence!, 'owner', 1)).toBeCloseTo(0.8);
     expect(sequenceSourceTime(spec.sequence!, 'owner', 3.5)).toBeCloseTo(3.25);
+  });
+
+  it('keeps a held frame only on the tail when splitting a clip', () => {
+    const spec = withSequence({ ...clip('held', 'owner', 0, 2), hold_after: 1 });
+    const split = splitClip(spec, 'held', 1)!;
+    expect(split.sequence?.clips.map((c) => [c.in, c.out, c.hold_after ?? 0])).toEqual([[0, 1, 0], [1, 2, 1]]);
+    expect(sequenceDuration(split.sequence!)).toBe(3);
+    expect(sequenceSourceTime(split.sequence!, 'owner', 2.5)).toBe(2);
+  });
+
+  it('keeps audio placed over a held frame when the picture speed changes', () => {
+    const spec: EditSpec = { ...withSequence({ ...clip('held', 'owner', 0, 2), hold_after: 1 }), audio: { source_volume: 0, tracks: [{ id: 'voice', asset_id: 'a', align: 'post', t: [2.2, 2.8] }] } };
+    const changed = updateClip(spec, 'held', { speed: 0.8 });
+    expect(changed.audio?.tracks.map((track) => track.t)).toEqual([[2.7, 3.3]]);
   });
 
   it('moves and deletes local windows with their footage, without moving all-film windows', () => {

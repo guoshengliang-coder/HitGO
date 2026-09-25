@@ -461,6 +461,9 @@ describe('applyLocalizationToSpec', () => {
     const w2 = applyLocalizationToSpec(spec2, 'ko', ctx(video()));
     expect(spec2.audio!.tracks.filter((t) => t.asset_id === 'a_inst')).toHaveLength(1);
     expect(w2.some((x) => x.includes('原人声'))).toBe(true);
+    expect(spec2.audio!.tracks.find((t) => t.id === 'voc_user')?.hidden).toBe(true);
+    applyLocalizationToSpec(spec2, 'ko', ctx(video()));
+    expect(spec2.audio!.tracks.filter((t) => t.origin === 'localize' && t.role === 'voice')).toHaveLength(1);
   });
 
   it('替换 BGM 时移除旧 BGM，不依赖分离伴奏；切换语言后仍只留一条新 BGM', () => {
@@ -541,6 +544,38 @@ describe('appliedVersion', () => {
     spec.audio!.tracks = spec.audio!.tracks.filter((t) => t.role !== 'voice');
     expect(appliedVersion(spec, v.localization)).toEqual({ lang: 'ko', state: 'stale' });
     expect(appliedVersion(null, v.localization)).toBeNull();
+  });
+});
+
+describe('HIG-108 逐句口播', () => {
+  it('完整长句用句末停帧，套用后每句成为可单独编辑的音轨', () => {
+    const ko = version({
+      adaptive_timing: true,
+      timeline_duration: 11,
+      cues: [
+        { i: 0, translated: '환영합니다.', dub_start: 0.4, dub_duration: 3, video_speed: 0.8, hold_after: 0.5, voice_asset_id: 'cue0' },
+        { i: 1, translated: '두 번째.', dub_start: 4.4, dub_duration: 2, video_speed: 1, voice_asset_id: 'cue1' },
+        { i: 2, translated: '' },
+      ],
+    });
+    const v = video({ localization: { source_lang: 'en', transcript: TRANSCRIPT, versions: { ko } } });
+    const cueAssets: Asset[] = ['cue0', 'cue1'].map((id) => ({ ...ASSET_BASE, id, name: `${id}.wav` }));
+    const spec = emptySpec();
+    const warnings = applyLocalizationToSpec(spec, 'ko', { ...ctx(v), assets: [...ASSETS, ...cueAssets] });
+    const tracks = spec.audio!.tracks.filter((track) => track.role === 'voice');
+    expect(warnings).toEqual([]);
+    expect(tracks.map((track) => [track.asset_id, track.align, track.t])).toEqual([
+      ['cue0', 'post', [0.4, 3.4]], ['cue1', 'post', [4.4, 6.4]],
+    ]);
+    expect(tracks[0].id).not.toBe(tracks[1].id);
+    expect(spec.sequence?.clips.find((clip) => clip.localize_cue === 0)).toMatchObject({ speed: 0.8, hold_after: 0.5 });
+    expect(appliedVersion(spec, v.localization)).toEqual({ lang: 'ko', state: 'applied' });
+    tracks[0].t = [0.6, 2.6];
+    tracks[0].volume = 0.4;
+    tracks[0].hidden = true;
+    expect(tracks[1]).toMatchObject({ t: [4.4, 6.4], volume: 1 });
+    const missingCue = version({ ...ko, cues: [{ ...ko.cues[0], voice_asset_id: null }, ...ko.cues.slice(1)] });
+    expect(appliedVersion(spec, { ...v.localization!, versions: { ko: missingCue } })).toEqual({ lang: 'ko', state: 'stale' });
   });
 });
 

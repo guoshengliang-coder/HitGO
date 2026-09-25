@@ -19,6 +19,7 @@ function fakeVideo(src = '/media/a.mp4') {
 describe('Player multi-source preview (HIG-39)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it('maps composed seeks to raw source times and keeps the composed duration', () => {
@@ -65,6 +66,31 @@ describe('Player multi-source preview (HIG-39)', () => {
     expect(p.sourceMediaRate).toBe(1.25);
     p.pause();
     expect(p.sourceMediaRate).toBe(0);
+  });
+
+  it('keeps the final source frame while the dubbed sentence continues', () => {
+    let frame: FrameRequestCallback | null = null;
+    let now = 1000;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frame = callback; return 1; });
+    vi.stubGlobal('cancelAnimationFrame', () => undefined);
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const tick = (ms: number) => { now += ms; const callback = frame; frame = null; callback?.(now); };
+    const p = new Player();
+    const v = fakeVideo();
+    p.attach(v);
+    p.setSequence([{ id: 'held', src: '/media/a.mp4', sourceIn: 0, sourceOut: 1, start: 0, end: 2, holdAfter: 1 }]);
+    p.play();
+    v.currentTime = 1;
+    v.dispatchEvent(new Event('ended'));
+    expect(p.currentTime).toBe(1);
+    expect(p.isPlaying).toBe(true);
+    tick(500);
+    expect(p.currentTime).toBeCloseTo(1.5);
+    expect(v.currentTime).toBeCloseTo(0.999);
+    expect(p.sourceMediaRate).toBe(0);
+    tick(600);
+    expect(p.currentTime).toBe(2);
+    expect(p.isPlaying).toBe(false);
   });
 });
 

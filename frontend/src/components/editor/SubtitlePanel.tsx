@@ -129,7 +129,7 @@ export function SubtitlePanel() {
         />
 
         <LayerList type="text" lane="subtitle" emptyHint="还没有字幕。自动识别、添加字幕或导入 .srt 文件，也可以在「改语言」中生成字幕。" />
-        <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置</label>
+        <label className="inline"><input type="checkbox" checked={subtitleSyncEnabled} onChange={(e) => setSubtitleSyncEnabled(e.target.checked)} />同步修改当前视频所有字幕的样式和位置（开启时统一为选中字幕的字号）</label>
         {selectedSubtitle && <LayerProps key={selectedSubtitle.id} layer={selectedSubtitle} />}
 
         <Section id="subtitle.mask" title="遮盖原字幕" bodyClass="stack" hint="在画布上拖到原字幕的位置" help={MASK_HELP}>

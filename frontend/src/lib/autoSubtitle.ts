@@ -36,7 +36,7 @@ export function ownerSourceRangeToPost(spec: EditSpec, videoId: string, [a0, b0]
       const speed = w.clip.speed ?? 1;
       const visibleEnd = Math.min(w.end, windows[i + 1]?.start ?? w.end);
       const lo = Math.max(a, w.clip.in);
-      const hi = Math.min(b, w.clip.in + (visibleEnd - w.start) * speed);
+      const hi = Math.min(b, w.clip.out, w.clip.in + (visibleEnd - w.start) * speed);
       if (hi - lo <= 1e-6) return;
       onClock.push([w.start + (lo - w.clip.in) / speed, w.start + (hi - w.clip.in) / speed]);
     });
@@ -111,6 +111,30 @@ export function transcriptToSubtitleLayers(transcripts: VideoTranscript[], spec:
 /** 这层是不是上一批自动识别出的字幕。 */
 export function isAutoSubtitle(layer: Layer): boolean {
   return layer.type === 'text' && layer.origin === 'subtitle' && layer.auto === true;
+}
+
+/** Keep generated subtitle layers disjoint even after a user moves or stretches one. */
+export function normalizeGeneratedSubtitleLayers(layers: Layer[]): boolean {
+  type TimedTextLayer = TextLayer & { t: [number, number] };
+  const groups = new Map<string, TimedTextLayer[]>();
+  for (const layer of layers) {
+    if (layer.type !== 'text' || layer.hidden || layer.t === 'all') continue;
+    const key = isAutoSubtitle(layer) ? 'auto' : layer.origin === 'localize' ? `localize:${layer.lang ?? ''}` : null;
+    if (key) groups.set(key, [...(groups.get(key) ?? []), layer as TimedTextLayer]);
+  }
+  let changed = false;
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.t[0] - b.t[0] || layers.indexOf(a) - layers.indexOf(b));
+    for (let i = 0; i + 1 < group.length; i++) {
+      const before = group[i], after = group[i + 1];
+      if (before.t === 'all' || after.t === 'all' || before.t[1] < after.t[0]) continue;
+      const end = Math.round((after.t[0] - 0.001) * 1000) / 1000;
+      if (end <= before.t[0]) before.hidden = true;
+      else before.t = [before.t[0], end];
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** 换掉上一批自动字幕（锁定的留着），手动添加 / .srt 导入的不动，新的一批追加在后面。 */

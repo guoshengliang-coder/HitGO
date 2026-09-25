@@ -15,4 +15,9 @@ describe('same thumbnail strip for single and composed videos', () => {
     expect(tiles.reduce((n, t) => n + t.width, 0)).toBeCloseTo(330);
     tiles.slice(1).forEach((t, i) => expect(t.left).toBeCloseTo(tiles[i].left + tiles[i].width));
   });
+  it('repeats the final source tile across a held frame', () => {
+    const tiles = timelineThumbnails(a, { clips: [{ id: 'held', video_id: 'a', in: 0, out: 1, hold_after: 1 }] }, [a], 100);
+    expect(tiles.reduce((n, tile) => n + tile.width, 0)).toBeCloseTo(200);
+    expect(tiles.every((tile) => tile.backgroundPosition === tiles[0].backgroundPosition)).toBe(true);
+  });
 });

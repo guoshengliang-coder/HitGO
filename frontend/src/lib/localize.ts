@@ -519,15 +519,16 @@ const retimeWindow = (window: [number, number], segments: { sourceStart: number;
 /** Apply HIG-73's cue timing to the owner picture. Returns a warning when an edited sequence cannot be replaced safely. */
 export function applyAdaptiveTiming(spec: EditSpec, video: Video, version: LocalizationVersion, newClipId?: () => string): string | null {
   if (!version.adaptive_timing) {
-    if (spec.sequence?.origin === LOCALIZE_ORIGIN && spec.sequence.clips.some((clip) => Math.abs((clip.speed ?? 1) - 1) > 1e-6)) {
+    if (spec.sequence?.origin === LOCALIZE_ORIGIN && spec.sequence.clips.some((clip) => Math.abs((clip.speed ?? 1) - 1) > 1e-6 || (clip.hold_after ?? 0) > 0)) {
       const before = cloneSpec(spec);
       const after = cloneSpec(spec);
-      for (const clip of after.sequence!.clips) clip.speed = 1;
+      for (const clip of after.sequence!.clips) { clip.speed = 1; clip.hold_after = 0; }
       Object.assign(spec, retimeContent(before, after));
     }
     return null;
   }
   const speeds = new Map(version.cues.filter((c) => typeof c.video_speed === 'number').map((c) => [c.i, c.video_speed!]));
+  const holds = new Map(version.cues.filter((c) => typeof c.hold_after === 'number').map((c) => [c.i, c.hold_after!]));
   const transcript = video.localization?.transcript?.cues ?? [];
   if (!speeds.size || !transcript.length) return '缺少画面适配数据，已保留当前画面时序';
 
@@ -535,7 +536,10 @@ export function applyAdaptiveTiming(spec: EditSpec, video: Video, version: Local
     if (spec.sequence.origin !== LOCALIZE_ORIGIN) return '当前已有手工视频拼接，未自动改动画面速度';
     const before = cloneSpec(spec);
     const after = cloneSpec(spec);
-    for (const clip of after.sequence!.clips) clip.speed = clip.localize_cue === undefined ? 1 : speeds.get(clip.localize_cue) ?? 1;
+    for (const clip of after.sequence!.clips) {
+      clip.speed = clip.localize_cue === undefined ? 1 : speeds.get(clip.localize_cue) ?? 1;
+      clip.hold_after = clip.localize_cue === undefined ? 0 : holds.get(clip.localize_cue) ?? 0;
+    }
     Object.assign(spec, retimeContent(before, after));
     return null;
   }
@@ -548,9 +552,10 @@ export function applyAdaptiveTiming(spec: EditSpec, video: Video, version: Local
   let outputCursor = 0;
   const add = (sourceStart: number, sourceEnd: number, speed: number, cue?: number) => {
     if (sourceEnd - sourceStart < 0.01) return;
-    clips.push({ id: makeId(), video_id: video.id, in: round3(sourceStart), out: round3(sourceEnd), speed: round3(speed), source_volume: 1, ...(cue === undefined ? {} : { localize_cue: cue }) });
+    const hold = cue === undefined ? 0 : holds.get(cue) ?? 0;
+    clips.push({ id: makeId(), video_id: video.id, in: round3(sourceStart), out: round3(sourceEnd), speed: round3(speed), hold_after: round3(hold), source_volume: 1, ...(cue === undefined ? {} : { localize_cue: cue }) });
     segments.push({ sourceStart, sourceEnd, outputStart: outputCursor, speed });
-    outputCursor += (sourceEnd - sourceStart) / speed;
+    outputCursor += (sourceEnd - sourceStart) / speed + hold;
   };
   for (const cue of [...transcript].sort((a, b) => a.i - b.i)) {
     const start = Math.max(sourceCursor, cue.start);
@@ -641,7 +646,18 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
 
   // 2. 源音轨静音 + 配音轨
   setOwnerSourceGain(spec, video.id, 0);
-  spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: version.adaptive_timing ? 'post' : 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
+  const voicedCues = version.cues.filter((cue) => cue.dub_start != null && cue.dub_duration != null && cue.dub_duration > 0);
+  const spoken = voicedCues.filter((cue) => !!cue.voice_asset_id);
+  const splitVoice = version.adaptive_timing && spoken.length > 0 && spoken.length === voicedCues.length && spoken.every((cue) => assets.some((asset) => asset.id === cue.voice_asset_id && isAssetReady(asset)));
+  if (splitVoice) {
+    for (const cue of spoken) {
+      const start = cue.dub_start!;
+      spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: cue.voice_asset_id!, role: 'voice', align: 'post', t: [start, start + cue.dub_duration!], volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang, name: `第 ${cue.i + 1} 句口播` });
+    }
+  } else {
+    spec.audio.tracks.push({ id: ctx.newTrackId(), asset_id: version.voice_asset_id, role: 'voice', align: version.adaptive_timing ? 'post' : 'source', t: 'all', volume: 1, loop: false, origin: LOCALIZE_ORIGIN, lang });
+    if (version.adaptive_timing && spoken.length) warnings.push('逐句口播素材未全部就绪，暂用整条口播；请刷新素材后重新套用');
+  }
 
   // 3. 原伴奏或指定的新 BGM
   const sep = video.separation;
@@ -663,7 +679,11 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
     warnings.push('还没有分离出的伴奏，成片只有配音没有背景音乐；到「音频」模块分离人声 / 伴奏后重新套用即可补上');
   }
   const vocalsId = sep?.status === 'done' ? sep.vocals_asset_id : null;
-  if (vocalsId && userTracks.some((t) => t.asset_id === vocalsId)) warnings.push('音频里还有分离出的原人声轨，会和配音重叠，建议删掉');
+  if (vocalsId) {
+    const duplicateVocals = userTracks.filter((track) => track.asset_id === vocalsId && !track.hidden);
+    for (const track of duplicateVocals) track.hidden = true;
+    if (duplicateVocals.length) warnings.push('已静音单独添加的原人声轨，避免与译文口播叠音；可在音频模块重新打开');
+  }
 
   // 4. 译文字幕层
   const cues = mergedCues(video.localization?.transcript, version);
@@ -687,7 +707,11 @@ export function appliedVersion(spec: EditSpec | null | undefined, loc: Localizat
   if (!lang) return null;
   const version = loc?.versions?.[lang];
   const voice = tracks.find((t) => t.role === 'voice' && t.lang === lang);
-  const fresh = !!version && version.status === 'done' && !!voice && voice.asset_id === version.voice_asset_id;
+  const voicedCues = version?.adaptive_timing ? version.cues.filter((cue) => (cue.dub_duration ?? 0) > 0) : [];
+  const cueIds = voicedCues.map((cue) => cue.voice_asset_id).filter((id): id is string => !!id);
+  const fresh = !!version && version.status === 'done' && (cueIds.length && cueIds.length === voicedCues.length
+    ? cueIds.every((id) => tracks.some((track) => track.role === 'voice' && track.lang === lang && track.asset_id === id))
+    : !!voice && voice.asset_id === version.voice_asset_id);
   return { lang, state: fresh ? 'applied' : 'stale' };
 }
 

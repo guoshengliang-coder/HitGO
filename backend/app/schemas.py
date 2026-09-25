@@ -802,6 +802,7 @@ class SequenceClip(BaseModel):
     source_out: float = Field(alias="out", gt=0)
     # HIG-73: visual playback rate. Optional on the wire through its default so old specs stay valid.
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    hold_after: float = Field(default=0.0, ge=0, le=3600.0)  # HIG-108: freeze the last frame after safe retiming
     localize_cue: int | None = Field(default=None, ge=0)
     # None distinguishes legacy sequences whose owner gain was stored as master gain.
     source_volume: float | None = Field(default=None, ge=0, le=1)
@@ -840,7 +841,7 @@ class SequenceSpec(BaseModel):
 
     @property
     def duration(self) -> float:
-        return sum((c.source_out - c.source_in) / c.speed - (c.transition.duration if c.transition else 0) for c in self.clips)
+        return sum((c.source_out - c.source_in) / c.speed + c.hold_after - (c.transition.duration if c.transition else 0) for c in self.clips)
 
 
 class VideoTrackClip(BaseModel):
@@ -1282,6 +1283,9 @@ class VersionCueOut(BaseModel):
     dub_duration: float | None = None
     # HIG-73: source-picture playback rate when the version uses adaptive timing.
     video_speed: float | None = None
+    hold_after: float | None = None
+    voice_asset_id: str | None = None
+    dub_tempo: float | None = None
 
 
 class TermOut(BaseModel):

@@ -12,7 +12,7 @@ import { lapsFor, postTimeOf, postToSource, postTrimDuration, removedRangeAt, sk
 
 type Listener = (t: number, playing: boolean, lap: number) => void;
 type FrameListener = () => void;
-export interface SequencePlaybackClip { id: string; src: string; sourceIn: number; sourceOut: number; start: number; end: number; speed?: number }
+export interface SequencePlaybackClip { id: string; src: string; sourceIn: number; sourceOut: number; start: number; end: number; speed?: number; holdAfter?: number }
 
 export class Player {
   private video: HTMLVideoElement | null = null;
@@ -62,6 +62,11 @@ export class Player {
     if (!this.playing || this.rateValue < 0) return;
     if (this.sequence) {
       const current = this.sequenceClipAt(this.time);
+      if (current && (current.holdAfter ?? 0) > 0) {
+        this.time = Math.max(this.time, this.holdStart(current));
+        this.video?.pause();
+        return;
+      }
       const next = this.sequence[this.sequence.findIndex((clip) => clip.id === current?.id) + 1];
       if (next) this.seek(next.start);
       else this.pause();
@@ -124,11 +129,21 @@ export class Player {
     return [...this.sequence].reverse().find((clip) => t >= clip.start - 1e-6) ?? this.sequence[0];
   }
 
+  private holdStart(clip: SequencePlaybackClip): number {
+    return clip.start + (clip.sourceOut - clip.sourceIn) / (clip.speed ?? 1);
+  }
+
+  private holding(clip: SequencePlaybackClip | null): boolean {
+    return !!clip && (clip.holdAfter ?? 0) > 0 && this.time >= this.holdStart(clip) - 1e-3 && this.time < clip.end - 1e-3;
+  }
+
   private syncSequenceMedia() {
     const video = this.video;
     const clip = this.sequenceClipAt(Math.max(0, this.time));
     if (!video || !clip) return;
-    const mediaTime = Math.min(clip.sourceOut, clip.sourceIn + Math.max(0, this.time - clip.start) * (clip.speed ?? 1));
+    const mediaTime = this.holding(clip)
+      ? Math.max(clip.sourceIn, clip.sourceOut - 0.001)
+      : Math.min(clip.sourceOut, clip.sourceIn + Math.max(0, this.time - clip.start) * (clip.speed ?? 1));
     if (video.getAttribute('src') !== clip.src) {
       video.pause();
       this.synthetic = true;
@@ -139,6 +154,7 @@ export class Player {
       try { video.currentTime = mediaTime; } catch { /* metadata not loaded yet */ }
     }
     this.applyRate();
+    if (this.holding(clip)) video.pause();
   }
 
   get isSynthetic() {
@@ -261,6 +277,7 @@ export class Player {
   /** Source-aligned media follows the active sequence clip's retiming as well as J/K/L. */
   get sourceMediaRate() {
     if (!this.playing || this.rateValue <= 0) return 0;
+    if (this.sequence && this.holding(this.sequenceClipAt(Math.max(0, this.time)))) return 0;
     const clipSpeed = this.sequence ? this.sequenceClipAt(Math.max(0, this.time))?.speed ?? 1 : 1;
     return this.rateValue * clipSpeed;
   }
@@ -324,6 +341,7 @@ export class Player {
   }
 
   private playVideo() {
+    if (this.sequence && this.holding(this.sequenceClipAt(Math.max(0, this.time)))) return;
     if (this.video && !this.synthetic) {
       this.video.play().catch(() => {
         this.synthetic = true;
@@ -390,7 +408,10 @@ export class Player {
         if (this.time >= 0) { this.time = skipRemoved(0, this.remove); this.syncSequenceMedia(); this.playVideo(); }
       } else {
         const clip = this.sequenceClipAt(this.time);
-        if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn) / (clip.speed ?? 1);
+        if (this.holding(clip)) {
+          this.video?.pause();
+          this.time += dt * this.rateValue;
+        } else if (clip && this.video && !this.synthetic) this.time = clip.start + Math.max(0, this.video.currentTime - clip.sourceIn) / (clip.speed ?? 1);
         else this.time += dt * this.rateValue;
         const next = this.sequence.find((c) => c.start > (clip?.start ?? 0) + 1e-6 && c.start <= this.time + 1e-3);
         if (next) { this.time = next.start; this.syncSequenceMedia(); this.playVideo(); }

@@ -13,7 +13,7 @@ export const activeSourceDrag = () => activeSourceId;
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 12)}`;
 
 export function clipLength(clip: SequenceClip): number {
-  return (clip.out - clip.in) / (clip.speed ?? 1);
+  return (clip.out - clip.in) / (clip.speed ?? 1) + (clip.hold_after ?? 0);
 }
 
 export function sequenceDuration(sequence: SequenceSpec): number {
@@ -76,7 +76,7 @@ export function setOwnerSourceGain(spec: EditSpec, ownerId: string, gain: number
 export function sequenceSourceTime(sequence: SequenceSpec, ownerId: string, time: number): number | undefined {
   const window = clipAt(sequence, time);
   if (!window || time < 0 || time >= sequenceDuration(sequence) || window.clip.video_id !== ownerId) return undefined;
-  return window.clip.in + (time - window.start) * (window.clip.speed ?? 1);
+  return Math.min(window.clip.out, window.clip.in + (time - window.start) * (window.clip.speed ?? 1));
 }
 
 /** Visible spans for an owner-aligned track; never paint it over other sources. */
@@ -205,6 +205,7 @@ export function insertClip(spec: EditSpec, ownerId: string, ownerDuration: numbe
     const cut = Math.max(original.in + MIN_CLIP, Math.min(original.out - MIN_CLIP, original.in + (position - window.start) * (original.speed ?? 1)));
     const tail: SequenceClip = { ...original, id: id('c'), in: cut, transition: null };
     original.out = cut;
+    original.hold_after = 0;
     sequence.clips.splice(index + 1, 0, clip, tail);
   }
   const postPosition = sourceToPost(position, next.trim.remove);
@@ -222,7 +223,7 @@ export function updateClip(spec: EditSpec, clipId: string, patch: Partial<Sequen
   const clip = next.sequence?.clips.find((c) => c.id === clipId);
   if (clip) Object.assign(clip, patch);
   if (next.sequence) sanitizeTransitions(next.sequence);
-  return 'in' in patch || 'out' in patch || 'speed' in patch || 'transition' in patch ? retimeContent(spec, next) : next;
+  return 'in' in patch || 'out' in patch || 'speed' in patch || 'hold_after' in patch || 'transition' in patch ? retimeContent(spec, next) : next;
 }
 
 /** A clip keeps its own timed content when it moves or changes length. */
@@ -237,13 +238,28 @@ export function retimeContent(before: EditSpec, after: EditSpec): EditSpec {
     const lo = Math.max(a, old.start);
     const hi = Math.min(b, old.end);
     if (hi - lo < 0.01) return [];
+    const oldPictureEnd = old.start + (old.clip.out - old.clip.in) / (old.clip.speed ?? 1);
+    const nextPictureEnd = next.start + (next.clip.out - next.clip.in) / (next.clip.speed ?? 1);
+    const mapped: [number, number][] = [];
     // Match frames by their raw-source timestamp, so changing a clip's in/out
     // point trims the attached timed content instead of sliding it over new footage.
-    const sourceLo = old.clip.in + (lo - old.start) * (old.clip.speed ?? 1);
-    const sourceHi = old.clip.in + (hi - old.start) * (old.clip.speed ?? 1);
-    const mappedA = next.start + (Math.max(sourceLo, next.clip.in) - next.clip.in) / (next.clip.speed ?? 1);
-    const mappedB = next.start + (Math.min(sourceHi, next.clip.out) - next.clip.in) / (next.clip.speed ?? 1);
-    return mappedB - mappedA >= 0.01 ? [[mappedA, mappedB]] : [];
+    const pictureHi = Math.min(hi, oldPictureEnd);
+    if (pictureHi - lo >= 0.01) {
+      const sourceLo = old.clip.in + (lo - old.start) * (old.clip.speed ?? 1);
+      const sourceHi = old.clip.in + (pictureHi - old.start) * (old.clip.speed ?? 1);
+      const mappedA = next.start + (Math.max(sourceLo, next.clip.in) - next.clip.in) / (next.clip.speed ?? 1);
+      const mappedB = next.start + (Math.min(sourceHi, next.clip.out) - next.clip.in) / (next.clip.speed ?? 1);
+      if (mappedB - mappedA >= 0.01) mapped.push([mappedA, mappedB]);
+    }
+    // Content placed over a held frame follows the hold rather than a source
+    // timestamp beyond clip.out, which does not exist.
+    const holdLo = Math.max(lo, oldPictureEnd);
+    if (hi - holdLo >= 0.01 && (next.clip.hold_after ?? 0) > 0) {
+      const mappedA = nextPictureEnd + (holdLo - oldPictureEnd);
+      const mappedB = Math.min(next.end, nextPictureEnd + (hi - oldPictureEnd));
+      if (mappedB - mappedA >= 0.01) mapped.push([mappedA, mappedB]);
+    }
+    return mapped;
   });
   after.trim.remove = normalizeRanges(before.trim.remove.flatMap(mapRawRange), sequenceDuration(after.sequence));
   const keeps = keepSegments(sequenceDuration(before.sequence), before.trim.remove);
@@ -286,6 +302,7 @@ export function splitClip(spec: EditSpec, clipId: string, time: number): EditSpe
   if (cut - clip.in < MIN_CLIP || clip.out - cut < MIN_CLIP) return null;
   const tail: SequenceClip = { ...clip, id: id('c'), in: cut, transition: null };
   clip.out = cut;
+  clip.hold_after = 0;
   next.sequence!.clips.splice(index + 1, 0, tail);
   return next;
 }

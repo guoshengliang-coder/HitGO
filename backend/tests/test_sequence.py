@@ -287,6 +287,52 @@ def test_sequence_speed_retimes_picture_source_audio_and_source_aligned_stems():
     assert plan.filter_complex.count('atempo=0.8') == 2  # raw source audio + source-aligned stem
 
 
+def test_source_aligned_instrumental_waits_for_the_held_frame():
+    data = sequence_spec({**clip('a', 'owner'), 'hold_after': 1}, clip('b', 'owner', 1, 2))
+    data['audio'] = {'source_volume': 0, 'tracks': [{'id': 'stem', 'asset_id': 'stem', 'align': 'source', 't': 'all'}]}
+    spec = EditSpec.model_validate(data)
+    sources = [ClipSource(c, '/owner.mp4', 128, 128, 25, True) for c in spec.sequence.clips]
+    plan = build_render_command(
+        spec, {'video_id': 'owner', 'duration': 2, 'width': 128, 'height': 128, 'fps': 25, 'has_audio': True},
+        {}, spec.outputs[0], source_path='/owner.mp4', output_path='/out.mp4', sequence_sources=sources,
+        audio_assets={'stem': AudioSource('/stem.m4a', 2)},
+    )
+    assert plan.expected_duration == pytest.approx(3)
+    assert 'adelay=2000:all=1' in plan.filter_complex
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+def test_cue_voice_continues_over_the_held_last_picture_frame(tmp_path):
+    source, voice, output = (tmp_path / name for name in ("source.mp4", "cue.wav", "held.mp4"))
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=blue:s=128x128:r=25:d=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+    ], check=True, capture_output=True)
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=660:duration=2",
+        str(voice),
+    ], check=True, capture_output=True)
+    data = sequence_spec({**clip("cue", "owner"), "hold_after": 1, "source_volume": 0})
+    data["audio"] = {"source_volume": 0, "tracks": [{"id": "cue0", "asset_id": "voice", "align": "post", "t": [0, 2], "role": "voice"}]}
+    spec = EditSpec.model_validate(data)
+    plan = build_render_command(
+        spec, {"video_id": "owner", "duration": 1, "width": 128, "height": 128, "fps": 25, "has_audio": False},
+        {}, spec.outputs[0], source_path=str(source), output_path=str(output),
+        sequence_sources=[ClipSource(spec.sequence.clips[0], str(source), 128, 128, 25, False)],
+        audio_assets={"voice": AudioSource(str(voice), 2)},
+    )
+    assert plan.expected_duration == pytest.approx(2)
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=60)
+    assert ffprobe.probe(output)["duration"] == pytest.approx(2, abs=0.1)
+    decoded = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", "1.4", "-i", str(output), "-t", "0.2", "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1"],
+        check=True, capture_output=True,
+    ).stdout
+    samples = array.array("f")
+    samples.frombytes(decoded)
+    assert samples and max(abs(value) for value in samples) > 0.02
+
+
 def test_compound_groups_and_splits_validate_and_round_trip(client, ready_video):
     """HIG-85: group ids on layers / tracks / clips and trim.splits are editor-only and survive a save."""
     spec = sequence_spec({**clip("main", ready_video.id, end=4), "group": "cg_main"})

@@ -835,7 +835,7 @@ export function Stage({ hidden }: { hidden?: boolean }) {
     }
     const clips = clipWindows(spec.sequence).map(({ clip, start, end }) => {
       const source = useEditor.getState().videos.find((v) => v.id === clip.video_id);
-      return { id: clip.id, src: source?.proxy_url ?? '', sourceIn: clip.in, sourceOut: clip.out, start, end, speed: clip.speed ?? 1 };
+      return { id: clip.id, src: source?.proxy_url ?? '', sourceIn: clip.in, sourceOut: clip.out, start, end, speed: clip.speed ?? 1, holdAfter: clip.hold_after ?? 0 };
     });
     player.setSequence(clips);
   }, [spec?.sequence, video?.id, video?.duration, previewUrl]);

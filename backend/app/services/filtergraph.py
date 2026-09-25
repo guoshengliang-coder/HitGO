@@ -596,12 +596,13 @@ def build_render_command(
         for i, src in enumerate(sequence_sources):
             clip = src.clip
             speed = float(clip.speed or 1.0)
-            length = (clip.source_out - clip.source_in) / speed
+            length = (clip.source_out - clip.source_in) / speed + clip.hold_after
             raw = f"[seqraw{i}]"
             tempo = f",setpts=(PTS-STARTPTS)/{_fmt(speed)}" if abs(speed - 1.0) > 1e-6 else ",setpts=PTS-STARTPTS"
+            freeze = f",tpad=stop_mode=clone:stop_duration={_fmt(clip.hold_after)}" if clip.hold_after > 0 else ""
             chains.append(
                 f"[{i}:v]trim=start={_fmt(clip.source_in)}:end={_fmt(clip.source_out)},"
-                f"{tempo[1:]},fps={fps},setsar=1{raw}"
+                f"{tempo[1:]},fps={fps}{freeze},setsar=1{raw}"
             )
             filled = f"[seqfill{i}]"
             if clip.transform is not None:
@@ -1065,7 +1066,7 @@ def build_render_command(
                     c = segment.clip
                     position -= c.transition.duration if c.transition else 0.0
                     speed = float(c.speed or 1.0)
-                    length = (c.source_out - c.source_in) / speed
+                    length = (c.source_out - c.source_in) / speed + c.hold_after
                     if c.video_id == video_meta.get("video_id"):
                         label = f"[tk{n_track}s{k}]"
                         delay = round(position * 1000)

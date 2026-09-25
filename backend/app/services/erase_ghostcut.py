@@ -53,9 +53,8 @@ OK_CODE = 1000
 STATUS_SUCCESS = 1
 STATUS_FAILED = {2, 3, 4, -1}
 
-# needChineseOcclude = 2: the advanced text-removal mode, which covers burnt-in subtitles as
-# well as OCR'd graphics. 1 is the basic mode and misses stylised captions.
-OCCLUDE_ADVANCED = 2
+# 2 selects the supplied regions; model quality is selected separately by extraOptions.
+OCCLUDE_REGIONS = 2
 
 # The vendor's own sentinel for "the whole clip" (it appears in their published example).
 WHOLE_CLIP_END = 99999
@@ -101,15 +100,34 @@ def resolution_for(height: int | None) -> str:
     return RESOLUTION_TIERS[-1][1]
 
 
+def inpaint_model(regions: list[EraseRegion]) -> str | None:
+    """Use the best supported region model without violating its count/area limits."""
+    if len(regions) == 1:
+        box = regions[0].box
+        area = min(1.0, float(box["w"])) * min(1.0, float(box["h"]))
+        if area < 0.2 - 1e-6:
+            return "advanced"
+        if area < 0.4 - 1e-6:
+            return "advanced_large_box"
+    if 1 <= len(regions) <= 10:
+        return "advanced_lite"
+    return None  # Basic handles more than ten regions.
+
+
 def submit_payload(public_url: str, regions: list[EraseRegion], resolution: str, uid: str) -> dict[str, Any]:
-    return {
+    payload = {
         "urls": [public_url],
         "uid": uid,
         "outUserId": uid,
-        "needChineseOcclude": OCCLUDE_ADVANCED,
+        "needChineseOcclude": OCCLUDE_REGIONS,
+        "videoInpaintLang": "all",
         "resolution": resolution,
         "videoInpaintMasks": masks_payload(regions),
     }
+    model = inpaint_model(regions)
+    if model:
+        payload["extraOptions"] = json.dumps({"extra_inpaint_config": {"model": model}}, separators=(",", ":"))
+    return payload
 
 
 def vendor_status_text(row: dict[str, Any]) -> str:

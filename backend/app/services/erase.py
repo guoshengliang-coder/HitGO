@@ -252,7 +252,15 @@ def regions_for(detect: dict[str, Any] | None, scope: dict[str, Any] | None) -> 
     regions: list[EraseRegion] = []
     band = detect.get("subtitle_band")
     if want_band and band:
-        regions.append(EraseRegion(box=band["box"], t=None))
+        # OCR boxes often fit the solid glyphs but miss antialiasing, outlines and
+        # shadows. Expand the search region; remove_only_ocr still protects the
+        # surrounding non-text picture.
+        box = band["box"]
+        left = max(0.0, float(box["x"]) - 0.02)
+        top = max(0.0, float(box["y"]) - 0.025)
+        right = min(1.0, float(box["x"]) + float(box["w"]) + 0.02)
+        bottom = min(1.0, float(box["y"]) + float(box["h"]) + 0.025)
+        regions.append(EraseRegion(box={"x": left, "y": top, "w": right - left, "h": bottom - top}, t=None))
     for block in screentext.enabled_blocks(detect):
         if ids is not None and block["id"] not in ids:
             continue

@@ -36,6 +36,7 @@ def test_the_subtitle_band_is_erased_for_the_whole_clip():
 
     band = regions[0]
     assert band.t is None
+    assert band.box == pytest.approx({"x": 0.04, "y": 0.775, "w": 0.92, "h": 0.125})
     assert [r.t for r in regions[1:]] == [(1.0, 4.0), (5.0, 8.0)]
 
 

@@ -142,7 +142,7 @@ def test_build_version_passes_the_voice_model_and_skips_rate_resynthesis_for_qwe
     assert es["status"] == "done" and es["voice"] == "Cherry"
     assert set(tts.models) == {"qwen3-tts-flash"}
     assert all(len(c) == 2 for c in tts.calls)  # no speech_rate re-synthesis on Qwen3-TTS
-    assert es["warnings"] and "加速" in es["warnings"][0]  # atempo covers it and says so
+    assert es["warnings"] and "停帧" in es["warnings"][0]
 
 
 def test_cue_slots_and_speech_rate_for():
@@ -154,8 +154,8 @@ def test_cue_slots_and_speech_rate_for():
     assert localize.speech_rate_for(1.0, 0.0) == 1.0  # no slot at all: leave it to atempo / warnings
 
 
-def test_build_version_resynthesizes_faster_when_a_clip_overflows_its_slot(ready_video, db, no_ffmpeg):
-    """Korean runs ~2× longer than English: the second synthesis asks for speech_rate before atempo."""
+def test_build_version_preserves_natural_tts_when_a_clip_overflows_its_slot(ready_video, db, no_ffmpeg):
+    """A long Korean line extends the picture; the two voices do not overlap."""
     queue(db, ["ko"], transcript=DONE_TRANSCRIPT, source_lang="en")
     tts = localize.FakeTts(seconds=5.0)  # cue 0 has a 2.58 s slot, cue 1 has 21.6 s
     providers = localize.Providers(asr=localize.FakeAsr(), mt=localize.FakeTranslate(), tts=tts)
@@ -163,9 +163,9 @@ def test_build_version_resynthesizes_faster_when_a_clip_overflows_its_slot(ready
     db.expire_all()
     ko = db.get(Video, VIDEO).localization["versions"]["ko"]
     assert ko["status"] == "done"
-    rates = [c[2] for c in tts.calls if len(c) == 3]
-    assert rates == [1.94]  # only cue 0 was re-synthesized, at 5.0 / 2.58
-    assert ko["warnings"] == []  # at 1.94× the clip is 2.58 s and fits without atempo
+    assert all(len(c) == 2 for c in tts.calls)
+    assert ko["cues"][1]["dub_start"] >= ko["cues"][0]["dub_start"] + ko["cues"][0]["dub_duration"]
+    assert ko["cues"][0]["hold_after"] > 0 and "停帧" in ko["warnings"][0]
 
 
 def test_cues_from_sentences_drops_empty_clamps_and_renumbers():
@@ -234,12 +234,22 @@ def test_adaptive_placements_preserve_gaps_and_reject_unnatural_picture_speed():
     assert placements is None and total == 6.0 and "保守范围" in warnings[0]
 
 
+def test_complete_placements_hold_the_last_frame_instead_of_cutting_a_long_line():
+    cues = [{"i": 0, "start": 0.5, "end": 2.5}, {"i": 1, "start": 3.0, "end": 5.0}]
+    placements, total, warnings = localize.plan_complete_placements(cues, [4.0, 1.6], 6.0)
+    assert placements[0] == {"i": 0, "start": 0.5, "tempo": 1.0, "duration": 4.0, "video_speed": 0.8, "hold_after": 1.5}
+    assert placements[1]["start"] == pytest.approx(5.0)
+    assert placements[1]["video_speed"] == pytest.approx(1.25)
+    assert total == pytest.approx(7.6)
+    assert len(warnings) == 1 and "停帧" in warnings[0]
+
+
 def test_with_placements_writes_and_strips_dub_windows():
     cues = [{"i": 0, "translated": "a"}, {"i": 1, "translated": "b"}, {"i": 2, "translated": ""}]
     placements = [{"i": 0, "start": 0.0, "tempo": 1.0, "duration": 1.5}, {"i": 1, "start": 2.0, "tempo": 1.2, "duration": 2.0}]
     out = localize.with_placements(cues, placements)
     assert out[0] == {"i": 0, "translated": "a", "dub_start": 0.0, "dub_duration": 1.5}
-    assert out[1] == {"i": 1, "translated": "b", "dub_start": 2.0, "dub_duration": 2.0}
+    assert out[1] == {"i": 1, "translated": "b", "dub_start": 2.0, "dub_duration": 2.0, "dub_tempo": 1.2}
     assert out[2] == {"i": 2, "translated": ""}  # nothing was synthesised for it
     assert localize.with_placements(out, []) == cues  # an empty plan strips the fields again
 
@@ -290,6 +300,9 @@ def test_voice_names_and_previous_asset_ids():
     loc = {"versions": {"ko": {"voice_asset_id": "a_k"}, "ja": {"voice_asset_id": None}, "zh": {"voice_asset_id": "a_z"}}}
     assert localize.previous_voice_asset_ids(loc) == ["a_k", "a_z"]
     assert localize.previous_voice_asset_ids(loc, ["ja", "zh"]) == ["a_z"]
+    loc["versions"]["ko"]["cues"] = [{"i": 0, "voice_asset_id": "a_cue"}]
+    loc["versions"]["ko"]["old_cue_asset_ids"] = ["a_previous", "a_cue"]
+    assert localize.previous_voice_asset_ids(loc, ["ko"]) == ["a_k", "a_cue", "a_previous"]
 
 
 def test_default_voice_table_is_well_formed_and_keeps_its_defaults():
@@ -419,11 +432,12 @@ def test_run_localization_transcribes_once_and_builds_one_asset_per_language(rea
         assert v["status"] == "done" and v["stage"] is None and v["error"] is None and v["stale"] is False
         assert v["voice"] == voice and v["warnings"] == [] and v["updated_at"]
         assert [(c["i"], c["translated"]) for c in v["cues"]] == [(0, f"[{target}] Welcome to HitGO."), (1, f"[{target}] Let's get started.")]
-        assert [c["dub_start"] for c in v["cues"]] == [0.42, 3.0]  # where each dub landed (HIG-36)
+        assert v["cues"][0]["dub_start"] == 0.42
+        assert v["cues"][1]["dub_start"] >= v["cues"][0]["dub_start"] + v["cues"][0]["dub_duration"]
         asset = db.get(Asset, v["voice_asset_id"])
         assert asset.type == "audio" and asset.kind == "audio" and asset.status == "ready" and asset.source == "derived"
-        assert asset.duration == 24.6 and asset.has_audio is True and asset.ext == "m4a"
-        assert asset.derived_from == {"video_id": VIDEO, "video_name": "V01.mp4", "stem": "dubbed", "lang": lang}
+        assert asset.duration == pytest.approx(v["timeline_duration"]) and asset.has_audio is True and asset.ext == "m4a"
+        assert asset.derived_from == {"video_id": VIDEO, "video_name": "V01.mp4", "stem": "dubbed", "lang": lang, "adaptive_timing": True}
         assert storage.asset_path(asset.id, "m4a").is_file()
     assert loc["versions"]["ko"]["voice_asset_id"] != loc["versions"]["ja"]["voice_asset_id"]
     assert db.get(Asset, loc["versions"]["ko"]["voice_asset_id"]).name == "V01 · 韩语配音.m4a"
@@ -457,6 +471,9 @@ def test_spoken_localization_builds_an_adaptive_picture_timeline(ready_video, db
     asset = db.get(Asset, version["voice_asset_id"])
     assert asset.duration == pytest.approx(23.61)
     assert asset.derived_from["adaptive_timing"] is True
+    cue_assets = [db.get(Asset, cue["voice_asset_id"]) for cue in version["cues"]]
+    assert all(asset is not None and asset.derived_from["stem"] == "dubbed_cue" for asset in cue_assets)
+    assert cue_assets[0].id != cue_assets[1].id
 
 
 def test_running_task_does_not_clobber_a_version_queued_meanwhile(ready_video, db, no_ffmpeg):
@@ -554,7 +571,7 @@ def test_one_language_failing_keeps_its_translation_and_the_other_language(ready
     ja = versions["ja"]
     assert ja["status"] == "failed" and ja["stage"] is None and "合成失败" in ja["error"] and ja["voice_asset_id"] is None
     assert ja["cues"][0]["translated"] == "[Japanese] Welcome to HitGO."  # kept for editing / retry
-    assert db.query(Asset).count() == 1
+    assert db.query(Asset).count() == 3  # combined dub plus two independent cue assets
 
 
 def test_retranscribe_replaces_the_template_and_marks_other_versions_stale(ready_video, db, no_ffmpeg):
@@ -826,8 +843,8 @@ def test_put_version_requeues_only_tts_and_mix(client, ready_video, enqueued, db
     assert r.status_code == 202, r.text
     ko = r.json()["localization"]["versions"]["ko"]
     assert ko["status"] == "queued" and ko["stage"] == "tts" and ko["voice"] == KO_VOICE and ko["error"] is None
-    assert ko["cues"] == [{"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None},
-                          {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None}]  # fmt: skip
+    assert ko["cues"] == [{"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None, "hold_after": None, "voice_asset_id": None, "dub_tempo": None},
+                          {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None, "hold_after": None, "voice_asset_id": None, "dub_tempo": None}]  # fmt: skip
     assert ko["voice_asset_id"] == "a_ko"  # kept until the worker replaces it
     assert enqueued.calls == [("hitgo.localize_video", (VIDEO,))]
     assert current_loc(db)["pending"] == {"target_langs": ["ko"], "retranscribe": False}
@@ -871,9 +888,9 @@ def test_build_version_records_where_each_dub_landed(ready_video, db, no_ffmpeg)
     db.expire_all()
     ko = db.get(Video, VIDEO).localization["versions"]["ko"]
     assert ko["status"] == "done"
-    # cue 0 starts at 0.42 with a 2.58 s slot, so a 2.0 s clip fits unchanged; cue 1 starts at 3.0
+    # Both keep their natural 2 s take; the picture speeds up conservatively.
     assert ko["cues"][0]["dub_start"] == 0.42 and ko["cues"][0]["dub_duration"] == 2.0
-    assert ko["cues"][1]["dub_start"] == 3.0 and ko["cues"][1]["dub_duration"] == 2.0
+    assert ko["cues"][1]["dub_start"] == pytest.approx(2.51) and ko["cues"][1]["dub_duration"] == 2.0
 
 
 def test_translate_only_version_has_no_dub_windows(ready_video, db, no_ffmpeg):
@@ -896,8 +913,8 @@ def test_put_version_clears_the_dub_windows_and_ignores_them_in_the_body(client,
     r = client.put(f"/api/videos/{VIDEO}/localize/versions/ko", json={"cues": [{"i": 1, "translated": "시작합시다", "dub_start": 99.0, "dub_duration": 99.0}]})
     assert r.status_code == 202, r.text
     assert r.json()["localization"]["versions"]["ko"]["cues"] == [
-        {"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None},
-        {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None},
+            {"i": 0, "translated": "환영", "dub_start": None, "dub_duration": None, "video_speed": None, "hold_after": None, "voice_asset_id": None, "dub_tempo": None},
+            {"i": 1, "translated": "시작합시다", "dub_start": None, "dub_duration": None, "video_speed": None, "hold_after": None, "voice_asset_id": None, "dub_tempo": None},
     ]
     assert all("dub_start" not in c for c in current_loc(db)["versions"]["ko"]["cues"])
 
@@ -919,6 +936,13 @@ def test_put_version_reverts_when_the_queue_is_down(client, ready_video, monkeyp
 def test_delete_version_removes_the_version_and_its_asset(client, ready_video, db):
     assert client.delete(f"/api/videos/{VIDEO}/localize/versions/ko").status_code == 404
     path = _done_state(db)
+    cue_asset = Asset(id="a_cue", type="audio", kind="audio", status="ready", name="cue.wav", ext="wav", source="derived")
+    cue_path = storage.asset_path(cue_asset.id, cue_asset.ext)
+    cue_path.parent.mkdir(parents=True, exist_ok=True)
+    cue_path.write_bytes(b"cue")
+    db.add(cue_asset)
+    db.commit()
+    patch_loc(db, lambda loc: loc["versions"]["ko"]["cues"][0].update(voice_asset_id="a_cue"))
     assert client.delete(f"/api/videos/{VIDEO}/localize/versions/zh").status_code == 404
     patch_loc(db, lambda loc: loc["versions"]["ko"].update(status="running"))
     assert client.delete(f"/api/videos/{VIDEO}/localize/versions/ko").status_code == 409
@@ -927,6 +951,7 @@ def test_delete_version_removes_the_version_and_its_asset(client, ready_video, d
     loc = current_loc(db)
     assert "ko" not in loc["versions"] and "ja" in loc["versions"] and loc["transcript"]["status"] == "done"
     assert db.get(Asset, "a_ko") is None and not path.exists()
+    assert db.get(Asset, "a_cue") is None and not cue_path.exists()
     assert client.get(f"/api/videos/{VIDEO}").json()["localization"]["versions"].keys() == {"ja"}
     # The failed ja version has no asset: deleting it is just bookkeeping.
     assert client.delete(f"/api/videos/{VIDEO}/localize/versions/ja").status_code == 204

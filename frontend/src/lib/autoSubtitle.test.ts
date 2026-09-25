@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type Layer, type SequenceClip } from '../types';
-import { autoSubtitleStyle, isAutoSubtitle, ownerSourceRangeToPost, replaceAutoSubtitles, transcriptToSubtitleLayers } from './autoSubtitle';
+import { autoSubtitleStyle, isAutoSubtitle, normalizeGeneratedSubtitleLayers, ownerSourceRangeToPost, replaceAutoSubtitles, transcriptToSubtitleLayers } from './autoSubtitle';
 import { MAX_SUBTITLE_LAYERS } from './localize';
 
 const specWith = (patch: Partial<EditSpec>): EditSpec => ({ ...emptySpec(), ...patch });
@@ -17,6 +17,14 @@ let n = 0;
 const newId = () => `l_${++n}`;
 
 describe('ownerSourceRangeToPost', () => {
+  it('does not map the next source sentence into the previous clip\'s held frame', () => {
+    const spec = specWith({ sequence: { clips: [
+      { id: 'a', video_id: 'A', in: 0, out: 1, hold_after: 1 },
+      { id: 'b', video_id: 'A', in: 1, out: 2 },
+    ] } });
+    expect(ownerSourceRangeToPost(spec, 'A', [1, 2])).toEqual([[2, 3]]);
+  });
+
   it('没有 sequence：按 trim.remove 平移', () => {
     const spec = specWith({ trim: { remove: [[2, 4]] } });
     expect(ownerSourceRangeToPost(spec, 'A', [5, 6])).toEqual([[3, 4]]);
@@ -131,5 +139,20 @@ describe('replaceAutoSubtitles', () => {
     expect(out.map((l) => l.id)).toEqual(['manual', 'locked', 'text', 'new']);
     expect(isAutoSubtitle(oldAuto)).toBe(true);
     expect(isAutoSubtitle(manual)).toBe(false);
+  });
+});
+
+describe('generated subtitle timing', () => {
+  it('repairs overlapping saved cues without touching a manual text layer', () => {
+    const base = transcriptToSubtitleLayers([{ videoId: 'A', cues: [{ i: 0, start: 0, end: 1, text: 'a' }] }], emptySpec(), { ownerId: 'A', postDuration: 5, newId })[0];
+    const first = { ...base, id: 'first', t: [0, 2] as [number, number] };
+    const second = { ...base, id: 'second', t: [1, 3] as [number, number] };
+    const manual = { ...base, id: 'manual', origin: undefined, auto: false, t: [0, 3] as [number, number] };
+    const layers: Layer[] = [first, second, manual];
+    expect(normalizeGeneratedSubtitleLayers(layers)).toBe(true);
+    expect(first.t).toEqual([0, 0.999]);
+    expect(second.t).toEqual([1, 3]);
+    expect(manual.t).toEqual([0, 3]);
+    expect(normalizeGeneratedSubtitleLayers(layers)).toBe(false);
   });
 });
