@@ -21,7 +21,9 @@ import logging
 import re
 import shutil
 import subprocess
+import sys
 import wave
+from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -672,6 +674,47 @@ def wav_duration(path: Path) -> float:
             return min(size, payload) / (rate * channels * width) if size else payload / (rate * channels * width)
         pos += 8 + size + (size & 1)
     return 0.0
+
+
+def wav_has_signal(path: Path) -> bool:
+    """Reject a valid-duration TTS WAV whose PCM contains only silence or tiny noise."""
+    with wave.open(str(path), "rb") as source:
+        width = source.getsampwidth()
+    if width not in (1, 2, 4):
+        raise LocalizeError(f"口播音频位深不受支持：{width * 8} bit")
+    data = path.read_bytes()
+    pos = 12
+    while pos + 8 <= len(data):
+        size = int.from_bytes(data[pos + 4 : pos + 8], "little")
+        if data[pos : pos + 4] == b"data":
+            payload = data[pos + 8 : pos + 8 + min(size or len(data), len(data) - pos - 8)]
+            if width == 1:
+                samples = (byte - 128 for byte in payload)
+            else:
+                signed = array("h" if width == 2 else "i")
+                signed.frombytes(payload[:len(payload) - len(payload) % width])
+                if sys.byteorder != "little":
+                    signed.byteswap()
+                samples = iter(signed)
+            threshold = max(1, int((1 << (width * 8 - 1)) / 512))
+            count = len(payload) // width
+            return count > 0 and sum(abs(sample) >= threshold for sample in samples) >= max(8, int(count * 0.001))
+        pos += 8 + size + (size & 1)
+    return False
+
+
+def mixed_voice_has_signal(path: Path) -> bool:
+    """Decode the final AAC and check it is audible before publishing it as a ready asset."""
+    result = subprocess.run(
+        [settings.ffmpeg_bin, "-hide_banner", "-nostdin", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+        capture_output=True, text=True, timeout=180, check=False,
+    )
+    if result.returncode != 0:
+        raise LocalizeError(f"配音文件无法解码：{result.stderr[-300:]}")
+    match = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?|-inf) dB", result.stderr)
+    if not match:
+        raise LocalizeError("无法验证生成口播是否有声")
+    return float(match.group(1)) > -70
 
 
 def silent_wav(seconds: float, rate: int = 22050) -> bytes:
@@ -1440,14 +1483,25 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     clip_paths: list[Path] = []
     clip_durations: list[float] = []
     tmp.mkdir(parents=True, exist_ok=True)
+    def synthesize_checked(path: Path, text: str, speech_rate: float = 1.0) -> float:
+        # The fake provider intentionally emits silence in tests and local demos.
+        # Production providers may return a valid WAV header and duration but no speech.
+        for attempt in range(2):
+            path.write_bytes(providers.tts.synthesize(text, voice, speech_rate, model=model, lang=lang, emotion=emotion))
+            seconds = wav_duration(path)
+            if seconds > 0.05 and (isinstance(providers.tts, FakeTts) or wav_has_signal(path)):
+                return seconds
+            if attempt == 0:
+                log.warning("TTS returned silent audio for %s cue; retrying once", lang)
+        raise LocalizeError(f"{lang}口播合成返回无声音频；未替换已有配音，请重试或更换音色")
+
     total = float(video.duration or max(float(c["end"]) for c in cues))
     for cue in cues:
         text = translated_by_i.get(int(cue["i"]), "")
         if not text:
             continue
         clip = tmp / f"{lang}_{int(cue['i']):04d}.wav"
-        clip.write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
-        seconds = wav_duration(clip)
+        seconds = synthesize_checked(clip, text)
         # Keep the natural TTS take; all providers now adapt the picture after
         # measuring it, instead of forcing voice speed or mixing adjacent lines.
         spoken.append(cue)
@@ -1482,8 +1536,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
                 for k, text in zip(retry_indexes, rewritten, strict=True):
                     cue_i = int(spoken[k]["i"])
                     version["cues"][cue_i]["translated"] = text
-                    clip_paths[k].write_bytes(providers.tts.synthesize(text, voice, model=model, lang=lang, emotion=emotion))
-                    clip_durations[k] = wav_duration(clip_paths[k])
+                    clip_durations[k] = synthesize_checked(clip_paths[k], text)
 
     _stamp(version, stage=STAGE_MIX)
     _save(db, video, loc, langs=[lang])
@@ -1496,6 +1549,8 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     clips = [(path, p["start"], p["tempo"]) for path, p in zip(clip_paths, placements, strict=True)]
     try:
         _run(mix_args(clips, mix_total, dst), "混音")
+        if not isinstance(providers.tts, FakeTts) and not mixed_voice_has_signal(dst):
+            raise LocalizeError(f"{lang}口播混音结果无声；未替换已有配音，请重试")
     except Exception:
         storage.remove_file(dst)
         raise

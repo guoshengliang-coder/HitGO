@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emptySpec, type EditSpec, type SequenceClip } from '../types';
-import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, insertClip, materializeEditableSegments, materializeSequence, moveClip, moveClipGroup, moveLegacySegment, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, splitClip, updateClip } from './sequence';
+import { clipAt, clipDisplayGroups, clipWindows, duplicateClip, firstClipOnBlank, insertClip, materializeEditableSegments, materializeSequence, moveClip, moveClipGroup, moveClipSetKeepingCrossingContent, moveLegacySegment, normalizeSequenceAudio, removeClip, removeClipGroup, sequenceDuration, sequenceSourceGain, sequenceSourceTime, sequenceTrackWindows, splitClip, updateClip } from './sequence';
 import { trackMediaTime } from './audioTracks';
 import { segKey } from './segments';
 
@@ -8,6 +8,17 @@ const clip = (id: string, videoId: string, start: number, end: number): Sequence
 const withSequence = (...clips: SequenceClip[]): EditSpec => ({ ...emptySpec(), sequence: { clips } });
 
 describe('HIG-39 composed timeline', () => {
+  it('places the first source on an empty blank main at zero, then appends the next source', () => {
+    const blank = { ...emptySpec(), trim: { remove: [], duration: 10 } };
+    const first = firstClipOnBlank(blank, 'source-a', 4);
+    expect(first.spec.sequence?.clips.map((item) => item.video_id)).toEqual(['source-a']);
+    expect(clipWindows(first.spec.sequence!)[0]).toMatchObject({ start: 0, end: 4 });
+    const second = insertClip(first.spec, 'blank-owner', 10, 'source-b', 3, 4);
+    expect(second.spec.sequence?.clips.map((item) => item.video_id)).toEqual(['source-a', 'source-b']);
+    expect(clipWindows(second.spec.sequence!)[1]).toMatchObject({ start: 4, end: 7 });
+    expect(blank.sequence).toBeUndefined();
+  });
+
   it('turns legacy split segments into stable sequence clips before editing', () => {
     const spec: EditSpec = { ...emptySpec(), trim: { remove: [[4, 5]], splits: [2, 7] } };
     const converted = materializeEditableSegments(spec, 'owner', 10);
@@ -38,6 +49,20 @@ describe('HIG-39 composed timeline', () => {
     expect(moved.spec.audio?.tracks[0].t).toEqual([4.3, 5]);
     expect(sequenceSourceGain(moved.spec, 'owner', 4.5)).toBe(0.5);
     expect(spec.sequence).toBeUndefined();
+  });
+  it('moves every compound member with its main clip, even when a grouped layer crosses a cut', () => {
+    const shape = (id: string, group: string | undefined, t: [number, number]) => ({ id, group, type: 'shape' as const, shape: 'rect' as const, anchor: 'top-left' as const, margin: [0, 0] as [number, number], width: 0.3, height: 0.2, fill: '#FFFFFF', stroke: '#000000', stroke_width: 0, radius: 0, rotate: 0, opacity: 1, t });
+    const spec: EditSpec = {
+      ...withSequence(clip('a', 'owner', 0, 2), { ...clip('b', 'owner', 2, 4), group: 'grp_one' }, clip('c', 'owner', 4, 6)),
+      layers: [shape('grouped', 'grp_one', [1.5, 3.5]), shape('crossing', undefined, [1.5, 3.5])],
+      audio: { source_volume: 1, tracks: [{ id: 'voice', asset_id: 'x', group: 'grp_one', t: [2.2, 3.2] }] },
+      video_tracks: [{ id: 'upper', clips: [{ id: 'upper-clip', video_id: 'other', in: 0, out: 1, start: 2.2, group: 'grp_one' }] }],
+    };
+    const moved = moveClipSetKeepingCrossingContent(spec, ['b'], 2);
+    expect(moved.sequence?.clips.map((item) => item.id)).toEqual(['a', 'c', 'b']);
+    expect(moved.layers.map((item) => item.t)).toEqual([[3.5, 5.5], [1.5, 3.5]]);
+    expect(moved.audio?.tracks[0].t).toEqual([4.2, 5.2]);
+    expect(moved.video_tracks?.[0].clips[0].start).toBeCloseTo(4.2);
   });
   it('adding and reordering sources preserves recoverable cuts on the composed source', () => {
     const spec: EditSpec = { ...withSequence(clip('a', 'owner', 0, 5), clip('b', 'other', 0, 5)), trim: { remove: [[2, 3], [7, 8]] } };

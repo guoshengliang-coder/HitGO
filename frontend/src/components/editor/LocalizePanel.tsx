@@ -3,7 +3,7 @@
 // 这里只管展示、编辑草稿（逐句文本 / 音色 / 术语表）、发请求。语言与音色列表来自 GET /api/localize/options，不写死。
 
 import { useEffect, useMemo, useState } from 'react';
-import { loadLocalizeBgm, useEditor } from '../../store/editor';
+import { loadLocalizeBgm, useEditor, type BatchLocalizeStatus } from '../../store/editor';
 import { player } from '../../lib/player';
 import { formatTime } from '../../lib/time';
 import { appliedVersion, canApplyVersion, cloneStatusText, cloneSupported, dubbableLangs, isLocalizationActive, isVersionActive, langLabel, mergedCues, parseTerms, termsToText, toggleTargetLang, transcriptStatusText, versionStatusText, versionVoiceText } from '../../lib/localize';
@@ -134,6 +134,9 @@ function pickVoice(code: string, voices: Record<string, string>, loc: Localizati
 /** 最短路径：目标语言和音色选一次，听写、翻译、配音在同一后台任务里完成。 */
 function QuickSection({ video, loc, options, blocked, sourceLang, draft }: SectionProps & { sourceLang: string; draft: GenerateDraft }) {
   const localizeVideo = useEditor((s) => s.localizeVideo);
+  const batchLocalize = useEditor((s) => s.batchLocalize);
+  const selectedIds = useEditor((s) => s.selectedIds);
+  const localizeBatch = useEditor((s) => s.localizeBatch);
   const assets = useEditor((s) => s.assets);
   const { selected, setSelected } = draft;
   const [bgmMode, setBgmMode] = useState<'keep' | 'replace'>(() => loadLocalizeBgm(video.id).mode);
@@ -159,6 +162,13 @@ function QuickSection({ video, loc, options, blocked, sourceLang, draft }: Secti
     const bgm: LocalizeBgmChoice = bgmMode === 'keep' ? { mode: 'keep' } : { mode: 'replace', assetId: bgmAssetId };
     void localizeVideo({ source_lang: sourceLang, target_langs: chosen.map((t) => t.code), voices, terms: parseTerms(draft.termsText), dub: true }, { bgm });
   };
+  const startBatch = () => {
+    if (!selectedIds.length || !chosen.length || !voicesReady || !bgmReady) return;
+    const bgm: LocalizeBgmChoice = bgmMode === 'keep' ? { mode: 'keep' } : { mode: 'replace', assetId: bgmAssetId };
+    void batchLocalize({ source_lang: 'auto', target_langs: chosen.map((t) => t.code), voices, terms: parseTerms(draft.termsText), dub: true }, { bgm });
+  };
+  const statusLabel: Record<BatchLocalizeStatus, string> = { skipped: '跳过', submitting: '提交中', running: '处理中', done: '完成', needs_apply: '待套用', failed: '失败' };
+  const batchRunning = !!localizeBatch?.entries.some((entry) => entry.status === 'submitting' || entry.status === 'running');
   return (
     <Section id="localize.quick" title="转语言" bodyClass="stack" help="最多勾选 5 种目标语言，逐种选择音色后一次生成配音与字幕；默认自动保留原伴奏。若开启生成后自动套用，会按勾选顺序套用首个成功版本，其余可在套用区切换或导出。">
       <Field label="目标语言">
@@ -180,6 +190,13 @@ function QuickSection({ video, loc, options, blocked, sourceLang, draft }: Secti
       <button className="btn action" disabled={blocked || !chosen.length || !voicesReady || !bgmReady} onClick={start}>
         {chosen.length ? `生成 ${chosen.length} 种语言的配音与字幕` : '先选目标语言'}
       </button>
+      {selectedIds.length > 0 && <div className="stack-2">
+        <div className="hint">左栏已勾选 {selectedIds.length} 条；批量时每条自动识别源语言，共用上面的目标语言、音色、术语与 BGM 设置。未就绪或无音轨的视频会列为跳过。</div>
+        <button className="btn action" disabled={!options?.enabled || !chosen.length || !voicesReady || !bgmReady || batchRunning} onClick={startBatch}>批量生成勾选的 {selectedIds.length} 条视频</button>
+      </div>}
+      {localizeBatch && <div className="stack-2" role="status" aria-label="批量转语言进度">
+        {localizeBatch.entries.map((entry) => <div key={entry.videoId} className="small">{entry.name} · {statusLabel[entry.status]} · {entry.detail}</div>)}
+      </div>}
       {pickingBgm && <Modal title="选择 BGM" onClose={() => setPickingBgm(false)} width={520}>
         <AudioAssetList onPick={(id) => { setBgmAssetId(id); setPickingBgm(false); }} />
       </Modal>}

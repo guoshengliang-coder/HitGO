@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.stubGlobal('window', globalThis);
   vi.useFakeTimers();
   const spec: EditSpec = { ...emptySpec(), layers: [textLayer('原文')] };
-  useEditor.setState({ videos: [VIDEO], currentVideoId: 'v1', specs: {}, history: {}, subtitleSyncEnabled: false, timelineSelection: [], hasTimelineClipboard: false });
+  useEditor.setState({ batch: null, videos: [VIDEO], currentVideoId: 'v1', selectedIds: [], localizeBatch: null, specs: {}, history: {}, subtitleSyncEnabled: false, timelineSelection: [], hasTimelineClipboard: false });
   useEditor.getState().replaceSpec('v1', spec);
 });
 
@@ -914,6 +914,37 @@ describe('转语言主流程（HIG-74）', () => {
     expect(useEditor.getState().currentSpec()?.audio?.tracks ?? []).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(2000);
     expect(useEditor.getState().currentSpec()?.audio?.tracks.map((t) => t.asset_id)).toEqual(['a_quick', 'a_inst']);
+  });
+});
+
+describe('批量转语言（HIG-106）', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('uses a snapshot of checked videos, skips ineligible sources, and applies the finished dub to every eligible video', async () => {
+    const videos = [
+      { ...VIDEO, id: 'v1', status: 'ready', has_audio: true },
+      { ...VIDEO, id: 'v2', name: 'b.mp4', status: 'ready', has_audio: true },
+      { ...VIDEO, id: 'v3', name: 'silent.mp4', status: 'ready', has_audio: false },
+      { ...VIDEO, id: 'v4', name: 'pending.mp4', status: 'preparing', has_audio: true },
+    ] as Video[];
+    const bgm: Asset = { id: 'bgm', type: 'audio', kind: 'audio', status: 'ready', name: 'bgm.m4a', url: '/media/bgm', source: 'upload', created_at: '' };
+    useEditor.setState({ batch: { id: 'batch-localize', name: '批次', videos } as BatchDetail, videos, currentVideoId: 'v1', selectedIds: videos.map((video) => video.id), assets: [bgm], specs: {}, history: {},
+      loadAssets: vi.fn(async () => useEditor.setState({ assets: [bgm, ...videos.slice(0, 2).map((video) => ({ ...bgm, id: `voice-${video.id}` }))] })) });
+    useEditor.getState().replaceSpec('v1', emptySpec());
+    useEditor.getState().replaceSpec('v2', emptySpec());
+    const queued = (video: Video) => ({ ...video, localization: { source_lang: 'en', transcript: { status: 'queued', cues: [] }, versions: { ko: { status: 'queued', voice_asset_id: null, cues: [] } } } }) as Video;
+    const done = (video: Video) => ({ ...video, localization: { source_lang: 'en', transcript: { status: 'done', cues: [{ i: 0, start: 0, end: 2, text: 'Hello' }] }, versions: { ko: { status: 'done', stage: null, voice: 'kyong', terms: [], cues: [{ i: 0, translated: '안녕' }], stale: false, error: null, warnings: [], voice_asset_id: `voice-${video.id}`, updated_at: 'done' } } } }) as Video;
+    const request = vi.spyOn(api, 'localizeVideo').mockImplementation(async (id) => queued(videos.find((video) => video.id === id)!));
+    vi.spyOn(api, 'getVideo').mockImplementation(async (id) => done(videos.find((video) => video.id === id)!));
+
+    await useEditor.getState().batchLocalize({ source_lang: 'auto', target_langs: ['ko'], voices: { ko: 'kyong' }, dub: true }, { bgm: { mode: 'replace', assetId: 'bgm' } });
+    expect(request.mock.calls.map(([id]) => id)).toEqual(['v1', 'v2']);
+    expect(useEditor.getState().localizeBatch?.entries.map((entry) => entry.status)).toEqual(['running', 'running', 'skipped', 'skipped']);
+    useEditor.getState().setSelectedAll(false);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(useEditor.getState().specs.v1.audio?.tracks.some((track) => track.asset_id === 'voice-v1')).toBe(true);
+    expect(useEditor.getState().specs.v2.audio?.tracks.some((track) => track.asset_id === 'voice-v2')).toBe(true);
+    expect(useEditor.getState().localizeBatch?.entries.map((entry) => entry.status)).toEqual(['done', 'done', 'skipped', 'skipped']);
   });
 });
 

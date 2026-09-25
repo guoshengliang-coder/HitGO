@@ -66,6 +66,18 @@ export interface LastApply {
   prevSpecs: Record<string, EditSpec | null>;
 }
 
+export type BatchLocalizeStatus = 'skipped' | 'submitting' | 'running' | 'done' | 'needs_apply' | 'failed';
+export interface BatchLocalizeEntry {
+  videoId: string;
+  name: string;
+  status: BatchLocalizeStatus;
+  detail: string;
+}
+export interface BatchLocalizeProgress {
+  batchId: string;
+  entries: BatchLocalizeEntry[];
+}
+
 export type EditorTheme = 'light' | 'dark';
 type TimelineClipboard = { clips: SequenceClip[]; videoClips: VideoTrackClip[]; layers: Layer[]; tracks: AudioTrack[]; origin: number };
 let timelineClipboard: TimelineClipboard | null = null;
@@ -331,6 +343,10 @@ export interface EditorState {
   /** GET /api/localize/options 的结果；null = 还没拉。拉失败（旧后端没有这个接口等）按 enabled=false 处理。 */
   localizeOptions: LocalizeOptions | null;
   loadLocalizeOptions: () => Promise<void>;
+  localizeBatch: BatchLocalizeProgress | null;
+  /** Snapshot the left-hand checked videos and submit the same quick-localize settings for each. */
+  batchLocalize: (body: LocalizeIn, opts: { bgm: LocalizeBgmChoice }) => Promise<void>;
+  setBatchLocalizeEntry: (batchId: string, videoId: string, status: BatchLocalizeStatus, detail: string) => void;
   /** POST localize：听写（模板未就绪时）+ 逐语言生成；发起后轮询到全部结束。成功返回 true。 */
   localizeVideo: (body: LocalizeIn, opts?: { bgm: LocalizeBgmChoice }) => Promise<boolean>;
   /** 「自动识别字幕」（HIG-84）正在为哪个视频跑；null = 空闲。 */
@@ -355,7 +371,7 @@ export interface EditorState {
    * 已是当前套用的版本时不重复套（返回 false，不记历史）；force 强制重建层 / 轨（沿用已调过的字幕样式）。
    * 版本不可用（没生成完 / 配音素材不存在）时 toast 原因并返回 false。
    */
-  applyVersion: (lang: string, opts?: { force?: boolean; skipScreenErase?: boolean }) => boolean;
+  applyVersion: (lang: string, opts?: { force?: boolean; skipScreenErase?: boolean; videoId?: string }) => boolean;
 
   // 画面文字（契约 §1 screen_text / §3 screen-text，HIG-38）
   /** GET /api/screen-text/options 的结果；null = 尚未成功读取，不能等同于服务器没配 key。 */
@@ -485,6 +501,7 @@ const PER_BATCH_INITIAL = {
   error: null,
   currentVideoId: null,
   selectedIds: [],
+  localizeBatch: null,
   step: 'trim',
   specs: {},
   history: {},
@@ -569,7 +586,7 @@ type PolledField = 'separation' | 'localization' | 'screen_text';
 const fieldTimers: Record<string, number> = {};
 /** 视频 id → 这轮「生成口播」发起的语言（按顺序）；改语言轮询结束时据此自动套用（HIG-56）。 */
 const dubRequests: Record<string, string[]> = {};
-const quickRequests: Record<string, { langs: string[]; readyLang?: string }> = {};
+const quickRequests: Record<string, { langs: string[]; readyLang?: string; batchId?: string }> = {};
 /** 用户确认过“先付费擦除再套用”的请求；同一视频只保留最后一次目标语言。 */
 const screenEraseApplyRequests: Record<string, string> = {};
 /** 「自动识别字幕」（HIG-84）最多等多久；超过当作这个视频识别失败（服务器上的任务照跑，下次再点直接用结果）。 */
@@ -608,6 +625,9 @@ function clearLocalizeBgm(videoId: string) {
 function applyQuickWhenReady(videoId: string, get: () => EditorState) {
   const pending = quickRequests[videoId];
   if (!pending?.readyLang) return;
+  const report = (status: BatchLocalizeStatus, detail: string) => {
+    if (pending.batchId) get().setBatchLocalizeEntry(pending.batchId, videoId, status, detail);
+  };
   const video = get().videos.find((v) => v.id === videoId);
   if (!video) { delete quickRequests[videoId]; return; }
   const bgm = loadLocalizeBgm(videoId);
@@ -615,16 +635,23 @@ function applyQuickWhenReady(videoId: string, get: () => EditorState) {
     if (fieldActive(video, 'separation')) return;
     if (video.separation?.status !== 'done' || !video.separation.instrumental_asset_id) {
       get().setToast('口播已生成，但原伴奏分离失败；未自动套用，请重试分离');
+      report('needs_apply', '口播已生成，伴奏分离失败；需处理后套用');
       delete quickRequests[videoId];
       return;
     }
   } else if (!isAssetReady(get().assets.find((a) => a.id === bgm.assetId))) {
     get().setToast('口播已生成，但所选 BGM 不可用；未自动套用');
+    report('needs_apply', '口播已生成，所选 BGM 不可用；需处理后套用');
     delete quickRequests[videoId];
     return;
   }
-  if (get().currentVideoId === videoId) get().applyVersion(pending.readyLang, { force: true });
-  else get().setToast(`${video.name} 的口播已生成；切回视频后可套用`);
+  const requiresErase = !!video.screen_text?.detect?.subtitle_band && !get().specs[videoId]?.sequence && !cleanReady(video.screen_text);
+  if (pending.batchId && requiresErase) {
+    report('needs_apply', '口播已生成；检测到硬字幕，需逐条确认擦除后套用');
+  } else if (get().currentVideoId === videoId || pending.batchId) {
+    const applied = get().applyVersion(pending.readyLang, { force: true, ...(pending.batchId ? { videoId } : {}) });
+    report(applied ? 'done' : 'needs_apply', applied ? '口播、字幕已生成并套用' : '口播已生成，自动套用未成功；请检查该视频');
+  } else get().setToast(`${video.name} 的口播已生成；切回视频后可套用`);
   delete quickRequests[videoId];
 }
 
@@ -690,6 +717,13 @@ function pollVideoField(videoId: string, field: PolledField, set: (fn: (s: Edito
             if (get().currentVideoId === videoId) get().applyVersion(lang, { force: true });
             else get().setToast(`${fresh.name} 的${langLabel(get().localizeOptions, lang)}口播已生成；切回该视频在「套用」里套用`);
           }
+        }
+        if (quick?.batchId && (!lang || !loadFeaturePrefs().autoApplyDub)) {
+          const done = quick.langs.filter((code) => fresh.localization?.versions?.[code]?.status === 'done');
+          const failed = quick.langs.filter((code) => fresh.localization?.versions?.[code]?.status === 'failed');
+          get().setBatchLocalizeEntry(quick.batchId, videoId, done.length ? 'done' : 'failed', done.length
+            ? `${done.length} 种口播已生成${failed.length ? `，${failed.length} 种失败` : ''}；自动套用${loadFeaturePrefs().autoApplyDub ? '未找到新口播' : '已关闭'}`
+            : fresh.localization?.transcript?.error ?? failed.map((code) => fresh.localization?.versions?.[code]?.error).find(Boolean) ?? '没有成功生成口播');
         }
         if (!lang || !loadFeaturePrefs().autoApplyDub) delete quickRequests[videoId];
       }
@@ -2155,6 +2189,49 @@ export const useEditor = create<EditorState>((set, get) => {
         set({ localizeOptions: { enabled: false, source_langs: [], target_langs: [] } });
       }
     },
+    setBatchLocalizeEntry: (batchId, videoId, status, detail) => set((state) => {
+      if (state.localizeBatch?.batchId !== batchId) return {};
+      return { localizeBatch: { ...state.localizeBatch, entries: state.localizeBatch.entries.map((entry) => entry.videoId === videoId ? { ...entry, status, detail } : entry) } };
+    }),
+    batchLocalize: async (body, opts) => {
+      const state = get();
+      const batchId = state.batch?.id;
+      if (!batchId || !state.selectedIds.length) { get().setToast('先在左侧勾选要转语言的视频'); return; }
+      if (state.localizeBatch?.entries.some((entry) => entry.status === 'submitting' || entry.status === 'running')) {
+        get().setToast('上一轮批量转语言仍在处理中');
+        return;
+      }
+      const chosen = new Set(state.selectedIds);
+      const entries: BatchLocalizeEntry[] = state.videos.filter((video) => chosen.has(video.id)).map((video) => {
+        const reason = video.status !== 'ready' ? '视频尚未就绪' : !video.has_audio ? '源视频没有音轨' : isLocalizationActive(video.localization) ? '转语言任务正在运行' : '';
+        return { videoId: video.id, name: video.name, status: reason ? 'skipped' : 'submitting', detail: reason || '等待提交' };
+      });
+      set({ localizeBatch: { batchId, entries } });
+      for (const entry of entries) {
+        if (entry.status === 'skipped') continue;
+        if (get().batch?.id !== batchId) return;
+        const video = get().videos.find((item) => item.id === entry.videoId);
+        if (!video) continue;
+        get().setBatchLocalizeEntry(batchId, video.id, 'submitting', '正在提交');
+        try {
+          if (opts.bgm.mode === 'keep' && video.separation?.status !== 'done' && !fieldActive(video, 'separation')) {
+            const separated = await api.separateVideo(video.id, 'htdemucs');
+            if (get().batch?.id !== batchId) return;
+            mergeVideoField(set, separated, 'separation');
+            pollVideoField(video.id, 'separation', set, get);
+          }
+          const updated = await api.localizeVideo(video.id, body);
+          if (get().batch?.id !== batchId) return;
+          saveLocalizeBgm(video.id, opts.bgm);
+          quickRequests[video.id] = { langs: body.target_langs, batchId };
+          mergeVideoField(set, updated, 'localization');
+          pollVideoField(video.id, 'localization', set, get);
+          get().setBatchLocalizeEntry(batchId, video.id, 'running', '听写、翻译与配音进行中');
+        } catch (error) {
+          get().setBatchLocalizeEntry(batchId, video.id, 'failed', error instanceof ApiError ? error.message : '请求失败，请重试这条视频');
+        }
+      }
+    },
     localizeVideo: async (body, opts) => {
       const video = get().currentVideo();
       if (!video) return false;
@@ -2324,9 +2401,10 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
     applyVersion: (lang, opts) => {
-      const video = get().currentVideo();
-      const spec = get().currentSpec();
+      const video = opts?.videoId ? get().videos.find((item) => item.id === opts.videoId) : get().currentVideo();
+      const spec = video ? get().specs[video.id] : null;
       if (!video || !spec) return false;
+      const background = video.id !== get().currentVideoId;
       const check = canApplyVersion(video, lang, get().assets);
       if (!check.ok) {
         get().setToast(check.reason);
@@ -2354,6 +2432,7 @@ export const useEditor = create<EditorState>((set, get) => {
       // 付费调用只在用户本次确认后提交；已经在擦除则复用该任务，完成后自动套用。
       const hasHardSubtitles = !!video.screen_text?.detect?.subtitle_band;
       if (!opts?.skipScreenErase && hasHardSubtitles && !spec.sequence && !cleanReady(video.screen_text)) {
+        if (background) return false; // Batch results show "需手动套用"; do not open a delayed paid-service prompt.
         const erase = video.screen_text?.erase;
         const running = erase?.status === 'queued' || erase?.status === 'running';
         if (!running && get().screenTextOptions?.erase_enabled === false) {
@@ -2382,9 +2461,11 @@ export const useEditor = create<EditorState>((set, get) => {
         if (video.screen_text?.detect?.status === 'done') {
           warnings = [...warnings, ...applyScreenTextToSpec(s, lang, { screen: video.screen_text, remove: s.trim.remove, postDuration: postTrimDuration(video.duration, s.trim.remove), newLayerId, source, measure: measureTextWidth })];
         }
-      });
-      set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
-      get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
+      }, { videoId: video.id });
+      if (!background) {
+        set({ selectedLayerId: null, selectedLayerIds: [], selectedTrackId: null });
+        get().setToast(`已套用${label}版${warnings.length ? `；${warnings.join('；')}` : ''}`, { label: '撤销', run: () => get().undo() });
+      }
       return true;
     },
 
