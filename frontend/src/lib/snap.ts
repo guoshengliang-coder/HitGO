@@ -7,6 +7,13 @@ export interface SnapResult {
   hit: number | null;
 }
 
+export interface GuideRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 /** 在候选值中找到与 v 距离最近且不超过 threshold 的那个；没有则原样返回。 */
 export function snapValue(v: number, candidates: number[], threshold: number): SnapResult {
   let best: number | null = null;
@@ -46,6 +53,18 @@ export function canvasGuides(zone: SafeZone | undefined | null, W: number, H: nu
       xs.push(r.x * W, (r.x + r.w) * W);
       ys.push(r.y * H, (r.y + r.h) * H);
     }
+  }
+  return { xs: uniqSorted(xs), ys: uniqSorted(ys) };
+}
+
+/** 把其他可见元素的左/中/右、上/中/下并入画布参考线。 */
+export function elementGuides(base: { xs: number[]; ys: number[] }, rects: GuideRect[]): { xs: number[]; ys: number[] } {
+  const xs = [...base.xs];
+  const ys = [...base.ys];
+  for (const r of rects) {
+    if (![r.x, r.y, r.width, r.height].every(Number.isFinite) || r.width < 0 || r.height < 0) continue;
+    xs.push(r.x, r.x + r.width / 2, r.x + r.width);
+    ys.push(r.y, r.y + r.height / 2, r.y + r.height);
   }
   return { xs: uniqSorted(xs), ys: uniqSorted(ys) };
 }

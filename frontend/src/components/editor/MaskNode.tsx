@@ -65,7 +65,7 @@ export function MaskNode({
   outlined: boolean;
   /** 页面能用 backdrop-filter 预览模糊；否则模糊模式在这里画磨砂填充 */
   backdrop: boolean;
-  guides: Guides;
+  guides: () => Guides;
   onSelect: () => void;
   onGuides: (g: Guides) => void;
   /** 拖动 / 拉伸中的实时框（给 MaskPreview 跟随），松手后传 null */
@@ -110,7 +110,7 @@ export function MaskNode({
       onTap={onSelect}
       onDragStart={onSelect}
       onDragMove={(e) => {
-        snapDraggedNode(e.target, e.evt, guides, onGuides);
+        snapDraggedNode(e.target, e.evt, guides(), onGuides);
         onLive(liveBox(e.target as Konva.Rect));
       }}
       onDragEnd={(e) => {

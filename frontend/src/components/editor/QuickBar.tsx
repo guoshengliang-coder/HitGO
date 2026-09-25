@@ -1,5 +1,5 @@
-// 画布下方的快捷操作条，只放画布相关操作：居中（文本 / 贴纸 / 字幕模块）、安全区、快捷键表。
-// 画布比例由剪辑模块「成片画面」的画幅页签决定（HIG-29）；预览非 9:16 时居中只改该画幅（写覆盖），安全区不可用。
+// 画布下方的快捷操作条，只放画布相关操作：视频/图层的居中、适应与重置，以及安全区、快捷键表。
+// 画布比例由剪辑模块「成片画面」的画幅页签决定（HIG-29）；预览非 9:16 时位置操作只改该画幅（写覆盖），安全区不可用。
 // 安全区只在这里设置（HIG-13）：按钮是开关，开启时才在旁边展开预设与显示方式，关闭时全部收起。
 // 撤销 / 重做、删左 / 删右、删除在时间线工具条（TimelineTools），顶栏也有撤销 / 重做。
 // 提示文案统一走 lib/shortcuts 的 hintFor（纯 CSS tooltip：data-tip）。
@@ -10,7 +10,8 @@ import { alignPlacement, placeLayer, type AlignEdge } from '../../lib/layout';
 import { placementOfBox } from '../../lib/variantLayout';
 import { layerAspect, outputFor } from '../../lib/spec';
 import { layerTypeForStep } from '../../lib/steps';
-import { IconCenter, IconCenterH, IconCenterV, IconHelp, IconSafeZone } from '../ui/Icons';
+import { fitLayerToCanvas, resetLayerPlacement } from '../../lib/canvasPlacement';
+import { IconCenter, IconCenterH, IconCenterV, IconFit, IconHelp, IconReset, IconSafeZone } from '../ui/Icons';
 
 const REF = { W: 1080, H: 1920 };
 const SAFE_MODES: { v: SafeZoneMode; label: string; tip: string }[] = [
@@ -33,9 +34,15 @@ export function QuickBar() {
   const previewKey = useEditor((s) => s.previewVariantKey);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
   const editLayerOnPreview = useEditor((s) => s.editLayerOnPreview);
+  const videoSelection = useEditor((s) => [...s.timelineSelection].reverse().find((key) => key.startsWith('clip:') || key.startsWith('vclip:')) ?? null);
+  const updateVideo = useEditor((s) => s.updateSelectedVideoTransform);
   const isRef = previewKey === '9x16';
 
   const center = (axis: 'h' | 'v' | 'both') => {
+    if (step === 'trim' && videoSelection) {
+      updateVideo(axis === 'both' ? { x: 0.5, y: 0.5 } : axis === 'h' ? { x: 0.5 } : { y: 0.5 });
+      return;
+    }
     if (!layer || layer.locked) return;
     const aspect = layerAspect(layer, assets);
     const edges: AlignEdge[] = axis === 'both' ? ['center-h', 'center-v'] : axis === 'h' ? ['center-h'] : ['center-v'];
@@ -51,24 +58,65 @@ export function QuickBar() {
     updateLayer(layer.id, { anchor: p.anchor, margin: p.margin });
   };
 
+  const fit = () => {
+    if (step === 'trim' && videoSelection) {
+      updateVideo({ fit: 'contain', scale: 1, x: 0.5, y: 0.5 });
+      return;
+    }
+    if (!layer || layer.locked) return;
+    const aspect = layerAspect(layer, assets);
+    const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
+      const { aspect: a, canvas } = placementOfBox(box, anchor, previewKey, spec ? outputFor(spec, previewKey) : undefined);
+      const patch = fitLayerToCanvas(layer, a, canvas);
+      return { box: placeLayer(patch, a, canvas), anchor: patch.anchor, rotate: patch.rotate };
+    });
+    if (onVariant) return;
+    const patch = fitLayerToCanvas(layer, aspect, REF);
+    updateLayer(layer.id, (draft) => Object.assign(draft, patch));
+  };
+
+  const reset = () => {
+    if (step === 'trim' && videoSelection) {
+      updateVideo(null);
+      return;
+    }
+    if (!layer || layer.locked) return;
+    const patch = resetLayerPlacement(layer);
+    const onVariant = editLayerOnPreview(layer.id, ({ box, anchor }) => {
+      const { aspect, canvas } = placementOfBox(box, anchor, previewKey, spec ? outputFor(spec, previewKey) : undefined);
+      const resetAspect = layer.type === 'mask' && patch.height ? (patch.width * canvas.W) / (patch.height * canvas.H) : aspect;
+      return { box: placeLayer(patch, resetAspect, canvas), anchor: patch.anchor, rotate: patch.rotate };
+    });
+    if (onVariant) return;
+    updateLayer(layer.id, (draft) => Object.assign(draft, patch));
+  };
+
   const layerStep = !!layerTypeForStep(step);
   const layerOk = layerStep && !!layer && !layer.locked;
+  const videoOk = step === 'trim' && !!videoSelection;
+  const placementOk = layerOk || videoOk;
   const safeOn = safeZoneView !== 'none';
   const zone = safeZones.find((z) => z.key === safeZoneKey);
   const overlayMissing = safeZoneView === 'overlay' && !zone?.overlay_url;
 
   return (
     <div className="quickbar">
-      {layerStep && (
+      {(layerStep || videoOk) && (
         <>
-          <button className="btn icon" onClick={() => center('h')} disabled={!layerOk} aria-label="水平居中" data-tip={hintFor('center-h')}>
+          <button className="btn icon" onClick={() => center('h')} disabled={!placementOk} aria-label="水平居中" data-tip={hintFor('center-h')}>
             <IconCenterH />
           </button>
-          <button className="btn icon" onClick={() => center('v')} disabled={!layerOk} aria-label="垂直居中" data-tip={hintFor('center-v')}>
+          <button className="btn icon" onClick={() => center('v')} disabled={!placementOk} aria-label="垂直居中" data-tip={hintFor('center-v')}>
             <IconCenterV />
           </button>
-          <button className="btn icon" onClick={() => center('both')} disabled={!layerOk} aria-label="居中" data-tip={hintFor('center')}>
+          <button className="btn icon" onClick={() => center('both')} disabled={!placementOk} aria-label="画布居中" data-tip={hintFor('center')}>
             <IconCenter />
+          </button>
+          <button className="btn icon" onClick={fit} disabled={!placementOk} aria-label="适应画布" data-tip="等比适应画布并居中">
+            <IconFit />
+          </button>
+          <button className="btn icon" onClick={reset} disabled={!placementOk} aria-label="重置位置和缩放" data-tip="恢复默认位置、缩放与旋转">
+            <IconReset />
           </button>
         </>
       )}

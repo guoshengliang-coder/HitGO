@@ -55,6 +55,7 @@ import { compoundLanes, groupColor, shiftTimedItems, type CompoundLane } from '.
 import { mainSegments, normalizeSplits, segKey, SEG_DRAG } from '../../lib/segments';
 import { playheadSnapCandidates, snapPlayhead } from '../../lib/playheadSnap';
 import { stepForLayer } from '../../lib/steps';
+import { shouldSeekTimelineClip } from '../../lib/timelinePointer';
 
 /** 复合组标记（HIG-85）：片段左缘的同色细条。 */
 function GroupMark({ group }: { group?: string }) {
@@ -538,6 +539,11 @@ export function Timeline() {
     return Math.abs(el.scrollLeft - before) > 0.01;
   };
   const scrub = useScrub(seekAt, autoScrollScrub);
+  const seekClip = (e: { button: number; altKey: boolean; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; clientX: number }) => {
+    if (!shouldSeekTimelineClip(e)) return;
+    player.pause();
+    seekAt(e.clientX, e.altKey);
+  };
   useEffect(() => {
     if (!scrub.scrubbing) setHeadSnapX(null);
   }, [scrub.scrubbing]);
@@ -596,9 +602,13 @@ export function Timeline() {
       const shifted = shiftTimedItems(original, new Set(lane.keys), px / ppsRef.current, postDuration);
       if (shifted) replaceSpec(video.id, shifted, { history: false });
     };
-    const onUp = () => {
+    const onUp = (event: PointerEvent) => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      if (!moved && shouldSeekTimelineClip(event)) {
+        player.pause();
+        seekAt(event.clientX, event.altKey);
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp, { once: true });
@@ -766,8 +776,13 @@ export function Timeline() {
     const original = structuredClone(clip);
     const originalSpec = structuredClone(spec);
     const sourceDuration = videos.find((item) => item.id === clip.video_id)?.duration ?? original.out;
-    pushHistorySnapshot(structuredClone(spec));
+    let moved = false;
     const onMove = (event: PointerEvent) => {
+      if (!moved && Math.abs(event.clientX - x0) < MARQUEE_PX) return;
+      if (!moved) {
+        moved = true;
+        pushHistorySnapshot(structuredClone(spec));
+      }
       const delta = (event.clientX - x0) / ppsRef.current;
       const shifted = kind === 'move' ? shiftTimedItems(originalSpec, moving, Math.max(-original.start, delta), postDuration) : null;
       useEditor.getState().updateSpec((draft) => {
@@ -786,9 +801,13 @@ export function Timeline() {
         }
       }, { history: false });
     };
-    const onUp = () => {
+    const onUp = (event: PointerEvent) => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      if (!moved && kind === 'move' && shouldSeekTimelineClip(event)) {
+        player.pause();
+        seekAt(event.clientX, event.altKey);
+      }
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp, { once: true });
@@ -928,6 +947,10 @@ export function Timeline() {
         const layer = spec?.layers[d.index];
         if (layer && useEditor.getState().timelineSelection.length <= 1) focusLayer(layer);
       }
+      if (!moved && ev.type !== 'pointercancel' && (d.kind === 'bar-move' || d.kind === 'track-move')) {
+        player.pause();
+        seekAt(ev.clientX, ev.altKey);
+      }
     };
     el.addEventListener('pointermove', onMove);
     el.addEventListener('pointerup', onUp);
@@ -1057,6 +1080,7 @@ export function Timeline() {
           if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`layer:${l.id}`))) pick(all || locked);
           pickTimeline(`layer:${l.id}`, e);
           if (all || locked || e.metaKey || e.ctrlKey || e.shiftKey) {
+            seekClip(e);
             // 全程条（未锁、无修饰键）占满整条时间轴，中间没有可移动的余地（拖了也会被夹回
             // 原位），所以不接管：让它冒泡下去做 scrub / 框选。要收成具体时段就拖两端（HIG-79）。
             const passThrough = all && !locked && !e.metaKey && !e.ctrlKey && !e.shiftKey;
@@ -1209,7 +1233,7 @@ export function Timeline() {
                             selectTimelineItems(lane.keys, 'replace', { expand: false });
                           } else beginCompoundDrag(e, lane);
                         }}
-                        onClick={(e) => { e.stopPropagation(); selectTimelineItems(lane.keys, 'replace', { expand: false }); player.pause(); seekAt(e.clientX); }}
+                        onClick={(e) => { e.stopPropagation(); if (mainKey) { selectTimelineItems(lane.keys, 'replace', { expand: false }); seekClip(e); } }}
                         onDoubleClick={(e) => { e.stopPropagation(); toggleCompound(lane.id); }}
                         title={`复合片段 ${index + 1} · ${lane.keys.length} 个成员 · 双击${expanded ? '收起' : '展开'}成员`}
                       >
@@ -1233,7 +1257,7 @@ export function Timeline() {
                   const source = videos.find((item) => item.id === clip.video_id);
                   const length = videoTrackClipDuration(clip);
                   const selected = timelineSelection.includes(`vclip:${clip.id}`);
-                  return <div key={clip.id} data-timeline-key={`vclip:${clip.id}`} className={`tl-upper-clip ${selected ? 'selected' : ''}`} style={{ left: off + postX(clip.start), width: Math.max(12, postX(clip.start + length) - postX(clip.start)) }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`vclip:${clip.id}`))) setStep('trim'); beginUpperDrag(e, clip, 'move', !!track.locked); }} onClick={(e) => { e.stopPropagation(); player.pause(); seekAt(e.clientX); }} title={`${source?.name ?? '视频'} · ${clip.start.toFixed(1)}–${(clip.start + length).toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /><div className="edge l" onPointerDown={(e) => beginUpperDrag(e, clip, 'left', !!track.locked)} /><span>{source?.name ?? '视频'}</span><div className="edge r" onPointerDown={(e) => beginUpperDrag(e, clip, 'right', !!track.locked)} /></div>;
+                  return <div key={clip.id} data-timeline-key={`vclip:${clip.id}`} className={`tl-upper-clip ${selected ? 'selected' : ''}`} style={{ left: off + postX(clip.start), width: Math.max(12, postX(clip.start + length) - postX(clip.start)) }} onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`vclip:${clip.id}`))) setStep('trim'); if (track.locked) { pickTimeline(`vclip:${clip.id}`, e); seekClip(e); e.stopPropagation(); } else beginUpperDrag(e, clip, 'move', false); }} title={`${source?.name ?? '视频'} · ${clip.start.toFixed(1)}–${(clip.start + length).toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /><div className="edge l" onPointerDown={(e) => beginUpperDrag(e, clip, 'left', !!track.locked)} /><span>{source?.name ?? '视频'}</span><div className="edge r" onPointerDown={(e) => beginUpperDrag(e, clip, 'right', !!track.locked)} /></div>;
                 })}
               </div>
             </div>;
@@ -1271,14 +1295,14 @@ export function Timeline() {
                   {tiles.filter((tile) => tile.left < lb && tile.left + tile.width > la).map((tile, i) => <div key={i} className="tl-sprite" style={{ ...tile, left: tile.left - la }} />)}
                 </div>;
               })}
-              {sequence && clipWindows(sequence).filter(({ clip, start, end }) => memberVisible(clip.group) && srcX(end) - srcX(start) > 0.5).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + srcX(start), width: Math.max(12, srcX(end) - srcX(start)), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { e.stopPropagation(); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} onClick={(e) => { e.stopPropagation(); player.pause(); seekAt(e.clientX); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
+              {sequence && clipWindows(sequence).filter(({ clip, start, end }) => memberVisible(clip.group) && srcX(end) - srcX(start) > 0.5).map(({ clip, start, end }) => <div key={clip.id} data-timeline-key={`clip:${clip.id}`} className={`tl-clip-hit ${timelineSelection.includes(`clip:${clip.id}`) ? 'selected' : ''}`} style={{ left: off + srcX(start), width: Math.max(12, srcX(end) - srcX(start)), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked} onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(CLIP_DRAG, clip.id); e.dataTransfer.effectAllowed = 'move'; }} onPointerDown={(e) => { e.stopPropagation(); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`clip:${clip.id}`))) setStep('trim'); pickTimeline(`clip:${clip.id}`, e); }} onClick={(e) => { e.stopPropagation(); seekClip(e); }} title={`选择片段 · ${start.toFixed(1)}–${end.toFixed(1)}s${clip.group ? ' · 已组合（⌥ 点单选）' : ''}`}><GroupMark group={clip.group} /></div>)}
               {!sequence && video && mainSegments(video.duration, spec?.trim ?? { remove: [] }).map((seg) => {
                 const key = segKey(seg);
                 // 点片段：切到「剪辑」右栏并选中它（HIG-93）；setStep 会清空选择，所以先切再选
                 return <div key={key} data-timeline-key={key} className={`tl-clip-hit tl-seg-hit ${timelineSelection.includes(key) ? 'selected' : ''}`} style={{ left: off + srcX(seg[0]), width: Math.max(6, srcX(seg[1]) - srcX(seg[0])), cursor: spec?.video_locked ? 'default' : 'grab' }} draggable={!spec?.video_locked}
                   onDragStart={(e) => { if (spec?.video_locked) { e.preventDefault(); return; } e.dataTransfer.setData(SEG_DRAG, key); e.dataTransfer.effectAllowed = 'move'; }}
                   onPointerDown={(e) => { e.stopPropagation(); if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(key))) setStep('trim'); setSelectedRange(null); pickTimeline(key, e); }}
-                  onClick={(e) => { e.stopPropagation(); player.pause(); seekAt(e.clientX); }}
+                  onClick={(e) => { e.stopPropagation(); seekClip(e); }}
                   title={`主轨片段 ${seg[0].toFixed(2)}–${seg[1].toFixed(2)}s · 拖动重排 · Delete 删除 · ⌘B 在播放头分割`} />;
               })}
               {!sequence && video && normalizeSplits(spec?.trim.splits, video.duration, remove).map((t) => <div key={t} className="tl-split" style={{ left: off + srcX(t) }} title={`分割点 ${t.toFixed(2)}s`} />)}
@@ -1403,7 +1427,7 @@ export function Timeline() {
                       <div key={start} data-timeline-key={`track:${t.id}`} className={`tl-bar audio ${r.role} ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''}`}
                         style={{ left: off + srcX(start), width: Math.max(4, srcX(end) - srcX(start)), cursor: all || t.locked ? 'default' : 'grab' }}
                         title="只随原视频片段播放；插入的其他视频期间不播放这条配音"
-                        onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id); pickTimeline(`track:${t.id}`, e); if (all || e.metaKey || e.ctrlKey || e.shiftKey) e.stopPropagation(); else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
+                        onPointerDown={(e) => { if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id); pickTimeline(`track:${t.id}`, e); if (all || e.metaKey || e.ctrlKey || e.shiftKey) { seekClip(e); e.stopPropagation(); } else startDrag(e, { kind: 'track-move', index: i, startX: e.clientX, orig: win }); }}>
                         <GroupMark group={t.group} />
                         随原片 · {start.toFixed(1)}s–{end.toFixed(1)}s
                         {!all && !t.locked && <><div className="edge l" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-l', index: i, startX: e.clientX, orig: win }); }} /><div className="edge r" onPointerDown={(e) => { pickTrack(t.id); startDrag(e, { kind: 'track-r', index: i, startX: e.clientX, orig: win }); }} /></>}
@@ -1415,6 +1439,7 @@ export function Timeline() {
                         if (!e.metaKey && !e.ctrlKey && !e.shiftKey && !(timelineSelection.length > 1 && timelineSelection.includes(`track:${t.id}`))) pickTrack(t.id);
                         pickTimeline(`track:${t.id}`, e);
                         if (all || linked || e.metaKey || e.ctrlKey || e.shiftKey) {
+                          seekClip(e);
                           e.stopPropagation();
                           return;
                         }

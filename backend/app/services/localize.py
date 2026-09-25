@@ -54,6 +54,7 @@ ASR_SAMPLE_RATE = 16000
 MIX_SAMPLE_RATE = 44100
 VOICE_EXT = "m4a"
 VOICE_BITRATE = "192k"
+VOICE_LOUDNESS_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=44100"
 MAX_CUES = 400
 STAGE_TRANSLATE = "translate"
 STAGE_TTS = "tts"
@@ -1026,7 +1027,14 @@ def with_placements(cues: list[dict[str, Any]], placements: list[dict[str, Any]]
     return out
 
 
-def mix_args(clips: list[tuple[Path, float, float]], total: float, dst: Path, ffmpeg_bin: str | None = None) -> list[str]:
+def mix_args(
+    clips: list[tuple[Path, float, float]],
+    total: float,
+    dst: Path,
+    ffmpeg_bin: str | None = None,
+    *,
+    normalize_loudness: bool = False,
+) -> list[str]:
     """One ffmpeg command: silent stereo bed of ``total`` seconds + every clip delayed to its start.
 
     ``clips`` = (path, start_seconds, tempo). Output: aac 192k, 44.1 kHz stereo, browser-playable.
@@ -1047,7 +1055,10 @@ def mix_args(clips: list[tuple[Path, float, float]], total: float, dst: Path, ff
         chains.append(f"[{k}:a]" + ",".join(steps) + f"[c{k}]")
         labels.append(f"[c{k}]")
     if clips:
-        chains.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:normalize=0:dropout_transition=0[aout]")
+        output_label = "mixed" if normalize_loudness else "aout"
+        chains.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=first:normalize=0:dropout_transition=0[{output_label}]")
+        if normalize_loudness:
+            chains.append(f"[mixed]{VOICE_LOUDNESS_FILTER}[aout]")
     else:
         chains[0] = chains[0].replace("[bed]", "[aout]")
     argv += [
@@ -1548,7 +1559,7 @@ def _build_version(db: Session, video: Video, loc: dict[str, Any], lang: str, pr
     dst.parent.mkdir(parents=True, exist_ok=True)
     clips = [(path, p["start"], p["tempo"]) for path, p in zip(clip_paths, placements, strict=True)]
     try:
-        _run(mix_args(clips, mix_total, dst), "混音")
+        _run(mix_args(clips, mix_total, dst, normalize_loudness=True), "混音")
         if not isinstance(providers.tts, FakeTts) and not mixed_voice_has_signal(dst):
             raise LocalizeError(f"{lang}口播混音结果无声；未替换已有配音，请重试")
     except Exception:

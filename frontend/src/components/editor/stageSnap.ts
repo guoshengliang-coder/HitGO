@@ -18,7 +18,8 @@ export function snapDraggedNode(node: Konva.Node, evt: MouseEvent | TouchEvent |
     onGuides(NO_GUIDES);
     return;
   }
-  const r = node.getClientRect({ skipStroke: true });
+  // 交互舞台外扩后，节点放在带偏移的 Group 里；参考线仍使用画布局部坐标。
+  const r = node.getClientRect({ skipStroke: true, relativeTo: node.getParent() ?? undefined });
   const snapAxis = (edges: number[], lines: number[]) => {
     let best: { d: number; delta: number; hit: number } | null = null;
     for (const v of edges) {
