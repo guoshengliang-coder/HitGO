@@ -16,17 +16,16 @@
 // 成片时长 trim.duration（HIG-50）比剪后长时：源片右边接一段「循环补足」斜纹块，横轴按 duration + 多出来的秒数延长；
 // 图层 / 音轨条可以排进那段；在那段里 scrub 换算成「第几遍 + 遍内源时刻」交给 player.seek(t, lap)，播放头按成片时刻定位。
 
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react';
 import { useCoverDuration, useEditor, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
 import { activeSourceDrag, clipWindows, firstClipOnBlank, insertClip, moveClipSetKeepingCrossingContent, sequenceDuration, sequenceTrackWindows, VIDEO_DRAG, CLIP_DRAG } from '../../lib/sequence';
 import { clamp, lapsFor, postToSource, postTrimDuration, splitPostTime } from '../../lib/time';
 import { makeTimelineAxis } from '../../lib/timelineAxis';
 import { dropSnapCandidates, mainInsertPosition, snapDrop } from '../../lib/dropSnap';
-import { packSubtitleRows, type SubtitleRow } from '../../lib/subtitleRows';
+import { visualTrackRows, type VisualTrackRow } from '../../lib/visualTracks';
 import { layerName } from '../../lib/spec';
 import { timelineThumbnails } from '../../lib/timelineThumbnails';
-import { layerLane } from '../../lib/timelineTracks';
 import { clampTrackLabelWidth, loadTrackLabelWidth, saveTrackLabelWidth, TRACK_LABEL_DEFAULT, TRACK_LABEL_MIN, TRACK_LABEL_MAX } from '../../lib/timelinePrefs';
 import { BUILTIN_TEXT_PRESETS } from '../../lib/textPresets';
 import { resolveTrack, SOURCE_TRACK_ID, sourceVolume, stickerAudioLayers, trackAssetProblem, trackSnapCandidates } from '../../lib/audioTracks';
@@ -388,14 +387,29 @@ export function Timeline() {
   const mutes = spec?.audio?.source_mute ?? [];
   // 全轨道常显（HIG-67）：音轨与图层不再按当前模块过滤，模块只决定右栏面板和新增入口。
   const stickerAudio = stickerAudioLayers(spec?.layers ?? [], assets);
-  // 全部图层行；保留在 spec.layers 里的下标，拖动时按它写回
-  const layerRows = (spec?.layers ?? []).map((l, i) => ({ l, i }));
-  // 空行不再放提示文字（HIG-91）：拖动时很容易被选成文字选区；新增入口在各组的「+」和右栏
-  const visualGroups = [
-    { id: 'tl.subtitle', label: '字幕', lane: 'subtitle' },
-    { id: 'tl.text', label: '文本', lane: 'text' },
-    { id: 'tl.layers', label: '贴纸', lane: 'other' },
-  ] as const;
+  const orderedVisualRows = useMemo(() => visualTrackRows(spec?.layers ?? [], postDuration, l => layerName(l, assets)), [spec?.layers, postDuration, assets]);
+  const visualRows = orderedVisualRows
+    .map(row => ({ ...row, items: row.items.filter(({ l }) => memberVisible(l.group)) })).filter(row => row.items.length);
+  const visualDragIds = useRef<string[]>([]);
+  const [visualDrop, setVisualDrop] = useState<{ key: string; side: 'before' | 'after' } | null>(null);
+  useEffect(() => { visualDragIds.current = []; setVisualDrop(null); }, [currentVideoId]);
+  const visualGrip = (row: VisualTrackRow) => <button className="tl-layer-grip" aria-label={`拖动${row.label}调整层级`} title="上下拖动调整画面层级" disabled={row.items.some(({ l }) => l.locked)} draggable={!row.items.some(({ l }) => l.locked)}
+    onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
+    onDragStart={e => { e.stopPropagation(); visualDragIds.current = row.items.map(({ l }) => l.id); e.dataTransfer.setData('application/x-hitgo-visual-row', JSON.stringify(visualDragIds.current)); e.dataTransfer.effectAllowed = 'move'; }}
+    onDragEnd={() => { visualDragIds.current = []; setVisualDrop(null); }}>⠿</button>;
+  const onVisualDragOver = (e: React.DragEvent<HTMLDivElement>, row: VisualTrackRow) => {
+    if (!visualDragIds.current.length) return;
+    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    setVisualDrop({ key: row.key, side: e.clientY < rect.top + rect.height / 2 ? 'before' : 'after' });
+  };
+  const onVisualDrop = (e: React.DragEvent<HTMLDivElement>, row: VisualTrackRow) => {
+    if (!visualDragIds.current.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    useEditor.getState().moveVisualTrack(visualDragIds.current, row.items.map(({ l }) => l.id), e.clientY < rect.top + rect.height / 2 ? 'before' : 'after');
+    visualDragIds.current = []; setVisualDrop(null);
+  };
   const addText = (subtitle: boolean) => {
     if (!video) return;
     const subtitleStyle = subtitle ? BUILTIN_TEXT_PRESETS.find((p) => p.id === 'builtin:subtitle-bar')?.style : undefined;
@@ -638,6 +652,7 @@ export function Timeline() {
     return true;
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => {
+    if (visualDragIds.current.length) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; return; }
     if ((e.target as HTMLElement).closest('.tl-upper-drop') && e.dataTransfer.types.includes(VIDEO_DRAG)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
@@ -666,6 +681,7 @@ export function Timeline() {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { setDropHint(null); setSequenceDropAt(null); setUpperDropAt(null); }
   };
   const onDrop = (e: React.DragEvent<HTMLElement>) => {
+    if (visualDragIds.current.length) { e.preventDefault(); visualDragIds.current = []; setVisualDrop(null); return; }
     setDropHint(null);
     setSequenceDropAt(null);
     setUpperDropAt(null);
@@ -1115,13 +1131,14 @@ export function Timeline() {
     );
   };
   /** 一层一行（文本、贴纸、遮盖）：轨道头可改名、隐藏、锁定、删除。 */
-  const layerRow = (l: Layer, i: number) => {
+  const layerRow = (l: Layer, i: number, row: VisualTrackRow) => {
     const sel = selectedLayerIds.includes(l.id);
     const hidden = !!l.hidden;
     const locked = !!l.locked;
     return (
       <div key={l.id} data-layer-row={l.id} className={`tl-row tl-layer ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl') && (selectedLayerIds.length <= 1 || !selectedLayerIds.includes(l.id))) focusLayer(l); }}>
         <div className="lbl" title={`${layerName(l, assets)} · ${l.t === 'all' ? '全程' : '区间'}`}>
+          {visualGrip(row)}
           <TrackName value={layerName(l, assets)} label="图层名" disabled={locked} onSave={(v) => renameLayer(l, v)} />
           <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
             <button className="btn ghost icon" title={hidden ? '显示（导出时恢复）' : '隐藏（导出时也不出，不删除）'} aria-label={hidden ? '显示' : '隐藏'} aria-pressed={hidden} onClick={() => updateLayer(l.id, { hidden: !hidden })}>
@@ -1141,7 +1158,7 @@ export function Timeline() {
     );
   };
   /** 字幕同轨的一行（HIG-92）：轨道头的隐藏 / 锁定 / 删除作用于整行；点行头选中整行，点条目单独编辑。 */
-  const cueRow = (row: SubtitleRow) => {
+  const cueRow = (row: VisualTrackRow) => {
     const ids = new Set(row.items.map(({ l }) => l.id));
     const hidden = row.items.every(({ l }) => l.hidden);
     const locked = row.items.every(({ l }) => l.locked);
@@ -1158,6 +1175,7 @@ export function Timeline() {
     return (
       <div key={row.key} className={`tl-row tl-layer tl-cues ${sel ? 'selected' : ''} ${hidden ? 'hidden' : ''} ${locked ? 'locked' : ''}`} onClick={(e) => { if ((e.target as HTMLElement).closest('.lbl')) { setStep('subtitle'); selectTimelineItems([...ids].map((id) => `layer:${id}`)); } }}>
         <div className="lbl" title={`${row.label} · ${row.items.length} 条（每句仍是独立字幕，点条目单独编辑；点这里选中整行）`}>
+          {visualGrip(row)}
           <span className="lname">{row.label}</span>
           <span className="tl-group-count mono">{row.items.length}</span>
           <span className="tl-acts" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
@@ -1246,6 +1264,13 @@ export function Timeline() {
               </div>
             </TrackGroup>
           )}
+
+          <TrackGroup id="tl.visual" label="视觉图层" count={visualRows.length} reveal={visualRows.some(row => row.items.some(({ l }) => l.id === selectedLayerId)) ? layerRevealVersion : 0}>
+            <div className="tl-visual-add"><button className="btn ghost" disabled={!video} onClick={() => addText(true)}>＋字幕</button><button className="btn ghost" disabled={!video} onClick={() => addText(false)}>＋文本</button><button className="btn ghost" disabled={!video} onClick={() => { setStep('sticker'); setToast('在右侧贴纸面板添加图片、视频或形状'); }}>＋贴纸 / 形状</button><button className="btn ghost" disabled={!video} onClick={() => { setStep('subtitle'); setToast('在右侧字幕面板添加遮盖'); }}>＋遮盖</button></div>
+            {visualRows.map(row => <div key={row.key} data-visual-row={row.key} className={`tl-visual-row ${visualDrop?.key === row.key ? `drop-${visualDrop.side}` : ''}`} onDragOver={e => onVisualDragOver(e, row)} onDrop={e => onVisualDrop(e, row)} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setVisualDrop(null); }}>
+              {row.kind === 'subtitle' ? cueRow(row) : layerRow(row.items[0].l, row.items[0].i, row)}
+            </div>)}
+          </TrackGroup>
 
           <TrackGroup id="tl.video" label="视频" count={video ? (sequence ? sequence.clips.length : 1) + upperTracks.reduce((n, track) => n + track.clips.length, 0) : 0} onAdd={video ? () => { setStep('trim'); setToast('拖到「新上层视频轨」会创建 V2 / V3；拖到主轨会顺序拼接'); } : undefined}>
           {[...upperTracks].reverse().map((track, reverseIndex) => {
@@ -1491,26 +1516,6 @@ export function Timeline() {
           })}
           </TrackGroup>
 
-          {visualGroups.map((group) => {
-          const allRows = layerRows.filter(({ l }) => layerLane(l) === group.lane);
-          const rows = allRows.filter(({ l }) => memberVisible(l.group));
-          return <TrackGroup key={group.id} id={group.id} label={group.label} count={rows.length} reveal={rows.some(({ l }) => l.id === selectedLayerId) ? layerRevealVersion : 0} onAdd={video ? () => {
-            if (group.lane === 'subtitle') addText(true);
-            else if (group.lane === 'text') addText(false);
-            else { setStep('sticker'); setToast('在右侧贴纸面板添加图片、视频或形状'); }
-          } : undefined}>
-          {group.lane === 'subtitle'
-            // 字幕同轨（HIG-92）：按来源 / 语种各一行，一行排多句；遮盖仍一层一行
-            ? packSubtitleRows(rows, postDuration, (l) => layerName(l, assets)).map((row) => (row.kind === 'mask' ? layerRow(row.items[0].l, row.items[0].i) : cueRow(row)))
-            : rows.map(({ l, i }) => layerRow(l, i))}
-          {rows.length === 0 && allRows.length === 0 && (
-            <div className="tl-row" style={{ height: 30 }}>
-              <div className="lbl">{group.label}</div>
-              <div className="body" />
-            </div>
-          )}
-          </TrackGroup>;
-          })}
           {marqueeDraft && <div className="tl-marquee" style={{ left: Math.min(marqueeDraft.x0, marqueeDraft.x1), top: Math.min(marqueeDraft.y0, marqueeDraft.y1), width: Math.abs(marqueeDraft.x1 - marqueeDraft.x0), height: Math.abs(marqueeDraft.y1 - marqueeDraft.y0) }} />}
 
           {snapX !== null && <div className="tl-snap" style={{ left: labelW + snapX }} />}

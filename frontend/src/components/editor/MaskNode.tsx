@@ -1,5 +1,5 @@
 // 遮盖层（契约 §2 type = "mask"）在画布上的两个部件：
-// - MaskPreview：叠在 <video> 之上、Konva 之下的 div，用 backdrop-filter 实时模糊画面（GPU 合成，零成本），
+// - MaskPreview：与 Konva canvas 按 layers 顺序交错的 div，用 backdrop-filter 实时模糊画面（GPU 合成，零成本），
 //   色块模式用背景色 + 不透明度；拖动 / 拉伸中跟着实时框走，所以预览和把手始终对齐。
 // - MaskNode：Konva Rect，只管命中、拖动（吸附参考线）、八向拉伸与选中框；没有旋转（worker 忽略 rotate）。
 //   浏览器不支持 backdrop-filter 时模糊模式退回磨砂填充，色块仍由 MaskPreview 画。

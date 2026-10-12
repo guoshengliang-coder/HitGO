@@ -819,7 +819,6 @@ export function LayerList({ type, lane, emptyHint }: { type: LayerType; lane?: L
   const removeLayer = useEditor((s) => s.removeLayer);
   const moveLayer = useEditor((s) => s.moveLayer);
   const moveLayerTo = useEditor((s) => s.moveLayerTo);
-  const moveLayerToIndex = useEditor((s) => s.moveLayerToIndex);
   const duplicateLayer = useEditor((s) => s.duplicateLayer);
   const layers = useMemo(() => layersOfType(spec?.layers ?? [], type).filter((l) => !lane || layerLane(l) === lane), [spec?.layers, type, lane]);
   // 正在改名的图层 / 正在拖的图层 / 插入位置指示（列表按 z 序倒序显示：before = 视觉上方 = 更靠上层）
@@ -838,14 +837,9 @@ export function LayerList({ type, lane, emptyHint }: { type: LayerType; lane?: L
   const onRowDrop = (e: DragEvent<HTMLDivElement>, overId: string) => {
     e.preventDefault();
     if (!dragId || !drop) return clearDrag();
-    const from = layers.findIndex((l) => l.id === dragId);
-    const over = layers.findIndex((l) => l.id === overId);
-    if (from < 0 || over < 0) return clearDrag();
-    // 视觉上方 = 同类里 over 之后；先把自己拿掉再算最终下标
-    let target = drop.side === 'before' ? over + 1 : over;
-    if (from < target) target -= 1;
+    const side = drop.side;
     clearDrag();
-    if (target !== from) moveLayerToIndex(dragId, target);
+    if (dragId !== overId) useEditor.getState().moveVisualTrack([dragId], [overId], side);
   };
 
   return (

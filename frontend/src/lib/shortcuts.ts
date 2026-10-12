@@ -22,6 +22,8 @@ const TEXT: Step[] = ['text', 'subtitle', 'localize'];
 
 export const SHORTCUTS: Shortcut[] = [
   // 全局
+  { id: 'preview-zoom', keys: ['Ctrl', '滚轮'], label: '点击预览后缩放画面（25%–400%）', group: '全局' },
+  { id: 'preview-pan', keys: ['空格', '拖动'], label: '平移预览画面', group: '全局' },
   { id: 'play', keys: ['空格'], label: '播放 / 暂停', group: '全局' },
   { id: 'frame-prev', keys: ['←'], label: '上一帧', group: '全局' },
   { id: 'frame-next', keys: ['→'], label: '下一帧', group: '全局' },

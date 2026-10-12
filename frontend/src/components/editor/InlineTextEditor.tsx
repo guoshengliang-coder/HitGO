@@ -13,7 +13,7 @@ import type { EditSpec, TextLayer } from '../../types';
 const MIN_W = 120;
 const MIN_H = 40;
 
-export function InlineTextEditor({ layer, W, H, onClose }: { layer: TextLayer; W: number; H: number; onClose: () => void }) {
+export function InlineTextEditor({ layer, W, H, onClose, zIndex }: { layer: TextLayer; W: number; H: number; onClose: () => void; zIndex?: number }) {
   const assets = useEditor((s) => s.assets);
   const updateLayer = useEditor((s) => s.updateLayer);
   const pushHistorySnapshot = useEditor((s) => s.pushHistorySnapshot);
@@ -80,6 +80,7 @@ export function InlineTextEditor({ layer, W, H, onClose }: { layer: TextLayer; W
     textAlign: st.align,
     letterSpacing: st.letter_spacing ? `${st.letter_spacing}em` : undefined,
     opacity: layer.opacity,
+    zIndex,
   };
 
   return (

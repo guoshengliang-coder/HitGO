@@ -1,3 +1,4 @@
+import { defaultVisualIndex } from './visualTracks';
 // 改语言（契约 §1 localization、§3 localize 端点）的纯函数：状态文案、术语表解析、按语言选字体、
 // 模板 + 版本合并、译文 → 字幕层、一键套用（origin = 'localize' 的层 / 轨整批替换）。
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算基于 lib/time.sourceRangeToPost：
@@ -689,7 +690,7 @@ export function applyLocalizationToSpec(spec: EditSpec, lang: string, ctx: Apply
   const cues = mergedCues(video.localization?.transcript, version);
   const postDuration = spec.sequence ? sequenceDuration(spec.sequence) : postTrimDuration(video.duration, spec.trim.remove);
   const layers = localizedCuesToLayers(cues, { lang, langLabel: ctx.langLabel, remove: spec.trim.remove, postDuration, style, placement, split: ctx.split, newId: ctx.newLayerId });
-  spec.layers.push(...layers);
+  for (const layer of layers) spec.layers.splice(defaultVisualIndex(spec.layers, layer), 0, layer);
   if (!layers.length) warnings.push('这个版本没有可显示的译文字幕');
   return warnings;
 }

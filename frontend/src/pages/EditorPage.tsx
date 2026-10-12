@@ -90,7 +90,7 @@ interface KeyActions {
  * 输入框中 → 忽略；有弹窗 → 只留 Esc（各 Modal 自己处理）；修饰键组合；⌥ + 方向键微移；当前步骤单键；全局单键。
  */
 function handleKey(e: KeyboardEvent, actions: KeyActions) {
-  if (isTyping(e)) return;
+  if (e.defaultPrevented || isTyping(e)) return;
   const s = useEditor.getState();
   const mod = e.metaKey || e.ctrlKey;
   const frame = frameDuration(s.videos.find((v) => v.id === s.currentVideoId)?.fps);

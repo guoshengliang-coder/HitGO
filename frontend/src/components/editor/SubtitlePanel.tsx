@@ -134,7 +134,7 @@ export function SubtitlePanel() {
 
         <Section id="subtitle.mask" title="遮盖原字幕" bodyClass="stack" hint="在画布上拖到原字幕的位置" help={MASK_HELP}>
           <div className="inline">
-            <button className="btn action" onClick={() => addLayer(newMaskLayer(newLayerId), { belowType: 'text' })}>
+            <button className="btn action" onClick={() => addLayer(newMaskLayer(newLayerId))}>
               <IconMask /> 添加遮盖
             </button>
             <button
