@@ -37,7 +37,8 @@ import { DEFAULT_SCROLL_BOX, fitScrollSpeed, highlightSpans, newPosterLayer, pos
 import { adjustSpans } from '../lib/textSpans';
 import { clampCoverDuration, COVER_DEFAULT_DURATION, coverDuration, isCoverAsset } from '../lib/cover';
 import { marginFromBox, nudgePlacement, placeLayer, round4, type LayerBox } from '../lib/layout';
-import { indexWithinType, insertIndexBelow, layersInCategory, moveWithinType, type LayerType } from '../lib/layerKind';
+import { defaultVisualIndex, moveVisualRow } from '../lib/visualTracks';
+import { insertIndexBelow, layersInCategory, moveWithinType, type LayerType } from '../lib/layerKind';
 import { layerTypesForStep, stepForLayer, type Step } from '../lib/steps';
 import { bakeTextLayer, bakeTextLayerVariants, ensureTextRendered, measureTextWidth } from '../lib/textImage';
 import { bakeShapeLayer } from '../lib/shapeImage';
@@ -389,7 +390,7 @@ export interface EditorState {
   setSourceVariant: (variant: SourceVariant) => boolean;
 
   // 图层
-  /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省放最上层。 */
+  /** 加一个图层并选中；belowType 指定要压在哪一类之下（遮盖插到第一个文字图层之前），缺省按新内容默认层级插入。 */
   addLayer: (layer: Layer, opts?: { belowType?: LayerType }) => void;
   /** 一次加入多个图层（标题模板），只记一步历史，选中第一个。 */
   addLayers: (layers: Layer[]) => void;
@@ -402,11 +403,12 @@ export interface EditorState {
   /** 把已套用的长字幕按当前设置补拆成多条（HIG-36）；只动字幕层，配音轨和 BGM 不变。 */
   resplitSubtitleLayers: () => void;
   removeLayer: (id: string) => void;
-  // 层级操作都只在图层自己这一类（文字 / 贴纸）里换序，另一类的位置不动，见 lib/layerKind
+  // 上移 / 置顶与轨道拖拽均使用全局视觉层级。
   moveLayer: (id: string, dir: -1 | 1) => void;
   moveLayerTo: (id: string, where: 'top' | 'bottom') => void;
   /** 把图层挪到同类里的第 index 位（0 = 同类最下层；越界夹到边界）。 */
   moveLayerToIndex: (id: string, index: number) => void;
+  moveVisualTrack: (ids: string[], targetIds: string[], side: 'before' | 'after') => void;
   duplicateLayer: (id: string) => void;
   /** 开始 / 取消「替换素材」（HIG-67）。 */
   setReplacingLayer: (id: string | null) => void;
@@ -1451,7 +1453,7 @@ export const useEditor = create<EditorState>((set, get) => {
       const moveWindow = (window: [number, number] | 'all'): [number, number] | 'all' => window === 'all' ? 'all' : [Math.max(0, window[0] + delta), Math.max(0.1, window[1] + delta)];
       for (const layer of source.layers) {
         const copy = regroup({ ...structuredClone(layer), id: newLayerId(), t: moveWindow(layer.t) });
-        next.layers.push(copy);
+        next.layers.splice(defaultVisualIndex(next.layers, copy), 0, copy);
         ids.push(`layer:${copy.id}`);
       }
       if (source.tracks.length) next.audio ??= { source_volume: 1, tracks: [] };
@@ -2629,7 +2631,7 @@ export const useEditor = create<EditorState>((set, get) => {
 
     addLayer: (layer, opts) => {
       get().updateSpec((spec) => {
-        const at = opts?.belowType ? insertIndexBelow(spec.layers, opts.belowType) : spec.layers.length;
+        const at = opts?.belowType ? insertIndexBelow(spec.layers, opts.belowType) : defaultVisualIndex(spec.layers, layer);
         spec.layers.splice(at, 0, layer);
       });
       set({ selectedLayerId: layer.id, selectedLayerIds: [layer.id] });
@@ -2637,7 +2639,7 @@ export const useEditor = create<EditorState>((set, get) => {
     addLayers: (layers) => {
       if (!layers.length) return;
       get().updateSpec((spec) => {
-        spec.layers.push(...layers);
+        for (const layer of layers) spec.layers.splice(defaultVisualIndex(spec.layers, layer), 0, layer);
       });
       set({ selectedLayerId: layers[0].id, selectedLayerIds: layers.map((l) => l.id) });
     },
@@ -2752,15 +2754,15 @@ export const useEditor = create<EditorState>((set, get) => {
     },
     moveLayer: (id, dir) => {
       const layers = get().currentSpec()?.layers ?? [];
-      const i = indexWithinType(layers, id);
-      if (i < 0) return;
-      get().moveLayerToIndex(id, i + dir);
+      const from = layers.findIndex(l => l.id === id);
+      const target = layers[from + dir];
+      if (from < 0 || !target) return;
+      get().moveVisualTrack([id], [target.id], dir > 0 ? 'before' : 'after');
     },
     moveLayerTo: (id, where) => {
       const layers = get().currentSpec()?.layers ?? [];
-      const layer = layers.find((l) => l.id === id);
-      if (!layer) return;
-      get().moveLayerToIndex(id, where === 'top' ? layersInCategory(layers, layer).length - 1 : 0);
+      const target = where === 'top' ? layers[layers.length - 1] : layers[0];
+      if (target) get().moveVisualTrack([id], [target.id], where === 'top' ? 'before' : 'after');
     },
     moveLayerToIndex: (id, index) => {
       const layers = get().currentSpec()?.layers ?? [];
@@ -2771,6 +2773,12 @@ export const useEditor = create<EditorState>((set, get) => {
       get().updateSpec((spec) => {
         spec.layers = moveWithinType(spec.layers, id, index);
       });
+    },
+    moveVisualTrack: (ids, targetIds, side) => {
+      const layers = get().currentSpec()?.layers ?? [];
+      const next = moveVisualRow(layers, ids, targetIds, side);
+      if (next === layers) return;
+      get().updateSpec(spec => { spec.layers = moveVisualRow(spec.layers, ids, targetIds, side); });
     },
     duplicateLayer: (id) => {
       const src = get().currentSpec()?.layers.find((l) => l.id === id);
@@ -2832,9 +2840,8 @@ export const useEditor = create<EditorState>((set, get) => {
       });
       get().updateSpec((s) => {
         for (const l of pasted) {
-          // 遮盖永远压在字幕之下：插到第一个文字图层之前，其它类型照旧放最上层
-          if (l.type === 'mask') s.layers.splice(insertIndexBelow(s.layers, 'text'), 0, l);
-          else s.layers.push(l);
+          // 新内容按默认位置插入，不重排已有图层。
+          s.layers.splice(defaultVisualIndex(s.layers, l), 0, l);
         }
       });
       // 同一视频里连续粘贴时继续错开：剪贴板里的坐标随之更新

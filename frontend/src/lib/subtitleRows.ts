@@ -15,7 +15,7 @@ export interface SubtitleRow {
 
 const EPS = 1e-6;
 
-function sourceKey(l: Layer): string {
+export function subtitleSourceKey(l: Layer): string {
   if (l.type === 'text' && l.origin === 'localize') return `localize:${l.lang ?? ''}`;
   if (l.type === 'text' && l.origin === 'subtitle' && l.auto) return 'auto';
   return 'manual';
@@ -39,7 +39,7 @@ export function packSubtitleRows(rows: { l: Layer; i: number }[], postDuration: 
   const order: string[] = [];
   const groups = new Map<string, { l: Layer; i: number }[]>();
   for (const row of rows) {
-    const key = row.l.type === 'mask' ? `mask:${row.l.id}` : sourceKey(row.l);
+    const key = row.l.type === 'mask' ? `mask:${row.l.id}` : subtitleSourceKey(row.l);
     if (!groups.has(key)) { groups.set(key, []); order.push(key); }
     groups.get(key)!.push(row);
   }

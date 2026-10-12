@@ -1,3 +1,4 @@
+import { defaultVisualIndex } from './visualTracks';
 // 画面文字本地化（契约 §1 screen_text / §2 origin='screen'，HIG-38）的纯函数：
 // 识别块 → 可编辑的文字图层 / 顶替遮盖，按语言整批替换，以及多语言导出「原版」时的清理。
 // 不碰 store / DOM，全部可用 vitest 直接测。时间换算走 lib/time.sourceRangeToPost，与译文字幕同一条路。
@@ -386,9 +387,7 @@ export function applyScreenTextToSpec(spec: EditSpec, lang: string, ctx: ScreenA
     }
   }
   if (masks.length) {
-    const firstText = spec.layers.findIndex((l) => l.type === 'text');
-    const at = firstText < 0 ? spec.layers.length : firstText;
-    spec.layers.splice(at, 0, ...masks);
+    for (const layer of masks) spec.layers.splice(defaultVisualIndex(spec.layers, layer), 0, layer);
   }
 
   const texts: Layer[] = [];
@@ -396,7 +395,7 @@ export function applyScreenTextToSpec(spec: EditSpec, lang: string, ctx: ScreenA
     const layer = blockToTextLayer(block, opts);
     if (layer) texts.push(layer);
   }
-  spec.layers.push(...texts);
+  for (const layer of texts) spec.layers.splice(defaultVisualIndex(spec.layers, layer), 0, layer);
 
   if (lang && !texts.length) {
     const translatable = blocks.filter((b) => !b.moving && b.enabled !== false);

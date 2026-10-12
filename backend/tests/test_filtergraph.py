@@ -2040,3 +2040,40 @@ def test_real_ffmpeg_hidden_main_video_is_black_with_source_audio(tmp_path):
         check=True, capture_output=True, text=True,
     )
     assert "codec_type=audio" in probe.stdout
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+@pytest.mark.parametrize("mask_above", [False, True])
+def test_cross_type_layer_order_matches_rendered_pixels(tmp_path, mask_above):
+    """HIG-109: a mask may sit above text; array order remains the render contract."""
+    source = tmp_path / "source.mp4"
+    png = tmp_path / "text.png"
+    output = tmp_path / "ordered.mp4"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=128x128:r=25:d=1",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
+    ], check=True, capture_output=True)
+    Image.new("RGBA", (64, 32), "red").save(png)
+    text = {
+        "id": "text", "type": "text", "text": "text",
+        "style": {"font_family": "Noto Sans SC", "font_size": 0.05, "color": "#FFFFFF"},
+        "image_url": "/media/text.png", "image_size": [64, 32],
+        "anchor": "center", "margin": [0, 0], "width": 0.5, "rotate": 0, "opacity": 1, "t": "all",
+    }
+    mask = {
+        "id": "mask", "type": "mask", "mode": "solid", "color": "#0000FF",
+        "anchor": "center", "margin": [0, 0], "width": 0.5, "height": 0.5, "rotate": 0, "opacity": 1, "t": "all",
+    }
+    spec = EditSpec.model_validate(valid_spec(
+        trim={"remove": []}, layers=[text, mask] if mask_above else [mask, text],
+        outputs=[{"variant_key": "custom", "aspect": "custom", "width": 128, "height": 128, "fill": "color"}],
+    ))
+    plan = build_render_command(
+        spec, {"duration": 1, "has_audio": False, "width": 128, "height": 128, "fps": 25}, {}, spec.outputs[0],
+        source_path=str(source), output_path=str(output),
+        resolve_image_url=lambda _: ImageSource(str(png), 64, 32),
+    )
+    subprocess.run(plan.argv, check=True, capture_output=True, timeout=60)
+    frame = tmp_path / "frame.png"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "0.5", "-i", str(output), "-frames:v", "1", str(frame)], check=True, capture_output=True)
+    red, _, blue = Image.open(frame).convert("RGB").getpixel((64, 64))
+    assert (blue > 180 and red < 50) if mask_above else (red > 180 and blue < 50)

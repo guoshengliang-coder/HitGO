@@ -6,7 +6,7 @@
 // 安全区只在 9:16 显示，内联文字编辑也只在 9:16 上进行。
 // 所有当前可见图层都能点选；点中后自动切到该对象的编辑模块。
 // 双击文字图层进入内联编辑（InlineTextEditor 叠在 Konva 上），编辑期间隐藏该图层的 Konva 节点和 Transformer。
-// 遮盖层（MaskNode）的模糊 / 色块由叠在 <video> 之上、Konva 之下的 MaskPreview div 实时画出，Konva 只画把手；
+// 遮盖层（MaskNode）的模糊 / 色块由与 Konva canvas 按 layers 顺序交错的 MaskPreview div 画出，Konva 只画把手；
 // 拉伸不锁比例、没有旋转把手。
 // 文字图层（HIG-51，对齐剪映）：四角等比缩放；左右边把手改自动换行宽度（style.wrap_width），上下边把手改框高（style.box_height，
 // 不小于文字本身，文字在框内垂直居中）。拖边时逐帧同步重画 PNG，字号、字形不变，被拖边的对边不动。
@@ -17,6 +17,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import Konva from 'konva';
+import { FIT_VIEW, wheelPreview } from '../../lib/previewView';
+import { previewLayerRuns } from '../../lib/visualTracks';
 import { Stage as KStage, Layer as KLayer, Image as KImage, Line as KLine, Rect, Text as KText, Transformer, Group } from 'react-konva';
 import { useCoverDuration, useEditor, useInCover, usePostDuration, usePostTime } from '../../store/editor';
 import { player } from '../../lib/player';
@@ -683,6 +685,17 @@ function UpperVideoPreview({ clip, source, active, fill, W, H, outputW }: { clip
   return <div className="upper-video-frame" style={{ ...styles.frame, display: active ? 'block' : 'none', background: transformed ? 'transparent' : undefined }}><video ref={ref} className="upper-video-preview" src={source.proxy_url} playsInline preload="auto" muted style={{ ...styles.media, objectFit: transformed ? 'fill' : fill === 'crop' ? 'cover' : 'contain', background: transformed ? 'transparent' : undefined }} /></div>;
 }
 
+/** Keep canvases and DOM backdrop masks in a shared stacking context. Only split
+ * at masks, so a project with hundreds of subtitle cues still uses one canvas. */
+function PreviewCanvas({ order, children, listening }: { order: number; children: React.ReactNode; listening?: boolean }) {
+  const ref = useRef<Konva.Layer>(null);
+  useLayoutEffect(() => {
+    const canvas = ref.current?.getNativeCanvasElement();
+    if (canvas) canvas.style.zIndex = String(order);
+  }, [order]);
+  return <KLayer ref={ref} listening={listening}>{children}</KLayer>;
+}
+
 export function Stage({ hidden }: { hidden?: boolean }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -696,6 +709,53 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const isRef = previewKey === '9x16';
   const video = useEditor((s) => s.videos.find((v) => v.id === s.currentVideoId) ?? null);
   const spec = useEditor((s) => (s.currentVideoId ? s.specs[s.currentVideoId] : null));
+  const [view, setView] = useState(FIT_VIEW);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const spaceRef = useRef(false);
+  const usedPan = useRef(false);
+  const swallowClick = useRef(false);
+  const previewActive = useRef(false);
+  const pan = useRef<{ id: number; x: number; y: number; view: typeof view } | null>(null);
+  const cancelPan = useCallback(() => { pan.current = null; spaceRef.current = false; setSpaceHeld(false); usedPan.current = true; }, []);
+  const resetView = () => setView({ ...FIT_VIEW });
+  useEffect(() => { resetView(); cancelPan(); previewActive.current = false; }, [video?.id, previewKey, hidden, cancelPan]);
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const typing = (target: EventTarget | null) => target instanceof HTMLElement && !!target.closest('input, textarea, select, [contenteditable="true"], .stage-view-tools');
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.ctrlKey || e.metaKey || e.altKey || hidden || !previewActive.current || !wrap.contains(document.activeElement) || typing(e.target) || document.querySelector('.modal-backdrop')) return;
+      e.preventDefault(); e.stopPropagation();
+      if (!spaceRef.current) { spaceRef.current = true; usedPan.current = false; setSpaceHeld(true); }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !spaceRef.current) return;
+      e.preventDefault(); e.stopPropagation();
+      if (!usedPan.current && !hidden && previewActive.current && wrap.contains(document.activeElement) && !typing(e.target) && !document.querySelector('.modal-backdrop')) player.toggle();
+      cancelPan();
+    };
+    const outside = (e: PointerEvent) => { if (!wrap.contains(e.target as Node)) { previewActive.current = false; cancelPan(); } };
+    const wheel = (e: WheelEvent) => {
+      if (!e.ctrlKey || !previewActive.current || !wrap.contains(document.activeElement) || typing(e.target) || hidden) return;
+      e.preventDefault(); e.stopPropagation();
+      const rect = wrap.getBoundingClientRect();
+      setView(v => wheelPreview(v, e.deltaY, e.deltaMode, rect.height, { x: e.clientX - rect.left - rect.width / 2, y: e.clientY - rect.top - rect.height / 2 }));
+    };
+    wrap.addEventListener('wheel', wheel, { passive: false });
+    window.addEventListener('keydown', down, true);
+    window.addEventListener('keyup', up, true);
+    window.addEventListener('blur', cancelPan);
+    document.addEventListener('pointerdown', outside, true);
+    return () => {
+      wrap.removeEventListener('wheel', wheel);
+      window.removeEventListener('keydown', down, true);
+      window.removeEventListener('keyup', up, true);
+      window.removeEventListener('blur', cancelPan);
+      document.removeEventListener('pointerdown', outside, true);
+    };
+  }, [hidden, cancelPan]);
   const activeSource = useEditor((s) => {
     const sequence = s.currentVideoId ? s.specs[s.currentVideoId]?.sequence : null;
     const clip = sequence ? clipAt(sequence, Math.max(0, s.time))?.clip : null;
@@ -1029,8 +1089,37 @@ export function Stage({ hidden }: { hidden?: boolean }) {
   const showFrames = isRef && (safeZoneView === 'frames' || (safeZoneView === 'overlay' && !overlayUrl));
 
   return (
-    <div className="stage-wrap" ref={wrapRef} style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}>
-      <div className="stage-box" ref={boxRef} style={{ width: W, height: H }}>
+    <div className={`stage-wrap ${spaceHeld ? 'pan-ready' : ''}`} ref={wrapRef} tabIndex={0} aria-label="视频预览" style={hidden ? { display: 'none' } : undefined} {...imageDrop.handlers}
+      onPointerDownCapture={e => {
+        if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], .stage-view-tools')) return;
+        previewActive.current = true;
+        wrapRef.current?.focus({ preventScroll: true });
+        if (spaceRef.current && e.button === 0) {
+          e.preventDefault(); e.stopPropagation(); usedPan.current = true; swallowClick.current = true;
+          pan.current = { id: e.pointerId, x: e.clientX, y: e.clientY, view: { ...viewRef.current } };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+      }}
+      onPointerMoveCapture={e => {
+        const drag = pan.current;
+        if (!drag || drag.id !== e.pointerId) return;
+        e.preventDefault(); e.stopPropagation();
+        setView({ ...drag.view, x: drag.view.x + e.clientX - drag.x, y: drag.view.y + e.clientY - drag.y });
+      }}
+      onPointerUpCapture={e => {
+        if (!pan.current || pan.current.id !== e.pointerId) return;
+        e.preventDefault(); e.stopPropagation(); pan.current = null;
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+      onPointerCancel={() => { swallowClick.current = false; cancelPan(); }}
+      onClickCapture={e => { if (swallowClick.current) { e.preventDefault(); e.stopPropagation(); swallowClick.current = false; } }}
+      onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) { previewActive.current = false; cancelPan(); } }}>
+      <div className="stage-view-tools" onPointerDown={e => e.stopPropagation()}>
+        <span className="mono" aria-live="polite">{Math.round(view.scale * 100)}%</span>
+        <button className="btn ghost" onClick={resetView} title="重置预览缩放和平移">重置</button>
+        <span className="muted">Ctrl＋滚轮缩放 · 空格拖拽平移</span>
+      </div>
+      <div className="stage-box" ref={boxRef} style={{ width: W, height: H, transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`, transformOrigin: 'center' }}>
         <div className="stage-canvas" style={{ background: mainVideoHidden ? '#000' : undefined }}>
           {needsFill && !mainVideoHidden && <FillBackdrop fill={fill} color={variant?.color} crop={variant?.crop} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W / 2)} videoId={frameVideo?.id} posterUrl={frameVideo?.poster_url} W={W} H={H} postTime={postTime} />}
           <div className="main-video-frame" style={mainFrameStyles.frame}>
@@ -1054,18 +1143,17 @@ export function Stage({ hidden }: { hidden?: boolean }) {
           })}
           {preroll > 0 && <CoverPreview fill={fill} color={variant?.color} blurFilter={blurFillFilter(variant ?? {}, outputW, outputH, W)} W={W} H={H} />}
           <AudioTracks />
-          {!coverActive &&
-          layers.map((l) => {
-            if (l.type !== 'mask' || l.hidden || !windowContains(l.t, postTime)) return null;
-            const g = geomOf(l);
-            const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
-            return <MaskPreview key={l.id} layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} />;
-            })}
         </div>
-        <div className="konva-layer" style={{ left: -WORKSPACE_PAD, top: -WORKSPACE_PAD, width: W + WORKSPACE_PAD * 2, height: H + WORKSPACE_PAD * 2, ...(drawingShape ? { cursor: 'crosshair' } : {}) }}>
+        {!coverActive && layers.map((l, i) => {
+          if (l.type !== 'mask' || l.hidden || !windowContains(l.t, postTime)) return null;
+          const g = geomOf(l);
+          const box = liveMask?.id === l.id ? liveMask.box : g?.box ?? maskStageBox(l, W, H);
+          return <div className="preview-mask-plane" key={l.id} style={{ zIndex: 10 + i * 2 }}><MaskPreview layer={g ? { ...l, opacity: g.opacity } : l} box={box} W={W} backdrop={backdrop} /></div>;
+        })}
+        <div className="konva-layer" style={{ left: -WORKSPACE_PAD, top: -WORKSPACE_PAD, width: W + WORKSPACE_PAD * 2, height: H + WORKSPACE_PAD * 2, zIndex: 'auto', ...(drawingShape ? { cursor: 'crosshair' } : {}) }}>
           <KStage width={W + WORKSPACE_PAD * 2} height={H + WORKSPACE_PAD * 2} onMouseDown={onStageMouseDown} onTouchStart={onStageMouseDown} onMouseMove={onStageMouseMove} onTouchMove={onStageMouseMove} onMouseUp={onStageMouseUp} onTouchEnd={onStageMouseUp}>
-            <KLayer listening={false}><Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</Group></KLayer>
-            <KLayer>
+            <PreviewCanvas order={2} listening={false}><Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>{showFrames && <SafeZones zone={zone} W={W} H={H} />}</Group></PreviewCanvas>
+            <PreviewCanvas order={3}>
               <Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>
               {step === 'trim' && videoControls.map((control) => {
                 const selected = selectedVideoKey === control.key;
@@ -1099,7 +1187,11 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   }}
                 />;
               })}
-              {layers.map((l) => {
+              </Group>
+            </PreviewCanvas>
+            {previewLayerRuns(layers).map(run => <PreviewCanvas key={run.key} order={run.order + 1}>
+              <Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>
+              {run.layers.map((l) => {
                 if (l.hidden || coverActive) return null;
                 if (!windowContains(l.t, postTime)) return null;
                 // 图层无论当前模块为何都能命中；点选后由 focusLayer 切到对应属性面板。
@@ -1150,6 +1242,10 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   />
                 );
               })}
+              </Group>
+            </PreviewCanvas>)}
+            <PreviewCanvas order={12 + layers.length * 2}>
+              <Group x={WORKSPACE_PAD} y={WORKSPACE_PAD}>
               {layerTypes.length > 0 && (
                 <Transformer
                   ref={trRef}
@@ -1179,8 +1275,8 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                 />
               )}
               </Group>
-            </KLayer>
-            <KLayer listening={false}>
+            </PreviewCanvas>
+            <PreviewCanvas order={14 + layers.length * 2} listening={false}>
               {marquee && (
                 <Rect
                   x={Math.min(marquee.x0, marquee.x1)}
@@ -1204,14 +1300,14 @@ export function Stage({ hidden }: { hidden?: boolean }) {
                   <KLine key={`y${y}`} points={[0, y, W, y]} stroke={GUIDE_COLOR} strokeWidth={1} dash={[4, 3]} />
                 ))}
               </Group>
-            </KLayer>
+            </PreviewCanvas>
           </KStage>
         </div>
-        {editingLayer && <InlineTextEditor key={editingLayer.id} layer={editingLayer} W={W} H={H} onClose={() => setEditingLayerId(null)} />}
+        {editingLayer && <InlineTextEditor key={editingLayer.id} layer={editingLayer} W={W} H={H} zIndex={16 + layers.length * 2} onClose={() => setEditingLayerId(null)} />}
         {!hasSrc && <div className="stage-hint">无代理视频（mock 示例）· 使用合成时钟播放</div>}
         {video?.status === 'preparing' && <div className="stage-hint">预处理中…</div>}
         {imageDrop.over && (
-          <div className="dropzone-mask" aria-hidden>
+          <div className="dropzone-mask" aria-hidden style={{ zIndex: 16 + layers.length * 2 }}>
             <span>松手添加为贴纸</span>
           </div>
         )}

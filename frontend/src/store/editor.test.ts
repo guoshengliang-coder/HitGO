@@ -662,7 +662,7 @@ describe('遮盖层的插入位置', () => {
   const sticker = (id: string) => ({ id, type: 'sticker' as const, asset_id: 'a', anchor: 'center' as const, margin: [0, 0] as [number, number], width: 0.3, rotate: 0, opacity: 1, t: 'all' as const });
   const ids = () => useEditor.getState().currentSpec()!.layers.map((l) => l.id);
 
-  it('addLayer 缺省放最上层；belowType 指定时插到该类第一个之前', () => {
+  it('addLayer 使用默认层级；belowType 指定时插到该类第一个之前', () => {
     const s = useEditor.getState();
     s.addLayer(sticker('S1'));
     expect(ids()).toEqual(['L1', 'S1']);
@@ -677,7 +677,7 @@ describe('遮盖层的插入位置', () => {
     expect(ids()).toEqual(['M1', 'L1', 'S1']);
   });
 
-  it('pasteLayer：字幕模块里粘贴遮盖插到文字之下，文字仍放最上层', () => {
+  it('pasteLayer：遮盖和文字各自按默认位置插入', () => {
     useEditor.setState({ step: 'subtitle' });
     let s = useEditor.getState();
     s.addLayer(mask('M1'), { belowType: 'text' });
@@ -1352,5 +1352,37 @@ describe('setTrackSpeed', () => {
     const track = useEditor.getState().currentSpec()!.audio!.tracks[0];
     expect(track.speed).toBe(1.5);
     expect(track.t).toBe('all');
+  });
+});
+
+describe('视觉轨道跨类型排序（HIG-109）', () => {
+  it('整行移动仅改层级，支持保存、撤销和重做', async () => {
+    const a = { ...textLayer('A'), id: 'A', origin: 'subtitle' as const, t: [0, 2] as [number, number] };
+    const b = { ...textLayer('B'), id: 'B', origin: 'subtitle' as const, t: [2, 4] as [number, number] };
+    const sticker = { id: 'S', type: 'sticker' as const, asset_id: 'asset', anchor: 'center' as const, margin: [0.2, 0.3] as [number, number], width: 0.4, rotate: 23, opacity: 0.7, t: [1, 7] as [number, number] };
+    const before = { ...emptySpec(), layers: [a, b, sticker] };
+    useEditor.getState().replaceSpec('v1', before);
+    useEditor.getState().moveVisualTrack(['A', 'B'], ['S'], 'before');
+    const next = useEditor.getState().currentSpec()!;
+    expect(next.layers).toEqual([sticker, a, b]);
+    const put = vi.spyOn(api, 'putSpec').mockResolvedValue(VIDEO);
+    await useEditor.getState().flushSave();
+    expect(put.mock.calls[0][1].layers).toEqual([sticker, a, b]);
+    useEditor.getState().undo();
+    expect(useEditor.getState().currentSpec()!.layers).toEqual(before.layers);
+    useEditor.getState().redo();
+    expect(useEditor.getState().currentSpec()!.layers).toEqual([sticker, a, b]);
+  });
+  it('新增默认位置不重排旧项目，锁定成员使整行不可移动', () => {
+    const a = { ...textLayer('A'), id: 'A' };
+    const b = { ...textLayer('B'), id: 'B', locked: true };
+    const sticker = { ...a, id: 'S', type: 'sticker' as const, asset_id: 'asset' };
+    useEditor.getState().replaceSpec('v1', { ...emptySpec(), layers: [sticker, a, b] });
+    useEditor.getState().addLayer({ ...textLayer('new'), id: 'N' });
+    expect(useEditor.getState().currentSpec()!.layers.map(l => l.id)).toEqual(['N', 'S', 'A', 'B']);
+    useEditor.getState().moveVisualTrack(['A', 'B'], ['N'], 'after');
+    expect(useEditor.getState().currentSpec()!.layers.map(l => l.id)).toEqual(['N', 'S', 'A', 'B']);
+    useEditor.getState().moveLayer('N', 1);
+    expect(useEditor.getState().currentSpec()!.layers.map(l => l.id)).toEqual(['S', 'N', 'A', 'B']);
   });
 });
